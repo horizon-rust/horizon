@@ -2220,7 +2220,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         // The Realms configuration screen's `TabNavigationBar` takes the same keys.
         if let Mode::Realms(screen) = &mut self.mode {
-            return screen.tab_key(key, ctrl, shift);
+            let was_players = screen.players_tab_ready();
+            let changed = screen.tab_key(key, ctrl, shift);
+            if changed == Some(true) && (was_players || screen.players_tab_ready()) {
+                screen.clear_players_focus();
+                self.focused_button = None;
+            }
+            return changed;
         }
         let Mode::Create { options, .. } = &self.mode else {
             return None;
@@ -2312,7 +2318,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             return (Action::None, hit.is_some());
         }
         let sound = hit.is_some()
-            || matches!(&self.mode, Mode::Realms(screen) if screen.reset_tile_at(x, y, (w, h)).is_some());
+            || matches!(&self.mode, Mode::Realms(screen) if screen.reset_tile_at(x, y, (w, h)).is_some()
+                || screen.player_control_at((x, y), (w, h)).is_some());
         let action = self.click_action(x, y, (w, h), hit);
         self.drop_button_focus_for_field(hit);
         // World list selection is silent; launching its selected entry sounds.
@@ -2393,34 +2400,15 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Realms(screen), hit) => {
+                let was_players = screen.players_tab_ready();
                 let outcome = screen.click(hit, x, y, (w, h));
-                // `AbstractSelectionList.mouseClicked`: a row takes the keyboard focus
-                // from the buttons.
-                if screen.take_list_click() {
+                // `AbstractSelectionList.mouseClicked`: a row takes keyboard focus.
+                // On a subpage transition the old screen's ordinary button cannot mask
+                // the UUID that will regain focus when Players is restored.
+                if screen.take_list_click() || was_players != screen.players_tab_ready() {
                     self.focused_button = None;
                 }
-                match outcome {
-                    crate::realms::Outcome::Back => {
-                        self.mode = Mode::Main;
-                        Action::None
-                    }
-                    crate::realms::Outcome::Connect(address) => Action::Connect {
-                        address,
-                        lan: false,
-                        realm: true,
-                    },
-                    crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
-                    crate::realms::Outcome::Copy(text) => Action::CopyText(text),
-                    crate::realms::Outcome::CreateWorld(request) => {
-                        // `RealmsCreateWorldFlow.createWorld`: Create New World's settings
-                        // upload into the Realm's slot instead of a local world.
-                        self.realms_create = Some(request);
-                        self.create_return_to_main = false;
-                        self.mode = self.new_world();
-                        Action::None
-                    }
-                    crate::realms::Outcome::None => Action::None,
-                }
+                self.realms_outcome(outcome)
             }
             (Mode::MultiplayerWarning { .. }, Some(71)) => {
                 self.set_mode(Mode::Main);
@@ -2945,6 +2933,83 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     pub fn confirm_key(&mut self) -> Action {
         self.confirm_key_size((854.0, 480.0)).0
     }
+    fn realms_outcome(&mut self, outcome: crate::realms::Outcome) -> Action {
+        match outcome {
+            crate::realms::Outcome::Back => {
+                self.mode = Mode::Main;
+                Action::None
+            }
+            crate::realms::Outcome::Connect(address) => Action::Connect {
+                address,
+                lan: false,
+                realm: true,
+            },
+            crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
+            crate::realms::Outcome::Copy(text) => Action::CopyText(text),
+            crate::realms::Outcome::CreateWorld(request) => {
+                // `RealmsCreateWorldFlow.createWorld`: upload into the slot rather than a local world.
+                self.realms_create = Some(request);
+                self.create_return_to_main = false;
+                self.mode = self.new_world();
+                Action::None
+            }
+            crate::realms::Outcome::None => Action::None,
+        }
+    }
+
+    /// The Players list owns its keyboard focus; its next control need not
+    /// have a rectangle in the last rendered frame.
+    pub fn players_owns_keyboard(&self) -> bool {
+        matches!(&self.mode, Mode::Realms(screen) if screen.players_tab_ready())
+    }
+
+    pub fn player_action_focused(&self) -> bool {
+        self.focused_button.is_none()
+            && matches!(&self.mode, Mode::Realms(screen) if screen.focused_player_column().is_some())
+    }
+
+    pub fn clear_player_action_focus(&mut self) {
+        if let Mode::Realms(screen) = &mut self.mode {
+            screen.clear_players_focus();
+        }
+    }
+
+    /// The controller's registry target landed on a Players control. Remember
+    /// its UUID/column and give the host its fully revealed rectangle.
+    pub fn reveal_player_target(
+        &mut self,
+        point: (f32, f32),
+        size: (f32, f32),
+    ) -> Option<[f32; 4]> {
+        let Mode::Realms(screen) = &mut self.mode else {
+            return None;
+        };
+        let rect = screen.focus_player_at(point, size)?;
+        self.focused_button = None;
+        Some(rect)
+    }
+
+    pub fn visible_player_target(&self, size: (f32, f32)) -> Option<[f32; 4]> {
+        let Mode::Realms(screen) = &self.mode else {
+            return None;
+        };
+        screen.focused_player_rect(size)
+    }
+
+    pub fn step_player_target(
+        &mut self,
+        key: winit::keyboard::KeyCode,
+        size: (f32, f32),
+    ) -> Option<[f32; 4]> {
+        let Mode::Realms(screen) = &mut self.mode else {
+            return None;
+        };
+        screen
+            .move_player_focus(key, size)
+            .then(|| screen.focused_player_rect(size))
+            .flatten()
+    }
+
     /// `confirm_key` with actual viewport size for button geometry lookup.
     /// Returns the triggered action and whether a UI button click sound should play.
     pub fn confirm_key_size(&mut self, size: (f32, f32)) -> (Action, bool) {
@@ -2963,6 +3028,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             let action = self.join_selected();
             let sound = matches!(action, Action::Play { .. });
             return (action, sound);
+        }
+        if self.player_action_focused()
+            && let Mode::Realms(screen) = &mut self.mode
+        {
+            return match screen.activate_player_focus() {
+                Some(outcome) => (self.realms_outcome(outcome), true),
+                None => (Action::None, false),
+            };
         }
         // A Realms list has Enter too: `ServerEntry.keyPressed` creates an uninitialized
         // Realm or plays an open one; the product page's rows do nothing.
@@ -3040,8 +3113,68 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     pub fn tab(&mut self) {
         self.tab_dir(false, (854.0, 480.0));
     }
+    fn tab_players(&mut self, reverse: bool, (w, h): (f32, f32)) -> bool {
+        use crate::realms::PlayerColumn;
+        let Mode::Realms(screen) = &mut self.mode else {
+            return false;
+        };
+        if !screen.players_tab_ready() {
+            return false;
+        }
+        let buttons = screen.buttons(w.ceil(), h.ceil());
+        // The tab's list precedes its Invite row and the configure-screen footer.
+        let enabled: Vec<_> = [67, 68, 64, 32]
+            .into_iter()
+            .filter(|id| buttons.iter().any(|b| b.5 == *id && b.4))
+            .collect();
+        if let Some(id) = self.focused_button {
+            if let Some(i) = enabled.iter().position(|&b| b == id) {
+                let next = if reverse {
+                    i.checked_sub(1)
+                } else {
+                    Some(i + 1)
+                };
+                if let Some(id) = next.and_then(|i| enabled.get(i)) {
+                    self.focused_button = Some(*id);
+                    return true;
+                }
+            }
+            screen.clear_players_focus();
+            self.focused_button = if screen.enter_player_focus(
+                reverse,
+                if reverse {
+                    PlayerColumn::Remove
+                } else {
+                    PlayerColumn::Operator
+                },
+                (w, h),
+            ) {
+                None
+            } else if reverse {
+                enabled.last().copied()
+            } else {
+                enabled.first().copied()
+            };
+        } else if !reverse || screen.players_list_focused() {
+            if !screen.tab_player_focus(reverse, (w, h)) {
+                screen.clear_players_focus();
+                self.focused_button = if reverse {
+                    enabled.last().copied()
+                } else {
+                    enabled.first().copied()
+                };
+            }
+        } else {
+            self.focused_button = enabled.last().copied();
+        }
+        true
+    }
+
     /// Tab navigation through widgets and fields in either forward or reverse order.
     pub fn tab_dir(&mut self, reverse: bool, size: (f32, f32)) {
+        if self.tab_players(reverse, size) {
+            return;
+        }
         if let Mode::Realms(screen) = &mut self.mode {
             // `RealmsScreen`'s buttons take the keyboard like every other screen's: Tab
             // steps through the enabled ones (`MenuTabBar`'s tabs included). A product
@@ -3237,6 +3370,37 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             && screen.arrow(key == KeyCode::ArrowUp, shift, size, &self.saves)
         {
             return;
+        }
+        if let Mode::Realms(screen) = &mut self.mode
+            && screen.players_tab_ready()
+        {
+            use crate::realms::PlayerColumn;
+            if self.focused_button.is_none() && screen.players_list_focused() {
+                let column = screen
+                    .focused_player_column()
+                    .unwrap_or(PlayerColumn::Operator);
+                if !screen.move_player_focus(key, size) && key == KeyCode::ArrowDown {
+                    self.focused_button = Some(match column {
+                        PlayerColumn::Operator => 67,
+                        PlayerColumn::Remove => 68,
+                    });
+                    screen.clear_players_focus();
+                }
+                return;
+            }
+            if self.focused_button.is_none()
+                || (key == KeyCode::ArrowUp && matches!(self.focused_button, Some(67 | 68)))
+            {
+                let column = if self.focused_button == Some(68) || key == KeyCode::ArrowLeft {
+                    PlayerColumn::Remove
+                } else {
+                    PlayerColumn::Operator
+                };
+                if screen.enter_player_focus(key == KeyCode::ArrowUp, column, size) {
+                    self.focused_button = None;
+                    return;
+                }
+            }
         }
         // `RealmsPdpScreen.PdpList` and `RealmsMainScreen`'s server list: the arrows move
         // through the rows while the list has the focus (`ObjectSelectionList.nextFocusPath`);
@@ -3621,10 +3785,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             self.set_mode(Mode::Multiplayer(*next));
             return;
         }
-        if let Mode::Realms(screen) = &mut self.mode
-            && !screen.escape()
-        {
-            return;
+        if let Mode::Realms(screen) = &mut self.mode {
+            let was_players = screen.players_tab_ready();
+            if !screen.escape() {
+                if was_players != screen.players_tab_ready() {
+                    self.focused_button = None;
+                }
+                return;
+            }
         }
         match &self.mode {
             // OptimizeWorldScreen: `shouldCloseOnEsc` is false; the Backup wait takes no input.

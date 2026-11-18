@@ -8823,6 +8823,9 @@ impl Game<'_> {
             self.physical_keys.clear();
             self.physical_buttons.clear();
             self.drag_button = None;
+            if let Some(title) = &mut self.title {
+                title.release();
+            }
         }
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.update_modifiers(m.state());
@@ -9973,7 +9976,9 @@ impl Game<'_> {
                             ) if code != KeyCode::Space
                                 || self.title.as_mut().is_some_and(|t| {
                                     !t.has_caret_field()
-                                        && (t.list_focused() || t.focused_button.is_some())
+                                        && (t.list_focused()
+                                            || t.focused_button.is_some()
+                                            || t.player_action_focused())
                                 }) =>
                             {
                                 let (action, sound) = self

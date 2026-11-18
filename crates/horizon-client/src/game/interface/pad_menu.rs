@@ -920,7 +920,24 @@ impl Game<'_> {
             Button::Select | Button::LeftStick if book_control => {}
             Button::East | Button::Start => return self.pad_back(),
             Button::South if self.pad_focusing() => {
-                let focus = self.pad_reveal(self.pad.menu.focus.expect("focusing"));
+                let size = self.gui_size();
+                let focus = self.pad.menu.focus.expect("focusing");
+                if let Some(title) = self
+                    .title
+                    .as_mut()
+                    .filter(|title| title.player_action_focused())
+                {
+                    // Never press a hidden UUID or the row now under an out-of-date rectangle.
+                    if title.visible_player_target(size) != Some(focus.rect) {
+                        return Ok(());
+                    }
+                    let (action, sound) = title.confirm_key_size(size);
+                    if sound {
+                        self.audio.play_button_click();
+                    }
+                    return self.title_action(event_loop, action);
+                }
+                let focus = self.pad_reveal(focus);
                 self.pad.menu.focus = Some(focus);
                 match focus.kind {
                     // A click would jump the handle: A takes hold of it, or lets it go.
@@ -1211,6 +1228,30 @@ impl Game<'_> {
         if reveal_pending(self.pad.menu.revealed, widgets::generation()) {
             return;
         }
+        let key = match button {
+            Button::DPadUp => Some(winit::keyboard::KeyCode::ArrowUp),
+            Button::DPadDown => Some(winit::keyboard::KeyCode::ArrowDown),
+            Button::DPadLeft => Some(winit::keyboard::KeyCode::ArrowLeft),
+            Button::DPadRight => Some(winit::keyboard::KeyCode::ArrowRight),
+            _ => None,
+        };
+        let size = self.gui_size();
+        if let Some(key) = key
+            && let Some(rect) = self
+                .title
+                .as_mut()
+                .and_then(|title| title.step_player_target(key, size))
+        {
+            self.pad_focus_on(
+                event_loop,
+                Target {
+                    rect,
+                    kind: Kind::Button,
+                },
+            );
+            self.pad.menu.revealed = Some(widgets::generation());
+            return;
+        }
         let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
         let vertical = matches!(button, Button::DPadUp | Button::DPadDown);
         // A step the screen declared comes first (`widgets::focus_link`).
@@ -1281,13 +1322,30 @@ impl Game<'_> {
     }
 
     fn pad_focus_on(&mut self, event_loop: &dyn EventLoopCtl, target: Target) {
-        let target = self.pad_reveal(target);
+        let mut target = self.pad_reveal(target);
         self.pad.menu.shortcut_focus = None;
-        let left = self.pad.menu.focus.replace(target);
+        let left = self.pad.menu.focus;
         if left.is_some_and(|l| l.rect != target.rect) {
             self.clear_screen_click_focus();
             self.pad.menu.armed = None;
         }
+        let size = self.gui_size();
+        if let Some(title) = &mut self.title {
+            if target.kind == Kind::Button
+                && let Some(rect) = title
+                    .visible_player_target(size)
+                    .filter(|rect| *rect == target.rect)
+                    .or_else(|| title.reveal_player_target(target.center(), size))
+            {
+                if rect != target.rect {
+                    target.rect = rect;
+                    self.pad.menu.revealed = Some(widgets::generation());
+                }
+            } else if title.players_owns_keyboard() {
+                title.clear_player_action_focus();
+            }
+        }
+        self.pad.menu.focus = Some(target);
         self.pad.menu.pending = None;
         self.pad.menu.nudge = None;
         if !self.pad.menu.held[0] {
@@ -1893,7 +1951,13 @@ impl Game<'_> {
                     gamepad::follow_scroll(focus.rect, s.down, &s.before, &after)
                 });
                 // The widget itself, wherever it went; else where its rectangle says.
-                self.pad.menu.focus = named
+                let player = self
+                    .title
+                    .as_ref()
+                    .and_then(|title| title.visible_player_target(self.gui_size()))
+                    .and_then(|rect| gamepad::refind(rect, &rects, 0.5));
+                self.pad.menu.focus = player
+                    .or(named)
                     .or(followed)
                     .or_else(|| gamepad::refind(focus.rect, &rects, 12.0))
                     .map(|i| targets[i]);

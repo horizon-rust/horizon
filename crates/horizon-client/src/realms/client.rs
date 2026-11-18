@@ -112,6 +112,11 @@ pub struct PlayerInfo {
     pub online: bool,
 }
 
+/// `RealmsServer.sortInvited`: accepted players first, then case-insensitive names.
+fn sort_invited(players: &mut [PlayerInfo]) {
+    players.sort_by_cached_key(|player| (!player.accepted, player.name.to_lowercase()));
+}
+
 /// `Ops`: the Realm's operators, by name (`RealmsClient.op`/`deop`).
 #[derive(Clone, Debug, Deserialize, Default, PartialEq)]
 pub struct Ops {
@@ -1401,7 +1406,9 @@ impl RealmsClient {
     pub fn get_own_realm(&self, realm_id: i64) -> Result<RealmServer, RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}"));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
-        serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
+        let mut realm: RealmServer = serde_json::from_str(&json).map_err(|_| RealmsError::Parse)?;
+        sort_invited(&mut realm.players);
+        Ok(realm)
     }
 
     /// `RealmsClient.op`: `POST ops/{id}/{uuid}` with an empty body, then the ops.
@@ -1425,7 +1432,10 @@ impl RealmsClient {
         let url = self.url(&format!("invites/{realm_id}"));
         let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body))?;
         serde_json::from_str::<RealmServer>(&json)
-            .map(|server| server.players)
+            .map(|mut server| {
+                sort_invited(&mut server.players);
+                server.players
+            })
             .map_err(|_| RealmsError::Parse)
     }
 
@@ -2399,6 +2409,29 @@ mod tests {
         assert_eq!(bare.download_link, "");
         assert_eq!(bare.resource_pack_url, "");
         assert_eq!(bare.resource_pack_hash, "");
+    }
+
+    #[test]
+    fn invited_players_are_sorted_by_acceptance_then_name() {
+        let mut players: Vec<_> = [
+            ("aardvark", false),
+            ("Zoe", true),
+            ("beA", true),
+            ("Ada", false),
+            ("BEA", true),
+        ]
+        .into_iter()
+        .map(|(name, accepted)| PlayerInfo {
+            name: name.into(),
+            accepted,
+            ..Default::default()
+        })
+        .collect();
+        sort_invited(&mut players);
+        assert_eq!(
+            players.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["beA", "BEA", "Zoe", "aardvark", "Ada"]
+        );
     }
 
     /// `RealmsClient.op`/`deop`: the `ops` endpoint, not the world one (a POST to

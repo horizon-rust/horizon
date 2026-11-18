@@ -74,11 +74,10 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
         key: KeyCode,
     ) -> bool {
-        if self
-            .title
-            .as_ref()
-            .is_some_and(|t| matches!(t.mode, horizon_client::title::Mode::MissingMods { .. }))
-        {
+        if self.title.as_ref().is_some_and(|t| {
+            t.players_owns_keyboard()
+                || matches!(t.mode, horizon_client::title::Mode::MissingMods { .. })
+        }) {
             return false;
         }
         let Some(nav) = key_focus::nav_of(key, self.has_shift_down()) else {
