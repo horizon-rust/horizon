@@ -43,13 +43,13 @@ impl CatSpawner {
             return;
         }
         if sections_to_village(&l.village_centers(), section(pos)) <= 2 {
-            if village_takes_cat(&l.parts().mobs, pos) {
+            if village_takes_cat(l.parts().mobs, pos) {
                 spawn_cat(l, pos, false);
             }
         } else {
             let hut = l.structure_tag("minecraft:cats_spawn_in");
             if l.structures_at(pos).iter().any(|s| hut.contains(s))
-                && hut_takes_cat(&l.parts().mobs, pos)
+                && hut_takes_cat(l.parts().mobs, pos)
             {
                 spawn_cat(l, pos, true);
             }
