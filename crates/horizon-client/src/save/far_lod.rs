@@ -37,12 +37,39 @@ pub(super) struct SavedLodSampler<G: ChunkGenerator> {
     pub(super) seen: u64,
 }
 impl<G: ChunkGenerator> SavedLodSampler<G> {
-    /// Forget the decoded chunks saved again since the last call.
+    /// Forget the decoded chunks saved again since the last call, and read
+    /// again the details waiting for `drain_details` that were read before
+    /// such a save.
     fn catch_up(&mut self) {
-        match self.generator.save.far_changes().since(&mut self.seen) {
-            Changed::Chunks(chunks) if chunks.is_empty() => {}
-            Changed::Chunks(chunks) => self.cache.retain(|(key, _)| !chunks.contains(key)),
-            Changed::All => self.cache.clear(),
+        let changed = self.generator.save.far_changes().since(&mut self.seen);
+        let touched = |key: &(i32, i32)| match &changed {
+            Changed::Chunks(chunks) => chunks.contains(key),
+            Changed::All => true,
+        };
+        if matches!(&changed, Changed::Chunks(chunks) if chunks.is_empty()) {
+            return;
+        }
+        self.cache.retain(|(key, _)| !touched(key));
+        if !self.details.iter().any(|(key, _)| touched(key)) {
+            return;
+        }
+        let details = std::mem::take(&mut self.details);
+        for (key, columns) in details {
+            let columns = if touched(&key) {
+                // Read again as `request_detail` reads it; one neither saved
+                // nor generated in an earlier session is left out, and far
+                // terrain asks for it again.
+                match self
+                    .saved_columns(key)
+                    .or_else(|| self.generated.get(key.0, key.1))
+                {
+                    Some(columns) => columns,
+                    None => continue,
+                }
+            } else {
+                columns
+            };
+            self.details.push((key, columns));
         }
     }
     fn saved_columns(&mut self, key: (i32, i32)) -> Option<LodSurfaces> {
@@ -100,8 +127,9 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
         self.inner.request_detail(&missing, center);
     }
     fn drain_details(&mut self) -> Vec<crate::streaming::LodDetail> {
-        // A chunk saved since it was asked for: read again below, not taken
-        // from the "not saved" kept when it was asked for.
+        // A chunk saved since it was asked for: read again (here, and the
+        // details waiting in `catch_up`), not taken from what was read when
+        // it was asked for.
         self.catch_up();
         let mut details = std::mem::take(&mut self.details);
         for (key, generated) in self.inner.drain_details() {
@@ -380,6 +408,32 @@ mod tests {
         let tower = chunk(&assets, &biomes, true);
         let mut sampler = sampler(assets, biomes, &dir, &save, Box::<Empty>::default());
         // Not saved when asked for: the generator makes it.
+        sampler.request_detail(&[(0, 0)], [0, 0]);
+        save.write_records("region", vec![((0, 0), Some(tower))], false)
+            .unwrap();
+        let details = sampler.drain_details();
+        assert_eq!(details.len(), 1);
+        let top = details[0].1[5 * 16 + 3].surface.map(|s| s.height);
+        assert_eq!(top, Some(200));
+        save.flush().unwrap();
+        drop(sampler);
+        drop(save);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_detail_waiting_while_its_chunk_is_saved_again_is_read_again() {
+        let Some((assets, biomes, dir, save, chunk)) = fixture("detail-again") else {
+            return;
+        };
+        let (flat, tower) = (
+            chunk(&assets, &biomes, false),
+            chunk(&assets, &biomes, true),
+        );
+        save.write_records("region", vec![((0, 0), Some(flat))], true)
+            .unwrap();
+        let mut sampler = sampler(assets, biomes, &dir, &save, Box::new(Unasked));
+        // Saved when asked for: its detail waits, read from the save.
         sampler.request_detail(&[(0, 0)], [0, 0]);
         save.write_records("region", vec![((0, 0), Some(tower))], false)
             .unwrap();
