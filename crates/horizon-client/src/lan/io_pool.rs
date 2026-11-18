@@ -612,14 +612,21 @@ impl Conn {
     /// Frame `bodies` into `out`, `queued` ones counted off `pending`: false
     /// if one could not be.
     fn frame(&mut self, now: Instant, bodies: Vec<Queued>, _queued: bool) -> bool {
+        let mut tally = (0, 0);
         for body in &bodies {
             let result = if body.prepared {
                 self.writer.frame_into(&body.body, &mut self.out);
                 Ok(())
             } else {
-                super::conn::frame_body(&mut self.writer, &body.body, &mut self.out)
+                super::conn::frame_body_tallied(
+                    &mut self.writer,
+                    &body.body,
+                    &mut self.out,
+                    &mut tally,
+                )
             };
             if let Err(e) = result {
+                self.writer.count_frames(tally.0, tally.1);
                 self.end(now, e.to_string());
                 return false;
             }
@@ -630,6 +637,7 @@ impl Conn {
                 self.outbox.probe[5].store(self.out.len() - self.written, Ordering::Relaxed);
             }
         }
+        self.writer.count_frames(tally.0, tally.1);
         true
     }
 

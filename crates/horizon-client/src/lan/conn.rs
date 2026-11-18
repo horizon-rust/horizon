@@ -2472,9 +2472,32 @@ pub(super) fn frame_body(
         {
             writer.frame_into(&SharedFrames::get().contents(body, t)?, out);
         }
+        horizon_protocol::connection::Framing::Network(Some(t)) if body.len() < t => {
+            writer.frame_small_into(body, out);
+        }
         _ => writer.frame_into(&writer.contents(body)?, out),
     }
     Ok(())
+}
+
+/// [`frame_body`] for a run of bodies: a small one is framed without touching the connection's
+/// counters, its count and bytes added to `tally`, for the caller to give to
+/// `ConnWriter::count_frames` once (two atomic adds for each packet, 32 000 packets a tick).
+pub(super) fn frame_body_tallied(
+    writer: &mut ConnWriter,
+    body: &[u8],
+    out: &mut Vec<u8>,
+    tally: &mut (i64, i64),
+) -> horizon_protocol::Result<()> {
+    if let horizon_protocol::connection::Framing::Network(Some(t)) = writer.framing()
+        && body.len() < t
+        && writer.for_client_is_plain()
+    {
+        tally.1 += writer.frame_small_uncounted(body, out);
+        tally.0 += 1;
+        return Ok(());
+    }
+    frame_body(writer, body, out)
 }
 
 /// The keep-alive clock of a play connection, shared by its network thread
