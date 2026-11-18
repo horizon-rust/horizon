@@ -13,8 +13,8 @@ added, removed (accepted and failing) and changed, and fails on:
 - an added point, unless --allow-added;
 - a difference in loops.json, and a difference in the other generated files that no accepted point change explains (the
   generated API differs whenever a point does);
-- a removed internals.json entry, and with --allow-added only that: added and changed entries are listed and pass, as
-  `cargo horizon-mod update` reports them to the mods that declared them.
+- a removed internals.json entry (one becoming `shape_only` too), and with --allow-added only that: added and changed
+  entries are listed and pass (`cargo horizon-mod update` reports signature-hash changes for declared internals).
 Moving code out of `game/` removes its points: list them in the file. A method of `Game` keeps its name, module path and
 signature, and only its body delegates. A mod that needs a moved function asks for `#[replaceable]` in the lower crate.
 
@@ -119,17 +119,22 @@ def diff_files(base_dir, head_dir, base_root=None, head_root=None):
 
 
 def internals_diff(base_text, head_text):
-    """(added, removed, changed) between two internals.json texts, each a sorted list of (path, kind). `path` is not
-    unique (a field and a method share one, and `cfg` alternatives repeat both), and a mod names an internal by path
-    and kind, so entries are grouped by that. A group the head has fewer entries of counts as removed."""
+    """(added, removed, changed) between two internals.json texts, each a sorted list of (path, kind, cfg). `path` is
+    not unique (a field and a method share one, and `cfg` alternatives repeat both), so entries are keyed as the
+    generator writes them apart, with an absent `cfg` as "". A key the head has fewer entries of, or fewer that are not
+    `shape_only` (a native mod cannot resolve a shape-only type), counts as removed."""
     def groups(text):
         out = {}
         for entry in json.loads(text)["internals"]:
-            out.setdefault((entry["path"], entry["kind"]), []).append(json.dumps(entry, sort_keys=True))
-        return {key: sorted(entries) for key, entries in out.items()}
+            out.setdefault((entry["path"], entry["kind"], entry.get("cfg") or ""), []).append(entry)
+        return {key: sorted(json.dumps(entry, sort_keys=True) for entry in entries) for key, entries in out.items()}
+
+    def resolvable(entries):
+        return sum(not json.loads(entry).get("shape_only") for entry in entries)
 
     base, head = groups(base_text), groups(head_text)
-    removed = sorted(key for key in base if len(head.get(key, ())) < len(base[key]))
+    removed = sorted(key for key in base if len(head.get(key, ())) < len(base[key])
+                     or resolvable(head.get(key, ())) < resolvable(base[key]))
     added = sorted(set(head) - set(base))
     changed = sorted(key for key in set(base) & set(head) if key not in removed and base[key] != head[key])
     return added, removed, changed
@@ -272,7 +277,8 @@ def summary(added, removed_ok, removed_bad, changed, changed_ok, files_added, fi
             out.append(f"  ... and {len(changed) - max_listed} more")
     if internals is not None:
         for title, keys in zip(("added", "removed", "changed"), internals):
-            listing(f"Internals {title}", keys, lambda key: f"{key[0]} ({key[1]})")
+            listing(f"Internals {title}", keys,
+                    lambda key: f"{key[0]} ({key[1]}" + (f", cfg {key[2]})" if key[2] else ")"))
         if not any(internals):
             out.append("internals.json differs, with the same entries.")
     listing("Generated files added", files_added, str)
@@ -327,10 +333,15 @@ def compare(base_dir, head_dir, allow_added=False, base_root=None, head_root=Non
         print(f"note: {name} exists on one side only, not compared.")
     internals = None
     if any(name == INTERNALS for name, _ in diffs):
-        # Listed by entry instead of as a diff: the file is one line of several megabytes.
-        internals = internals_diff(read_text(base_dir / INTERNALS, [base_root] if base_root else []),
-                                   read_text(head_dir / INTERNALS, [head_root] if head_root else []))
-        diffs = [(name, lines) for name, lines in diffs if name != INTERNALS]
+        # Listed by entry instead of as a diff: the file is one line of several megabytes. One that does not parse as
+        # entries stays a strict file difference, in one line.
+        try:
+            internals = internals_diff(read_text(base_dir / INTERNALS, [base_root] if base_root else []),
+                                       read_text(head_dir / INTERNALS, [head_root] if head_root else []))
+            unreadable = None
+        except (ValueError, KeyError, TypeError) as error:
+            unreadable = [f"internals.json differs and does not parse as entries ({type(error).__name__}: {error})"]
+        diffs = [(name, unreadable or lines) for name, lines in diffs if name != INTERNALS or unreadable]
     if removed and files is None:
         files = repo_texts
     if accepted is None:

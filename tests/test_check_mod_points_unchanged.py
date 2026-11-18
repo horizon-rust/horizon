@@ -275,6 +275,31 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("game::S::x (field)", text)
 
+    def test_a_platform_swap_with_the_same_count_fails(self):
+        unix, windows, mac = (("game::f", "fn", "01", {"cfg": cfg}) for cfg in ("unix", "windows", "macos"))
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(unix, windows)},
+                                        {"internals.json": internals(unix, mac)}, allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("Internals removed (1):", text)
+        self.assertIn("game::f (fn, cfg windows)", text)
+
+    def test_becoming_shape_only_fails(self):
+        exposed, shape = ("game::T", "struct", "01", {}), ("game::T", "struct", "01", {"shape_only": True})
+        status, text = self.run_compare([point("a")], [point("a")], {"internals.json": internals(exposed)},
+                                        {"internals.json": internals(shape)}, allow_added=True)
+        self.assertEqual(status, 1)
+        self.assertIn("Internals removed (1):", text)
+        status, _ = self.run_compare([point("a")], [point("a")], {"internals.json": internals(shape)},
+                                     {"internals.json": internals(exposed)}, allow_added=True)
+        self.assertEqual(status, 0)
+
+    def test_an_unparsable_internals_difference_fails_with_status_1(self):
+        for allow_added in (False, True):
+            status, text = self.run_compare([point("a")], [point("a")], {"internals.json": "{}"},
+                                            {"internals.json": "{ }"}, allow_added=allow_added)
+            self.assertEqual(status, 1)
+            self.assertIn("internals.json differs and does not parse as entries (KeyError", text)
+
     def test_one_of_two_cfg_variants_removed_fails(self):
         on, off = ("game::f", "mod", "01", {"cfg": "feature = \"f\""}), ("game::f", "mod", "01", {"cfg": "not f"})
         status, _ = self.run_compare([point("a")], [point("a")], {"internals.json": internals(on, off)},
