@@ -3,10 +3,7 @@
 use crate::mob_level::MobLevel;
 use horizon_client::{
     items::{ItemStack, Items},
-    mobs::{
-        Mob,
-        equip::{Facts, Slot},
-    },
+    mobs::Mob,
 };
 use horizon_core::geometry::Vec3;
 
@@ -15,9 +12,6 @@ pub trait PiglinLevel: MobLevel {
     fn res_items(&self) -> &Items;
     /// The content tables the world plays with (its data packs' over the game's own).
     fn world_items(&self) -> &Items;
-    /// The numbers `Mob.compareArmor` and `compareWeapons` read off `stack` in `slot`
-    /// for the mob `m`.
-    fn stack_facts(&self, m: &Mob, stack: &ItemStack, slot: Slot) -> Facts;
     // The `Game` methods piglin code calls on itself. Each is the game's own method, so a mod
     // that listens to one still hears the moved code; the free functions of `piglins` are
     // what those methods run.

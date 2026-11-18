@@ -6,7 +6,6 @@ use horizon_client::{
     items::{ItemStack, Items},
     mobs::{
         Mob, Species,
-        equip::{Facts, Slot},
         piglin::{BARTERING_ITEM, is_idle},
     },
 };
@@ -335,9 +334,6 @@ impl PiglinLevel for Game<'_> {
     }
     fn world_items(&self) -> &Items {
         self.items()
-    }
-    fn stack_facts(&self, m: &Mob, stack: &ItemStack, slot: Slot) -> Facts {
-        Game::stack_facts(self, m, stack, slot)
     }
     fn item_in_tag(&self, tag: &str, item: &str) -> bool {
         Game::item_in_tag(self, tag, item)
