@@ -972,6 +972,9 @@ fn install_version_guarded(
         return Err(format!("{} was taken down: {}", p.name, r.reason));
     }
     // Every install comes here, a modpack's pinned ones too: refused before the download.
+    if p.kind == index::Kind::Shader {
+        crate::game_shader_api::said().map_err(|e| format!("{}: {e}.", p.name))?;
+    }
     if needs_other_shader_api(p, v) {
         return Err(format!("{} {}.", p.name, other_shader_api(&v.api)));
     }

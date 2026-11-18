@@ -851,6 +851,26 @@ fn a_shader_pack_goes_by_the_game_of_the_instance_it_is_for() {
     );
     assert_eq!(install(&for_0_2, &selected.home).unwrap(), "1.0.0");
 
+    // An installed game that didn't say its lines (too slow at its first start, say): no shader
+    // pack goes in by the launcher's own line, and the next install asks it again.
+    let quiet = "nightly-2026-11-17-bbbbbbb";
+    fs::create_dir_all(crate::backend::version_dir(quiet)).unwrap();
+    fs::write(crate::backend::version_dir(quiet).join(".installed"), "").unwrap();
+    crate::instances::create("Quiet", None).unwrap();
+    let quiet_home = crate::instances::edit("Quiet", |meta| meta.version = Some(quiet.into()))
+        .unwrap()
+        .home;
+    assert_eq!(
+        install(&for_0_2, &quiet_home).unwrap_err(),
+        "Soft Glow: the installed game didn't say which shader API it serves. Try again."
+    );
+    assert!(
+        !quiet_home.join("mod-browser").exists(),
+        "nothing was downloaded"
+    );
+    answers(quiet, &["0.2"]);
+    assert_eq!(install(&for_0_2, &quiet_home).unwrap(), "1.0.0");
+
     // A newer version for 0.2 comes out: the instance on the Nightly stays on its 0.1 version.
     let mut newer = sample();
     glow_for_0_1(&mut newer, &root, false);
