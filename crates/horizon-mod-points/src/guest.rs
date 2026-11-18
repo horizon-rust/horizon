@@ -25,13 +25,21 @@ pub fn register(listener: &SlotListener) -> Result<(), crate::RegisterError> {
     }
 }
 
-/// The places this guest listens at, in registration order.
-pub fn subscriptions() -> Vec<(u32, String)> {
+/// The places this guest listens at, in registration order: each with its own place id, the
+/// place's name and identity (`point_identity`), which the game checks by name, and the
+/// listener's inject id.
+pub fn subscriptions() -> Vec<(u32, String, u64, String)> {
     LISTENERS.with(|slots| {
         slots
             .borrow()
             .iter()
-            .map(|(place, injection, _)| (*place as u32, injection.clone()))
+            .map(|(place, injection, _)| {
+                let (name, identity) = crate::API_PLACES
+                    .iter()
+                    .find(|(point, ..)| *point as usize == *place)
+                    .map_or(("", 0), |(point, ..)| crate::point_identity(*point));
+                (*place as u32, name.to_owned(), identity, injection.clone())
+            })
             .collect()
     })
 }

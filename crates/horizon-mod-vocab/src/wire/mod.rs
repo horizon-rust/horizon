@@ -42,9 +42,15 @@ pub const HOST_RELEASE: u32 = 0xFFFF_FF02;
 // hidden: transport plumbing used by generated boundary code.
 #[doc(hidden)]
 pub const HOST_LOG: u32 = 0xFFFF_FF03;
+/// The game's question to a mod, when it loads, for every call the mod was built with and its
+/// layout (`call_layouts`): the answer is a `Vec<(String, u64)>`.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const CALLS: u32 = 0xFFFF_FF04;
 
-/// The layout of every value and call that crosses, a hash the generator writes: a mod built
-/// for another one is refused when it loads.
+/// What a mod and the game must agree on exactly, a hash the generator writes: the transport's
+/// rules, its own payloads and the hand-written codecs. Each call is checked on its own, by
+/// name (`call_layouts`), so a mod built before a call was added still loads.
 // hidden: transport plumbing used by generated boundary code.
 #[doc(hidden)]
 pub use crate::WIRE_LAYOUT as LAYOUT;

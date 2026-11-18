@@ -12,6 +12,30 @@ use std::sync::atomic::AtomicUsize;
 mod prepared;
 pub use prepared::PreparedSlots;
 
+/// Calls the game's method through its own import, `name` (`owner::method#signature`), so the
+/// game links it by name and refuses a mod whose call it changed or removed. A native build of
+/// the guest has no imports: its test transport takes the game's `id` instead.
+macro_rules! host_import {
+    ($name:literal, $id:expr, $args:expr) => {{
+        #[cfg(target_arch = "wasm32")]
+        let reply = {
+            #[link(wasm_import_module = "horizon")]
+            unsafe extern "C" {
+                #[link_name = $name]
+                fn import(input: *const u8, len: u32, out: *mut u8, cap: u32) -> u32;
+            }
+            // SAFETY: the game reads `len` bytes at `input` and writes at most `cap` at `out`.
+            $crate::wire::guest::host_via(
+                |input, len, out, cap| unsafe { import(input, len, out, cap) },
+                $args,
+            )
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let reply = $crate::wire::guest::host($id, $args);
+        reply
+    }};
+}
+
 mod generated {
     #![allow(clippy::all, unused, dead_code, non_snake_case)]
     use crate::__private::game::{BackendMutRefOf, BackendRefOf, ClientBackendMutRefOf};
@@ -451,14 +475,27 @@ impl Drop for Reply {
     }
 }
 
-/// Calls the game's import `id` with `args` and returns its answer.
+/// Calls the game's import `id` with `args` and returns its answer: on wasm only the reserved
+/// ids (`HOST_RELEASE`, `HOST_LOG`); every API call has its own import (`host_via`).
 pub fn host(id: u32, args: Writer) -> Reply {
+    exchange(args, |input, out| transport::call(id, input, out))
+}
+
+/// Calls the game through `import`, one method's own import, with `args`, and returns its answer.
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+pub fn host_via(import: impl FnOnce(*const u8, u32, *mut u8, u32) -> u32, args: Writer) -> Reply {
+    exchange(args, |input, out| transport::call_via(import, input, out))
+}
+
+#[inline(always)]
+fn exchange(args: Writer, call: impl FnOnce(&[u8], &mut Vec<u8>)) -> Reply {
     let mut out = RUNTIME
         .with(|rt| rt.borrow_mut().spare.pop())
         .unwrap_or_default();
     out.clear();
     out.reserve(256);
-    transport::call(id, args.bytes(), &mut out);
+    call(args.bytes(), &mut out);
     RUNTIME.with(|rt| rt.borrow_mut().recycle(args.into_bytes()));
     Reply(out)
 }
@@ -480,12 +517,24 @@ mod transport {
         try_call(crate::wire::HOST_LOG, input, &mut Vec::new())
     }
     pub(super) fn call(id: u32, input: &[u8], out: &mut Vec<u8>) {
+        // SAFETY: `host` reads the input and writes at most `cap` bytes at `out`.
+        call_via(
+            |input, len, out, cap| unsafe { host(id, input, len, out, cap) },
+            input,
+            out,
+        )
+    }
+    #[inline(always)]
+    pub(super) fn call_via(
+        import: impl FnOnce(*const u8, u32, *mut u8, u32) -> u32,
+        input: &[u8],
+        out: &mut Vec<u8>,
+    ) {
         let cap = out.capacity();
         // SAFETY: the game writes at most `cap` bytes at `out`'s spare capacity, which it owns;
         // a longer answer is kept by the game and copied by `host_reply` into the grown buffer.
         unsafe {
-            let len = host(
-                id,
+            let len = import(
                 input.as_ptr(),
                 input.len() as u32,
                 out.as_mut_ptr(),
@@ -696,7 +745,10 @@ pub fn run(id: u32) -> (*const u8, u32) {
         }));
     });
     let _resources = resource_scope();
-    let _ = hooks();
+    // The game asks for the calls before anything else: the mod's own hooks are not made yet.
+    if id != crate::wire::CALLS {
+        let _ = hooks();
+    }
     let (input, depth, mut reply) = RUNTIME.with(|rt| {
         let mut rt = rt.borrow_mut();
         let depth = rt.keeps.len();
@@ -716,6 +768,14 @@ pub fn run(id: u32) -> (*const u8, u32) {
             .take::<Vec<crate::PackageInfo>>()
             .map(crate::install_guest_packages),
         crate::wire::RELEASE => reader.take::<Vec<Id>>().map(release),
+        crate::wire::CALLS => {
+            let calls: Vec<(String, u64)> = crate::call_layouts()
+                .into_iter()
+                .map(|(name, layout)| (name.to_owned(), layout))
+                .collect();
+            reply.put(&calls);
+            Ok(())
+        }
         id => dispatch(id, &mut reader, &mut reply),
     };
     let result = result.and_then(|()| reply.error().map_or(Ok(()), Err));

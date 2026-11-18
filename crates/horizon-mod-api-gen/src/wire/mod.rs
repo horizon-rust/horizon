@@ -5,6 +5,7 @@ mod append;
 mod borrowed;
 mod calls;
 mod host;
+mod names;
 mod prepared;
 #[cfg(test)]
 mod prepared_tests;
@@ -640,6 +641,7 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
     with_providers.push(("capability_providers_generated.rs", providers.as_str()));
     let surface = surface(root, &with_providers)?;
     coverage(&surface)?;
+    names::check_names(&surface.methods)?;
     let mut wire = borrowed::calls(&surface.types);
     let mut guest = calls::guest(
         &surface.types,
@@ -656,12 +658,25 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
         .collect::<Vec<_>>();
     guest.push_str(&calls::dispatch(&surface.types, &surface.methods, &prepared).0);
     let abis = prepared::describe(&surface.methods, &prepared)?;
+    let (codecs, codec_sources) = codecs(root)?;
+    // The transport's own payloads: no call's signature names them.
+    let control = [
+        "Vec<crate::PackageInfo>",
+        "Vec<crate::wire::Id>",
+        "crate::wire::Id",
+        "String",
+        "Vec<(String, u64)>",
+        "Vec<(String, i32, bool)>",
+    ]
+    .iter()
+    .map(|ty| format!("hash = crate::wire::layout_mix(hash, <{ty} as crate::wire::Wire>::layout(&mut vec![]));"))
+    .collect::<String>();
     let _ = writeln!(
         wire,
-        "#[doc(hidden)]\npub fn wire_core_layout() -> u64 {{ let mut hash = {:#x}; {layouts} hash }}",
-        layout(&surface),
-        layouts = surface.types.defs.iter().filter(|def| def.lifetimes == 0).map(|def| format!("hash = crate::wire::layout_mix(hash, <{} as crate::wire::Wire>::layout(&mut vec![]));", def.rust.replace("mod_api::", "crate::"))).collect::<String>()
+        "/// What every mod of a group and the game must agree on exactly; each call is checked on\n/// its own (`call_layouts`).\n#[doc(hidden)]\npub fn wire_core_layout() -> u64 {{ let mut hash = {:#x}; {control} hash }}",
+        core(codecs),
     );
+    wire.push_str(&names::layouts(&surface.types, &surface.methods));
     writeln!(
         wire,
         "#[doc(hidden)] pub fn prepared_abi_layout() -> u64 {{ {} }}",
@@ -674,7 +689,8 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
         "crate::wire::layout_mix(wire_core_layout(),prepared_abi_layout())"
     };
     writeln!(wire, "#[doc(hidden)] pub static WIRE_LAYOUT: ::std::sync::LazyLock<u64> = ::std::sync::LazyLock::new(|| {{ {complete} }});").unwrap();
-    let sources = surface.types.index.read.take();
+    let mut sources = surface.types.index.read.take();
+    sources.extend(codec_sources);
     Ok(Generated {
         wire,
         guest,
@@ -847,18 +863,20 @@ fn public_path(index: &Index<'_>, path: &str) -> bool {
     })
 }
 
-/// A hash of everything the two sides must agree on: every method's id and signature, and
-/// every type's shape (FNV-1a over their descriptions). This is the core seed;
-/// `generate` appends owned Wire layouts and the prepared marker/entry ABI layouts
-/// to the final WIRE_LAYOUT. wire_core_layout also supports refusal diagnostics:
-/// a guest presenting it without the prepared component is refused, never accepted.
-fn layout(surface: &Surface<'_>) -> u64 {
+/// The seed of the core hash: the transport's rules no call's signature carries, and the
+/// hand-written codecs (`codecs`), whose bytes no declared layout describes. The calls
+/// themselves are checked one by one (`names`), so an added call leaves it as it was.
+fn core(codecs: u64) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     let mut feed = |text: &str| {
         for byte in text.bytes() {
             hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
         }
     };
+    // A new value here refuses every mod built before it, those of the positional ABI first.
+    feed(
+        "calls by name (#18253): imports horizon.<owner>::<name>#<signature>, horizon.host for the reserved ids only; exports by name-hash id; CALLS answers call_layouts",
+    );
     // Resource-control values are part of the interface even though they do not
     // appear in a catalog signature. Older guests may have allocated identity zero.
     feed(
@@ -868,19 +886,138 @@ fn layout(surface: &Surface<'_>) -> u64 {
     feed(
         "group state: 32 words in the std member's horizon_group_state; 0 handler table, 1 cache budget, 2 eviction guard, 3.. eviction callbacks; members allocate through an evicting global allocator",
     );
+    feed(
+        "reserved ids: INIT ffffff00, RELEASE ffffff01, HOST_RELEASE ffffff02, HOST_LOG ffffff03, CALLS ffffff04, PREPARE ffffff10, RELEASE_PREPARED ffffff11; points 80000000..bfffffff",
+    );
     feed("static replies: bounded acknowledged ids or uncached text");
     feed("ConfigFiles imports: u8 root selector, 0 config, 1 data, 2 world; other values refused");
     feed("Hooks::subscribed: Vec<(hook name, i32 priority, bool receive_cancelled)>");
-    for method in &surface.methods {
-        feed(&format!("{method:?}"));
-    }
-    for def in &surface.types.defs {
-        // Private borrowed descriptors also define bytes and checked writeback policy.
-        // Hash the complete definition so private writeback contracts affect compatibility.
-        feed(&format!("{def:?}"));
-    }
-    feed(&format!("{:?}", surface.hooks));
+    feed(&format!("hand-written codecs {codecs:#x}"));
     hash
+}
+
+/// A hash of every hand-written `Wire` codec of the API (`impl Wire for …` and the macros that
+/// write one), doc comments aside, and the files read for it. Their bytes are what the code
+/// says, which no declared layout describes, so a change to one refuses every mod built before.
+fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
+    fn strip_docs(tokens: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        use proc_macro2::TokenTree;
+        let mut out = Vec::new();
+        let mut trees = tokens.into_iter().peekable();
+        while let Some(tree) = trees.next() {
+            if let TokenTree::Punct(punct) = &tree
+                && punct.as_char() == '#'
+                && let Some(TokenTree::Group(group)) = trees.peek()
+                && group.delimiter() == proc_macro2::Delimiter::Bracket
+                && group
+                    .stream()
+                    .into_iter()
+                    .next()
+                    .is_some_and(|first| first.to_string() == "doc")
+            {
+                trees.next();
+                continue;
+            }
+            out.push(match tree {
+                TokenTree::Group(group) => {
+                    let mut inner =
+                        proc_macro2::Group::new(group.delimiter(), strip_docs(group.stream()));
+                    inner.set_span(group.span());
+                    TokenTree::Group(inner)
+                }
+                tree => tree,
+            });
+        }
+        out.into_iter().collect()
+    }
+    fn test_only(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().any(|attr| {
+            attr.path().is_ident("cfg")
+                && quote::ToTokens::to_token_stream(attr)
+                    .to_string()
+                    .contains("test")
+        })
+    }
+    fn items(list: &[Item], texts: &mut Vec<String>) {
+        for item in list {
+            match item {
+                Item::Impl(block)
+                    if !test_only(&block.attrs)
+                        && block.trait_.as_ref().is_some_and(|(_, path, _)| {
+                            path.segments.last().is_some_and(|s| s.ident == "Wire")
+                        }) =>
+                {
+                    texts.push(strip_docs(quote::ToTokens::to_token_stream(block)).to_string());
+                }
+                Item::Macro(mac)
+                    if mac.mac.path.is_ident("macro_rules")
+                        && mac.mac.tokens.to_string().contains("Wire for") =>
+                {
+                    texts.push(strip_docs(mac.mac.tokens.clone()).to_string());
+                }
+                Item::Mod(module) if !test_only(&module.attrs) => {
+                    if let Some((_, content)) = &module.content {
+                        items(content, texts);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn walk(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.is_dir() {
+                walk(&path, files)?;
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let dirs = [
+        root.join("crates/horizon-mod-vocab/src"),
+        root.join("crates/horizon-mod-api/src"),
+    ];
+    let mut files = Vec::new();
+    for dir in &dirs {
+        walk(dir, &mut files)?;
+    }
+    let mut keyed: Vec<(String, std::path::PathBuf)> = files
+        .into_iter()
+        .map(|path| {
+            let key = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            (key, path)
+        })
+        .filter(|(key, _)| !key.contains("tests"))
+        .collect();
+    keyed.sort();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for (key, path) in &keyed {
+        // Line ends as Git stores them: a literal spanning lines must hash the same in a
+        // Windows checkout as in the SDK's.
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("{key}: {e}"))?
+            .replace("\r\n", "\n");
+        if !text.contains("Wire for") {
+            continue;
+        }
+        let file = syn::parse_file(&text).map_err(|e| format!("{key}: {e}"))?;
+        let mut texts = Vec::new();
+        items(&file.items, &mut texts);
+        for text in &texts {
+            for byte in text.bytes().chain([0]) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    // The directories, so a codec in a new file reruns the build script too.
+    Ok((hash, dirs.to_vec()))
 }
 
 #[cfg(test)]
@@ -987,6 +1124,14 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn layout_includes_private_borrowed_shapes() {
+        // What the calls carry: each call's signature, which covers the borrowed shapes.
+        fn layout(surface: &super::Surface<'_>) -> Vec<u64> {
+            surface
+                .methods
+                .iter()
+                .map(|m| super::names::signature(&surface.types, m))
+                .collect()
+        }
         let run = || {
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
             let generated = crate::sources(&root, crate::FillMode::Require).unwrap();
@@ -998,7 +1143,7 @@ mod tests {
                 ("capability_providers_generated.rs", providers.as_str()),
             ];
             let mut surface = super::surface(&root, &included).unwrap();
-            let baseline = super::layout(&surface);
+            let baseline = layout(&surface);
             assert!(
                 surface
                     .types
@@ -1019,7 +1164,7 @@ mod tests {
                 super::ty::BorrowedShape::None
             ));
             surface.types.defs[append].append.as_mut().unwrap().field += 1;
-            assert_ne!(baseline, super::layout(&surface));
+            assert_ne!(baseline, layout(&surface));
             surface.types.defs[append].append.as_mut().unwrap().field -= 1;
             let projection = surface
                 .types
@@ -1032,8 +1177,8 @@ mod tests {
                 super::ty::BorrowedShape::None
             ));
             projection.projection.as_mut().unwrap()[0].ty = super::ty::Ty::Unit;
-            assert_ne!(baseline, super::layout(&surface));
-            let before_borrowed = super::layout(&surface);
+            assert_ne!(baseline, layout(&surface));
+            let before_borrowed = layout(&surface);
             let borrowed = surface
                 .types
                 .defs
@@ -1049,7 +1194,7 @@ mod tests {
                 })
                 .expect("a borrowed call record");
             borrowed.ty = super::ty::Ty::Unit;
-            assert_ne!(before_borrowed, super::layout(&surface));
+            assert_ne!(before_borrowed, layout(&surface));
         };
         std::thread::Builder::new()
             .stack_size(64 << 20)

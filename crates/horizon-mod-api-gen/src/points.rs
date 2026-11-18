@@ -1121,20 +1121,26 @@ pub(crate) fn records_selected(
         .collect();
     let mut api_places = proc_macro2::TokenStream::new();
     let mut api_refusals = proc_macro2::TokenStream::new();
+    // The point transport's own rules; each place is checked on its own, by name
+    // (`point_identity`), so a point added to the catalog leaves the others as they were.
     let mut layout = 0xcbf29ce484222325u64;
+    for byte in "points by name (#18253): ids 0x8000_0000 + the guest's own place, 0xBFFF_FFFF lists subscriptions as (place, name, identity, inject id); a place's identity is its declaration and its record's field layouts".bytes() {
+        layout = (layout ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    let mut identities = proc_macro2::TokenStream::new();
+    let mut by_name = proc_macro2::TokenStream::new();
     for point in points {
-        for byte in format!(
-            "{}:{}:{}:{}:{:?}",
-            point.name, point.host, point.record_item, point.at_return, point.api_refusal
-        )
-        .bytes()
-        {
-            layout = (layout ^ u64::from(byte)).wrapping_mul(0x100000001b3);
-        }
         if let Some(reason) = &point.api_refusal {
             let target = &point.target;
             api_refusals.extend(quote! { (#target, #reason), });
             continue;
+        }
+        identities.extend(identity(point));
+        for name in std::iter::once(point.name.clone())
+            .chain(point.at_return.then(|| format!("{}_return", point.name)))
+        {
+            let variant = quote::format_ident!("{}", point_shape::camel(&name));
+            by_name.extend(quote!(#name => ::std::option::Option::Some(PointId::#variant),));
         }
         let record = quote::format_ident!("{}", point.record);
         let passed = match point.host {
@@ -1198,9 +1204,22 @@ pub(crate) fn records_selected(
         /// Target names for native load diagnostics.
         #[doc(hidden)]
         pub const POINT_TARGETS: &[&str] = &[#(#targets),*];
-        /// The generated point export table and record layout, checked separately from the API layout.
+        /// The point transport's rules, checked separately from the API layout; each place is
+        /// checked on its own (`point_identity`).
         #[doc(hidden)]
         pub const POINT_LAYOUT: u64 = #layout;
+        /// An API place's name and what a guest and the game must agree on for it: its
+        /// declaration and the wire layout of each field of its record.
+        #[doc(hidden)]
+        #[allow(unreachable_patterns)]
+        pub fn point_identity(point: PointId) -> (&'static str, u64) {
+            match point { #identities _ => ("", 0) }
+        }
+        /// The API place named `name` in this game.
+        #[doc(hidden)]
+        pub fn point_by_name(name: &str) -> ::std::option::Option<PointId> {
+            match name { #by_name _ => ::std::option::Option::None }
+        }
         /// API places as (place, target function, return phase, the return type a `replace` there
         /// can't produce), for manifest validation: a head whose return is neither `()` nor an
         /// API value refuses a replacement when a module loads.
@@ -1251,6 +1270,51 @@ pub(crate) fn records_selected(
         pub mod listeners { use super::*; #(#listeners)* }
     }
     .to_string()
+}
+
+/// `point_identity`'s arms for `point`'s places: the hash of its declaration mixed with the
+/// run-time `Wire` layout of each field type of its record, which the generator can't see.
+fn identity(point: &GamePoint) -> proc_macro2::TokenStream {
+    struct Static;
+    impl syn::visit_mut::VisitMut for Static {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            *lifetime = syn::parse_quote!('static);
+        }
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in format!(
+        "{}:{}:{}:{}",
+        point.name, point.host, point.record_item, point.at_return
+    )
+    .bytes()
+    {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    let file: syn::File = syn::parse_str(&point.record_item).expect("point record");
+    let mut fields = Vec::new();
+    for item in &file.items {
+        if let syn::Item::Struct(record) = item {
+            for field in &record.fields {
+                let mut ty = field.ty.clone();
+                syn::visit_mut::VisitMut::visit_type_mut(&mut Static, &mut ty);
+                fields.push(ty);
+            }
+        }
+    }
+    let count = fields.len();
+    let mut arms = proc_macro2::TokenStream::new();
+    for name in std::iter::once(point.name.clone())
+        .chain(point.at_return.then(|| format!("{}_return", point.name)))
+    {
+        let variant = quote::format_ident!("{}", point_shape::camel(&name));
+        arms.extend(quote! {
+            PointId::#variant => (#name, {
+                let layouts: [u64; #count] = [#(<#fields as ::mod_api::wire::Wire>::layout(&mut ::std::vec::Vec::new())),*];
+                layouts.into_iter().fold(#hash, ::mod_api::wire::layout_mix)
+            }),
+        });
+    }
+    arms
 }
 
 /// Engine-owned records and typed dispatch; registration stays in the platform.

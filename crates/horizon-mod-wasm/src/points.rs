@@ -104,7 +104,7 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
             ));
         }
     }
-    let listed: Vec<(u32, String)> = module
+    let listed: Vec<(u32, String, u64, String)> = module
         .call(
             CallClass::Load,
             Frame::default(),
@@ -119,14 +119,27 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
         .map(|inject| (inject.id.as_str(), inject))
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut slots = Vec::new();
-    for (index, (place, id)) in listed.into_iter().enumerate() {
+    for (index, (place, name, identity, id)) in listed.into_iter().enumerate() {
         let inject = declared
             .remove(id.as_str())
             .ok_or_else(|| format!("undeclared point listener {id}"))?;
-        let point =
-            checked_place(&id, inject, place).map_err(|e| format!("{}: {e}", manifest.id))?;
+        // By name: the guest's place ids are its own build's, and may differ from the game's.
+        let point = mod_points::point_by_name(&name).ok_or_else(|| {
+            format!(
+                "{}: {id}: listens at point {name}, which this game no longer has: rebuild it",
+                manifest.id
+            )
+        })?;
+        if mod_points::point_identity(point).1 != identity {
+            return Err(format!(
+                "{}: {id}: built against another version of point {name}, which this game changed: rebuild it",
+                manifest.id
+            ));
+        }
+        checked_place(&id, inject, point).map_err(|e| format!("{}: {e}", manifest.id))?;
         slots.push((
             point,
+            place,
             index as u32,
             inject.priority,
             id,
@@ -137,7 +150,7 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
         return Err(format!("unfilled point listener {id}"));
     }
     let owner = Box::leak(manifest.id.clone().into_boxed_str());
-    for (place, listener, priority, id, replace) in slots {
+    for (place, guest_place, listener, priority, id, replace) in slots {
         let endpoint = Box::leak(Box::new(Endpoint {
             owner,
             module: module.downgrade(),
@@ -145,7 +158,7 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
         }));
         let id = Box::leak(id.into_boxed_str());
         let mut slot =
-            SlotListener::forwarded(owner, place.place(), endpoint, 0x8000_0000 + place as u32)
+            SlotListener::forwarded(owner, place.place(), endpoint, 0x8000_0000 + guest_place)
                 .ordered(priority, id);
         // The guest's listener already owns the outcome (`mod_points::replace!`); the host's
         // slot carries the mark, so a second replace at the place is refused for either target.
@@ -160,13 +173,13 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
 /// The engine's API place `place` that a guest subscribed as its declared `inject`, checked
 /// against the game's own point list, not what the module says of itself: the target, the phase,
 /// and, for a `replace`, that its head returns `()` or an API value the listener can produce.
-fn checked_place(id: &str, inject: &Inject, place: u32) -> Result<PointId, String> {
-    let Some(&(point, target, at_return, replace_refusal)) = mod_points::API_PLACES
+fn checked_place(id: &str, inject: &Inject, place: PointId) -> Result<(), String> {
+    let Some(&(_, target, at_return, replace_refusal)) = mod_points::API_PLACES
         .iter()
-        .find(|(point, ..)| *point as u32 == place)
+        .find(|(point, ..)| *point == place)
     else {
         return Err(format!(
-            "{id}: {}: no API record for place {place}",
+            "{id}: {}: no API record for place {place:?}",
             inject.at
         ));
     };
@@ -184,7 +197,7 @@ fn checked_place(id: &str, inject: &Inject, place: u32) -> Result<PointId, Strin
              `{ty}` has no API form"
         ));
     }
-    Ok(point)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -218,8 +231,9 @@ mod tests {
             (import "env" "memory" (memory 1))
             (func (export "horizon_layout") (result i64) i64.const {})
             (func (export "horizon_in") (param i32) (result i32) i32.const 0)
-            (func (export "horizon_hook") (param i32) (result i64) i64.const 0))"#,
-                *mod_api::wire::LAYOUT
+            (func (export "horizon_hook") (param i32) (result i64) {}))"#,
+                *mod_api::wire::LAYOUT,
+                crate::calls::answering::<&str>(&[], "i64.const 0")
             ))
             .unwrap();
             let mut modules = WasmMod::instantiate(
@@ -267,8 +281,9 @@ with='no_wire'
             (import "env" "memory" (memory 1))
             (func (export "horizon_layout") (result i64) i64.const {})
             (func (export "horizon_in") (param i32) (result i32) i32.const 0)
-            (func (export "horizon_hook") (param i32) (result i64) i64.const 0))"#,
-                *mod_api::wire::LAYOUT
+            (func (export "horizon_hook") (param i32) (result i64) {}))"#,
+                *mod_api::wire::LAYOUT,
+                crate::calls::answering::<&str>(&[], "i64.const 0")
             ))
             .unwrap();
             let mut modules = WasmMod::instantiate(
@@ -291,16 +306,6 @@ with='no_wire'
         })
     }
 
-    #[test]
-    fn missing_place_names_mod_row_and_declared_target() {
-        let error =
-            checked_place("addon:own", &inject(Kind::Head, "game::tick"), u32::MAX).unwrap_err();
-        assert_eq!(
-            error,
-            "addon:own: game::tick: no API record for place 4294967295"
-        );
-    }
-
     /// A module built without the build tool may subscribe a `replace` anywhere: the loader
     /// refuses one at a head whose return it can't produce, by the game's own point list.
     #[test]
@@ -313,23 +318,22 @@ with='no_wire'
         let &(fallible, target, _, refusal) = heads()
             .find(|(.., refusal)| refusal.is_some_and(|ty| ty.starts_with("Result")))
             .expect("a game point returning Result<(), E> with an API record");
-        let error =
-            checked_place("own", &inject(Kind::Replace, target), fallible as u32).unwrap_err();
+        let error = checked_place("own", &inject(Kind::Replace, target), fallible).unwrap_err();
         assert!(
             error.contains(target) && error.contains(&format!("`{}`", refusal.unwrap())),
             "{error}"
         );
         // An ordinary head listener there is unaffected.
         assert_eq!(
-            checked_place("own", &inject(Kind::Head, target), fallible as u32),
-            Ok(fallible)
+            checked_place("own", &inject(Kind::Head, target), fallible),
+            Ok(())
         );
         let &(owned, target, ..) = heads()
             .find(|(.., refusal)| refusal.is_none())
             .expect("a game point a replace can own");
         assert_eq!(
-            checked_place("own", &inject(Kind::Replace, target), owned as u32),
-            Ok(owned)
+            checked_place("own", &inject(Kind::Replace, target), owned),
+            Ok(())
         );
     }
 }
