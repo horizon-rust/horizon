@@ -44,7 +44,9 @@ fn an_own_rockets_spark_is_live_the_tick_it_spawns_at_the_moved_hand() {
         loaded.gui.unwrap(),
         options,
         settings,
-        Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(root.clone())),
+        Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            root.clone(),
+        )),
         None,
     )
     .unwrap();

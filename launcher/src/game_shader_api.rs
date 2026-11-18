@@ -475,6 +475,7 @@ pub mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn reads_the_lines_a_game_says_it_serves() {
         // The Nightly of 2026-11-13 (9f42064c11) and a game from main after #15886.
         let nightly =

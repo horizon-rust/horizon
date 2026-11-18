@@ -497,9 +497,7 @@ impl Game<'_> {
             self.frame_output_changed(f.pos);
         }
         self.drop_frame_items(&mut f, with_frame, by_player, creative);
-        if !with_frame
-            && let Some(now) = self.item_frames.iter().position(|g| g.id == entity_id)
-        {
+        if !with_frame && let Some(now) = self.item_frames.iter().position(|g| g.id == entity_id) {
             self.item_frames[now].random = f.random.clone();
         }
         // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer

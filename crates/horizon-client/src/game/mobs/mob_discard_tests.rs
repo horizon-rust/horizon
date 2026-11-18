@@ -215,7 +215,9 @@ fn a_killed_mob_leaves_at_e_at_once_with_death_time_zero() {
         loaded.gui.unwrap(),
         options,
         settings,
-        Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(root.clone())),
+        Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            root.clone(),
+        )),
         None,
     )
     .unwrap();

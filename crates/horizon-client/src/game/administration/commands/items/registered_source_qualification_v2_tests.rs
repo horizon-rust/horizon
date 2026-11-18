@@ -100,10 +100,8 @@ mod registered_source_completion_qualification_v2 {
         let source = game.block_entity_nbt([0, 100, 0]).unwrap();
         let clock = game.world.game_time;
         assert!(game.run_command("scoreboard objectives add fullslot dummy"));
-        let stages: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(fixture.join("stages.json")).unwrap(),
-        )
-        .unwrap();
+        let stages: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.join("stages.json")).unwrap()).unwrap();
         let mut failures = Vec::new();
         let mut expected_target: Option<(&str, u32)> = None;
         for op in stages[0]["operations"].as_array().unwrap() {
@@ -170,9 +168,15 @@ mod registered_source_completion_qualification_v2 {
             }
             if label=="context/executor_write" && !game.run_command(r#"execute if data entity @e[tag=complete_executor,limit=1] {equipment:{mainhand:{id:"minecraft:gold_ingot",count:6}}}"#) {failures.push("executor did not receive six gold ingots".to_owned());}
             if label == "context/executor_write" {
-                for predicate in ["minecraft:gold_ingot[count=6]", "minecraft:gold_ingot[count~6]", "minecraft:gold_ingot"] {
+                for predicate in [
+                    "minecraft:gold_ingot[count=6]",
+                    "minecraft:gold_ingot[count~6]",
+                    "minecraft:gold_ingot",
+                ] {
                     let result = game.run_command(&format!("execute if items entity @e[tag=complete_executor,limit=1] weapon.mainhand {predicate}"));
-                    println!("count matcher diagnostic (outside source-resolution assertion): {predicate}: {result}");
+                    println!(
+                        "count matcher diagnostic (outside source-resolution assertion): {predicate}: {result}"
+                    );
                 }
             }
             if label.starts_with("read/") && cmd.starts_with("execute if ") {

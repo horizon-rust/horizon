@@ -129,6 +129,7 @@ fn crumbs(game: &mut Game<'_>) -> Vec<([f64; 3], [f64; 3])> {
 /// the fly toggle on trails nothing, and the same player walking on it
 /// leaves its crumb, from its own `Entity.random`.
 #[test]
+#[ignore = "daily"]
 fn a_flying_player_leaves_no_sprint_dust() {
     let Some(mut game) = game() else { return };
     let mut player = PlayerMotion::new(game.motion, Vec3::new(0.5, 100.0, 0.5)).unwrap();
@@ -165,6 +166,7 @@ fn a_flying_player_leaves_no_sprint_dust() {
 /// window's player each leave one, from their own random; a sprinting rabbit
 /// leaves none, and neither does a cat that is not sprinting nor a spectator.
 #[test]
+#[ignore = "daily"]
 fn every_sprinting_client_entity_leaves_a_crumb() {
     let Some(mut game) = game() else { return };
     let cat = runner(&mut game, 13001, "minecraft:cat", 2.5, 2.5);

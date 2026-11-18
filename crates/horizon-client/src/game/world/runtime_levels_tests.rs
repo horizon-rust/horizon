@@ -21,7 +21,8 @@ fn a_built_in_dimension_id_does_not_read_the_extra_table() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(
-            ["overworld", "the_nether", "the_end"].map(|name| super::Dim::from_id(&format!("minecraft:{name}"))),
+            ["overworld", "the_nether", "the_end"]
+                .map(|name| super::Dim::from_id(&format!("minecraft:{name}"))),
         );
     });
     let found = rx.recv_timeout(std::time::Duration::from_secs(10));

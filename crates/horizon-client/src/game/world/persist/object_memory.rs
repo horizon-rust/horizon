@@ -643,7 +643,9 @@ impl Game<'_> {
             (VehicleTreeKind::Mob, self.mob_object_nbt(object))
         } else if self.boat_object(root).is_some() {
             let uuid = self.uuid_for(root);
-            let mut tag = self.boat_object(root)?.to_nbt(uuid, self.persist.raw.get(&root));
+            let mut tag = self
+                .boat_object(root)?
+                .to_nbt(uuid, self.persist.raw.get(&root));
             if let Some(index) = self.boats.iter().position(|boat| boat.id == root) {
                 self.write_boat_leash(&mut tag, index);
             }
@@ -651,7 +653,9 @@ impl Game<'_> {
             (VehicleTreeKind::Boat, tag)
         } else if self.cart_object(root).is_some() {
             let uuid = self.uuid_for(root);
-            let mut tag = self.cart_object(root)?.to_nbt(uuid, self.persist.raw.get(&root));
+            let mut tag = self
+                .cart_object(root)?
+                .to_nbt(uuid, self.persist.raw.get(&root));
             self.save_portal_cooldown(root, &mut tag);
             (VehicleTreeKind::Cart, tag)
         } else {

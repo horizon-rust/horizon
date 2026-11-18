@@ -1,3 +1,8 @@
 # The daily tests of horizon-launcher: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
 # where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+horizon-launcher browser::horizon::pack::tests::a_pack_pinning_a_shader_pack_for_another_shader_api_installs_nothing lib daily game-boot
+horizon-launcher browser::horizon::tests::a_shader_pack_offers_its_newest_version_for_this_shader_api lib daily game-boot
+horizon-launcher browser::horizon::tests::shader_packs_are_offered_for_the_shader_api_the_installed_game_serves lib daily game-boot
+horizon-launcher browser::horizon::tests::shader_packs_for_another_shader_api_are_marked_and_not_installed lib daily game-boot
+horizon-launcher game_shader_api::tests::reads_the_lines_a_game_says_it_serves lib daily game-boot
 horizon-launcher native_mods::tests::each_command_logs_its_time lib daily child-process

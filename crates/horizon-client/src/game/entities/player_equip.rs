@@ -198,11 +198,7 @@ mod tests {
             })
             .unwrap()
         };
-        assert_eq!(
-            charge(&mut game),
-            (4.0, true),
-            "the hand's charge"
-        );
+        assert_eq!(charge(&mut game), (4.0, true), "the hand's charge");
         // Its tick sees the spear (and starts its charge again): the spear's own speed counts.
         game.tick_guests();
         let (speed, _) = charge(&mut game);
@@ -263,15 +259,21 @@ mod tests {
         for (held, worn, swaps, attribute, before, after) in cases {
             let mut resources = None;
             let mut game = game(&mut resources);
-            game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
-                guest.inventory[1] = held
-            });
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .guests
+                .update(0, |guest| guest.inventory[1] = held);
             // It has played a tick with its empty hand and nothing on.
             game.tick_guests();
             // the chest (head, chest, legs, feet)
-            game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
-                guest.armor[1] = worn
-            });
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .guests
+                .update(0, |guest| guest.armor[1] = worn);
             if swaps {
                 let swap = S::SetCarriedItem(play::SetCarriedItem { slot: 1 });
                 game.lan_guest_packet(2, swap);

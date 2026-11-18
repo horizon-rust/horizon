@@ -125,6 +125,7 @@ fn step(game: &mut Game<'_>) {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_selector_matching_two_entities_mounts_nothing() {
     let mut resources = None;
     let Some(mut game) = game(&mut resources) else {
@@ -165,6 +166,7 @@ fn a_selector_matching_two_entities_mounts_nothing() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_mounting_mob_drops_its_lead() {
     let mut resources = None;
     let Some(mut game) = game(&mut resources) else {
@@ -197,6 +199,7 @@ fn a_mounting_mob_drops_its_lead() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_brain_boarding_mob_drops_its_lead() {
     let mut resources = None;
     let Some(mut game) = game(&mut resources) else {

@@ -69,8 +69,7 @@ impl Game<'_> {
                 (mob_seat + 1, aboard.len() + 1)
             } else {
                 if let Some(driver) = vehicle.extra.rider
-                    && let Some(pos) =
-                        aboard.iter().position(|&k| self.mobs[k].id == driver)
+                    && let Some(pos) = aboard.iter().position(|&k| self.mobs[k].id == driver)
                     && pos != 0
                 {
                     let driver_idx = aboard.remove(pos);
@@ -116,8 +115,7 @@ impl Game<'_> {
             };
             place = (seat, 1);
         }
-        let attach =
-            Self::mob_passenger_attachment(vehicle, &self.mobs[i], place.0, place.1);
+        let attach = Self::mob_passenger_attachment(vehicle, &self.mobs[i], place.0, place.1);
         let (pos, prev) = (vehicle.position, vehicle.previous);
         let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
         let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);

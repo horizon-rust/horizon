@@ -31,9 +31,7 @@ fn attack(id: i32) -> Serverbound {
 
 /// A dedicated server with a stone floor, a wall along z = 7 and a creative
 /// guest that `spawn-protection` holds back.
-fn server<'a>(
-    resources: &'a mut Option<Arc<crate::game::Resources>>,
-) -> Game<'a> {
+fn server<'a>(resources: &'a mut Option<Arc<crate::game::Resources>>) -> Game<'a> {
     let mut game = crate::game::game_tests::tests::server_game(resources);
     game.build_registries();
     game.set_allow_commands(true);

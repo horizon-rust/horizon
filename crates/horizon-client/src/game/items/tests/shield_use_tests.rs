@@ -2,8 +2,8 @@
 //! empties the stack (`hurtBlockingItem` wears the stack before `hurtServer`
 //! reads its component again), a `bypassed_by` list, and a stack carrying both
 //! a `consumable` and `blocks_attacks` (`Item.use` reads the consumable first).
-use crate::game::*;
 use super::OFFHAND_SLOT;
+use crate::game::*;
 use horizon_client::{
     health::{BlockOutcome, HealthEvent, HurtSource},
     items::ItemStack,

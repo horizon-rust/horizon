@@ -212,7 +212,11 @@ impl Level<'_, NoGame> {
                 school: true,
                 cluster_size: None,
             },
-            Made { mob, created, rides },
+            Made {
+                mob,
+                created,
+                rides,
+            },
         ))
     }
 }

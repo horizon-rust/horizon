@@ -93,7 +93,8 @@ fn extinguish_fire_preserves_player_guest_stand_and_item_sound_routes() {
                     "entity {id}, ticks {ticks}"
                 );
                 *game.particles.random() = LegacyRandom::new(1234);
-                game.dropped[0].random = horizon_core::random::EntityRandom::own(LegacyRandom::new(1234));
+                game.dropped[0].random =
+                    horizon_core::random::EntityRandom::own(LegacyRandom::new(1234));
                 game.audio.capture = Some(Vec::new());
                 let actor = game.lan_acting;
                 assert!(entity.extinguish_fire(game));

@@ -584,6 +584,7 @@ fn versions_of(index: &Index, id: &str) -> Vec<Version> {
 /// A shader pack whose every version is for a shader API the installed game doesn't serve is
 /// marked, and neither picked nor downloaded (#17245).
 #[test]
+#[ignore = "daily"]
 fn shader_packs_for_another_shader_api_are_marked_and_not_installed() {
     with_game(&["0.2"], marked_and_not_installed);
 }
@@ -637,6 +638,7 @@ fn marked_and_not_installed() {
 /// A newer version for a shader API the installed game doesn't serve above one for a line it
 /// does: the one that runs is picked, installed and updated to.
 #[test]
+#[ignore = "daily"]
 fn a_shader_pack_offers_its_newest_version_for_this_shader_api() {
     with_game(&["0.2"], offers_its_newest_version_for_the_games_shader_api);
 }
@@ -744,6 +746,7 @@ fn glow_taken(index: &Index, name: &str) -> Result<String, String> {
 /// #15886), and the Nightly of 2026-11-13, whose `--launch-api` says 0.1. The 0.1 file goes
 /// through the index's checks although this launcher's own checker can't read it.
 #[test]
+#[ignore = "daily"]
 fn shader_packs_are_offered_for_the_shader_api_the_installed_game_serves() {
     let dir = scratch("shader-api-game");
     let only_0_2 = sample();

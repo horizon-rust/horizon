@@ -58,7 +58,8 @@ impl Game<'_> {
             zombie.position.y.floor() as i32,
             zombie.position.z.floor() as i32,
         ];
-        let mut own = std::mem::replace(&mut zombie.random, EntityRandom::own(LegacyRandom::new(0)));
+        let mut own =
+            std::mem::replace(&mut zombie.random, EntityRandom::own(LegacyRandom::new(0)));
         let mut rules = std::mem::replace(
             &mut self.world.random,
             LevelRandom::for_level(LegacyRandom::new(0)),

@@ -1,11 +1,7 @@
 //! The game's side of `NaturalSpawner` (`mobs::spawn_selection`): the level
 //! it reads, the spawning chunks and caps of `ServerChunkCache.tickChunks`,
 //! and the mobs it adds (finalized with the game's `finalizeSpawn`).
-use super::{
-    Dim, Game,
-    creatures::Finalized,
-    structures::structures_reaching_in,
-};
+use super::{Dim, Game, creatures::Finalized, structures::structures_reaching_in};
 use horizon_client::vanillagen::VanillaTerrain;
 use horizon_client::{
     biome::{BiomeInfo, SpawnEntry},
@@ -683,7 +679,8 @@ impl<'g, 'a> GameLevel<'g, 'a> {
                     created: Vec::new(),
                     jockey_rider: None,
                 };
-                group = horizon_client::mobs::finalize::finalize(&mut cx, &mut mob, r.reason, group);
+                group =
+                    horizon_client::mobs::finalize::finalize(&mut cx, &mut mob, r.reason, group);
                 for m in cx.created {
                     let bounds = m.bounds();
                     self.pending.borrow_mut().push(bounds);

@@ -64,9 +64,7 @@ fn with_game(test: impl FnOnce(&mut Game<'_>)) {
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
     game.creative = true;
     assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
-    assert!(
-        game.run_command("summon pig 13.5 200 2.5 {UUID:[I;114,0,0,99],NoAI:1b,NoGravity:1b}")
-    );
+    assert!(game.run_command("summon pig 13.5 200 2.5 {UUID:[I;114,0,0,99],NoAI:1b,NoGravity:1b}"));
     game.world.random.set_seed(114);
     test(&mut game);
 }
@@ -101,9 +99,9 @@ fn a_rocket_posts_its_shot_once_and_a_silent_one_launches_quietly() {
         assert!(game.run_command(
             "summon firework_rocket 6.5 201.5 10.5 {LifeTime:100,Silent:1b,NoGravity:1b}"
         ));
-        assert!(game.run_command(
-            "summon firework_rocket 9.5 201.5 10.5 {LifeTime:100,HasBeenShot:1b}"
-        ));
+        assert!(
+            game.run_command("summon firework_rocket 9.5 201.5 10.5 {LifeTime:100,HasBeenShot:1b}")
+        );
         assert!(
             game.rockets
                 .iter()
@@ -134,9 +132,7 @@ fn a_rocket_posts_its_shot_once_and_a_silent_one_launches_quietly() {
 fn a_landing_orb_posts_hit_ground_after_a_fall() {
     use horizon_client::entities::OrbMove;
     with_game(|game| {
-        assert!(
-            game.run_command("summon experience_orb 6.5 200 10.5 {Value:1,fall_distance:2d}")
-        );
+        assert!(game.run_command("summon experience_orb 6.5 200 10.5 {Value:1,fall_distance:2d}"));
         let i = game.orbs.len() - 1;
         let from = Vec3::new(6.5, 200.5, 10.5);
         let down = Vec3::new(0.0, -0.5, 0.0);
@@ -440,9 +436,9 @@ fn loaded_arrow_first_tick_dispatches_once_with_its_real_owner() {
             assert_eq!(first, expected, "actual first tick, input={flag:?}");
             assert!(game.run_command(&format!(
                 "kill {}",
-                horizon_protocol::crypto::uuid_string(
-                    horizon_client::lan::playerdata::ints_uuid([114, 0, 0, n])
-                )
+                horizon_protocol::crypto::uuid_string(horizon_client::lan::playerdata::ints_uuid(
+                    [114, 0, 0, n]
+                ))
             )));
         }
     });

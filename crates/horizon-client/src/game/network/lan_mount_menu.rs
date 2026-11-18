@@ -262,7 +262,12 @@ mod tests {
         use horizon_core::geometry::Vec3;
         use horizon_protocol::packets::play;
         super::super::native_guest_turn_tests::with_guests(|game| {
-            let kind = game.res.mob_types().get("minecraft:donkey").unwrap().clone();
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:donkey")
+                .unwrap()
+                .clone();
             let mut mob = Mob::new(40, kind, Vec3::new(3.0, 64.0, 6.0), 0.0);
             mob.extra.tame = true;
             mob.extra.chested = true;

@@ -1372,7 +1372,8 @@ mod tests {
             let mut expected = LegacyRandom::new(2026);
             let sound_delay = expected.next_int_bound(21).unwrap();
             let alert_delay = 80 + expected.next_int_bound(41).unwrap();
-            game.mobs.iter_mut().find(|m| m.id == 14).unwrap().random = horizon_core::random::EntityRandom::own(LegacyRandom::new(2026));
+            game.mobs.iter_mut().find(|m| m.id == 14).unwrap().random =
+                horizon_core::random::EntityRandom::own(LegacyRandom::new(2026));
             assert!(piglin.set_target(game, Some(other)));
             assert_eq!(piglin.target(game), Some(other));
             let first = state(game, 14);

@@ -352,6 +352,7 @@ mod tests {
     /// A pack that pins a shader pack made for another shader API fails as a whole, and the
     /// pinned pack isn't downloaded (#17245).
     #[test]
+    #[ignore = "daily"]
     fn a_pack_pinning_a_shader_pack_for_another_shader_api_installs_nothing() {
         let dir = scratch("shader-api");
         let mut index = registry(&dir, true, "");

@@ -163,7 +163,8 @@ impl Game<'_> {
                 let at = |i: usize| (i / w) * size + i % w;
                 let mut grid: [Option<ItemStack>; 9] = Default::default();
                 for (i, stack) in slots.iter().enumerate() {
-                    #[allow(clippy::needless_borrows_for_generic_args)] // TODO(arismoko/horizon#2273)
+                    #[allow(clippy::needless_borrows_for_generic_args)]
+                    // TODO(arismoko/horizon#2273)
                     {
                         grid[at(i)] = stack.as_ref().map(&read_stack).transpose()?;
                     }

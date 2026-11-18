@@ -567,7 +567,9 @@ impl Game<'_> {
         }
         self.journal_block_entity(key);
         match self.world.block_entities.get_mut(&key) {
-            Some(BlockEntity::Banner(banner)) => banner.name = name.map(|name| Tag::String(name.into())),
+            Some(BlockEntity::Banner(banner)) => {
+                banner.name = name.map(|name| Tag::String(name.into()))
+            }
             _ => {
                 match name {
                     Some(name) => self.world.block_names.insert(key, Tag::String(name.into())),

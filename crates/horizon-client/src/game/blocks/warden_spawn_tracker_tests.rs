@@ -6,9 +6,7 @@
 use super::Game;
 use super::commands::{R, execute::Source};
 use super::game_tests::tests::server_game;
-use horizon_client::{
-    command::vanilla, motion::PlayerMotion, sculk::WardenSpawnTracker,
-};
+use horizon_client::{command::vanilla, motion::PlayerMotion, sculk::WardenSpawnTracker};
 use horizon_core::geometry::Vec3;
 use horizon_core::nbt::Tag;
 use std::sync::Arc;

@@ -180,9 +180,7 @@ fn h149_actual_registered_local_commands_preserve_exact_saved_positions() {
             for key in ["Health", "NoAI", "NoGravity", "Rotation", "Motion"] {
                 assert_eq!(saved.get(key), before.get(key), "unchanged {key}: {name}");
             }
-            assert!(
-                game.run_command(&format!("execute as {actor} at @s if block ~ 199 ~ stone"))
-            );
+            assert!(game.run_command(&format!("execute as {actor} at @s if block ~ 199 ~ stone")));
             assert!(game.world.loaded(
                 f64::from_bits(got[0]).floor() as i32,
                 f64::from_bits(got[2]).floor() as i32,

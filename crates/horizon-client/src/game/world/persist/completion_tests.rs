@@ -226,13 +226,17 @@ fn admitted_families_load_merge_save_and_reload() {
                 children.iter().map(|id| *id as i32).collect::<Vec<_>>()
             );
 
-            let body = g.command_target_nbt(g.level_entity(root as i32).unwrap()).unwrap();
+            let body = g
+                .command_target_nbt(g.level_entity(root as i32).unwrap())
+                .unwrap();
             eprintln!("h161 loaded parent={parent} body={body:?}");
             assert_eq!(child_uuids(&body), saved, "save {parent}");
             assert!(g.run_command(&format!("data merge entity @e[nbt={{UUID:[I;161,26,3,{parent}]}},limit=1] {{CustomName:\"changed{parent}\",Passengers:[{{id:\"minecraft:pig\",UUID:[I;161,26,3,900]}}]}}")));
             assert!(id(g, 900).is_none());
             assert_eq!(g.ordered_live_passengers(root), children);
-            let body = g.command_target_nbt(g.level_entity(root as i32).unwrap()).unwrap();
+            let body = g
+                .command_target_nbt(g.level_entity(root as i32).unwrap())
+                .unwrap();
             assert_eq!(child_uuids(&body), saved);
         }
         let keys = HashSet::from([(0, 0)]);
@@ -246,7 +250,9 @@ fn admitted_families_load_merge_save_and_reload() {
         g.spawn_loaded_entities();
         for &(_, parent, _, saved) in cases {
             let root = id(g, parent).expect("reloaded root");
-            let body = g.command_target_nbt(g.level_entity(root as i32).unwrap()).unwrap();
+            let body = g
+                .command_target_nbt(g.level_entity(root as i32).unwrap())
+                .unwrap();
             assert_eq!(child_uuids(&body), saved, "reload {parent}");
             for &child in saved {
                 assert_eq!(g.passenger_vehicle(id(g, child).unwrap()), Some(root));
@@ -460,7 +466,10 @@ fn nosave_riders_transfer_live_without_becoming_saved() {
 
 fn passenger_record(kind: &str, uuid: i32, passengers: Vec<Tag>) -> Tag {
     let mut tag = Tag::compound([
-        ("id", Tag::String(format!("minecraft:{kind}").as_str().into())),
+        (
+            "id",
+            Tag::String(format!("minecraft:{kind}").as_str().into()),
+        ),
         ("UUID", Tag::IntArray(vec![161, 26, 3, uuid])),
         ("identity", Tag::Int(uuid)),
         ("NoAI", Tag::Byte(1)),
@@ -494,11 +503,7 @@ fn mixed_riders_keep_load_order_and_offlevel_descendants_through_chunk_reload() 
                     982,
                     vec![passenger_record("armor_stand", 983, vec![])],
                 ),
-                passenger_record(
-                    "oak_boat",
-                    984,
-                    vec![passenger_record("cow", 985, vec![])],
-                ),
+                passenger_record("oak_boat", 984, vec![passenger_record("cow", 985, vec![])]),
                 passenger_record("minecart", 986, vec![]),
             ],
         );
@@ -515,7 +520,10 @@ fn mixed_riders_keep_load_order_and_offlevel_descendants_through_chunk_reload() 
             let rejected = game.mob_passenger_ids(root)[0];
             assert!(game.persist.off_level.contains_key(&rejected));
             assert_eq!(game.mob_object(rejected).unwrap().extra.mount, Some(root));
-            assert_eq!(game.passenger_vehicle(id(game, 983).unwrap()), Some(rejected));
+            assert_eq!(
+                game.passenger_vehicle(id(game, 983).unwrap()),
+                Some(rejected)
+            );
             assert_eq!(game.passenger_tree(root).len(), 7, "no duplicate riders");
             assert_eq!(
                 game.ordered_live_passengers(root)
@@ -586,7 +594,9 @@ fn mixed_transfer_pairs_runtime_state_with_exact_objects_not_uuid_or_mob_vec_ord
                 panic!("source object identity")
             };
             let mut map = Attachments::default();
-            runtime.set(&mut map, Holder::Entity(source), *identity).unwrap();
+            runtime
+                .set(&mut map, Holder::Entity(source), *identity)
+                .unwrap();
             game.entity_attachments.insert(source, map);
         }
         // Resident storage order is deliberately unrelated to the saved graph.
@@ -608,7 +618,11 @@ fn mixed_transfer_pairs_runtime_state_with_exact_objects_not_uuid_or_mob_vec_ord
         game.enter_level(crate::game::Dim::Nether).unwrap();
         let root = id(game, 990).unwrap();
         let restored = game.passenger_tree(root);
-        assert_eq!(restored.len(), sources.len(), "every live object transfers once");
+        assert_eq!(
+            restored.len(),
+            sources.len(),
+            "every live object transfers once"
+        );
         let identities = restored
             .iter()
             .map(|id| {
@@ -620,8 +634,12 @@ fn mixed_transfer_pairs_runtime_state_with_exact_objects_not_uuid_or_mob_vec_ord
                 *identity
             })
             .collect::<HashSet<_>>();
-        assert_eq!(identities, HashSet::from([990, 991, 992, 9930, 9931, 994, 995, 996, 997]));
-        let children = game.ordered_passenger_slots(root)
+        assert_eq!(
+            identities,
+            HashSet::from([990, 991, 992, 9930, 9931, 994, 995, 996, 997])
+        );
+        let children = game
+            .ordered_passenger_slots(root)
             .into_iter()
             .map(|slot| match slot {
                 PassengerSlot::Live(id) => game.persist.uuid_of(id).unwrap()[3],
@@ -657,7 +675,11 @@ fn mixed_transfer_pairs_runtime_state_with_exact_objects_not_uuid_or_mob_vec_ord
             "duplicate UUIDs retain distinct rider objects, not duplicate residents",
         );
         game.enter_level(crate::game::Dim::Overworld).unwrap();
-        assert!(sources.into_iter().all(|id| !game.passenger_object_present(id)));
+        assert!(
+            sources
+                .into_iter()
+                .all(|id| !game.passenger_object_present(id))
+        );
     });
 }
 
@@ -682,7 +704,8 @@ fn dismount_and_reboard_appends_a_loaded_mob_after_existing_mixed_riders() {
             [1001, 1002, 1003],
         );
         game.dismount_mob(rider);
-        game.ride_mount(Target::Mob(rider), Target::Mob(root)).unwrap();
+        game.ride_mount(Target::Mob(rider), Target::Mob(root))
+            .unwrap();
         assert_eq!(
             child_uuids(&game.vehicle_tree_nbt(root).unwrap()),
             [1002, 1003, 1001],

@@ -876,8 +876,8 @@ mod tests {
     use super::*;
     use horizon_client::mobs::{Anim, Brain, Mob, MobType, Part, Species};
     use horizon_core::geometry::Vec3;
-    use mod_api::{self, ServerHost};
     use horizon_core::random::LegacyRandom;
+    use mod_api::{self, ServerHost};
     use std::sync::Arc;
 
     /// `LightningBolt.spawnFire` places nothing, and draws no extra sources,
