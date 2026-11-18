@@ -235,11 +235,11 @@ def run_integrated(args, home, out, timings):
         port = run('lan', 'open', 0, 'commands')['port']
         try:
             reply = json.dumps(command('digest-sync ' + ' '.join(map(str, base.SYNC))))
-            if 'Unknown' in reply or 'Incorrect' in reply or 'rror' in reply:
+            if 'Unknown' in reply or 'Incorrect' in reply or 'rror' in reply or 'digest-sync:' in reply or 'digest-sync done' not in reply:
                 raise SystemExit(reply)
             timings['digest_sync'] = 'ok'
         except SystemExit as e:
-            timings['digest_sync'] = f'unavailable on the integrated server, so its digest is not comparable run to run: {e}'
+            timings['digest_sync'] = f'failed, so the digest is not comparable run to run: {e}'
         for line in base.scene_commands(False)[1:]:
             command(line)
         players.processes.append(subprocess.Popen(

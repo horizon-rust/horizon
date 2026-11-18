@@ -1119,6 +1119,17 @@ impl Game<'_> {
     /// the owner's level, at the owner permission level. The feedback goes to
     /// the owner's chat and is returned.
     pub(super) fn owner_console_command(&mut self, command: &str) -> Vec<String> {
+        // Test-only, as on the dedicated console: sync the randoms on this server thread, in the owner's level.
+        #[cfg(feature = "state-digest")]
+        if let Some(rest) = command.trim_start_matches('/').strip_prefix("digest-sync")
+            && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            return vec![match self.in_owner_level(|g| g.state_digest_sync(&args)) {
+                Ok(()) => "digest-sync done".to_owned(),
+                Err(e) => format!("digest-sync: {e}"),
+            }];
+        }
         let Some(owner) = self.serving.as_ref().map(|s| s.owner) else {
             return Vec::new();
         };
