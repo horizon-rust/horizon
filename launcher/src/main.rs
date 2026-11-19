@@ -46,6 +46,7 @@ mod glass_storage;
 mod glass_toast;
 mod glass_ui;
 mod glass_versions;
+mod glide;
 mod home;
 mod home_tabs;
 mod import_page;
@@ -79,6 +80,7 @@ mod partner;
 mod perf;
 mod picture_cache;
 mod plate;
+mod play_step;
 mod profile_heads;
 mod screenshots_page;
 mod scrollbar;
@@ -282,6 +284,11 @@ struct Launcher {
     instance_install: Option<String>,
     /// One for an instance waiting for the install running now to end.
     install_next: Option<Release>,
+    /// The Stable build Home's Update is installing (`nightly::install_stable`).
+    stable_install: Option<Release>,
+    /// A Stable build whose download failed: not offered again until the release list is read
+    /// from the network (`Msg::ReleasesFromNetwork`).
+    stable_failed: Option<Release>,
     /// The install bar's previous and current fraction, so it moves rather than jumps.
     bar: (f32, f32),
     releases: Load<Vec<Release>>,
@@ -457,6 +464,9 @@ struct Launcher {
     starting_client: Option<String>,
     /// The instance that start is for, whatever is selected by the time it ends.
     starting_instance: Option<String>,
+    /// The Stop of the start under way while it may run its instance's pre-launch command
+    /// (Windows runs it before the game): kept until the start's result is handled.
+    pre_launch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Play was pressed on a version not prepared yet: it starts once this preparation ends well.
     play_when_prepared: Option<(String, String)>,
     /// Join a friend: the code typed on the Play page, and the one the game
@@ -527,6 +537,8 @@ struct Launcher {
     /// Modrinth projects' icon URLs (`instance_mods.rs`).
     project_icons: instance_mods::ProjectIcons,
     play_pressed: Option<Instant>,
+    /// The step the start in progress said last (`play_step`).
+    play_step: play_step::PlayStep,
     /// `horizon-launcher benchmark` started this window to measure it.
     bench: Option<perf::Bench>,
     /// The Modpacks page: the imported packs (read when the page first opens), the one shown,
@@ -535,6 +547,8 @@ struct Launcher {
     /// Modpacks installed from Horizon's registry, each its own profile.
     registry_packs: Vec<horizon_launcher::browser::horizon::pack::Installed>,
     packs_loaded: Option<Instant>,
+    /// The imported packs' read on a thread, and whether it may still apply (`load_packs`).
+    packs_reading: modpacks_page::PackReads,
     pack_open: Option<String>,
     pack_filter: Option<horizon_port_pack::report::Status>,
     pack_busy: bool,
@@ -546,6 +560,10 @@ struct Launcher {
     found_scanning: bool,
     /// The game starting now plays this pack's profile (its work folder).
     starting_pack: Option<std::path::PathBuf>,
+    /// The folder of the instance a start is preparing, while `starting_client` is set.
+    starting_work: Option<std::path::PathBuf>,
+    /// The pack folder a Port step is rebuilding now.
+    porting: Option<std::path::PathBuf>,
     /// The Mods page: the browser's search, installs and updates (`mods_page.rs`).
     mods: mods_page::Mods,
     github: github_mods_page::Github,
@@ -559,6 +577,8 @@ struct Launcher {
     /// Pictures from disk made at their drawn size (`picture_cache`).
     pictures: picture_cache::Pictures,
     game_packs: packs_page::Packs,
+    /// The games' answers about their shader API seen so far (`game_shader_api::answers`).
+    shader_answers: u64,
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
     launch: Option<launch_page::LaunchPanel>,

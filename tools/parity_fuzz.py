@@ -218,7 +218,10 @@ def render(scenario, slot):
             ops.append(sync_op(seed, slot))
         elif kind == 'reload':
             summoned = [uuid_text(uuid_words(slot, s['n'])) for s in scenario['steps'][:i] if s['k'] == 'summon']
-            ops += [cmd(f'/forceload remove {x0} {z0}', i, False), {'op': 'tick', 'n': RELOAD_TICKS},
+            # `allow_chunk_io`: the oracle's ticks have no spare time by default, so `ChunkMap.processUnloads` would
+            # leave the chunk in memory, unsaved, with its scheduled ticks still counting.
+            ops += [cmd(f'/forceload remove {x0} {z0}', i, False),
+                    {'op': 'tick', 'n': RELOAD_TICKS, 'allow_chunk_io': True},
                     {**cmd(f'/execute unless loaded {x0} {y0} {z0}', i), 'guard': 'chunk'},
                     *({**cmd(f'/execute if entity {uuid}', i), 'guard': 'entity'} for uuid in summoned),
                     cmd(f'/forceload add {x0} {z0}', i, False), {'op': 'wait_chunks', 'chunks': chunk}]
@@ -263,7 +266,7 @@ def witness(family, op, vanilla, rust):
     """
     invalid = (f'vanilla kept the {op["guard"]} loaded: {vanilla["results"]}'
                if vanilla['results'] != GUARDS[op['guard']] else None)
-    failure = ((f'{family}|chunk|<unload>', op['cmd'], [('<unload>', vanilla['results'], rust['results'])])
+    failure = ((f'{family}|{op["guard"]}|<unload>', op['cmd'], [('<unload>', vanilla['results'], rust['results'])])
                if rust['results'] != vanilla['results'] else None)
     return invalid, failure
 

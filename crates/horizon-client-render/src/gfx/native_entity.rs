@@ -15,6 +15,7 @@
 
 use horizon_shader_api::{Fog, check::CheckedStage, stages::GROUP};
 
+use super::external::EntityLayers;
 use super::native_post::kept::StageReads;
 use super::native_post::{NativeFrame, present_constants};
 
@@ -236,9 +237,9 @@ fn horizon_entity_own(in: horizon_entity_out) -> horizon_vanilla_Out {
         // Vanilla's texel says how much of the surface is kept, the stage's how much goes.
         vec4(horizon_decode(in.overlay_color.rgb), 1.0 - in.overlay_color.a),
         horizon_decode(lightmap), horizon_decode(vec3(shade)).x, position,
-        f32((in.flags >> 1u) & 1u), horizon_entity_normal(position), kind - 1u,
+        ((in.flags >> 1u) & 1u) != 0u, horizon_entity_normal(position), kind - 1u,
         horizon_decode(colored), (in.flags & 4u) != 0u, min(light / 240.0, vec2(1.0)),
-        in.uv, in.clip.xy / frame.resolution)).color;
+        in.uv, in.clip.xy / frame.resolution@light_source@)).color;
     // `entity_color`'s alpha test and blend weight: the texture's alpha times the layer's
     // opacity (the vertex alpha, 1 past a dissolve mask), unless the pack's `[entity] coverage`
     // is `pack` and its returned alpha decides.
@@ -277,17 +278,25 @@ const PACK_FOG: &str = "    let f = vanilla_fog(position);
 }
 ";
 
+/// What `EntityInput.light_source_tier` takes in a pack that names it
+/// (`CheckedStage::light_source`): entity.wgsl's `tier`, which its `hdr_entity_mark` takes as 4
+/// from 4 up.
+const LIGHT_SOURCE: &str = ", min((in.flags >> 8u) & 0xffu, 4u)";
+
 /// The entity shader for the pack's entity stage `source`; under `Fog::Pack` the stage fogs
-/// its surfaces itself.
-pub(super) fn shader_source(source: &str, fog: Fog) -> String {
+/// its surfaces itself. `light`: its input has the light-source field
+/// (`CheckedStage::light_source`).
+pub(super) fn shader_source(source: &str, fog: Fog, light: bool) -> String {
     let (unglinted, fog) = match fog {
         Fog::Engine => ("", FOG),
         Fog::Pack => (UNGLINTED, PACK_FOG),
     };
+    let light = light.then_some(LIGHT_SOURCE);
+    let entries = horizon_shader_api::stages::light_source_entries(ENTRIES, light);
     format!(
         "{source}\n// Horizon's entities (entity.wgsl, static_entity.wgsl)\n{}\
          const horizon_entity_kind_shift: u32 = {KIND_SHIFT}u;\n\
-         const horizon_entity_block_entity: u32 = {}u;\n{ENTRIES}{unglinted}{GLINT}{fog}",
+         const horizon_entity_block_entity: u32 = {}u;\n{entries}{unglinted}{GLINT}{fog}",
         super::wgsl_prefix::prefixed(&super::static_entity_shader(), PREFIX),
         EntityKind::BlockEntity as u32 + 1,
     )
@@ -346,7 +355,7 @@ impl NativeEntity {
         if let Some(why) = (kept.as_ref()).and_then(|k| k.over(frame, &entity_entries(), &limits)) {
             return Err(format!("{}: {why}", stage.file));
         }
-        let text = shader_source(&stage.source, manifest.fog);
+        let text = shader_source(&stage.source, manifest.fog, stage.light_source());
         let module = naga::front::wgsl::parse_str(&text)
             .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))?;
         let mut constants = present_constants(&module, constants);
@@ -447,30 +456,24 @@ impl NativeEntity {
     }
 }
 
-/// Sets the pipeline of the entity stream's ordinary quads, or of the `retained` block
-/// entities: the `stage`'s with the pack's frame at its group, else Horizon's `own`.
-pub(super) fn set_pipeline(
-    pass: &mut wgpu::RenderPass<'_>,
-    stage: Option<(&NativeEntity, &wgpu::BindGroup)>,
-    own: &wgpu::RenderPipeline,
-    retained: bool,
-) {
-    let Some((stage, frame)) = stage else {
-        return pass.set_pipeline(own);
-    };
-    pass.set_pipeline(if retained {
-        &stage.retained
-    } else {
-        &stage.entities
-    });
-    pass.set_bind_group(GROUP, frame, &[]);
+impl super::native_pack::NativePack {
+    /// The layers the entities draw with this frame, with an entity stage, and the group 3
+    /// they read (`entities`: the frame's, or this frame's version of its kept resources).
+    pub fn entity_layers(&self) -> Option<EntityLayers<'_>> {
+        let (stage, frame) = self.entities()?;
+        Some(EntityLayers {
+            entities: &stage.entities,
+            retained: &stage.retained,
+            frame,
+        })
+    }
 }
 
 impl super::Renderer {
     /// Whether a pack's `[entity]` stage draws this renderer's entities: the game then names
     /// the runs of them it lights (`take_entity_runs`).
     pub fn draws_entity_stage(&self) -> bool {
-        self.native.as_ref().is_some_and(|n| n.entity.is_some())
+        self.executor.is_some_and(|c| c.entities)
     }
 
     /// Whether the game names the runs of its entities (`take_entity_runs`): a pack's `[entity]`

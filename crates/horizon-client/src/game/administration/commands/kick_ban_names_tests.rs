@@ -14,9 +14,10 @@ fn host_game() -> Game<'static> {
     game.build_registries();
     game.set_allow_commands(true);
     let _rx = crate::game::lan::world_spawn_sync_tests::host_for(&mut game);
-    let guest = &mut game.lan.as_mut().unwrap().hub.guests[0];
-    guest.name = "Guest".into();
-    guest.address = "1.2.3.4:25565".parse().unwrap();
+    game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+        guest.name = "Guest".into();
+        guest.address = "1.2.3.4:25565".parse().unwrap();
+    });
     game
 }
 
@@ -46,6 +47,8 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 /// One dedicated command, parsed from the dedicated tree (the process-wide one
 /// stays integrated for the other tests).
 fn run_dedicated(game: &mut Game<'_>, command: &str) -> R<i32> {
+    game.options.execution_role =
+        crate::game::execution_role::ExecutionRole::DedicatedServer;
     let dispatcher = horizon_client::command::vanilla::build_for(false, true);
     game.ui.registries.permission = 4;
     let parsed = dispatcher.parse(command, &game.ui.registries);

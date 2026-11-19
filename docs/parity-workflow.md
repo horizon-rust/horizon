@@ -173,9 +173,11 @@ One draw too many or too few shifts every later value, so read the first field t
 
 ### State digest
 
-A build with `--features state-digest` and `HORIZON_STATE_DIGEST=<file>` appends one line per level tick: hashes of the entities (join order), their own randoms, the block entities (ticker order) and the scheduled ticks, plus the level random, `Level.randValue`, the entity-id counter and the join counter. Off by default and compiled out. `digest-sync U E S` on a dedicated server's console is `sync_randoms` (needs `HORIZON_TEST_SEEDS=1`), and `HORIZON_STATE_DIGEST_DETAIL=1` adds a raw line per entity and block entity.
+A build with `--features state-digest` and `HORIZON_STATE_DIGEST=<file>` appends one line per level tick: hashes of the entities (join order), their own randoms, the block entities (ticker order) and the scheduled ticks, plus the level random, `Level.randValue`, the entity-id counter and the join counter. Off by default and compiled out. `digest-sync U E S` is `sync_randoms` (needs `HORIZON_TEST_SEEDS=1`). It works on a dedicated server's console and, through `horizon-ctl command`, on an integrated server (a LAN host), where it syncs the owner's level on the server thread, and `HORIZON_STATE_DIGEST_DETAIL=1` adds a raw line per entity and block entity. The join numbers are hashed relative to the sync, and the join field under `counters` is the upcoming join number. After the integrated `digest-sync` they are ranks instead: each entity's place in the join-order walk, and the number of entities visited. The window's client world shares the process-wide join counter there, so ranked digests match although the raw counters differ.
 
 - `tools/state_digest_scene.py BINARY RESOURCES TEMPLATE OUT` runs a fixed dedicated-server scene (frozen before the first tick, `tick step N`) and writes `OUT/digest.txt`; `--generate` makes the forceloaded flat template once. Random ticks are off unless `--random-ticks`. `HORIZON_SCENE_GATE` names an optional script to wait on before each run.
+- `--extended` adds subjects to that scene without changing the default one, so old baselines stay valid. Before the window: breeding pairs, primed TNT, skeletons beside an iron golem, zombies beside a villager, a zombie villager, a zombie, a piglin and a hoglin with conversion countdowns, creepers, a slime, a minecart, a boat with a rider, jockeys and a dispenser. Inside the window the script steps the frozen server in pieces and runs commands between them (`extended_plan` in the script): `/data merge` and `/data modify`, `/effect`, `/attribute`, `/item replace`, `/tp`, `/ride`, `/fill`, `/setblock`, `/damage`, `/kill`, `/execute ... run`, summoned arrows, snowballs, eggs and a fireball, lightning on a pig and a villager, and more TNT and creepers. Passes at ticks 0 to 100 need the default 200 ticks or more, and a pass at or after `--ticks` is skipped. It needs step mode, not `--sprint`. The script writes the console output to `OUT/commands.log` and counts lines that look like command errors in `timings.txt` (`command_errors`), so check that count is 0 before trusting a baseline. `/give` needs a player, so it stays in the players scene.
+- `tools/state_digest_players.py ... --integrated` now syncs the host's randoms with `digest-sync`, so its digest can be compared run to run like the dedicated one. The run writes a digest even when the sync failed, so use it as a baseline only when `timings.txt` has `'digest_sync': 'ok'` (a failed sync records `'digest_sync': 'failed, ...'`). The integrated run also starts frozen (`HORIZON_STATE_DIGEST_FREEZE=1`) and makes the host a spectator.
 - `tools/state_digest_compare.py A/digest.txt B/digest.txt` names the first differing step per group. Compare runs from one toolchain: the hashes are not stable across Rust versions.
 - Keep the measured window free of chunk loading, generation and lighting, and of trial spawners, ominous item spawners and `/item modify` (clock-seeded UUIDs and loot random).
 
@@ -247,6 +249,20 @@ scratch, and a pass then counts. `parity.py` prints a `RETRIED` line for it
 in its summary and in the CI job's summary (PR parity and parity-main), so the
 flake stays visible. No other harness gets this retry. Fix the cause, then take
 the harness off the list.
+
+`known_failing` in `tools/parity_hosts.json` lists harnesses, or single shards
+(`datafix#2`), that fail on main until an open issue is fixed, each as `"#issue:
+what differs"`. They still run and report (a `KNOWN FAILING` line in the summary
+and the CI job's summary), but their failure doesn't fail the run, so
+parity-main, and the Nightly it gates, stop only for new failures, and
+parity-main's bisect leaves them out. Without the list, one regression kept
+every later parity-main red: each run rechecked every merge since the last green
+one, and no Nightly could ship (2026-11-15 to 11-17). An entry covers any
+failure of what it names, in pull requests' parity too, a new one included: list
+the failing shard rather than the whole harness, and take the entry off with the
+fix. A listed harness that passes gets a line saying so. Add a harness only with
+its issue and only when the difference doesn't harm players (crashes, saves,
+multiplayer): those block.
 
 The game-binary fixture audit keeps these complementary direct rule tests:
 
