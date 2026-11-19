@@ -1,0 +1,114 @@
+"""tools/parity_plan.py: shards grouped by the probe each harness builds, and the dependency lists a runner without
+parity state of its own selects with."""
+import argparse
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from tools import parity, parity_plan
+
+WORLD = ["example", "world_probe", "release", ["-p", "horizon-world"], True]
+CLIENT = ["example", "client_probe", "fast", ["-p", "horizon-client-lib"], True]
+GAME = ["bins", "", "fast", ["-p", "horizon-game", "-p", "horizon-client-lib"], False]
+
+
+class ProbeGroupTests(unittest.TestCase):
+    def test_a_harness_joins_the_group_of_its_costliest_build(self):
+        self.assertEqual(parity_plan.probe_group([WORLD, CLIENT, GAME]), "game")
+        self.assertEqual(parity_plan.probe_group([["bin", "horizon-client", "fast", ["-p", "horizon-game"], False]]),
+                         "game")
+        self.assertEqual(parity_plan.probe_group([WORLD, CLIENT]), "client")
+        self.assertEqual(parity_plan.probe_group([WORLD]), "world")
+        self.assertEqual(parity_plan.probe_group([["example", "paletted_fixture", "fast", ["-p", "horizon-core"], True]]),
+                         "other")
+        self.assertEqual(parity_plan.probe_group([]), "other")
+
+    def test_a_tools_binary_is_not_the_game(self):
+        relay = ["bin", "horizon-relay", "dev", ["-p", "horizon-relay"], False]
+        self.assertEqual(parity_plan.probe_group([relay]), "other")
+
+    def test_the_shared_list_stands_in_for_a_harness_that_never_ran_here(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "SHARED", Path(temp)):
+            (Path(temp) / "dependencies").mkdir()
+            (Path(temp) / "dependencies/food.json").write_text(json.dumps({"dependencies": ["tools/lab.py"],
+                                                                         "artifacts": [WORLD]}))
+            records = {"light": {"status": "pass", "dependencies": ["tools/lab.py"], "artifacts": [CLIENT]}}
+            self.assertEqual(parity_plan.probe_group(parity_plan.artifacts("food", records)), "world")
+            self.assertEqual(parity_plan.probe_group(parity_plan.artifacts("light", records)), "client")
+            self.assertEqual(parity_plan.probe_group(parity_plan.artifacts("new", records)), "other")
+
+
+class PlanTests(unittest.TestCase):
+    def setUp(self):
+        self.names = [f"w{index:03}" for index in range(320)] + [f"c{index:03}" for index in range(120)] + \
+            ["spawn#1", "spawn#2", "spawn#3", "spawn#4"] + ["g1", "g2"]
+        self.groups = {name: "world" if name[0] in "ws" else "client" if name[0] == "c" else "game"
+                       for name in self.names}
+
+    def test_each_group_gets_the_shards_its_size_needs(self):
+        count = parity_plan.shards_needed(self.names, self.groups)
+        self.assertEqual(count, 3 + 2 + 1)  # 324 world harnesses at 150, 120 client at 100, 2 game at 50
+        shards = parity_plan.plan(self.names, self.groups, count)
+        self.assertEqual([group for group, _ in shards], ["game", "client", "client", "world", "world", "world"])
+        for group, harnesses in shards:
+            self.assertLessEqual(len(harnesses), parity_plan.SHARD_SIZES[group])
+            self.assertEqual({self.groups[name] for name in harnesses}, {group})
+        self.assertEqual(sorted(name for _, harnesses in shards for name in harnesses), sorted(self.names))
+
+    def test_a_sharded_harnesss_entries_spread_over_its_groups_shards(self):
+        shards = parity_plan.plan(self.names, self.groups, 6)
+        holding = [index for index, (_, harnesses) in enumerate(shards) for name in harnesses if name.startswith("spawn")]
+        self.assertEqual(len(set(holding)), 3)
+
+    def test_fewer_shards_than_groups_put_whole_groups_together(self):
+        shards = parity_plan.plan(self.names, self.groups, 2)
+        self.assertEqual([group for group, _ in shards], ["world", "client+game"])
+        self.assertEqual(shards[1][1], [name for name in self.names if self.groups[name] in ("client", "game")])
+
+    def test_extra_shards_are_empty_and_the_same_split_comes_back(self):
+        self.assertEqual(parity_plan.plan(["a", "b"], {"a": "world", "b": "world"}, 3),
+                         [("world", ["a"]), ("world", ["b"]), ("world", [])])
+        self.assertEqual(parity_plan.plan([], {}, 2), [("", []), ("", [])])
+        self.assertEqual(parity_plan.plan(self.names, self.groups, 6), parity_plan.plan(self.names, self.groups, 6))
+
+    def test_a_shard_spec_names_one_of_n(self):
+        self.assertEqual(parity_plan.shard_spec("2/5"), (2, 5))
+        for spec in ("0/5", "6/5", "1/0", "2", "a/b"):
+            with self.subTest(spec=spec), self.assertRaises(argparse.ArgumentTypeError):
+                parity_plan.shard_spec(spec)
+
+    def test_the_selection_is_parity_pys_listed_names(self):
+        output = "3 files changed: 2 harnesses depend on them, 2 without a pass for their current inputs.\n" \
+                 "not selected (runs when named, and nightly): lan: slow\nfood\nlight\n2 of 9 harnesses would run\n"
+        with mock.patch.object(parity_plan.subprocess, "run",
+                               return_value=SimpleNamespace(returncode=0, stdout=output, stderr="")) as run, \
+                mock.patch.object(parity, "harnesses", return_value={"food": 1, "light": 2, "lan": 3}):
+            self.assertEqual(parity_plan.selection(["--changed", "origin/main"]), ["food", "light"])
+        self.assertEqual(run.call_args.args[0][-3:], ["--changed", "origin/main", "--list"])
+
+
+class ExportTests(unittest.TestCase):
+    def test_only_this_checkouts_own_passes_are_exported(self):
+        records = {
+            "food": {"status": "pass", "host": "mac", "seconds": 3, "hashes": {"tools/lab.py": "x"},
+                     "dependencies": ["tools/lab.py", "crates/horizon-world/src/food.rs"], "artifacts": [WORLD]},
+            "light": {"status": "pass", "shared": True, "dependencies": ["tools/lab.py"], "artifacts": [CLIENT]},
+            "mace": {"status": "fail", "dependencies": ["tools/lab.py"], "artifacts": [GAME]},
+            "hud": {"status": "pass", "dependencies": [], "artifacts": []},
+            "gone": {"status": "pass", "dependencies": ["tools/lab.py"], "artifacts": []},
+        }
+        found = {name: None for name in ("food", "light", "mace", "hud", "never_ran")}
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / "out"
+            self.assertEqual(parity_plan.export_dependencies(records, found, directory), 1)
+            self.assertEqual(sorted(path.name for path in directory.iterdir()), ["food.json"])
+            self.assertEqual(json.loads((directory / "food.json").read_text(encoding="utf-8")),
+                             {"dependencies": ["tools/lab.py", "crates/horizon-world/src/food.rs"],
+                              "artifacts": [WORLD]})
+
+
+if __name__ == "__main__":
+    unittest.main()
