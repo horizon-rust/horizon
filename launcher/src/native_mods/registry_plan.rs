@@ -316,10 +316,21 @@ mod tests {
             .check(&resolved)
             .unwrap_err();
         assert!(error.contains("parent"), "{error}");
+        // The shape the lock generator writes: crates.io `naga`, which the staged resolution
+        // replaces with the SDK's patched copy. The recorded edge is not the resolved one.
+        let pins = lock(&[
+            ("mod_a", "0.0.0", ' ', "'parent'"),
+            ("parent", "1.0.0", 'a', "'naga'"),
+            ("naga", "30.0.1", 'e', ""),
+        ]);
+        let error = plan(&game, &[("mod_a", pins)])
+            .check(&resolved)
+            .unwrap_err();
+        assert!(error.contains("parent"), "{error}");
     }
 
     #[test]
-    fn one_mods_lock_cannot_authorise_an_edge_for_another_mod() {
+    fn a_mods_lock_counts_only_for_packages_its_own_crate_reaches() {
         let game = lock(&[("parent", "1.0.0", 'a', ""), ("child", "1.0.0", 'b', "")]);
         let mods = [
             (

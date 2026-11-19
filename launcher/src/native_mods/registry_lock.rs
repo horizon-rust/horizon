@@ -236,8 +236,8 @@ impl RegistryLock {
         self.check_resolved(resolved, game, &ModEdges::new(), false)
     }
 
-    /// As [`Self::check_partial_resolution`], letting game-locked packages carry the edges
-    /// that [`Self::mod_edges`] authorised.
+    /// As `check_partial_resolution`, letting game-locked packages carry the edges that
+    /// [`Self::mod_edges`] authorised.
     pub fn check_partial_resolution_with(
         &self,
         resolved: &Self,
@@ -416,8 +416,14 @@ impl RegistryLock {
     /// packages its crate reaches both in the staged resolution and in its own lock. Only edges
     /// to dependency names the game's record lacks, and only to crates.io packages: a mod's
     /// features may add a dependency, never move one the game resolved or reach an SDK-patched
-    /// crate. A lock Cargo wrote for the mod's single-member workspace reaches every record from
-    /// the root, so an orphan record (one no path in the lock leads to) authorises nothing.
+    /// crate. Requiring the package to be reachable in the mod's own lock too only keeps honest
+    /// locks consistent (Cargo writes no orphan records); it doesn't stop a hand-edited lock, and
+    /// once two mods reach a package, either one's lock authorises edges on it. What protects
+    /// the build is elsewhere: every crates.io package must still be pinned, with its checksum,
+    /// by the game's lock or a mod's lock, and every one a mod reaches by the game's lock or that
+    /// mod's own (`check_resolved`'s pin loop and `check_mod`, which never read these edges);
+    /// and these edges only accept an edge already in the lock Cargo wrote for the staged
+    /// workspace, never add one.
     pub fn mod_edges(
         &self,
         mod_id: &str,
