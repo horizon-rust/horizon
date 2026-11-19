@@ -116,7 +116,7 @@ impl Launcher {
             self_update: horizon_launcher::update_handoff::take_failure()
                 .map_or(SelfUpdate::Idle, |e| SelfUpdate::Stuck(Some(e))),
             self_update_hidden: false,
-            min_restart_tried: horizon_launcher::min_launcher::take_restarted(),
+            min_restart_tried: horizon_launcher::update_handoff::min_restarted(),
             update_install: None,
             instance_install: None,
             install_next: None,
@@ -553,12 +553,18 @@ impl Launcher {
     /// Update: the window closes, the installer puts the new launcher in place and starts it.
     /// When another launcher already put it there, this one only restarts.
     pub(crate) fn apply_launcher_update(&mut self, cx: &mut App) {
-        match horizon_launcher::update_handoff::start_now() {
+        self.hand_over_launcher_update(false, cx)
+    }
+
+    /// `for_minimum`: the restart for links.json's `min_launcher`, which the launcher it starts
+    /// doesn't repeat (`update_handoff::MIN_RESTARTED_ENV`).
+    fn hand_over_launcher_update(&mut self, for_minimum: bool, cx: &mut App) {
+        match horizon_launcher::update_handoff::start_now(for_minimum) {
             Ok(true) => {
                 servers_page::keep_running_through_update();
                 shut_down(cx)
             }
-            Ok(false) => self.self_update = SelfUpdate::Failed(backend::restart()),
+            Ok(false) => self.self_update = SelfUpdate::Failed(backend::restart_with(for_minimum)),
             Err(e) => self.self_update = SelfUpdate::Failed(e),
         }
     }
@@ -583,12 +589,7 @@ impl Launcher {
             return;
         }
         self.min_restart_tried = true;
-        min_launcher::mark_restart();
-        self.apply_launcher_update(cx);
-        // The handoff failed and says why: the next start may try again.
-        if matches!(self.self_update, SelfUpdate::Failed(_)) {
-            min_launcher::unmark_restart();
-        }
+        self.hand_over_launcher_update(true, cx);
     }
 
     /// Installs the Horizon version the last check found, keeping the player's choice of

@@ -4063,9 +4063,14 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 /// arguments in place of this one: on Unix the process becomes the new binary (exec), on Windows
 /// the new one starts and this one exits. Returns only when the new one could not start.
 pub fn restart() -> String {
+    restart_with(false)
+}
+
+/// [`restart`], marked as the restart for links.json's `min_launcher` when `for_minimum`
+/// (`update_handoff::MIN_RESTARTED_ENV`).
+pub fn restart_with(for_minimum: bool) -> String {
     let target = update_target();
-    let mut cmd = Command::new(&target);
-    cmd.args(std::env::args_os().skip(1));
+    let mut cmd = restart_command(&target, std::env::args_os().skip(1), for_minimum);
     #[cfg(unix)]
     let error = {
         use std::os::unix::process::CommandExt;
@@ -4080,6 +4085,19 @@ pub fn restart() -> String {
         "Could not start {}: {error}. Close the launcher and open it again.",
         target.display()
     )
+}
+
+fn restart_command(
+    target: &Path,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    for_minimum: bool,
+) -> Command {
+    let mut cmd = Command::new(target);
+    cmd.args(args);
+    if for_minimum {
+        cmd.env(crate::update_handoff::MIN_RESTARTED_ENV, "1");
+    }
+    cmd
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -6520,8 +6538,24 @@ pub fn {f}("
             prerelease: false,
             nightly: None,
         };
-        assert!(launcher_update_from(&[release.clone()], "launcher@0.2.80-rc.1").is_some());
+        assert!(
+            launcher_update_from(std::slice::from_ref(&release), "launcher@0.2.80-rc.1").is_some()
+        );
         assert!(launcher_update_from(&[release], "launcher@0.2.80").is_none());
+    }
+
+    /// The restart when the new launcher is already in place carries the minimum's mark too.
+    #[test]
+    fn a_restart_for_the_minimum_is_marked() {
+        let marked = |cmd: &Command| {
+            cmd.get_envs().any(|(key, value)| {
+                key == crate::update_handoff::MIN_RESTARTED_ENV && value == Some("1".as_ref())
+            })
+        };
+        let command =
+            |for_minimum| restart_command(Path::new("l"), ["play"].map(Into::into), for_minimum);
+        assert!(marked(&command(true)));
+        assert!(!marked(&command(false)));
     }
 
     #[test]

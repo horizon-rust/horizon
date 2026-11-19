@@ -4,11 +4,9 @@
 //! `min_launcher` that replaces itself then installs it and restarts without waiting for Update.
 //! It waits while a game it started runs or a version installs, and then it installs when the
 //! window closes (`update_handoff`). It tries once per start: a failed update says why, as any
-//! other does, and the launcher goes on; the launcher it restarts into never restarts again for
-//! the minimum, whatever it finds ([`take_restarted`]).
+//! other does, and the launcher goes on; the launcher the restart starts never restarts again for
+//! the minimum, whatever it finds (`update_handoff::MIN_RESTARTED_ENV`).
 use crate::backend;
-use std::fs;
-use std::path::PathBuf;
 
 /// The version `min_launcher` names: a plain `0.2.80`, or the tag `launcher@0.2.80`. None for
 /// anything else: an empty value, a prerelease, a typo.
@@ -69,30 +67,6 @@ pub fn installs_now(version: &str, min: Option<&str>, now: Now) -> bool {
         && !now.activity.busy()
         && !now.tried
         && min.is_some_and(|min| below(version, min))
-}
-
-fn marker_file() -> PathBuf {
-    backend::data_dir().join(".launcher-min-restart")
-}
-
-/// The window is about to restart for the minimum: the launcher it starts doesn't again.
-pub fn mark_restart() {
-    let _ = fs::create_dir_all(backend::data_dir());
-    let _ = fs::write(marker_file(), backend::VERSION);
-}
-
-/// The restart didn't happen (the installer didn't start): the next start may try again.
-pub fn unmark_restart() {
-    let _ = fs::remove_file(marker_file());
-}
-
-/// Whether an earlier launcher restarted into this one for the minimum. Read once at start: the
-/// marker goes as it is read, so the start after this one may try again.
-pub fn take_restarted() -> bool {
-    let marker = marker_file();
-    let restarted = marker.exists();
-    let _ = fs::remove_file(marker);
-    restarted
 }
 
 #[cfg(test)]
@@ -194,17 +168,6 @@ mod tests {
             ..READY
         };
         assert!(!installs_now("0.2.79", Some("0.2.80"), now));
-    }
-
-    /// The marker a restart for the minimum leaves is read once.
-    #[test]
-    fn the_restart_marker_is_read_once() {
-        mark_restart();
-        assert!(take_restarted());
-        assert!(!take_restarted());
-        mark_restart();
-        unmark_restart();
-        assert!(!take_restarted());
     }
 
     /// Once per start: not again after a try this start (a failed handoff, the next check), and
