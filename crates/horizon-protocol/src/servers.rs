@@ -227,7 +227,9 @@ fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
 /// ServerAddress.parseString: `host`, `host:port` or `[v6]:port`; default 25565.
 pub fn parse_address(text: &str) -> Option<(String, u16)> {
     let (host, port) = parse_address_parts(text)?;
-    Some((idn_to_ascii(&host).unwrap_or(host), port))
+    // ServerAddress.getHost() returns the empty host when IDN conversion fails;
+    // the caller then reports the invalid-address screen instead of connecting.
+    Some((idn_to_ascii(&host).unwrap_or_default(), port))
 }
 
 fn parse_address_parts(text: &str) -> Option<(String, u16)> {
