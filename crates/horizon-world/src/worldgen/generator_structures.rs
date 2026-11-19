@@ -409,6 +409,10 @@ impl StructureState {
         work.help(|set| registry.ring_biomes(set), &mut |quarts| {
             context.noise_biomes(quarts)
         });
+        if context.mod_failed() {
+            static NONE: Rings = Rings::new();
+            return &NONE;
+        }
         self.rings
             .get_or_init(|| work.rings(|set| registry.sets[set].name.clone()))
     }
@@ -683,6 +687,9 @@ impl StructureState {
             .map(Arc::new)
             .collect(),
         );
+        if context.mod_failed() {
+            return Some(starts);
+        }
         Some(self.starts.insert_first((chunk.x, chunk.z), starts))
     }
     /// `Structure.generate` for `/place structure`: the start `structure`

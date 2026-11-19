@@ -152,6 +152,8 @@ static RAMP_POINTS: AtomicUsize = AtomicUsize::new(0);
 static RAMP_VOLUMES: AtomicUsize = AtomicUsize::new(0);
 static COUNTED_POINTS: AtomicUsize = AtomicUsize::new(0);
 static COUNTED_VOLUMES: AtomicUsize = AtomicUsize::new(0);
+static DECORATION_POINTS: AtomicUsize = AtomicUsize::new(0);
+static DECORATION_VOLUMES: AtomicUsize = AtomicUsize::new(0);
 
 /// Every test's types, installed by whichever test runs first.
 fn install() {
@@ -168,6 +170,13 @@ fn install() {
             Arc::new(RampType {
                 points: &COUNTED_POINTS,
                 volumes: &COUNTED_VOLUMES,
+            }) as _,
+        ),
+        (
+            "worldgen_test:decoration".to_owned(),
+            Arc::new(RampType {
+                points: &DECORATION_POINTS,
+                volumes: &DECORATION_VOLUMES,
             }) as _,
         ),
         ("worldgen_test:flat".to_owned(), Arc::new(Flat) as _),
@@ -204,6 +213,17 @@ fn pipeline(
     void: bool,
     edit: impl FnOnce(&mut Value),
 ) -> Result<Arc<Pipeline<XoroshiroRandom>>, GeneratorError> {
+    pipeline_with(data, seed, void, false, edit)
+}
+
+/// `pipeline`, with the preset's structures when `structures`.
+fn pipeline_with(
+    data: &Arc<GeneratorData>,
+    seed: i64,
+    void: bool,
+    structures: bool,
+    edit: impl FnOnce(&mut Value),
+) -> Result<Arc<Pipeline<XoroshiroRandom>>, GeneratorError> {
     let preset: Value = serde_json::from_str(&data.world_presets["minecraft:normal"]).unwrap();
     let mut generator = preset["dimensions"]["minecraft:overworld"]["generator"].clone();
     let mut settings: Value =
@@ -220,7 +240,7 @@ fn pipeline(
         XoroshiroRandom::new(seed),
         &generator,
         &settings,
-        false,
+        structures,
         Some((-64, 384)),
         None,
     )?))
@@ -372,27 +392,60 @@ fn an_unknown_or_refused_mod_type_is_a_load_error_naming_it() {
     );
 }
 
-/// A mod function whose code fails mid-generation fails that chunk's generation and far terrain
-/// with an error, on the worker that asked, instead of unwinding through it.
+/// A mod function whose code fails mid-generation fails that chunk's generation with an error
+/// naming the type and its mod, on the worker that asked, instead of unwinding through it. From
+/// then on the world answers nothing from samples: no far terrain, no spawn, and no structure
+/// height or start is kept.
 #[test]
-fn a_failing_mod_function_fails_the_chunk_not_the_worker() {
+fn a_failing_mod_function_fails_the_world_naming_it() {
     install();
     let Some(root) = resources() else { return };
     let data = data(&root);
-    let (_, mut worker) = ramp_world(&data, 1, "worldgen_test:fails");
+    let pipeline = pipeline_with(&data, 1, false, true, |settings| {
+        settings["noise_router"]["final_density"] =
+            serde_json::json!({"type": "worldgen_test:fails"});
+    })
+    .expect("pipeline");
+    let generator = OverworldGenerator {
+        pipeline: pipeline.clone(),
+        noise_clamped: None,
+    };
+    let mut worker = generator.worker();
+    let named = "density function type worldgen_test:fails of mod worldgen_test failed: the mod's";
     let error = worker
         .generate_proto(ChunkPos::new(0, 0))
         .err()
         .expect("generation fails")
         .to_string();
-    assert!(error.contains("External"), "{error}");
-    assert!(worker.lod_grid(0, 0, 8, 4, false).is_err());
+    assert!(error.contains(named), "{error}");
+    assert_eq!(
+        worker.mod_density_failure(),
+        generator.mod_density_failure()
+    );
+    assert!(worker.state.heights.is_empty());
+    let cached = pipeline.structures.as_ref().unwrap().start_census();
+    for at in [
+        ChunkPos::new(5, 5),
+        ChunkPos::new(-9, 4),
+        ChunkPos::new(30, -30),
+    ] {
+        assert!(worker.generate_proto(at).is_err());
+        assert!(worker.structure_starts(at).is_empty());
+    }
+    assert!(worker.state.heights.is_empty());
+    assert_eq!(pipeline.structures.as_ref().unwrap().start_census(), cached);
+    let far = worker
+        .lod_grid(0, 0, 8, 4, false)
+        .expect_err("far terrain fails");
+    assert!(far.to_string().contains(named), "{far}");
+    let spawn = generator.spawn_position().expect_err("spawn search fails");
+    assert!(spawn.to_string().contains(named), "{spawn}");
 }
 
-/// A failing mod `continents` reaches every climate and height reader; each gives an error or no
-/// answer on the worker that asked, none unwinds through it.
+/// A failing mod `continents` reaches every climate reader: each gives an error or no answer,
+/// and `/locate biome` stops at the first failure.
 #[test]
-fn every_reader_of_a_failing_mod_function_returns() {
+fn every_climate_reader_of_a_failing_mod_function_returns() {
     install();
     let Some(root) = resources() else { return };
     let data = data(&root);
@@ -401,28 +454,85 @@ fn every_reader_of_a_failing_mod_function_returns() {
     })
     .expect("pipeline");
     let generator = OverworldGenerator {
-        pipeline: pipeline.clone(),
+        pipeline,
         noise_clamped: None,
     };
     let mut worker = generator.worker();
-    assert!(worker.generate_proto(ChunkPos::new(3, -2)).is_err());
-    assert!(worker.lod_grid(48, -32, 8, 4, false).is_err());
-    assert!(
-        worker
-            .noise_biomes(&[[0, 60, 0], [97, 60, -53]])
-            .iter()
-            .all(Option::is_none)
-    );
     let found = worker.find_closest_biome(&BiomeSearch {
         allowed: &|_| true,
         origin: [0, 64, 0],
-        radius: 64,
+        radius: 6400,
         horizontal: 8,
         vertical: 16,
         min_y: -64,
         max_y: 319,
     });
     assert_eq!(found, None);
-    let _ = pipeline.base_height(5, 9, HeightmapType::WorldSurfaceWg);
-    let _ = generator.spawn_position();
+    assert!((worker.mod_density_failure()).is_some_and(|f| f.contains("worldgen_test:fails")));
+    assert!(
+        worker
+            .noise_biomes(&[[0, 60, 0], [97, 60, -53]])
+            .iter()
+            .all(Option::is_none)
+    );
+    assert!(worker.generate_proto(ChunkPos::new(3, -2)).is_err());
+    assert!(generator.spawn_position().is_err());
+}
+
+/// Decoration reads no density: with a counted mod node in the terrain and climate densities of
+/// the vanilla overworld, decorating a region that holds structure pieces calls the mod not once.
+/// (So a mod's failure can't happen part way through a decoration: the chunks' generation, which
+/// does call it, is where it fails.)
+#[test]
+fn decoration_never_calls_a_mod_density_function() {
+    install();
+    let Some(root) = resources() else { return };
+    let data = data(&root);
+    let pipeline = pipeline_with(&data, 12345, false, true, |settings| {
+        let router = &mut settings["noise_router"];
+        for field in ["final_density", "continents", "erosion", "depth"] {
+            let vanilla = router[field].take();
+            router[field] = serde_json::json!({
+                "type": "minecraft:add",
+                "left": vanilla,
+                "right": {
+                    "type": "minecraft:mul",
+                    "left": 1e-6,
+                    "right": {"type": "worldgen_test:decoration", "base": 70.37},
+                },
+            });
+        }
+    })
+    .expect("pipeline");
+    let mut worker = OverworldGenerator {
+        pipeline,
+        noise_clamped: None,
+    }
+    .worker();
+    let center = (0..24)
+        .flat_map(|x| (0..24).map(move |z| ChunkPos::new(x, z)))
+        .find(|&at| {
+            let chunk = worker.generate_proto(at).unwrap();
+            !chunk.structure_starts.is_empty()
+        })
+        .expect("a chunk that structure pieces reach");
+    let mut region: [ProtoChunk; 9] = std::array::from_fn(|i| {
+        let at = ChunkPos::new(center.x + i as i32 % 3 - 1, center.z + i as i32 / 3 - 1);
+        worker.generate_proto(at).unwrap()
+    });
+    assert!(DECORATION_VOLUMES.load(Ordering::Relaxed) > 0);
+    let before = (
+        DECORATION_POINTS.load(Ordering::Relaxed),
+        DECORATION_VOLUMES.load(Ordering::Relaxed),
+    );
+    worker.decorate(&mut region).unwrap();
+    assert!(region[4].is_decorated());
+    let after = (
+        DECORATION_POINTS.load(Ordering::Relaxed),
+        DECORATION_VOLUMES.load(Ordering::Relaxed),
+    );
+    assert_eq!(
+        after, before,
+        "decorating {center:?} called the mod's density function"
+    );
 }

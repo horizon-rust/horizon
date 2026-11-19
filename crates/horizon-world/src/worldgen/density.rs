@@ -1,7 +1,7 @@
 //! Bounded decoding of density registries into the immutable core graph.
 //! Named registry holders and raw numeric tokens preserve compilation behavior.
 use super::mod_density_functions::{
-    ModDensity, ModDensityFunctionTypes, mod_density_function_types,
+    ModDensity, ModDensityFailure, ModDensityFunctionTypes, mod_density_function_types,
 };
 use super::*;
 use horizon_core::{
@@ -57,9 +57,10 @@ fn axis(raw: &RawValue) -> Result<Axis, DecodeError> {
     }
 }
 
-/// The mod density function types a registry's JSON may name.
-#[derive(Clone, Copy)]
-struct ModTypes(&'static ModDensityFunctionTypes);
+/// The mod density function types a registry's JSON may name, and the registry's record of
+/// their first failure, which every mod node it decodes shares.
+#[derive(Clone)]
+struct ModTypes(&'static ModDensityFunctionTypes, Arc<ModDensityFailure>);
 impl std::fmt::Debug for ModTypes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_set().entries(self.0.keys()).finish()
@@ -93,7 +94,7 @@ impl DensityRegistry {
         types: &'static ModDensityFunctionTypes,
     ) -> Result<Self, DecodeError> {
         let mut loader = Loader {
-            types: ModTypes(types),
+            types: ModTypes(types, Arc::default()),
             graph: DensityGraph::new(),
             noises: BTreeMap::new(),
             definitions: BTreeMap::new(),
@@ -127,6 +128,11 @@ impl DensityRegistry {
             types: loader.types,
         })
     }
+    /// The first failure of a mod density function this registry decoded: what samples it
+    /// reads this to end the world's session.
+    pub fn mod_failure(&self) -> Arc<ModDensityFailure> {
+        self.types.1.clone()
+    }
     pub fn graph(&self) -> &DensityGraph {
         &self.graph
     }
@@ -147,7 +153,7 @@ impl DensityRegistry {
     /// intact. Roots are not registered as additional named density entries.
     pub fn decode_functions(&mut self, json: &[&str]) -> Result<Vec<FunctionId>, DecodeError> {
         let mut loader = Loader {
-            types: self.types,
+            types: self.types.clone(),
             graph: self.graph.clone(),
             noises: self.noises.clone(),
             definitions: BTreeMap::new(),
@@ -510,6 +516,7 @@ impl Loader {
         let node = ModDensity {
             id: kind.to_owned(),
             function,
+            failure: self.types.1.clone(),
         };
         Ok(self.graph.bind_seeded(Arc::new(node), range, axes)?)
     }

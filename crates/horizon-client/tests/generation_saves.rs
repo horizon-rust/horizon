@@ -50,10 +50,13 @@ struct Recorder {
     finished: Mutex<HashMap<(i32, i32), Vec<Recorded>>>,
     /// The proto chunks a light job was given a view of, as they were.
     viewed: Mutex<Vec<Recorded>>,
-    /// A column whose generation fails (`ChunkGenerator::proto_failed`), and how often it was
-    /// tried.
+    /// A column whose generation fails (`ChunkGenerator::proto_failed`, as a mod's density
+    /// function failing), and how often it was tried. After one, `fatal` says so.
     fails_at: Mutex<Option<(i32, i32)>>,
     failures: std::sync::atomic::AtomicUsize,
+    /// `ChunkGenerator::decorates_beside_final`: a final chunk's proto chunk is generated again
+    /// for a decoration next to it.
+    beside_final: std::sync::atomic::AtomicBool,
 }
 /// What `Recorder::proto` gives for the column that fails.
 struct FailedProto;
@@ -90,6 +93,16 @@ impl ChunkGenerator for Recorder {
     }
     fn proto_failed(&self, proto: &Proto) -> bool {
         proto.is::<FailedProto>()
+    }
+    fn fatal(&self) -> Option<String> {
+        (self.failures.load(std::sync::atomic::Ordering::Relaxed) > 0)
+            .then(|| "the recorder's generation failed".to_owned())
+    }
+    fn decorates_beside_final(&self) -> bool {
+        self.beside_final.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn proto_beside_final(&self, worker: &mut (), snapshot: &Chunk) -> Option<Proto> {
+        Some(self.proto(worker, snapshot.x, snapshot.z))
     }
     fn decorates(&self) -> bool {
         true
@@ -264,38 +277,113 @@ fn a_new_column_is_told_apart_from_a_saved_one() {
     assert!(again.contains(&(0, 0, false)), "{again:?}");
 }
 
-/// A column whose generation fails (a mod's density function panicked) is never finished or
-/// saved as an empty column: it stays missing, and generates once the failure is gone.
+/// The column and its eight neighbours.
+fn around((x, z): (i32, i32)) -> impl Iterator<Item = (i32, i32)> {
+    (-1..=1).flat_map(move |dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+}
+
+/// Every column saved as final was finished once, after its own decoration and each
+/// neighbour's.
+fn assert_finals_whole(generator: &Recorder) {
+    let finished = generator.finished.lock().unwrap();
+    for &(x, z) in generator.chunks.lock().unwrap().keys() {
+        let finishes = &finished[&(x, z)];
+        assert_eq!(finishes.len(), 1, "({x}, {z}) was finished again");
+        assert!(finishes[0].decorated, "({x}, {z}) was finished undecorated");
+        let mut writes = finishes[0].writes.clone();
+        writes.sort_unstable();
+        let mut neighbours: Vec<_> = around((x, z)).collect();
+        neighbours.sort_unstable();
+        assert_eq!(writes, neighbours, "({x}, {z})'s decorations");
+    }
+}
+
+/// A chunk whose generation fails (a mod's density function failed) ends the session: the
+/// streamer starts no more work and reports why, and the save that closes the world keeps what
+/// was final. No column next to the failed one is final or saved decorated, and the failed one is
+/// saved neither as a chunk nor as a proto chunk.
 #[test]
-fn a_column_whose_generation_fails_is_not_saved_empty() {
+fn a_failed_generation_ends_the_session_and_nothing_unfinished_is_saved_final() {
     let Some(root) = resources() else {
         return;
     };
     let context = worker_context(&root);
     let generator = Arc::new(Recorder::default());
-    *generator.fails_at.lock().unwrap() = Some((1, 1));
-    let mut session = Session::new(generator.clone(), context.clone());
+    let mut session = Session::new(generator.clone(), context);
     session.settle_at((0, 0));
+    let failed = (10, 0);
+    *generator.fails_at.lock().unwrap() = Some(failed);
+    session.settle_at((8, 0));
     assert!(
         generator
             .failures
             .load(std::sync::atomic::Ordering::Relaxed)
             > 0
     );
-    assert!(!session.world.chunks.contains_key(&(1, 1)));
-    let mut loaded: Vec<_> = session.world.chunks.keys().copied().collect();
-    loaded.sort_unstable();
-    assert!(session.world.chunks.contains_key(&(-3, 0)), "{loaded:?}");
+    assert!(session.streaming.fatal().is_some());
     session.save();
     drop(session);
-    assert!(!generator.finished.lock().unwrap().contains_key(&(1, 1)));
-    assert!(!generator.chunks.lock().unwrap().contains_key(&(1, 1)));
-    assert!(!generator.protos.lock().unwrap().contains_key(&(1, 1)));
-    *generator.fails_at.lock().unwrap() = None;
-    let mut session = Session::new(generator.clone(), context);
+    assert_finals_whole(&generator);
+    assert!(generator.finished.lock().unwrap().len() > 50);
+    let protos = generator.protos.lock().unwrap();
+    let chunks = generator.chunks.lock().unwrap();
+    for column in around(failed) {
+        assert!(!chunks.contains_key(&column), "{column:?} saved final");
+        assert!(
+            protos.get(&column).is_none_or(|proto| !proto.decorated),
+            "{column:?} saved decorated"
+        );
+    }
+    assert!(!protos.contains_key(&failed));
+}
+
+/// A final chunk whose proto chunk fails to generate again for a decoration beside it (a world
+/// reopened with a failing mod): that decoration doesn't run, nothing is marked decorated, and the
+/// session ends.
+#[test]
+fn a_final_chunk_that_fails_to_generate_again_decorates_nothing() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let context = worker_context(&root);
+    let generator = Arc::new(Recorder::default());
+    generator
+        .beside_final
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut session = Session::new(generator.clone(), context.clone());
     session.settle_at((0, 0));
-    assert!(session.world.chunks.contains_key(&(1, 1)));
-    assert_eq!(generator.finished.lock().unwrap()[&(1, 1)].len(), 1);
+    session.save();
+    drop(session);
+    // A world saved without its proto chunks (an older version's): the columns around its final
+    // ones are generated again, and their decorations reach into the final ones.
+    generator.protos.lock().unwrap().clear();
+    let finals: Vec<(i32, i32)> = generator.chunks.lock().unwrap().keys().copied().collect();
+    let edge = *finals
+        .iter()
+        .filter(|(_, z)| *z == 0)
+        .max_by_key(|(x, _)| *x)
+        .unwrap();
+    *generator.fails_at.lock().unwrap() = Some(edge);
+    let mut session = Session::new(generator.clone(), context);
+    session.settle_at((edge.0 + 3, 0));
+    assert!(
+        generator
+            .failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+    );
+    assert!(session.streaming.fatal().is_some());
+    session.save();
+    drop(session);
+    assert_finals_whole(&generator);
+    assert_eq!(generator.finished.lock().unwrap()[&edge].len(), 1);
+    let protos = generator.protos.lock().unwrap();
+    for column in around(edge).filter(|column| !finals.contains(column)) {
+        assert!(
+            protos.get(&column).is_none_or(|proto| !proto.decorated),
+            "{column:?} saved decorated beside a final chunk that failed"
+        );
+    }
 }
 
 #[test]

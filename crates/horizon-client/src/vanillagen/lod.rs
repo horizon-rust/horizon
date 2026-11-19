@@ -177,6 +177,9 @@ impl Builder {
                                 key.0,
                                 key.1
                             );
+                            if let Some(failure) = state.mod_density_failure() {
+                                let _ = terrain.far_failure.set(failure.to_owned());
+                            }
                             worker.stop.store(true, Ordering::Relaxed);
                             break;
                         }

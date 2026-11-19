@@ -4965,6 +4965,9 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     fn proto_failed(&self, proto: &crate::streaming::Proto) -> bool {
         self.inner.proto_failed(proto)
     }
+    fn fatal(&self) -> Option<String> {
+        self.inner.fatal()
+    }
     fn proto_status(
         &self,
         proto: &crate::streaming::Proto,
