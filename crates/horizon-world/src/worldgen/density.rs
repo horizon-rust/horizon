@@ -730,6 +730,10 @@ mod tests {
             Box::leak(Box::new(ModDensityFunctionTypes::from([
                 ("test:skips".to_owned(), Arc::new(Misbehaves(None)) as _),
                 (
+                    "test:steady".to_owned(),
+                    Arc::new(Misbehaves(Some(1.0))) as _,
+                ),
+                (
                     "test:wild".to_owned(),
                     Arc::new(Misbehaves(Some(20.0))) as _,
                 ),
@@ -797,7 +801,8 @@ mod tests {
             let densities = BTreeMap::from([
                 (
                     "minecraft:skips".into(),
-                    r#"{"type":"add","left":{"type":"test:skips"},"right":{"type":"y_clamped_gradient","from_y":0,"to_y":64,"from_value":0,"to_value":1}}"#.into(),
+                    r#"{"type":"add","left":{"type":"test:skips"},"right":{"type":"test:steady"}}"#
+                        .into(),
                 ),
                 ("minecraft:wild".into(), r#"{"type":"test:wild"}"#.into()),
             ]);
@@ -806,7 +811,7 @@ mod tests {
                     .unwrap();
             let skips = registry.value("minecraft:skips").unwrap();
             let wild = registry.value("minecraft:wild").unwrap();
-            let compiler = DensityCompiler::new_seeded(registry.into_graph(), 4, false);
+            let mut compiler = DensityCompiler::new_seeded(registry.into_graph(), 4, false);
             let sampler = compiler.get_sampler(skips).unwrap();
             let mut context = SamplerContext::default();
             let mut values = vec![0.0; 12];
@@ -816,7 +821,7 @@ mod tests {
             sampler
                 .sample_volume(&mut context, &mut values, volume(-8))
                 .unwrap();
-            assert!(values.iter().all(|value| (1.0..=2.0).contains(value)));
+            assert!(values.iter().all(|&value| value == 2.0), "{values:?}");
             let message = panic_message(|| {
                 let _ = sampler.sample_volume(&mut context, &mut values, volume(8));
             });
@@ -837,14 +842,14 @@ mod tests {
             });
             assert_eq!(
                 message,
-                "native mod test density type test:wild wrote 20 at slot 0, outside its declared                  range [-10, 10]"
+                "native mod test density type test:wild wrote 20 at slot 0, outside its declared range [-10, 10]"
             );
             let message = panic_message(|| {
                 let _ = wild.sample_value(&mut SamplerContext::default(), [5, 0, 0]);
             });
             assert_eq!(
                 message,
-                "native mod test density type test:wild returned 20 at [5, 0, 0], outside its                  declared range [-10, 10]"
+                "native mod test density type test:wild returned 20 at [5, 0, 0], outside its declared range [-10, 10]"
             );
         }
 

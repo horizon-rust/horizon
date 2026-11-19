@@ -109,7 +109,7 @@ impl ModDensitySampler {
             panic!("native mod {mod_id} density type {id} left slot {slot} unwritten or wrote NaN")
         }
         panic!(
-            "native mod {mod_id} density type {id} wrote {value} at slot {slot}, outside its              declared range [{min}, {max}]"
+            "native mod {mod_id} density type {id} wrote {value} at slot {slot}, outside its declared range [{min}, {max}]"
         )
     }
     #[cold]
@@ -120,7 +120,7 @@ impl ModDensitySampler {
             panic!("native mod {mod_id} density type {id} returned NaN at {position:?}")
         }
         panic!(
-            "native mod {mod_id} density type {id} returned {value} at {position:?}, outside its              declared range [{min}, {max}]"
+            "native mod {mod_id} density type {id} returned {value} at {position:?}, outside its declared range [{min}, {max}]"
         )
     }
 }
