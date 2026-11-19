@@ -16,8 +16,10 @@ fn a_charge_hits_the_entity_in_its_box_not_the_remembered_target() {
     let ran = with_test_world(&[], |_, types| {
         let kind = Arc::new(types.types["minecraft:cow"].clone());
         seen = Some((
-            Mob::new(2, kind.clone(), Vec3::new(5.5, 64.0, 0.5), 0.0).seen(None),
-            Mob::new(3, kind, Vec3::new(0.5, 64.0, 0.2), 0.0).seen(None),
+            Mob::new(2, kind.clone(), Vec3::new(5.5, 64.0, 0.5), 0.0)
+                .seen(None, &crate::items::Items::empty()),
+            Mob::new(3, kind, Vec3::new(0.5, 64.0, 0.2), 0.0)
+                .seen(None, &crate::items::Items::empty()),
         ));
     });
     let Some((target, bystander)) = seen.filter(|_| ran) else {
@@ -33,10 +35,11 @@ fn a_charge_hits_the_entity_in_its_box_not_the_remembered_target() {
         );
         m.ai.target = Some(Who::Mob(2));
         let mut goal = Charge::new(0.5);
-        let mut lr = horizon_core::random::LegacyRandom::new(1);
+        let mut test_level = crate::health::TestLevel::new(1);
+        let level = &mut test_level.level();
         let mut cx = Cx {
             w,
-            lr: &mut lr,
+            level,
             events: &mut events,
         };
         goal.tick(&mut m, &mut cx);
@@ -78,7 +81,9 @@ fn anger(
             cows = Some(
                 at.iter()
                     .zip(2..)
-                    .map(|(&p, id)| Mob::new(id, kind.clone(), p, 0.0).seen(None))
+                    .map(|(&p, id)| {
+                        Mob::new(id, kind.clone(), p, 0.0).seen(None, &crate::items::Items::empty())
+                    })
                     .collect::<Vec<_>>(),
             );
         },
@@ -92,15 +97,17 @@ fn anger(
         m.attrs.follow_range = follow;
         // Within the target cooldown, so only `ANGRY_AT` can answer.
         m.extra.counter = 100;
+        let mut test_level = crate::health::TestLevel::new(1);
+        let level = &mut test_level.level();
         for &id in hits {
             m.invulnerable = 0;
-            assert!(m.damage(1.0, crate::mobs::Damage::mob(id, [0.0; 3])));
+            assert!(m.damage(level, 1.0, crate::mobs::Damage::mob(id, [0.0; 3])));
             set_anger_target(&mut m, w);
         }
-        let mut level = horizon_core::random::LegacyRandom::new(1);
-        let first = find_target(&mut m, w, &mut level);
+        let mut random = crate::mobs::world::level_random(1);
+        let first = find_target(&mut m, w, &mut random);
         m.attrs.follow_range = follow_after;
-        let then = find_target(&mut m, w, &mut level);
+        let then = find_target(&mut m, w, &mut random);
         out = Some((m.extra.angry_at, first, then));
     });
     out
