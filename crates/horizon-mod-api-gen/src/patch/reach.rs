@@ -599,26 +599,64 @@ mod tests {
     const HELPER: &str = "pub mod helper { pub fn lane() -> u32 { super::super::lanes::LANE } }";
 
     /// A support module of `game`: a glob that makes `subtitles` a mirror, which must keep the
-    /// rest of `game`'s grouped import of it, and an import a disabled `cfg` leaves out, of a
-    /// module the build does not have.
+    /// rest of `game`'s grouped import of it; an import a disabled `cfg` leaves out, of a module the
+    /// build does not have; and a glob of `friends`, which two files declare under opposite `cfg`s.
     const SUPPORT: &str = "pub(crate) mod support {
         #[cfg(any())]
         use crate::game::refs::ray_tests::*;
         use super::subtitles::*;
+        use crate::game::friends::*;
         pub fn caption() -> super::Subtitles {
-            let _ = LANE + super::subtitles();
+            let _ = LANE + super::subtitles() + invite(&super::Game);
             super::Subtitles
         }
     }";
 
+    /// `friends` with the `friends` feature, which imports a module only that build has.
+    const FRIENDS: &str = "// game-module-cfg: feature = \"friends\"
+        use super::Game;
+        use super::screen::Panel;
+        pub fn invite(_: &Game) -> u32 { Panel::SIZE }";
+
+    /// `friends` without it.
+    const FRIENDS_OFF: &str = "// game-module-cfg: not(feature = \"friends\")
+        // game-module-name: friends
+        use super::Game;
+        pub fn invite(_: &Game) -> u32 { 0 }";
+
     /// The game crate as the staging pass leaves it, items public and imports as written, into
     /// `dir`; and the patch crate's mirror of it with `RIDE`, `HELPER` and `SUPPORT` copied.
     fn mirrored(dir: &Path) -> TokenStream {
+        let friends = dir.join("friends.rs");
+        let friends_off = dir.join("friends_off.rs");
+        std::fs::write(&friends, FRIENDS).unwrap();
+        std::fs::write(&friends_off, FRIENDS_OFF).unwrap();
+        // Declared as the game's build script declares its modules: out of syn's sight.
+        let declare = |file: &Path, cfg: &str| {
+            let file = file.to_string_lossy().replace('\\', "/");
+            format!(
+                "#[cfg({cfg})] #[path = {file:?}] pub mod friends;
+"
+            )
+        };
+        std::fs::write(
+            dir.join("game_modules.rs"),
+            declare(&friends, "feature = \"friends\"")
+                + &declare(&friends_off, "not(feature = \"friends\")"),
+        )
+        .unwrap();
         let game = dir.join("lib.rs");
         std::fs::write(
             &game,
             format!(
                 "pub mod game {{
+                    include!(\"game_modules.rs\");
+                    pub struct Game;
+                    #[cfg(feature = \"friends\")]
+                    pub mod screen {{
+                        pub struct Panel;
+                        impl Panel {{ pub const SIZE: u32 = 1; }}
+                    }}
                     use self::api_values::TryIntoApi;
                     #[cfg(any())]
                     use self::quiet::LANE;
@@ -652,7 +690,13 @@ mod tests {
         let mut source = Source {
             root: dir.to_owned(),
             loaded: BTreeSet::new(),
-            files: BTreeMap::from([("horizon_client".to_owned(), vec![game])]),
+            files: BTreeMap::from([
+                ("horizon_client".to_owned(), vec![game]),
+                (
+                    "horizon_client::game::friends".to_owned(),
+                    vec![friends, friends_off],
+                ),
+            ]),
             parsed: BTreeMap::new(),
             local_macros: BTreeSet::new(),
             libraries: BTreeMap::new(),
@@ -698,6 +742,7 @@ mod tests {
             "game::depots",
             "game::execution_role",
             "game::facade",
+            "game::friends",
             "game::lanes",
             "game::minecarts",
             "game::rails",
@@ -730,6 +775,22 @@ mod tests {
         for name in ["subtitles::Subtitles", "subtitles::subtitles"] {
             assert!(imported.iter().any(|i| i == name), "{name} in {imported:?}");
         }
+        // `friends` has a mirror per file, each under its file's `cfg` and with its items alone.
+        let friends: Vec<String> = game
+            .1
+            .iter()
+            .filter_map(|item| match item {
+                Item::Mod(module) if module.ident == "friends" => {
+                    Some(module.to_token_stream().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(friends.len(), 2, "{friends:?}");
+        assert!(friends[0].starts_with("# [cfg (feature = \"friends\")]"));
+        assert!(friends[0].contains("screen"));
+        assert!(friends[1].starts_with("# [cfg (not (feature = \"friends\"))]"));
+        assert!(!friends[1].contains("screen"));
     }
 
     /// A mirror of a module the build may leave out keeps its `cfg`: an inline module's, and a
@@ -799,7 +860,8 @@ mod tests {
         assert_eq!(guards["bench"], "# [cfg (test)]");
     }
 
-    /// The mirror compiles against a prebuilt game whose imports are private.
+    /// The mirror compiles against a prebuilt game whose imports are private, with the
+    /// `friends` feature and without, as the launcher passes the game's features to it.
     #[test]
     #[ignore = "daily"]
     fn the_patch_crate_compiles_against_the_games_private_imports() {
@@ -824,26 +886,32 @@ mod tests {
         rustc(&[lower.to_str().unwrap()]);
         let body = mirrored(dir.path());
         let game = dir.path().join("lib.rs");
-        rustc(&[
-            "--crate-name=horizon_client",
-            game.to_str().unwrap(),
-            "--extern",
-            "gameplay",
-        ]);
         let patch = dir.path().join("patch.rs");
         std::fs::write(
             &patch,
             quote!(#![allow(unused_imports, dead_code)] #body).to_string(),
         )
         .unwrap();
-        rustc(&[
-            "--crate-name=horizon_patched",
-            patch.to_str().unwrap(),
-            "--extern",
-            "horizon_client",
-            "--extern",
-            "gameplay",
-        ]);
+        for features in [&[][..], &["--cfg", "feature=\"friends\""]] {
+            let mut args = vec![
+                "--crate-name=horizon_client",
+                game.to_str().unwrap(),
+                "--extern",
+                "gameplay",
+            ];
+            args.extend(features);
+            rustc(&args);
+            let mut args = vec![
+                "--crate-name=horizon_patched",
+                patch.to_str().unwrap(),
+                "--extern",
+                "horizon_client",
+                "--extern",
+                "gameplay",
+            ];
+            args.extend(features);
+            rustc(&args);
+        }
     }
 
     #[test]

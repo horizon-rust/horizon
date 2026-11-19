@@ -1443,18 +1443,28 @@ fn crate_mirror(
     if krate == "horizon_client" {
         reach::extend(source, krate, tree);
     }
-    mirror(source, krate, tree, bridges, used)
+    mirror(source, krate, tree, bridges, used, None)
 }
 
-/// The mirror of module `path` and its children in `tree`.
+/// The mirror of module `path` and its children in `tree`; of the items of `file` alone when
+/// it is one of several files of the module ([`Variant`]).
 fn mirror(
     source: &mut Source,
     path: &str,
     tree: &Tree,
     bridges: bool,
     used: Option<&BTreeSet<String>>,
+    file: Option<&Path>,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let items = source.module(path)?.items.clone();
+    let items = match file {
+        Some(file) => {
+            let text = source.read(file)?;
+            syn::parse_file(&text)
+                .map_err(|e| format!("{}: {e}", file.display()))?
+                .items
+        }
+        None => source.module(path)?.items.clone(),
+    };
     let original: syn::Path =
         syn::parse_str(&original_path(&source.libraries, path)).expect("a module path");
     let reserved: BTreeSet<String> = tree
@@ -1532,13 +1542,34 @@ fn mirror(
     for (name, child) in &tree.children {
         let ident = format_ident!("{name}");
         let child_path = format!("{path}::{name}");
-        let guard = module_cfg(source, &child_path).map(|cfg| quote!(#[cfg(#cfg)]));
-        let inner = mirror(source, &child_path, child, bridges, used)?;
-        children.push(quote!(#guard pub mod #ident { #inner }));
+        for variant in variants(source, &child_path) {
+            let guard = variant.cfg.map(|cfg| quote!(#[cfg(#cfg)]));
+            let inner = mirror(
+                source,
+                &child_path,
+                child,
+                bridges,
+                used,
+                variant.file.as_deref(),
+            )?;
+            children.push(quote!(#guard pub mod #ident { #inner }));
+        }
     }
     // Repeated before the children, which see them by textual scope as the game's did.
     let macros = source.scope_macros(path);
-    let copies = &tree.copies;
+    // A copied function goes into the mirror of the file that has it.
+    let functions: BTreeSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(item) => Some(item.sig.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    let copies = tree.copies.iter().filter(|copy| {
+        file.is_none()
+            || !matches!(syn::parse2::<Item>((*copy).clone()),
+                Ok(Item::Fn(item)) if !functions.contains(&item.sig.ident.to_string()))
+    });
     let bridge_import = bridges.then(|| {
         quote!(
             use crate::__fnr_bridges::*;
@@ -1777,72 +1808,125 @@ fn prune(
     }
 }
 
-/// The `cfg` condition of module `path`'s declaration, which its mirror carries: a mirror of a
-/// module the build leaves out (`#[cfg(test)] mod ray_tests`) is left out with it. A module the
-/// game's build script declares has it from its file's `// game-module-cfg:` header, where
-/// `always` is none and a `_tests` module without one is `test`; several declarations of a name
-/// (`friends` and `friends_off`) are any of theirs.
-fn module_cfg(source: &mut Source, path: &str) -> Option<proc_macro2::TokenStream> {
-    let (parent, name) = path.rsplit_once("::")?;
-    let cfg_of = |attrs: &[syn::Attribute]| -> Option<proc_macro2::TokenStream> {
-        let conditions: Vec<proc_macro2::TokenStream> = attrs
-            .iter()
-            .filter(|attr| attr.path().is_ident("cfg"))
-            .filter_map(|attr| {
-                attr.meta
-                    .require_list()
-                    .ok()
-                    .map(|list| list.tokens.clone())
+/// One mirror of a module: the `cfg` condition its declaration has, which the mirror carries
+/// so that a mirror of a module the build leaves out (`#[cfg(test)] mod ray_tests`) is left out
+/// with it; and, for a module several files declare under their own conditions (`friends.rs`
+/// and `friends_off.rs`), the file whose items it mirrors. Only one of those files is in a
+/// build, so each gets a mirror of its own.
+struct Variant {
+    cfg: Option<proc_macro2::TokenStream>,
+    file: Option<PathBuf>,
+}
+
+/// The mirrors module `path` gets ([`Variant`]). A module the game's build script declares has
+/// its condition from its file's `// game-module-cfg:` header.
+fn variants(source: &mut Source, path: &str) -> Vec<Variant> {
+    let Some((parent, name)) = path.rsplit_once("::") else {
+        return vec![Variant {
+            cfg: None,
+            file: None,
+        }];
+    };
+    // Each `mod` declaration of the name: its condition, and its `#[path]`.
+    let declared: Vec<(Option<proc_macro2::TokenStream>, Option<String>)> = source
+        .module(parent)
+        .map(|module| {
+            module
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Mod(module) if module.ident == name => Some((
+                        all_cfg(&module.attrs),
+                        module.attrs.iter().find_map(|attr| match &attr.meta {
+                            syn::Meta::NameValue(value) if value.path.is_ident("path") => {
+                                match &value.value {
+                                    syn::Expr::Lit(syn::ExprLit {
+                                        lit: syn::Lit::Str(at),
+                                        ..
+                                    }) => Some(at.value()),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        }),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let files = source.files.get(path).cloned().unwrap_or_default();
+    if files.len() > 1 {
+        return files
+            .into_iter()
+            .map(|file| {
+                let cfg = match declared
+                    .iter()
+                    .find(|(_, at)| at.as_ref().is_some_and(|at| file.ends_with(at)))
+                {
+                    Some((cfg, _)) => cfg.clone(),
+                    None => header_cfg(source, &file),
+                };
+                Variant {
+                    cfg,
+                    file: Some(file),
+                }
             })
             .collect();
-        match conditions.as_slice() {
-            [] => None,
-            [one] => Some(one.clone()),
-            all => Some(quote!(all(#(#all),*))),
-        }
+    }
+    let cfg = if declared.is_empty() {
+        files.first().and_then(|file| header_cfg(source, file))
+    } else {
+        // A declaration without a condition is always there.
+        declared
+            .into_iter()
+            .map(|(cfg, _)| cfg)
+            .collect::<Option<Vec<_>>>()
+            .and_then(|conditions| match conditions.as_slice() {
+                [] => None,
+                [one] => Some(one.clone()),
+                any => Some(quote!(any(#(#any),*))),
+            })
     };
-    let declared: Vec<Option<proc_macro2::TokenStream>> = source
-        .module(parent)
-        .ok()?
-        .items
+    vec![Variant { cfg, file: None }]
+}
+
+/// The `cfg` conditions of `attrs`, as one.
+fn all_cfg(attrs: &[syn::Attribute]) -> Option<proc_macro2::TokenStream> {
+    let conditions: Vec<proc_macro2::TokenStream> = attrs
         .iter()
-        .filter_map(|item| match item {
-            Item::Mod(module) if module.ident == name => Some(cfg_of(&module.attrs)),
-            _ => None,
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .filter_map(|attr| {
+            attr.meta
+                .require_list()
+                .ok()
+                .map(|list| list.tokens.clone())
         })
         .collect();
-    let conditions = if declared.is_empty() {
-        let mut conditions = Vec::new();
-        for file in source.files.get(path).cloned().unwrap_or_default() {
-            let text = source.read(&file).ok()?;
-            let root = if file.file_name().is_some_and(|f| f == "mod.rs") {
-                file.parent().and_then(Path::file_name)
-            } else {
-                file.file_stem()
-            };
-            let header = text
-                .lines()
-                .find_map(|line| line.strip_prefix("// game-module-cfg: "));
-            conditions.push(match header {
-                Some("always") => None,
-                Some(condition) => Some(condition.parse().ok()?),
-                None if root.is_some_and(|r| r.to_string_lossy().ends_with("_tests")) => {
-                    Some(quote!(test))
-                }
-                None => None,
-            });
-        }
-        conditions
-    } else {
-        declared
-    };
-    // A declaration without a condition is always there.
-    let conditions: Vec<proc_macro2::TokenStream> =
-        conditions.into_iter().collect::<Option<_>>()?;
     match conditions.as_slice() {
         [] => None,
         [one] => Some(one.clone()),
-        any => Some(quote!(any(#(#any),*))),
+        all => Some(quote!(all(#(#all),*))),
+    }
+}
+
+/// The condition a game module file's `// game-module-cfg:` header gives it, as the game's build
+/// script declares the module: `always` is none, and a `_tests` module without one is `test`.
+fn header_cfg(source: &mut Source, file: &Path) -> Option<proc_macro2::TokenStream> {
+    let text = source.read(file).ok()?;
+    let root = if file.file_name().is_some_and(|f| f == "mod.rs") {
+        file.parent().and_then(Path::file_name)
+    } else {
+        file.file_stem()
+    };
+    match text
+        .lines()
+        .find_map(|line| line.strip_prefix("// game-module-cfg: "))
+    {
+        Some("always") => None,
+        Some(condition) => condition.parse().ok(),
+        None if root.is_some_and(|r| r.to_string_lossy().ends_with("_tests")) => Some(quote!(test)),
+        None => None,
     }
 }
 
@@ -2019,6 +2103,7 @@ mod tests {
             &Tree::default(),
             false,
             None,
+            None,
         )
         .unwrap()
         .to_string();
@@ -2028,7 +2113,7 @@ mod tests {
         target.copies.push(quote!(
             pub fn copy() {}
         ));
-        let target = mirror(&mut source, "lower::ancestor", &target, false, None)
+        let target = mirror(&mut source, "lower::ancestor", &target, false, None, None)
             .unwrap()
             .to_string();
         assert!(target.contains("private_helper"));
@@ -2044,6 +2129,7 @@ mod tests {
                 "horizon_client::game",
                 &Tree::default(),
                 false,
+                None,
                 None
             )
             .unwrap()
@@ -2075,7 +2161,15 @@ mod tests {
             stale: None,
         };
         let used = BTreeSet::from(["Arc".to_owned()]);
-        let out = mirror(&mut source, "fixture", &Tree::default(), false, Some(&used)).unwrap();
+        let out = mirror(
+            &mut source,
+            "fixture",
+            &Tree::default(),
+            false,
+            Some(&used),
+            None,
+        )
+        .unwrap();
         let parsed: syn::File = syn::parse2(out).unwrap();
         let imports: Vec<String> = uses(&parsed.items)
             .iter()
@@ -2105,7 +2199,7 @@ mod tests {
             hashes: BTreeMap::new(),
             stale: None,
         };
-        let out = mirror(&mut source, "fixture", &Tree::default(), false, None).unwrap();
+        let out = mirror(&mut source, "fixture", &Tree::default(), false, None, None).unwrap();
         let parsed: syn::File = syn::parse2(out).unwrap();
         let imports: Vec<String> = uses(&parsed.items)
             .iter()
