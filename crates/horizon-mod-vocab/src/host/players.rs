@@ -631,6 +631,33 @@ pub trait PlayersBackendMut {
     #[access(WorldOnly)]
     fn player_set_nickname(&mut self, player: PlayerRef, nickname: Option<&str>) -> bool;
     /// Side: server.
+    /// Shows `sidebar` on that player's screen in place of the one shown before, or takes it
+    /// away (None): an objective only their client holds, displayed in the sidebar slot, its
+    /// lines as scores with fixed or blank number formats (`ClientboundSetObjectivePacket`,
+    /// `SetDisplayObjective`, `SetScore`). The server's scoreboard, `/scoreboard` and the other
+    /// players don't see it; it covers a sidebar objective the world shows, for this player,
+    /// and is gone when they leave. False when they aren't on.
+    #[access(WorldOnly)]
+    fn player_set_sidebar(
+        &mut self,
+        player: PlayerRef,
+        sidebar: Option<Sidebar>,
+    ) -> Result<bool, TextFormError>;
+    /// Side: server.
+    /// Shows `name` for that player in everyone's Tab list (Paper's `Player.playerListName`,
+    /// NeoForge's `ServerPlayer.refreshTabListName`), colours and all; None shows the name the
+    /// game would (their nickname or real name). The `player_tab_list_name_format` hook still
+    /// has the last word. Only the Tab list: chat, name tags and commands keep the real name.
+    /// Kept by UUID until a mod sets it again or the server stops (also if they leave and come
+    /// back). False when the server list is unavailable, the handle is stale or the player
+    /// isn't online.
+    #[access(WorldOnly)]
+    fn player_set_list_name(
+        &mut self,
+        player: PlayerRef,
+        name: Option<Text>,
+    ) -> Result<bool, TextFormError>;
+    /// Side: server.
     /// Hides that player (a vanish) from the players below permission
     /// `level`, or shows them again (None): from the next tick those players
     /// lose them from the Tab list and the world (their client stops

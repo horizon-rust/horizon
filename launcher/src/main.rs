@@ -46,6 +46,7 @@ mod glass_storage;
 mod glass_toast;
 mod glass_ui;
 mod glass_versions;
+mod glide;
 mod home;
 mod home_tabs;
 mod import_page;
@@ -283,6 +284,11 @@ struct Launcher {
     instance_install: Option<String>,
     /// One for an instance waiting for the install running now to end.
     install_next: Option<Release>,
+    /// The Stable build Home's Update is installing (`nightly::install_stable`).
+    stable_install: Option<Release>,
+    /// A Stable build whose download failed: not offered again until the release list is read
+    /// from the network (`Msg::ReleasesFromNetwork`).
+    stable_failed: Option<Release>,
     /// The install bar's previous and current fraction, so it moves rather than jumps.
     bar: (f32, f32),
     releases: Load<Vec<Release>>,
@@ -458,6 +464,9 @@ struct Launcher {
     starting_client: Option<String>,
     /// The instance that start is for, whatever is selected by the time it ends.
     starting_instance: Option<String>,
+    /// The Stop of the start under way while it may run its instance's pre-launch command
+    /// (Windows runs it before the game): kept until the start's result is handled.
+    pre_launch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Play was pressed on a version not prepared yet: it starts once this preparation ends well.
     play_when_prepared: Option<(String, String)>,
     /// Join a friend: the code typed on the Play page, and the one the game
