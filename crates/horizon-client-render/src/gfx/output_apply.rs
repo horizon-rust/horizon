@@ -894,7 +894,8 @@ mod tests {
                 fresh: None,
             }),
         };
-        let before = Instant::now();
+        // Strictly before the cutoff: two `Instant::now()` in a row can be equal.
+        let before = Instant::now() - std::time::Duration::from_secs(1);
         let offered = offer_fresh(Some(&mut watch), || Some(None));
         caps.hdr = offered.flatten();
         hand.send((reading, Some(Some(Pq)), before)).unwrap();
