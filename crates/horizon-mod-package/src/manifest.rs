@@ -446,6 +446,13 @@ impl Manifest {
                 m.id
             ));
         }
+        // The id is the mod's first owned namespace, so the reserved ones are refused here too.
+        if RESERVED_NAMESPACES.contains(&m.id.as_str()) {
+            return Err(format!(
+                "{MANIFEST}: id {} is a namespace no mod may claim",
+                m.id
+            ));
+        }
         let rules = m.incompatible.iter().chain(&m.discouraged);
         for id in m
             .dependencies
@@ -652,6 +659,13 @@ impl Manifest {
                     "{MANIFEST}: namespace {ns:?} is not [a-z0-9_.-]{{1,64}}"
                 ));
             }
+            // Windows drops a folder name's trailing dot, so `horizon.` would write into
+            // `horizon`; a leading one is refused alike.
+            if ns.starts_with('.') || ns.ends_with('.') {
+                return Err(format!(
+                    "{MANIFEST}: namespace {ns:?} starts or ends with a dot"
+                ));
+            }
             if RESERVED_NAMESPACES.contains(&ns.as_str()) {
                 return Err(format!(
                     "{MANIFEST}: namespace {ns} is not a mod's to claim (only to add to its tags)"
@@ -722,7 +736,7 @@ pub fn source_file(name: &str) -> bool {
                 .any(|prefix| name.starts_with(prefix)))
 }
 
-fn plain_path(name: &str) -> bool {
+pub(crate) fn plain_path(name: &str) -> bool {
     !name.starts_with('/')
         && !name.contains(['\\', ':'])
         && !name
@@ -892,6 +906,11 @@ impl Package {
             let name = entry.name().map_err(|e| e.to_string())?.into_owned();
             let mode = entry.unix_mode().unwrap_or_default();
             entries.push((name.clone(), entry.size(), entry.is_dir()));
+            // Every entry, a content-only package's too: a reader that takes `\` for `/` (the
+            // resource loader does) must see the same names the checks below saw.
+            if !plain_path(name.strip_suffix('/').unwrap_or(&name)) {
+                return Err(format!("invalid package path: {name}"));
+            }
             let first = name.split('/').next().unwrap_or("");
             if legacy_path(&name) {
                 return Err(format!("{name}: unsupported package path"));
@@ -1845,8 +1864,22 @@ capabilities = ["registries"]
             assert!(e.contains("not a mod's to claim"), "{e}");
         }
         assert!(with("\"ruby\"").unwrap_err().contains("twice"));
+        for reserved in ["minecraft", "c", "horizon"] {
+            let e = Manifest::parse(&EXAMPLE.replacen(
+                "id = \"ruby\"",
+                &format!("id = \"{reserved}\""),
+                1,
+            ))
+            .unwrap_err();
+            assert!(e.contains("no mod may claim"), "{e}");
+        }
         assert!(with("\"a\", \"a\"").unwrap_err().contains("twice"));
         assert!(with("\"Kaisyn\"").unwrap_err().contains("is not"));
+        for dotted in ["horizon.", ".kaisyn"] {
+            let e = with(&format!("\"{dotted}\"")).unwrap_err();
+            assert!(e.contains("with a dot"), "{e}");
+        }
+        assert!(with("\"kai.syn\"").is_ok(), "a dot inside stays allowed");
         assert!(with("\"\"").unwrap_err().contains("is not"));
     }
 
@@ -1981,9 +2014,12 @@ issues = \"http://example.org/issues\"
             zip.write_all(bytes).unwrap();
             zip.finish().unwrap();
             let error = Package::read(&archive).err().unwrap();
-            // The one place a module may sit is refused for want of `[wasm]`.
+            // The one place a module may sit is refused for want of `[wasm]`; a name that
+            // isn't plain is refused before its bytes are looked at.
             let expected = if *name == WASM {
                 WasmError::Undeclared.to_string()
+            } else if name.starts_with("./") {
+                "invalid package path".to_string()
             } else {
                 "unsupported executable file".to_string()
             };
