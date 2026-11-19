@@ -217,7 +217,7 @@ fn shareable_options(file: &Path) -> Result<Vec<u8>, String> {
 
 /// options.txt's lines, each with its end, split where the game splits them
 /// (`BufferedReader.lines()`): at `\n`, `\r\n` and a lone `\r`.
-pub(crate) fn option_lines(bytes: &[u8]) -> Vec<&[u8]> {
+fn option_lines(bytes: &[u8]) -> Vec<&[u8]> {
     let mut lines = Vec::new();
     let mut start = 0;
     let mut i = 0;

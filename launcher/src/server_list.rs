@@ -163,12 +163,6 @@ impl List {
         Ok(server)
     }
 
-    /// The address of every entry, the hidden ones (servers joined through Direct Connection)
-    /// too, in the file's order.
-    pub fn addresses(&self) -> Vec<String> {
-        self.entries.iter().map(|e| text(e, "ip")).collect()
-    }
-
     /// The list as a servers.dat holding only the shown entries, each with all its fields: what
     /// an export shares, without the addresses the player typed in Direct Connection.
     pub fn shown_file(&self) -> Result<Vec<u8>, String> {

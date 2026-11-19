@@ -13,8 +13,6 @@ pub const PRIVATE: &str = "<private>";
 pub struct Scrubber {
     /// Exact terms to hide, longest first.
     terms: Vec<String>,
-    /// Host names to hide in any ASCII case, lowercase, each also with its trailing dot.
-    hosts: Vec<String>,
     user: Option<String>,
 }
 
@@ -26,7 +24,6 @@ impl Scrubber {
             .find_map(|k| std::env::var(k).ok().filter(|u| u.trim().len() >= 3));
         Self {
             terms: Vec::new(),
-            hosts: Vec::new(),
             user,
         }
     }
@@ -52,20 +49,8 @@ impl Scrubber {
         self
     }
 
-    /// Hides the host name `host` wherever it stands alone, in any ASCII case and with or without
-    /// a trailing dot: `Play.Example.net.` and `play.example.net` are the same server. Like
-    /// [`Self::term`], under 3 characters is ignored.
-    pub fn host(mut self, host: &str) -> Self {
-        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-        if host.len() >= 3 && !self.hosts.contains(&host) {
-            self.hosts.push(format!("{host}."));
-            self.hosts.push(host);
-        }
-        self
-    }
-
     pub fn scrub(&self, text: &str) -> String {
-        let mut out = self.hide_hosts(text);
+        let mut out = text.to_owned();
         for term in &self.terms {
             out = out.replace(term.as_str(), PRIVATE);
         }
@@ -77,76 +62,6 @@ impl Scrubber {
         if let Some(user) = &self.user {
             out = replace_word(&out, user, USER);
         }
-        out
-    }
-
-    /// The host pass, before every other one and on the text as it came: each registered host
-    /// standing alone becomes [`PRIVATE`], overlapping matches (a host and its trailing-dot
-    /// spelling) as one, except where a term or e-mail match reaches past it on either side: that
-    /// pass then hides the whole term or address, as without hosts. With no host registered the
-    /// text is unchanged.
-    fn hide_hosts(&self, text: &str) -> String {
-        if self.hosts.is_empty() {
-            return text.to_owned();
-        }
-        // What the term and e-mail passes match in the text as it came: a host inside one of them
-        // that reaches past it is left for that pass, which hides the whole term or address.
-        let mut theirs: Vec<(usize, usize)> = Vec::new();
-        for term in &self.terms {
-            theirs.extend(
-                text.match_indices(term.as_str())
-                    .map(|(at, m)| (at, at + m.len())),
-            );
-        }
-        let bytes = text.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            match text
-                .is_char_boundary(i)
-                .then(|| email_at(bytes, i))
-                .flatten()
-            {
-                Some((len, _)) => {
-                    theirs.push((i, i + len));
-                    i += len;
-                }
-                None => i += 1,
-            }
-        }
-        // ASCII lowercasing keeps every character where it was: offsets in `lower` hold in `text`.
-        let lower = text.to_ascii_lowercase();
-        let mut found: Vec<(usize, usize)> = Vec::new();
-        for host in &self.hosts {
-            found.extend(
-                lower
-                    .match_indices(host.as_str())
-                    .map(|(at, m)| (at, at + m.len()))
-                    .filter(|&(start, end)| host_alone(text, start, end))
-                    // A span wholly inside the host (a world named `Play` in `Play.example.net`)
-                    // goes with it: hiding the whole host hides more than that pass would.
-                    .filter(|&(start, end)| {
-                        !theirs
-                            .iter()
-                            .any(|&(s, e)| start < e && s < end && (s < start || e > end))
-                    }),
-            );
-        }
-        found.sort_unstable();
-        let mut merged: Vec<(usize, usize)> = Vec::new();
-        for (start, end) in found {
-            match merged.last_mut() {
-                Some(last) if start < last.1 => last.1 = last.1.max(end),
-                _ => merged.push((start, end)),
-            }
-        }
-        let mut out = String::with_capacity(text.len());
-        let mut copied = 0;
-        for (start, end) in merged {
-            out.push_str(&text[copied..start]);
-            out.push_str(PRIVATE);
-            copied = end;
-        }
-        out.push_str(&text[copied..]);
         out
     }
 }
@@ -210,16 +125,6 @@ fn replace_tokens(
     }
     out.push_str(&text[copied..]);
     out
-}
-
-/// Whether `start..end` in `text` is a whole host name: the characters next to it are not a host
-/// name's (ASCII letter, digit, `-`, `.`), so `a.b` is not in `data.bin` and `example.net` not in
-/// `play.example.net`; a host before a sentence's full stop matches as its trailing-dot spelling.
-fn host_alone(text: &str, start: usize, end: usize) -> bool {
-    let host_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '.';
-    let before = text[..start].chars().next_back();
-    let after = text[end..].chars().next();
-    !before.is_some_and(host_char) && !after.is_some_and(host_char)
 }
 
 fn word_byte(b: u8) -> bool {
@@ -479,114 +384,6 @@ mod tests {
         assert_eq!(
             s.scrub("Saving My World; joined play.example.net:25565, ab"),
             "Saving <private>; joined <private>:25565, ab"
-        );
-    }
-
-    /// With no host registered, terms, e-mail and IP addresses come out as they always have: one
-    /// term after another, each pass on the one before's output.
-    #[test]
-    fn without_hosts_terms_and_addresses_are_hidden_as_before() {
-        let s = Scrubber::bare().term("PrivateWorld").term("WorldWorld");
-        assert_eq!(
-            s.scrub("PrivateWorldWorldWorld192.168.1.5"),
-            "<private><private><ip>"
-        );
-        let s = Scrubber::bare().term("My World");
-        assert_eq!(
-            s.scrub("Saving My World/region and ana.b+mc@example.org from 10.0.0.1:25565"),
-            "Saving <private>/region and <email> from <ip>"
-        );
-    }
-
-    #[test]
-    fn a_host_is_hidden_alone_in_any_case_and_an_e_mail_whole() {
-        let s = Scrubber::bare().host("friends.example.net");
-        assert_eq!(s.scrub("“Friends.Example.NET”"), "“<private>”");
-        // The domain of an e-mail address is left to the e-mail pass, which hides all of it.
-        let mail = "mail alice+private@friends.example.net now";
-        assert_eq!(s.scrub(mail), "mail <email> now");
-        assert_eq!(s.scrub(mail), Scrubber::bare().scrub(mail));
-        // Outside an address the e-mail pass matches, the host is hidden even after `@`.
-        assert_eq!(s.scrub("@friends.example.net"), "@<private>");
-        assert_eq!(
-            s.scrub("https://user:pass@friends.example.net/"),
-            "https://user:pass@<private>/"
-        );
-        // A trailing dot ends the address with an empty label: the e-mail pass takes none of it.
-        assert_eq!(s.scrub("alice@friends.example.net."), "alice@<private>");
-        assert_eq!(s.scrub("ssh://git@friends.example.net"), "ssh://<email>");
-    }
-
-    #[test]
-    fn a_host_inside_an_e_mail_address_or_a_term_leaves_it_whole() {
-        let term = "friends.example.net Private Survival";
-        let with = Scrubber::bare().term(term).host("friends.example.net");
-        let without = Scrubber::bare().term(term);
-        for text in [
-            "alice+friends.example.net@example.org",
-            "Saving friends.example.net Private Survival/region",
-        ] {
-            assert_eq!(with.scrub(text), without.scrub(text), "{text}");
-        }
-        assert_eq!(
-            with.scrub("alice+friends.example.net@example.org"),
-            "<email>"
-        );
-        assert_eq!(
-            with.scrub("Saving friends.example.net Private Survival/region"),
-            "Saving <private>/region"
-        );
-    }
-
-    /// Registering a host never shows what the scrubber hid without it, and hides the host.
-    #[test]
-    fn a_host_only_ever_hides_more() {
-        let term = "friends.example.net Private Survival";
-        let with = Scrubber::bare().term(term).host("friends.example.net");
-        let without = Scrubber::bare().term(term);
-        let secrets = [
-            "alice",
-            "+private@",
-            "Private Survival",
-            "192.168.1.20",
-            "069a79f4-44e9-4726-a5be-fca90e38aaf5",
-            "Ana Silva",
-        ];
-        for line in [
-            "alice+friends.example.net@example.org",
-            "Saving friends.example.net Private Survival/region",
-            "@friends.example.net",
-            "https://user:pass@friends.example.net/",
-            "alice@friends.example.net.",
-            "alice+private@friends.example.net",
-            "ssh://git@friends.example.net",
-            r"joined Friends.Example.NET from 192.168.1.20 as 069a79f4-44e9-4726-a5be-fca90e38aaf5 in C:\Users\Ana Silva\AppData",
-        ] {
-            let (hid, shown) = (without.scrub(line), with.scrub(line));
-            for secret in secrets.iter().filter(|s| !hid.contains(**s)) {
-                assert!(!shown.contains(*secret), "{secret} in {shown}");
-            }
-            assert!(
-                !shown.to_ascii_lowercase().contains("friends.example.net"),
-                "{shown}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_host_is_hidden_before_terms_and_only_as_a_whole_name() {
-        // A world folder named `Play` used to turn the host into `<private>.Secret-Host.net`.
-        let s = Scrubber::bare().term("Play").host("Play.Secret-Host.net");
-        assert_eq!(
-            s.scrub("Play in Play.Secret-Host.net, then play.secret-host.net"),
-            "<private> in <private>, then <private>"
-        );
-        // Not inside a longer name or word; a full stop after it goes with it, as its
-        // trailing-dot spelling.
-        let s = Scrubber::bare().host("a.b");
-        assert_eq!(
-            s.scrub("read data.bin, joined play.playhorizon.dev, left a.b. Then A.B:25565"),
-            "read data.bin, joined play.playhorizon.dev, left <private> Then <private>:25565"
         );
     }
 }
