@@ -82,12 +82,14 @@ git push origin --delete try/<name>                           # when done
 
 - **Linux**: verify's parts on Blacksmith, as for a push to main: the whole workspace's tests, clippy, the server build,
   the launcher, the Python tests and the whole history's tree check. Not the mod points comparison (pull requests only).
-  They mount main's disks and never save them, so a branch near main takes about as long as a pull request.
+  They mount main's disks and never save them, so a branch near main takes about as long as a pull request: 7 minutes
+  on 2026-11-19, the tree check of the whole history the slowest part. The Windows job took 48: 28 for the game, 4 for
+  the folder, 15 for the launcher's tests.
 - **Windows x64** (`-f windows=true`, `windows-x64`, on `windows-latest` as the release build): the game built as
   `game-build.yml` builds it, uploaded as the artifact `horizon-windows-x64` (kept 3 days): `horizon-client.exe`,
   `horizon-ctl.exe`, `horizon-prepare.exe`, `horizon-server.exe`, `horizon-wasm-std.wasm` and DXC. No exporters (they
   are compiled from Minecraft's jars on the Mac mini), so point it at resources an installed Horizon already prepared
-  (`--resources`). Then the launcher's tests. It reads the releases' Rust caches and saves none.
+  (`--resources`). Then the launcher's tests. It builds from scratch, with no Rust cache read or saved.
 - `-f arm64=true` adds the Windows ARM64 job (about 90 minutes) and `-f jfr=true` the JFR analysis on the Linux game
   runner; every hand-started run ran both before the inputs existed.
 - No job of a try run holds a secret, and none saves a disk or a cache (`tests/test_ci_runners.py`). Runs of one commit

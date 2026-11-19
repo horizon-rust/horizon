@@ -164,8 +164,9 @@ class TryRunTests(unittest.TestCase):
     def test_the_windows_build_runs_by_hand_and_saves_no_cache(self):
         block = dict(jobs((WORKFLOWS / "ci.yml").read_text()))["windows-x64"]
         self.assertIn("    if: github.event_name == 'workflow_dispatch' && inputs.windows\n", block)
-        self.assertGreaterEqual(block.count("Swatinem/rust-cache@"), 1)
-        self.assertEqual(block.count("Swatinem/rust-cache@"), block.count("save-if: false"))
+        # Nothing a branch built may reach a cache that main's builds restore.
+        self.assertNotIn("rust-cache@", block)
+        self.assertNotIn("actions/cache", block)
         self.assertIn("persist-credentials: false", block)
         self.assertIn("retention-days: 3", block)
 

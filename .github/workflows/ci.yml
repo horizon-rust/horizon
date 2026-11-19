@@ -615,8 +615,8 @@ jobs:
           python ../tools/check_imports.py $client
   # A try run's Windows part (`gh workflow run checks --ref <branch> -f windows=true`): the game for Windows x64 as
   # game-build.yml's release build makes it, for a maintainer to download and run instead of building it on a PC. Not
-  # the exporters (compiled from Minecraft's jars on the Mac mini), the Polytone tests, signing or publishing. It reads
-  # the releases' Rust caches (main's) and saves none. Then the launcher's tests, as launcher.yml runs them.
+  # the exporters (compiled from Minecraft's jars on the Mac mini), the Polytone tests, signing or publishing. No Rust
+  # cache, read or saved: it builds from scratch (~48 min). Then the launcher's tests, as launcher.yml runs them.
   windows-x64:
     name: Windows x64 game and launcher tests
     if: github.event_name == 'workflow_dispatch' && inputs.windows
@@ -636,15 +636,6 @@ jobs:
           toolchain: ${{ steps.rust.outputs.version }}
           components: rust-src
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: release-windows
-          save-if: false
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: launcher
-          shared-key: launcher-windows
-          save-if: false
       - name: Build the official game, horizon-ctl, horizon-prepare and horizon-server
         env:
           # The C runtime linked in, as the release's.
