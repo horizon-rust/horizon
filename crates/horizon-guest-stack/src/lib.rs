@@ -90,9 +90,9 @@ fn prepare() -> std::io::Result<()> {
             required.saturating_add(HOST_HEADROOM as libc::rlim_t) / 1024
         )));
     }
-    // pthread_getattr_np excludes the initial argument/environment pages from
-    // its reported stack extent. Reserve additional host headroom for those
-    // pages when the hard limit permits it; guest entry still verifies the extent.
+    // The argument and environment pages sit at the top of the main stack and count
+    // against the limit. Reserve additional host headroom for those pages when the
+    // hard limit permits it; guest entry still verifies the room left.
     limit.rlim_cur = required
         .saturating_add(HOST_HEADROOM as libc::rlim_t)
         .min(limit.rlim_max);
@@ -121,6 +121,14 @@ pub fn check_current() -> Result<(), &'static str> {
 fn inspect_current() -> Result<(), &'static str> {
     #[cfg(target_os = "linux")]
     {
+        // SAFETY: both calls only read this process's ids.
+        if unsafe { libc::syscall(libc::SYS_gettid) == libc::c_long::from(libc::getpid()) } {
+            return match main_thread_room() {
+                Some(room) if room >= GUEST_STACK_BYTES + HOST_HEADROOM => Ok(()),
+                Some(_) => Err("GuestStackUnavailable: calling thread needs 136 MiB of stack"),
+                None => Err("GuestStackUnavailable: cannot inspect the calling thread stack"),
+            };
+        }
         let mut attr = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
         // SAFETY: pthread_self is live and attr is writable. Destroy only on success.
         unsafe {
@@ -158,6 +166,50 @@ fn inspect_current() -> Result<(), &'static str> {
     return Err("GuestStackUnavailable: stack inspection is unsupported on this platform");
     #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
     Ok(())
+}
+
+/// The main thread's stack grows on demand up to `RLIMIT_STACK`, so its size is the limit, not the
+/// pages mapped so far (what musl's `pthread_getattr_np` reports for it). Reads the stack's top and
+/// the mapping below it from `/proc/self/maps`.
+#[cfg(target_os = "linux")]
+fn main_thread_room() -> Option<usize> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: limit is writable and getrlimit initializes it on success.
+    if unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut limit) } != 0 {
+        return None;
+    }
+    // RLIM_INFINITY is the largest value, so it stays unbounded here.
+    let soft_limit = usize::try_from(limit.rlim_cur).unwrap_or(usize::MAX);
+    let here = std::hint::black_box(0u8);
+    let current = std::ptr::addr_of!(here) as usize;
+    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    let mut below = 0;
+    for line in maps.lines() {
+        let (range, rest) = line.split_once(' ')?;
+        let (start, end) = range.split_once('-')?;
+        let start = usize::from_str_radix(start, 16).ok()?;
+        let end = usize::from_str_radix(end, 16).ok()?;
+        if rest.trim_end().ends_with("[stack]") {
+            return (start..end)
+                .contains(&current)
+                .then(|| main_stack_room(soft_limit, below, end, current));
+        }
+        below = end;
+    }
+    None
+}
+
+/// Room left below `current` on a stack whose top is `top`: it may grow to `soft_limit` bytes in all
+/// (the argument and environment pages and the frames above `current` included), and never into
+/// the mapping that ends at `below`.
+#[cfg(target_os = "linux")]
+fn main_stack_room(soft_limit: usize, below: usize, top: usize, current: usize) -> usize {
+    top.saturating_sub(below)
+        .min(soft_limit)
+        .saturating_sub(top.saturating_sub(current))
 }
 
 #[cfg(windows)]
@@ -231,6 +283,25 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn main_stack_is_judged_by_its_limit() {
+        const MIB: usize = 1024 * 1024;
+        let needed = super::GUEST_STACK_BYTES + super::HOST_HEADROOM;
+        let top = 0x7fff_0000_0000;
+        let far = top - 1024 * MIB;
+        // A re-executed Nightly on musl: soft limit 144 MiB, a few hundred KiB used so far.
+        assert!(super::main_stack_room(144 * MIB, far, top, top - 300 * 1024) >= needed);
+        // A hard limit of 140 MiB caps the soft one there, which still leaves 136 MiB.
+        assert!(super::main_stack_room(140 * MIB, far, top, top - 300 * 1024) >= needed);
+        // Unlimited, with the next mapping far below.
+        assert!(super::main_stack_room(usize::MAX, far, top, top - 300 * 1024) >= needed);
+        // Exactly 136 MiB, but 2 MiB of environment above the caller already count against it.
+        assert!(super::main_stack_room(136 * MIB, far, top, top - 2 * MIB) < needed);
+        // A mapping 100 MiB below the top stops growth before the limit does.
+        assert!(super::main_stack_room(144 * MIB, top - 100 * MIB, top, top - 300 * 1024) < needed);
     }
 
     #[test]
