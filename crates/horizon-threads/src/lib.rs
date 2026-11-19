@@ -851,8 +851,30 @@ mod tests {
         if std::env::var_os("HORIZON_WORKER_THREADS").is_some() {
             return;
         }
-        let machine = std::thread::available_parallelism().map_or(1, |n| n.get());
-        assert_eq!(super::worker_count(), machine);
+        assert_eq!(super::worker_count(), machine());
+    }
+
+    /// The machine's count as std sees it from a thread with the main thread's CPUs. libtest
+    /// starts each test on a new thread from its main thread: one started while another test's
+    /// reservation had moved that main thread off the reserved core inherits the narrower mask,
+    /// and lives too short for the keeper to see it. The main thread is given back, so its mask
+    /// is the machine's again once that test ends (this test holds the same lock).
+    fn machine() -> usize {
+        std::thread::spawn(|| {
+            #[cfg(target_os = "linux")]
+            // SAFETY: a zeroed cpu_set_t is the empty set; the size passed is its own, and the
+            // mask set is the main thread's, on this short-lived thread only.
+            unsafe {
+                let mut set: libc::cpu_set_t = std::mem::zeroed();
+                let size = std::mem::size_of::<libc::cpu_set_t>();
+                if libc::sched_getaffinity(libc::getpid(), size, &mut set) == 0 {
+                    libc::sched_setaffinity(0, size, &set);
+                }
+            }
+            std::thread::available_parallelism().map_or(1, |n| n.get())
+        })
+        .join()
+        .unwrap()
     }
 
     /// The pool leaves a core, counting only the performance cores where the machine has them.
