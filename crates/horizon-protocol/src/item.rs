@@ -6,7 +6,7 @@ use crate::{
     adapter::ids,
     buf::{Codec, Reader, Writer, pack_block_pos, unpack_block_pos},
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use std::sync::Arc;
 
 #[doc(hidden)]
@@ -89,6 +89,7 @@ pub mod component {
     /// `DeathProtection`: the `death_effects` a stack runs when it saves its holder.
     pub const DEATH_PROTECTION: i32 = 36;
     pub const BLOCKS_ATTACKS: i32 = 37;
+    pub const KINETIC_WEAPON: i32 = 39;
     pub const STORED_ENCHANTMENTS: i32 = 45;
     pub const PROFILE: i32 = 72;
     pub const BANNER_PATTERNS: i32 = 74;
@@ -121,12 +122,26 @@ pub mod component {
     /// `Tool`: rules, default mining speed, wear per block, creative breaking.
     pub const TOOL: i32 = 28;
     pub const CONTAINER: i32 = 77;
+    /// `BlockItemStateProperties`: the block state a block item places (a hive's honey level).
+    pub const BLOCK_STATE: i32 = 78;
+    /// `Bees`: a hive item's occupants.
+    pub const BEES: i32 = 79;
     pub const SULFUR_CUBE_CONTENT: i32 = 80;
     pub const PAINTING_VARIANT: i32 = 109;
     /// `SignText.STREAM_CODEC`: a sign item's text, front and back.
     pub const SIGN_TEXT_FRONT: i32 = 118;
     pub const SIGN_TEXT_BACK: i32 = 119;
 }
+
+/// `EquipmentSlotGroup`'s serialized names by network id (`EquipmentSlotGroup.BY_ID`): the slot
+/// group an [`component::ATTRIBUTE_MODIFIERS`] entry applies in.
+pub const EQUIPMENT_SLOT_GROUPS: [&str; 11] = [
+    "any", "mainhand", "offhand", "hand", "feet", "legs", "chest", "head", "armor", "body",
+    "saddle",
+];
+/// `AttributeModifier.Operation`'s serialized names by network id (`Operation.BY_ID`).
+pub const ATTRIBUTE_OPERATIONS: [&str; 3] =
+    ["add_value", "add_multiplied_base", "add_multiplied_total"];
 
 /// A written book's content (`WrittenBookContent.STREAM_CODEC`). The raw title
 /// and pages are what a book shows; the filtered variants (`Filterable.filtered`,
@@ -1202,6 +1217,21 @@ fn write_value(kind: i32, c: &Component, w: &mut Writer) {
         CONTAINER => !quirks.stacks_in_components,
         _ => false,
     };
+    // These are EitherHolders until 26.1 (the codecs go through EitherHolder.streamCodec in the 1.21.4, 1.21.5,
+    // 1.21.8, 1.21.10 and 1.21.11 client jars): a flag set for the holder, which is what the pinned value is.
+    // An instrument is a plain holder until 1.21.4 (its InstrumentComponent wrapper is 1.21.5's).
+    let either = match kind {
+        JUKEBOX_PLAYABLE
+        | PROVIDES_TRIM_MATERIAL
+        | DAMAGE_TYPE
+        | CHICKEN_VARIANT
+        | ZOMBIE_NAUTILUS_VARIANT => true,
+        INSTRUMENT => !quirks.components_before_1_21_5,
+        _ => false,
+    };
+    if renumbered && either && quirks.either_holders_and_tag_resistance {
+        w.bool(true);
+    }
     if !renumbered || !held {
         return c.write(kind, w);
     }
@@ -1521,6 +1551,250 @@ impl Codec<Option<Hashed>> for HashedSlot {
         }
     }
 }
+
+// Generated retained-allocation traversals; regenerate with protocol-retained-gen.
+impl crate::retained::OwnedHeap for Nested {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for WrittenBook {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            title,
+            title_filtered,
+            author,
+            generation,
+            pages,
+            pages_filtered,
+            resolved,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(title))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(title_filtered))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(author))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(generation))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(pages))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(pages_filtered))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(resolved))
+    }
+}
+impl crate::retained::OwnedHeap for Component {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Int(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Unit => 0usize,
+            Self::Bool(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Text(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Nbt(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Ident(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Lore(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Enchantments(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::AttackRange(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Potion {
+                potion,
+                color,
+                rest,
+            } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(potion))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(color))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(rest)),
+            Self::Profile(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::CustomModelData {
+                floats,
+                flags,
+                strings,
+                colors,
+            } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(floats))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(flags))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(strings))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(colors)),
+            Self::TooltipDisplay { hide, hidden } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(hide))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(hidden)),
+            Self::WritableBook { pages, filtered } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(pages))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(filtered)),
+            Self::WrittenBook(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Stacks(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Fireworks { flight, explosions } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(flight))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(explosions)),
+            Self::FireworkExplosion(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::LodestoneTracker { target, tracked } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(target))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(tracked)),
+            Self::Trim { material, pattern } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(material))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(pattern)),
+            Self::TrimDirect { material, pattern } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(material))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(pattern)),
+            Self::StewEffects(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Instrument(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::BannerPatterns(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::PaintingVariant(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Raw(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for FireworkExplosion {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            shape,
+            colors,
+            fade,
+            trail,
+            twinkle,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(shape))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(colors))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(fade))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(trail))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(twinkle))
+    }
+}
+impl crate::retained::OwnedHeap for Profile {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            name,
+            id,
+            properties,
+            skin,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(name))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(id))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(properties))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(skin))
+    }
+}
+impl crate::retained::OwnedHeap for SkinPatch {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            body,
+            cape,
+            elytra,
+            slim,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(body))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(cape))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(elytra))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(slim))
+    }
+}
+impl crate::retained::OwnedHeap for WirePatch {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self(field_0) = self;
+        0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+    }
+}
+impl crate::retained::OwnedHeap for Older {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Pinned => 0usize,
+            Self::Dropped => 0usize,
+            Self::Rewritten(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for Stack {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            item,
+            count,
+            added,
+            removed,
+            wire,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(item))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(count))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(added))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(removed))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(wire))
+    }
+}
+impl crate::retained::OwnedHeap for Slot {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for DelimitedSlot {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for Template {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for Hashed {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            item,
+            count,
+            added,
+            removed,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(item))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(count))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(added))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(removed))
+    }
+}
+impl crate::retained::OwnedHeap for HashedSlot {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+// End generated retained traversals.
 
 #[cfg(test)]
 mod tests {
@@ -2064,5 +2338,57 @@ mod tests {
             Slot::write(&stack, &mut w);
             assert_eq!(w.data, bytes);
         }
+    }
+
+    /// Until 26.1 damage_type, instrument (from 1.21.5), provides_trim_material, chicken/variant and
+    /// zombie_nautilus/variant are EitherHolders: a flag set for the holder goes before the pinned holder.
+    #[test]
+    fn either_holder_components_are_written_with_their_flag_for_older_clients() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        let written = |version: ServerVersion, added: Vec<(i32, Component)>| {
+            let mut stack = Stack::new(1012, 1);
+            stack.added = added;
+            let mut w = Writer::new();
+            let _down = ids::renumbering(version.ids().unwrap(), Way::Down);
+            Slot::write(&Some(stack), &mut w);
+            w.data
+        };
+        let raw = |v: u8| Component::Raw(vec![v]);
+        // diamond is 898 in 1.21.11 (0x82 0x07); damage_type 8 and zombie_nautilus/variant 94.
+        assert_eq!(
+            written(
+                ServerVersion::V1_21_11,
+                vec![
+                    (component::DAMAGE_TYPE, raw(5)),
+                    (component::ZOMBIE_NAUTILUS_VARIANT, raw(4)),
+                ]
+            ),
+            [1, 0x82, 0x07, 2, 0, 8, 1, 5, 94, 1, 4]
+        );
+        // 1.21.5: diamond 845 (0xcd 0x06); instrument 52, provides_trim_material 53, chicken/variant 86
+        assert_eq!(
+            written(
+                ServerVersion::V1_21_5,
+                vec![
+                    (component::INSTRUMENT, Component::Instrument(2)),
+                    (component::PROVIDES_TRIM_MATERIAL, raw(6)),
+                    (component::CHICKEN_VARIANT, raw(7)),
+                ]
+            ),
+            [1, 0xcd, 0x06, 3, 0, 52, 1, 3, 53, 1, 6, 86, 1, 7]
+        );
+        // 1.21.4's instrument is a plain holder: diamond 836 (0xc4 0x06), instrument 50
+        assert_eq!(
+            written(
+                ServerVersion::V1_21_4,
+                vec![(component::INSTRUMENT, Component::Instrument(2))]
+            ),
+            [1, 0xc4, 0x06, 1, 0, 50, 3]
+        );
+        // 26.2 reads the pinned holders as they are: diamond 926 (0x9e 0x07), damage_type 8
+        assert_eq!(
+            written(ServerVersion::V26_2, vec![(component::DAMAGE_TYPE, raw(5))]),
+            [1, 0x9e, 0x07, 1, 0, 8, 5]
+        );
     }
 }
