@@ -43,7 +43,7 @@ fn no_pack_hdr_gain(layered: bool, pack: bool, world: bool) -> bool {
     layered && !pack && world
 }
 
-fn terrain_shader() -> String {
+pub(in crate::gfx) fn terrain_shader() -> String {
     wgsl_prefix::HDR_LIGHT.to_owned() + include_str!("terrain.wgsl")
 }
 
@@ -1887,7 +1887,7 @@ fn adapter_requested_split(info: &wgpu::AdapterInfo, asked: Option<u32>, n: u32)
     asked.or((info.backend == wgpu::Backend::Metal).then(|| n.div_ceil(SPRITE_ARRAYS).max(512)))
 }
 /// The split the CPU mip chains are cut by before the adapter is known.
-fn sprite_split() -> u32 {
+pub(crate) fn sprite_split() -> u32 {
     requested_split().unwrap_or(SPRITE_SPLIT)
 }
 /// The block sprite layers per texture array on an adapter that holds
@@ -1914,7 +1914,7 @@ fn layer_split(
     Ok(split)
 }
 /// Sprite arrays terrain.wgsl binds (`sprites`, `sprites_1`...).
-const SPRITE_ARRAYS: u32 = 8;
+pub(crate) const SPRITE_ARRAYS: u32 = 8;
 /// The layers to give a square texture of `count` layers viewed as a 2D
 /// array. wgpu's OpenGL backend picks a texture's target from its layer
 /// count when it is created: one layer makes a 2D texture and a multiple of
@@ -10868,9 +10868,30 @@ impl Renderer {
                 device: &self.device,
                 encoder: &mut encoder,
                 world: (color, depth),
-                screen: &view_target,
                 size: self.world_post.size().unwrap_or([1, 1]),
+                window: [target_texture.width(), target_texture.height()],
                 scene: self.ray_scene.as_ref().map(|s| (s, frame.camera)),
+            });
+            // The engine's resolve of the pack's world goes here, between its chain and its
+            // output (#16126): the player's FXAA, at the world's size, where no chain draws
+            // the picture. TAA, its upscaling and sharpening stay off under every pack.
+            let resolved = (self.executor.is_some_and(|c| c.engine_fxaa)
+                && self.world_post.antialias)
+                .then(|| self.world_post.resolved(&self.device))
+                .flatten();
+            if let Some(resolved) = &resolved {
+                self.world_post.finish(
+                    &self.queue,
+                    &mut encoder,
+                    resolved,
+                    self.own_timing.as_mut(),
+                );
+            }
+            native.run_output(external::WorldOutput {
+                device: &self.device,
+                encoder: &mut encoder,
+                screen: &view_target,
+                resolved: resolved.as_ref(),
             });
         } else if let (Some((_, generated)), Some((_, depth))) = (&fg_frames, &scaled) {
             let camera = frame_gen::Camera {
