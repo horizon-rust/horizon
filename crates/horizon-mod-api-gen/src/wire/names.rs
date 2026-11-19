@@ -131,12 +131,14 @@ fn canon(types: &Types<'_>, ty: &Ty, out: &mut String, seen: &mut Vec<usize>) {
     }
 }
 
-/// The hash of what `m` carries as the generator sees it: its receiver, argument and answer
-/// types, and the generated shape of each borrowing type among them.
+/// The hash of what `m` carries as the generator sees it: its receiver, its arguments by name
+/// and type in order (two swapped arguments of one type mean another call), its answer type,
+/// and the generated shape of each borrowing type among them.
 pub(super) fn signature(types: &Types<'_>, m: &Method) -> u64 {
     let mut text = format!("receiver:{:?};", m.receiver);
     let mut seen = Vec::new();
-    for (_, ty) in &m.params {
+    for (name, ty) in &m.params {
+        write!(text, "{name}:").unwrap();
         canon(types, ty, &mut text, &mut seen);
         text.push(',');
     }
@@ -245,29 +247,29 @@ fn reached(types: &Types<'_>, ty: &Ty, found: &mut Vec<usize>, seen: &mut Vec<us
     }
 }
 
-/// Every call both sides know, as `(key, signature hash, owned types reached)`: the imports,
-/// the methods of held handlers and the exports.
-fn calls(types: &Types<'_>, methods: &[Method]) -> Vec<(String, u64, Vec<usize>)> {
+/// Every call both sides know, as `(key, signature hash, owned types reached, export)`: the
+/// imports, the methods of held handlers and the exports.
+fn calls(types: &Types<'_>, methods: &[Method]) -> Vec<(String, u64, Vec<usize>, bool)> {
     let imports = super::calls::imports(methods)
         .into_iter()
-        .map(|m| (m, false));
+        .map(|m| (m, false, false));
     let held = super::calls::held_methods(methods)
         .into_iter()
-        .map(|m| (m, true));
+        .map(|m| (m, true, false));
     let own = methods
         .iter()
         .filter(|m| exports().contains(&m.owner))
-        .map(|m| (m, false));
+        .map(|m| (m, false, true));
     imports
         .chain(held)
         .chain(own)
-        .map(|(m, held)| {
+        .map(|(m, held, export)| {
             let mut found = Vec::new();
             for ty in m.params.iter().map(|(_, ty)| ty).chain([&m.ret]) {
                 reached(types, ty, &mut found, &mut Vec::new());
             }
             found.sort_by(|a, b| types.defs[*a].rust.cmp(&types.defs[*b].rust));
-            (key(m, held), signature(types, m), found)
+            (key(m, held), signature(types, m), found, export)
         })
         .collect()
 }
@@ -279,13 +281,13 @@ pub(super) fn layouts(types: &Types<'_>, methods: &[Method]) -> String {
     let calls = calls(types, methods);
     let mut used: Vec<usize> = calls
         .iter()
-        .flat_map(|(_, _, d)| d.iter().copied())
+        .flat_map(|(_, _, d, _)| d.iter().copied())
         .collect();
     used.sort_unstable();
     used.dedup();
     let slot = |def: usize| used.binary_search(&def).unwrap();
     let mut code = String::from(
-        "/// Every call of this build by its name, with its signature and the wire layout of each\n/// owned type it reaches: what the game compares with a mod's own when it loads.\n#[doc(hidden)]\npub fn call_layouts() -> ::std::vec::Vec<(&'static str, u64)> {\nlet d: [u64; ",
+        "/// Every call of this build by its name, with its signature and the wire layout of each\n/// owned type it reaches, and whether it is an export: what the game compares with a mod's own\n/// when it loads.\n#[doc(hidden)]\npub fn call_layouts() -> ::std::vec::Vec<(&'static str, u64, bool)> {\nlet d: [u64; ",
     );
     write!(code, "{}] = [", used.len()).unwrap();
     for def in &used {
@@ -297,14 +299,14 @@ pub(super) fn layouts(types: &Types<'_>, methods: &[Method]) -> String {
         .unwrap();
     }
     code.push_str("];\nlet m = crate::wire::layout_mix;\nvec![\n");
-    for (key, signature, found) in &calls {
+    for (key, signature, found, export) in &calls {
         let reached: String = found
             .iter()
             .map(|def| format!("d[{}],", slot(*def)))
             .collect();
         writeln!(
             code,
-            "({key:?},[{reached}].into_iter().fold({signature:#x},m)),"
+            "({key:?},[{reached}].into_iter().fold({signature:#x},m),{export}),"
         )
         .unwrap();
     }
@@ -385,5 +387,18 @@ mod tests {
         assert_eq!(old[0], new[0]);
         assert_ne!(old[1], new[1]);
         assert_eq!(key(&before[1], false), key(&changed[1], false));
+    }
+
+    /// `entity_start_riding(entity, vehicle)` with its two arguments swapped is another call:
+    /// a mod built against one order must not link against the other.
+    #[test]
+    fn swapped_arguments_of_one_type_change_the_call() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let types = Types::new(crate::index::Index::new(&root, &[])).unwrap();
+        let mut riding = method("BackendMut", "entity_start_riding", i32());
+        riding.params = vec![("entity".to_owned(), i32()), ("vehicle".to_owned(), i32())];
+        let before = import_name(&types, &riding, false);
+        riding.params.reverse();
+        assert_ne!(before, import_name(&types, &riding, false));
     }
 }

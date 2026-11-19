@@ -7,7 +7,7 @@ const NEXT_LONG: (&str, &str) = ("StructureRandom", "next_long");
 
 /// A guest importing `imports` (wasm import names) and answering `CALLS` with `table`; every
 /// other export runs `body`.
-fn member(imports: &[&str], table: &[(String, u64)], body: &str) -> Vec<u8> {
+fn member(imports: &[&str], table: &[(String, u64, bool)], body: &str) -> Vec<u8> {
     let declared: String = imports
         .iter()
         .enumerate()
@@ -53,13 +53,12 @@ fn load(members: &[(&str, &[u8])]) -> Result<Vec<WasmMod>, Refusal> {
 }
 
 /// The game's own entry for `key`, as a mod built against this game answers it.
-fn entry(key: &str) -> (String, u64) {
-    let layout = mod_api::call_layouts()
+fn entry(key: &str) -> (String, u64, bool) {
+    let (_, layout, export) = mod_api::call_layouts()
         .into_iter()
-        .find(|(k, _)| *k == key)
-        .unwrap_or_else(|| panic!("the game has no call {key}"))
-        .1;
-    (key.to_owned(), layout)
+        .find(|(k, ..)| *k == key)
+        .unwrap_or_else(|| panic!("the game has no call {key}"));
+    (key.to_owned(), layout, export)
 }
 
 fn import(call: (&str, &str)) -> &'static str {
@@ -130,8 +129,8 @@ fn a_call_the_game_no_longer_has_is_refused_naming_it() {
 fn a_call_reaching_a_type_whose_layout_changed_is_refused_naming_it() {
     crate::test_stack::on_guest_stack(|| {
         let name = import(NEXT_LONG);
-        let (key, layout) = entry(crate::calls::key(name));
-        let bytes = member(&[name], &[(key, layout ^ 1)], "unreachable");
+        let (key, layout, export) = entry(crate::calls::key(name));
+        let bytes = member(&[name], &[(key, layout ^ 1, export)], "unreachable");
         assert_eq!(
             load(&[("test", &bytes)]).err().unwrap(),
             Refusal::Call {
@@ -145,8 +144,8 @@ fn a_call_reaching_a_type_whose_layout_changed_is_refused_naming_it() {
 #[test]
 fn an_export_whose_hash_changed_is_refused_before_it_is_called() {
     crate::test_stack::on_guest_stack(|| {
-        let (key, layout) = entry("Hooks::server_stopped");
-        let bytes = member(&[], &[(key, layout ^ 1)], "unreachable");
+        let (key, layout, export) = entry("Hooks::server_stopped");
+        let bytes = member(&[], &[(key, layout ^ 1, export)], "unreachable");
         assert_eq!(
             load(&[("test", &bytes)]).err().unwrap(),
             Refusal::Call {
@@ -160,14 +159,17 @@ fn an_export_whose_hash_changed_is_refused_before_it_is_called() {
 #[test]
 fn an_export_the_game_dropped_is_refused_naming_it() {
     crate::test_stack::on_guest_stack(|| {
-        let bytes = member(&[], &[("Hooks::gone_hook".into(), 1)], "unreachable");
-        assert_eq!(
-            load(&[("test", &bytes)]).err().unwrap(),
-            Refusal::Call {
-                call: "Hooks::gone_hook".into(),
-                changed: false
-            }
-        );
+        // Its trait's only export: the game has nothing left of the trait to compare it with.
+        for gone in ["Hooks::gone_hook", "GoneTrait::only_export"] {
+            let bytes = member(&[], &[(gone.into(), 1, true)], "unreachable");
+            assert_eq!(
+                load(&[("test", &bytes)]).err().unwrap(),
+                Refusal::Call {
+                    call: gone.into(),
+                    changed: false
+                }
+            );
+        }
     })
 }
 
@@ -214,4 +216,42 @@ fn a_linked_group_built_against_different_apis_is_refused() {
         );
         assert!(load(&[("liba.so", &older), ("libb.so", &older)]).is_ok());
     })
+}
+
+/// A change to any value the transport uses (a reserved id, the group state's size or a word's
+/// place) changes the core layout, so a mod built before it is refused at load.
+#[test]
+fn a_changed_transport_value_refuses_the_mod() {
+    crate::test_stack::on_guest_stack(|| {
+        let complete = |core: u64| mod_api::wire::layout_mix(core, mod_api::prepared_abi_layout());
+        assert_eq!(
+            complete(mod_api::wire_core_layout_with(mod_api::wire::PROTOCOL)),
+            *mod_api::wire::LAYOUT
+        );
+        let changed = |name: &str| {
+            let protocol: Vec<(&str, u64)> = mod_api::wire::PROTOCOL
+                .iter()
+                .map(|&(n, value)| (n, if n == name { value + 1 } else { value }))
+                .collect();
+            complete(mod_api::wire_core_layout_with(&protocol))
+        };
+        for &(name, _) in mod_api::wire::PROTOCOL {
+            assert_ne!(changed(name), *mod_api::wire::LAYOUT, "{name}");
+        }
+        let older = guest_with_exports(changed("HOST_RELEASE"), "i64.const 0", "");
+        assert!(matches!(
+            load(&[("test", &older)]).err().unwrap(),
+            Refusal::Layout { .. }
+        ));
+    })
+}
+
+/// The std member the build tool writes holds exactly the group state the transport reads.
+#[test]
+fn the_build_tools_std_holds_the_transports_group_state() {
+    let tool = include_str!("../../../cargo-horizon-mod/src/wasm.rs");
+    assert!(tool.contains(&format!(
+        "[core::sync::atomic::AtomicUsize; {}]",
+        mod_api::wire::GROUP_WORDS
+    )));
 }

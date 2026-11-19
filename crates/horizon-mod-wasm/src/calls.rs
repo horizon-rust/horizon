@@ -6,8 +6,17 @@
 use crate::Refusal;
 use std::collections::{BTreeSet, HashMap};
 
-static GAME: std::sync::LazyLock<HashMap<&'static str, u64>> =
-    std::sync::LazyLock::new(|| mod_api::call_layouts().into_iter().collect());
+/// A table of calls, as a mod answers `CALLS`: each call's key, its hash, and whether it is one
+/// of the mod's exports.
+pub(crate) type Table = Vec<(String, u64, bool)>;
+
+static GAME: std::sync::LazyLock<HashMap<&'static str, (u64, bool)>> =
+    std::sync::LazyLock::new(|| {
+        mod_api::call_layouts()
+            .into_iter()
+            .map(|(key, hash, export)| (key, (hash, export)))
+            .collect()
+    });
 
 /// A hand-written guest's `horizon_hook` body that answers the game's `CALLS` question as a mod
 /// built against this game whose imports are `keys` would, and runs `body` (leaving an `i64`)
@@ -15,9 +24,12 @@ static GAME: std::sync::LazyLock<HashMap<&'static str, u64>> =
 #[cfg(any(test, feature = "listener-fixture", feature = "runtime-fixture"))]
 pub fn answering<K: AsRef<str>>(keys: &[K], body: &str) -> String {
     const AT: u64 = 128 << 10;
-    let table: Vec<(String, u64)> = keys
+    let table: Table = keys
         .iter()
-        .map(|key| (key.as_ref().to_owned(), GAME[key.as_ref()]))
+        .map(|key| {
+            let (hash, export) = GAME[key.as_ref()];
+            (key.as_ref().to_owned(), hash, export)
+        })
         .collect();
     let mut bytes = mod_api::wire::Writer::new();
     bytes.put(&table);
@@ -103,50 +115,41 @@ fn shim_name(owner: &str, method: &str) -> &'static str {
 }
 
 /// Checks a mod's table against the game's: each call in `imported` (by key, `Owner::method`)
-/// and each export both know must match, and the game must still have each export the mod
-/// has. Answers the ids of the game's exports the mod doesn't have, sorted.
+/// must match, and each export the mod has must still be the game's, unchanged. Answers the ids
+/// of the game's exports the mod doesn't have, sorted.
 pub(crate) fn check(
-    table: &[(String, u64)],
+    table: &[(String, u64, bool)],
     imported: &BTreeSet<String>,
 ) -> Result<Vec<u32>, Refusal> {
-    let mine: HashMap<&str, u64> = table.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let changed = |call: &str| Refusal::Call {
+    let mine: HashMap<&str, (u64, bool)> = table
+        .iter()
+        .map(|(key, hash, export)| (key.as_str(), (*hash, *export)))
+        .collect();
+    let refusal = |call: &str, changed| Refusal::Call {
         call: call.to_owned(),
-        changed: true,
+        changed,
     };
     for call in imported {
         // Linking found the import under this name, so the game has it.
         if mine.get(call.as_str()) != GAME.get(call.as_str()) {
-            return Err(changed(call));
+            return Err(refusal(call, true));
         }
     }
-    let mut missing = Vec::new();
-    for &(id, name) in crate::boundary::EXPORT_NAMES {
-        let Some(game) = GAME.get(name) else {
-            continue;
-        };
-        match mine.get(name) {
-            Some(built) if built != game => return Err(changed(name)),
-            Some(_) => {}
-            None => missing.push(id),
+    // By the mod's own word for what it exports: one the game dropped, its trait's last
+    // included, would never run.
+    for (key, hash, _) in table.iter().filter(|(.., export)| *export) {
+        match GAME.get(key.as_str()) {
+            Some(&(game, true)) if game == *hash => {}
+            Some(&(_, true)) => return Err(refusal(key, true)),
+            _ => return Err(refusal(key, false)),
         }
     }
-    // An export the mod has and the game dropped: the mod's code there would never run.
-    let owners: BTreeSet<&str> = crate::boundary::EXPORT_NAMES
+    let mut missing: Vec<u32> = crate::boundary::EXPORT_NAMES
         .iter()
-        .filter(|(_, name)| GAME.contains_key(name))
-        .filter_map(|(_, name)| name.split_once("::").map(|(owner, _)| owner))
+        .filter(|(_, name)| GAME.get(name).is_some_and(|(_, export)| *export))
+        .filter(|(_, name)| !mine.contains_key(name))
+        .map(|(id, _)| *id)
         .collect();
-    if let Some(gone) = table.iter().map(|(k, _)| k.as_str()).find(|k| {
-        k.split_once("::")
-            .is_some_and(|(owner, _)| owners.contains(owner))
-            && !GAME.contains_key(k)
-    }) {
-        return Err(Refusal::Call {
-            call: gone.to_owned(),
-            changed: false,
-        });
-    }
     missing.sort_unstable();
     missing.dedup();
     Ok(missing)

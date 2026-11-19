@@ -108,7 +108,7 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
         .call(
             CallClass::Load,
             Frame::default(),
-            0xBFFF_FFFF,
+            mod_api::wire::POINT_SUBSCRIPTIONS,
             None,
             |_| {},
             |input| input.take(),
@@ -137,9 +137,16 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
             ));
         }
         checked_place(&id, inject, point).map_err(|e| format!("{}: {e}", manifest.id))?;
+        // Checked before any listener is registered.
+        let listener_id = listener_id(place).ok_or_else(|| {
+            format!(
+                "{}: {id}: point index {place} is outside the points' range",
+                manifest.id
+            )
+        })?;
         slots.push((
             point,
-            place,
+            listener_id,
             index as u32,
             inject.priority,
             id,
@@ -150,16 +157,15 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
         return Err(format!("unfilled point listener {id}"));
     }
     let owner = Box::leak(manifest.id.clone().into_boxed_str());
-    for (place, guest_place, listener, priority, id, replace) in slots {
+    for (place, listener_id, listener, priority, id, replace) in slots {
         let endpoint = Box::leak(Box::new(Endpoint {
             owner,
             module: module.downgrade(),
             listener,
         }));
         let id = Box::leak(id.into_boxed_str());
-        let mut slot =
-            SlotListener::forwarded(owner, place.place(), endpoint, 0x8000_0000 + guest_place)
-                .ordered(priority, id);
+        let mut slot = SlotListener::forwarded(owner, place.place(), endpoint, listener_id)
+            .ordered(priority, id);
         // The guest's listener already owns the outcome (`mod_points::replace!`); the host's
         // slot carries the mark, so a second replace at the place is refused for either target.
         if replace {
@@ -168,6 +174,14 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
         mod_points::register(&slot).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// The listener id of the mod's own point index `place`: in the points' range, below the
+/// subscriptions id. `None` for an index the mod made up.
+fn listener_id(place: u32) -> Option<u32> {
+    mod_api::wire::POINTS
+        .checked_add(place)
+        .filter(|id| *id < mod_api::wire::POINT_SUBSCRIPTIONS)
 }
 
 /// The engine's API place `place` that a guest subscribed as its declared `inject`, checked
@@ -304,6 +318,21 @@ with='no_wire'
                 "refused_fixture:no_wire: no API listener at listener_fixture::no_wire: argument 1 `value` (`&RegistrationData`) has no API type yet"
             );
         })
+    }
+
+    /// A point index from the mod is used only inside the points' range: never the
+    /// subscriptions id, never past the range, and never by overflowing.
+    #[test]
+    fn a_point_index_outside_the_range_is_refused() {
+        assert_eq!(listener_id(0), Some(mod_api::wire::POINTS));
+        let last = mod_api::wire::POINT_SUBSCRIPTIONS - mod_api::wire::POINTS;
+        assert_eq!(
+            listener_id(last - 1),
+            Some(mod_api::wire::POINT_SUBSCRIPTIONS - 1)
+        );
+        for place in [last, last + 1, 0x7FFF_FFFF, u32::MAX] {
+            assert_eq!(listener_id(place), None, "{place:#x}");
+        }
     }
 
     /// A module built without the build tool may subscribe a `replace` anywhere: the loader

@@ -42,11 +42,74 @@ pub const HOST_RELEASE: u32 = 0xFFFF_FF02;
 // hidden: transport plumbing used by generated boundary code.
 #[doc(hidden)]
 pub const HOST_LOG: u32 = 0xFFFF_FF03;
-/// The game's question to a mod, when it loads, for every call the mod was built with and its
-/// layout (`call_layouts`): the answer is a `Vec<(String, u64)>`.
+/// The game's question to a mod, when it loads, for every call the mod was built with
+/// (`call_layouts`): the answer is a `Vec<(String, u64, bool)>`, each call's key, hash and
+/// whether it is an export.
 // hidden: transport plumbing used by generated boundary code.
 #[doc(hidden)]
 pub const CALLS: u32 = 0xFFFF_FF04;
+/// The game's call preparing a prepared hook's stack.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const PREPARE: u32 = 0xFFFF_FF10;
+/// The game's call releasing a prepared stack.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const RELEASE_PREPARED: u32 = 0xFFFF_FF11;
+/// The first point listener id: a mod's listener at its own point index `place` is
+/// `POINTS + place`, below [`POINT_SUBSCRIPTIONS`].
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const POINTS: u32 = 0x8000_0000;
+/// The call answering a mod's point subscriptions.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const POINT_SUBSCRIPTIONS: u32 = 0xBFFF_FFFF;
+/// The end of the ids the points answer.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const POINTS_END: u32 = 0xC000_0000;
+/// Words in a link group's shared state, the std member's `horizon_group_state`.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const GROUP_WORDS: usize = 32;
+/// The group-state word pointing at the group's handler table.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const GROUP_WORD_HANDLERS: usize = 0;
+/// The group-state word counting the group's cache budget.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const GROUP_WORD_BUDGET: usize = 1;
+/// The group-state word that is non-zero while eviction callbacks run.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const GROUP_WORD_EVICTING: usize = 2;
+/// The first group-state word holding an eviction callback.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const GROUP_WORD_EVICT: usize = 3;
+/// Every value above, by name: what the transport uses, mixed into the core layout so that a
+/// change to one refuses every mod built before it.
+// hidden: transport plumbing used by generated boundary code.
+#[doc(hidden)]
+pub const PROTOCOL: &[(&str, u64)] = &[
+    ("INIT", INIT as u64),
+    ("RELEASE", RELEASE as u64),
+    ("HOST_RELEASE", HOST_RELEASE as u64),
+    ("HOST_LOG", HOST_LOG as u64),
+    ("CALLS", CALLS as u64),
+    ("PREPARE", PREPARE as u64),
+    ("RELEASE_PREPARED", RELEASE_PREPARED as u64),
+    ("POINTS", POINTS as u64),
+    ("POINT_SUBSCRIPTIONS", POINT_SUBSCRIPTIONS as u64),
+    ("POINTS_END", POINTS_END as u64),
+    ("GROUP_WORDS", GROUP_WORDS as u64),
+    ("GROUP_WORD_HANDLERS", GROUP_WORD_HANDLERS as u64),
+    ("GROUP_WORD_BUDGET", GROUP_WORD_BUDGET as u64),
+    ("GROUP_WORD_EVICTING", GROUP_WORD_EVICTING as u64),
+    ("GROUP_WORD_EVICT", GROUP_WORD_EVICT as u64),
+];
 
 /// What a mod and the game must agree on exactly, a hash the generator writes: the transport's
 /// rules, its own payloads and the hand-written codecs. Each call is checked on its own, by

@@ -18,7 +18,11 @@ pub fn register(listener: &SlotListener) -> Result<(), crate::RegisterError> {
                 function,
             ))
         });
-        mod_api::wire::guest::extend(0x8000_0000, 0xC000_0000, crate::guest_dispatch);
+        mod_api::wire::guest::extend(
+            mod_api::wire::POINTS,
+            mod_api::wire::POINTS_END,
+            crate::guest_dispatch,
+        );
         Ok(())
     } else {
         Err(crate::RegisterError::Unsupported)

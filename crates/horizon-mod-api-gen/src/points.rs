@@ -1232,8 +1232,8 @@ pub(crate) fn records_selected(
         #[cfg(any(target_arch = "wasm32", feature = "wasm-guest"))]
         #[doc(hidden)]
         pub fn guest_dispatch(id: u32, input: &mut ::mod_api::wire::Reader<'_>, out: &mut ::mod_api::wire::Writer) -> Result<(), ::mod_api::wire::WireError> {
-            if id == 0xBFFF_FFFF { out.put(&crate::guest::subscriptions()); return Ok(()); }
-            let index = (id & 0x3FFF_FFFF) as usize;
+            if id == ::mod_api::wire::POINT_SUBSCRIPTIONS { out.put(&crate::guest::subscriptions()); return Ok(()); }
+            let index = id.wrapping_sub(::mod_api::wire::POINTS) as usize;
             let (place, function) = guest_exports::TABLE.get(index).copied().flatten().ok_or(::mod_api::wire::WireError::Tag(id))?;
             function(place, input, out)
         }

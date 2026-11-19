@@ -209,15 +209,15 @@ thread_local! {
 /// Words in the group's shared state: the std member exports this array as `horizon_group_state`,
 /// zeroed, for every mod of the group to read (one memory, one std, one state). A new word is taken
 /// from the end of this list; the array's length is part of the ABI.
-const GROUP_WORDS: usize = 32;
+const GROUP_WORDS: usize = crate::wire::GROUP_WORDS;
 #[cfg(any(target_arch = "wasm32", test))]
-const WORD_HANDLERS: usize = 0;
-const WORD_BUDGET: usize = 1;
+const WORD_HANDLERS: usize = crate::wire::GROUP_WORD_HANDLERS;
+const WORD_BUDGET: usize = crate::wire::GROUP_WORD_BUDGET;
 /// Non-zero while the group's eviction callbacks run, so an allocation that fails inside one fails.
-const WORD_EVICTING: usize = 2;
+const WORD_EVICTING: usize = crate::wire::GROUP_WORD_EVICTING;
 /// The first of the group's eviction slots: each holds a function-table index (the table is the
 /// group's, so an index a member registered is callable by any member), or zero when free.
-const WORD_EVICT: usize = 3;
+const WORD_EVICT: usize = crate::wire::GROUP_WORD_EVICT;
 /// How many eviction callbacks a group can register.
 pub const EVICTORS: usize = GROUP_WORDS - WORD_EVICT;
 
@@ -769,9 +769,9 @@ pub fn run(id: u32) -> (*const u8, u32) {
             .map(crate::install_guest_packages),
         crate::wire::RELEASE => reader.take::<Vec<Id>>().map(release),
         crate::wire::CALLS => {
-            let calls: Vec<(String, u64)> = crate::call_layouts()
+            let calls: Vec<(String, u64, bool)> = crate::call_layouts()
                 .into_iter()
-                .map(|(name, layout)| (name.to_owned(), layout))
+                .map(|(name, layout, export)| (name.to_owned(), layout, export))
                 .collect();
             reply.put(&calls);
             Ok(())

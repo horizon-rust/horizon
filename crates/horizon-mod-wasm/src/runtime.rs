@@ -752,7 +752,7 @@ fn calls_of(
     memory: Memory,
     input: &TypedFunc<u32, u32>,
     hook: &TypedFunc<u32, u64>,
-) -> wasmtime::Result<Vec<(String, u64)>> {
+) -> wasmtime::Result<crate::calls::Table> {
     input.call(&mut *store, 0)?;
     let answer = hook.call(&mut *store, mod_api::wire::CALLS)?;
     let ptr = (answer >> 32) as usize;
@@ -991,7 +991,7 @@ impl WasmMod {
         group.store.data_mut().memory = Some(group.memory);
         let mut exports = Vec::new();
         // Every mod of a group shares its memory and std: they must agree exactly.
-        let mut first: Option<(String, Vec<(String, u64)>)> = None;
+        let mut first: Option<(String, crate::calls::Table)> = None;
         for (name, instance) in group.members.clone() {
             // The std member is a library, not a mod.
             if instance

@@ -665,7 +665,7 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
         "Vec<crate::wire::Id>",
         "crate::wire::Id",
         "String",
-        "Vec<(String, u64)>",
+        "Vec<(String, u64, bool)>",
         "Vec<(String, i32, bool)>",
     ]
     .iter()
@@ -673,8 +673,10 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
     .collect::<String>();
     let _ = writeln!(
         wire,
-        "/// What every mod of a group and the game must agree on exactly; each call is checked on\n/// its own (`call_layouts`).\n#[doc(hidden)]\npub fn wire_core_layout() -> u64 {{ let mut hash = {:#x}; {control} hash }}",
+        "/// What every mod of a group and the game must agree on exactly; each call is checked on\n/// its own (`call_layouts`).\n#[doc(hidden)]\npub fn wire_core_layout() -> u64 {{ wire_core_layout_with(crate::wire::PROTOCOL) }}\n/// [`wire_core_layout`] with `protocol` for the transport's values.\n#[doc(hidden)]\npub fn wire_core_layout_with(protocol: &[(&str, u64)]) -> u64 {{ let mut hash = {:#x}; {control} for &(name, value) in protocol {{ hash = crate::wire::layout_mix(crate::wire::layout_mix(hash, crate::wire::layout_name(name)), value); }} hash }}\nconst _: () = assert!(crate::wire::PREPARE == {:#x} && crate::wire::RELEASE_PREPARED == {:#x}, \"the generator's prepared ids are the transport's\");",
         core(codecs),
+        prepared::PREPARE,
+        prepared::RELEASE,
     );
     wire.push_str(&names::layouts(&surface.types, &surface.methods));
     writeln!(
@@ -882,13 +884,9 @@ fn core(codecs: u64) -> u64 {
     feed(
         "resource generation zero reserved; Any identity zero is Unsupported/cross-group capability",
     );
-    // The group's mods share one handler table, which lives in a word of the std member.
-    feed(
-        "group state: 32 words in the std member's horizon_group_state; 0 handler table, 1 cache budget, 2 eviction guard, 3.. eviction callbacks; members allocate through an evicting global allocator",
-    );
-    feed(
-        "reserved ids: INIT ffffff00, RELEASE ffffff01, HOST_RELEASE ffffff02, HOST_LOG ffffff03, CALLS ffffff04, PREPARE ffffff10, RELEASE_PREPARED ffffff11; points 80000000..bfffffff",
-    );
+    // The reserved ids and the group state's words are mixed in at run time from the
+    // constants the transport uses (`crate::wire::PROTOCOL`), not described here.
+    feed("members allocate through an evicting global allocator");
     feed("static replies: bounded acknowledged ids or uncached text");
     feed("ConfigFiles imports: u8 root selector, 0 config, 1 data, 2 world; other values refused");
     feed("Hooks::subscribed: Vec<(hook name, i32 priority, bool receive_cancelled)>");
@@ -937,6 +935,36 @@ fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
                     .to_string()
                     .contains("test")
         })
+    }
+    fn attrs(item: &Item) -> &[syn::Attribute] {
+        match item {
+            Item::Const(item) => &item.attrs,
+            Item::Enum(item) => &item.attrs,
+            Item::Fn(item) => &item.attrs,
+            Item::Impl(item) => &item.attrs,
+            Item::Macro(item) => &item.attrs,
+            Item::Mod(item) => &item.attrs,
+            Item::Static(item) => &item.attrs,
+            Item::Struct(item) => &item.attrs,
+            Item::Trait(item) => &item.attrs,
+            Item::Type(item) => &item.attrs,
+            Item::Use(item) => &item.attrs,
+            _ => &[],
+        }
+    }
+    /// Every item of a codec module (`horizon-mod-vocab/src/wire`): the helpers its `Wire`
+    /// impls delegate to (`tag_tree`, `json_tree`) encode as much as the impls do.
+    fn whole(list: &[Item], texts: &mut Vec<String>) {
+        for item in list.iter().filter(|item| !test_only(attrs(item))) {
+            match item {
+                Item::Mod(module) => {
+                    if let Some((_, content)) = &module.content {
+                        whole(content, texts);
+                    }
+                }
+                item => texts.push(strip_docs(quote::ToTokens::to_token_stream(item)).to_string()),
+            }
+        }
     }
     fn items(list: &[Item], texts: &mut Vec<String>) {
         for item in list {
@@ -994,7 +1022,7 @@ fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
                 .replace('\\', "/");
             (key, path)
         })
-        .filter(|(key, _)| !key.contains("tests"))
+        .filter(|(key, _)| !key.contains("tests") && !key.contains("golden"))
         .collect();
     keyed.sort();
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
@@ -1004,12 +1032,17 @@ fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("{key}: {e}"))?
             .replace("\r\n", "\n");
-        if !text.contains("Wire for") {
+        let codec_module = key.starts_with("crates/horizon-mod-vocab/src/wire/");
+        if !codec_module && !text.contains("Wire for") {
             continue;
         }
         let file = syn::parse_file(&text).map_err(|e| format!("{key}: {e}"))?;
         let mut texts = Vec::new();
-        items(&file.items, &mut texts);
+        if codec_module {
+            whole(&file.items, &mut texts);
+        } else {
+            items(&file.items, &mut texts);
+        }
         for text in &texts {
             for byte in text.bytes().chain([0]) {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
@@ -1022,6 +1055,25 @@ fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
 
 #[cfg(test)]
 mod tests {
+    /// The core hash covers what a codec module encodes beyond its `impl Wire` blocks
+    /// (`tag_tree`'s NBT discriminants), the same in a CRLF checkout as in an LF one.
+    #[test]
+    fn the_core_hash_covers_codec_helpers_whatever_the_line_ends() {
+        let root = std::env::temp_dir().join(format!("horizon-codecs-{}", std::process::id()));
+        let wire = root.join("crates/horizon-mod-vocab/src/wire");
+        std::fs::create_dir_all(&wire).unwrap();
+        std::fs::create_dir_all(root.join("crates/horizon-mod-api/src")).unwrap();
+        let hash = |tag_tree: &str| {
+            std::fs::write(wire.join("tag_tree.rs"), tag_tree).unwrap();
+            super::codecs(&root).unwrap().0
+        };
+        let helper = "pub fn tag(kind: u8) -> u8 {\n    match kind { 1 => 10, _ => 0 }\n}\nconst NOTE: &str = \"one\ntwo\";\n";
+        let before = hash(helper);
+        assert_ne!(before, hash(&helper.replace("10", "11")));
+        assert_eq!(before, hash(&helper.replace('\n', "\r\n")));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// The generated impls depend on the hand-written `Wire` impls the generator skips, so an
     /// edit to that file must rerun the build script.
     #[test]
