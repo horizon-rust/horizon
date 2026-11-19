@@ -330,6 +330,15 @@ fn canonical_custom_model_data(value: Value) -> Value {
     let Value::Object(mut map) = value else {
         return value;
     };
+    if let Some(Value::Array(floats)) = map.get_mut("floats") {
+        for entry in floats {
+            if let Some(f) = entry.as_f64()
+                && let Some(n) = serde_json::Number::from_f64(f64::from(f as f32))
+            {
+                *entry = Value::Number(n);
+            }
+        }
+    }
     if let Some(Value::Array(flags)) = map.get_mut("flags") {
         for flag in flags {
             if let Some(b) = json_bool(flag) {

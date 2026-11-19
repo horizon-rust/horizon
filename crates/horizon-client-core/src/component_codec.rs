@@ -212,10 +212,29 @@ mod tests {
             canonicalize_component_json("entity_data", entity_when)
         );
 
-        let custom = Tag::compound([("flag", Tag::Byte(1)), ("count", Tag::Byte(0))]);
+        let custom = Tag::compound([
+            ("flag", Tag::Byte(1)),
+            ("count", Tag::Byte(0)),
+            ("val", Tag::Double(0.1_f64.to_bits())),
+        ]);
         assert_eq!(
             nbt_component_to_json("minecraft:custom_data", &custom),
-            json!({"flag": 1, "count": 0})
+            json!({"flag": 1, "count": 0, "val": 0.1})
+        );
+    }
+
+    #[test]
+    fn custom_model_data_floats_normalize_through_f32() {
+        let cmd_nbt = Tag::compound([(
+            "floats",
+            Tag::List(vec![
+                Tag::Float(0.1_f32.to_bits()),
+                Tag::Float(1.0_f32.to_bits()),
+            ]),
+        )]);
+        assert_eq!(
+            nbt_component_to_json("minecraft:custom_model_data", &cmd_nbt),
+            canonicalize_component_json("minecraft:custom_model_data", json!({"floats": [0.1, 1]}))
         );
     }
 }
