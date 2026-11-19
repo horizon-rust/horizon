@@ -1606,6 +1606,7 @@ horizon-client game::native_item_places::tests::living_equipment_moves_through_t
 horizon-client game::native_item_places::tests::one_by_one_shows_one_bucket_of_sixteen_and_fills_one lib daily resources
 horizon-client game::native_item_places::tests::scoped_boat_slots_use_the_open_menu_and_refuse_a_removed_owner lib daily resources
 horizon-client game::native_item_places::tests::stand_equipment_effects_wait_for_root_commit lib daily resources
+horizon-client game::native_item_places::tests::the_owners_places_outside_their_turn_are_their_guest_records lib daily resources
 horizon-client game::native_item_places::tests::whole_stack_component_edit_preserves_slot_and_refuses_item_or_count_changes lib daily resources
 horizon-client game::native_item_places::tests::whole_stack_component_edit_rolls_back_with_its_transaction lib daily resources
 horizon-client game::native_key_mappings::tests::opening_and_closing_a_direct_screen_discards_pending_clicks lib daily resources
@@ -1908,6 +1909,7 @@ horizon-client game::native_server::fake_action_tests::a_fake_uses_items_through
 horizon-client game::native_server::fake_action_tests::a_fakes_action_is_refused_before_anything_runs lib daily resources
 horizon-client game::native_server::fake_action_tests::a_fakes_action_leaves_the_per_action_state_as_it_was lib daily resources
 horizon-client game::native_server::fake_action_tests::a_fakes_effects_are_stopped_where_they_start lib daily resources
+horizon-client game::native_server::fake_action_tests::a_panic_inside_a_scoped_action_puts_the_fake_back lib daily resources
 horizon-client game::native_server::fake_action_tests::a_real_player_is_unaffected_at_every_effect_site lib daily resources
 horizon-client game::native_server::fake_action_tests::a_shulker_box_and_an_ender_chest_a_fake_player_used_are_left_shut lib daily resources
 horizon-client game::native_server::fake_action_tests::a_trader_a_fake_player_used_trades_with_the_next_one lib daily resources

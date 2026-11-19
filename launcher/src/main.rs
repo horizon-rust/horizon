@@ -276,6 +276,9 @@ struct Launcher {
     update_error: Option<String>,
     self_update: SelfUpdate,
     self_update_hidden: bool,
+    /// The restart for links.json's `min_launcher` was tried this start, or this launcher is
+    /// what one started: it isn't tried (again) before the next start.
+    min_restart_tried: bool,
     /// The Horizon version being installed as an update: whether it becomes the selected one is
     /// judged when it finishes.
     update_install: Option<String>,
@@ -512,6 +515,8 @@ struct Launcher {
     perf: perf::Perf,
     install_started: Option<Instant>,
     prepare_started: Option<Instant>,
+    /// The version the preparation under way is for: its end checks that one is ready.
+    prepare_tag: Option<String>,
     /// The download under way as first seen (when, files done), for the time left.
     download_seen: Option<(Instant, usize)>,
     /// The tab open under Home's hero (`home_tabs.rs`).
@@ -614,8 +619,8 @@ actions!(horizon_launcher, [Quit, CloseWindow]);
 fn shut_down(cx: &mut App) {
     servers_page::stop_on_quit();
     telemetry::send_before_exit();
-    // A downloaded launcher update goes in only when the player presses Update: closing drops it.
-    horizon_launcher::update_handoff::forget();
+    // A downloaded launcher update goes in once this process has exited; the game keeps running.
+    horizon_launcher::update_handoff::on_close();
     cx.quit()
 }
 

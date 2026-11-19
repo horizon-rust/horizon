@@ -256,6 +256,18 @@ uniform! {
         /// wither's bar). Only a pack whose files name `full_lightmap` has this field.
         full_lightmap: [f32; 3],
         @pad full_lightmap_padding: [u32; 1],
+        /// This frame's sub-pixel offset of the world, added to clip `xy / w` (y up): the offset
+        /// `projection` leaves out. Rebuilding a point from the depth subtracts it before
+        /// `projection_inverse` (`vec4<f32>(ndc.xy - frame.jitter, depth, 1.0)`); projecting a
+        /// point to sample what the world drew this frame adds it to `xy / w` after `projection`.
+        /// `(0, 0)` while the world isn't jittered. Only a pack whose files name `jitter` or `previous_jitter` has this
+        /// field.
+        jitter: [f32; 2],
+        /// Last frame's `jitter`: reprojecting a `keep = "view"` resource adds it to `xy / w`
+        /// after `previous_view_projection`. `(0, 0)` where `previous_view_projection` is this frame's
+        /// (the first frame, after a pause or a reset) and while the world isn't jittered. Only a
+        /// pack whose files name `jitter` or `previous_jitter` has this field.
+        previous_jitter: [f32; 2],
     }
 }
 
@@ -276,20 +288,26 @@ impl Frame {
     /// struct it had before, so no other field moves.
     pub const FULL_LIGHTMAP_FIELDS: std::ops::Range<usize> = 62..63;
 
+    /// Where `jitter` and `previous_jitter` are among the fields: the last, on 16 bytes of their
+    /// own after `full_lightmap`'s, so no other field moves.
+    pub const JITTER_FIELDS: std::ops::Range<usize> = 63..65;
+
     /// The fields the prelude declares, by index, for a pack that asks for the scene
     /// (`[ray_tracing]`) or not, keeps resources (`[[resource]]`) or not, and whose files name
-    /// `moon_phase` or not, and `full_lightmap` or not.
+    /// `moon_phase` or not, `full_lightmap` or not, and the jitter's (`JITTER_FIELDS`) or not.
     fn declared_at(
         ray_tracing: bool,
         kept: bool,
         moon_phase: bool,
         full_lightmap: bool,
+        jitter: bool,
     ) -> Vec<usize> {
         let skipped = |i: usize| {
             (!ray_tracing && Self::RAY_FIELDS.contains(&i))
                 || (!kept && Self::KEPT_FIELDS.contains(&i))
                 || (!moon_phase && Self::MOON_FIELDS.contains(&i))
                 || (!full_lightmap && Self::FULL_LIGHTMAP_FIELDS.contains(&i))
+                || (!jitter && Self::JITTER_FIELDS.contains(&i))
         };
         (0..Self::WGSL.fields.len())
             .filter(|&i| !skipped(i))
@@ -302,23 +320,27 @@ impl Frame {
         kept: bool,
         moon_phase: bool,
         full_lightmap: bool,
+        jitter: bool,
     ) -> Vec<Field> {
-        let at = Self::declared_at(ray_tracing, kept, moon_phase, full_lightmap).into_iter();
+        let at = Self::declared_at(ray_tracing, kept, moon_phase, full_lightmap, jitter);
+        let at = at.into_iter();
         at.map(|i| Self::WGSL.fields[i]).collect()
     }
 
     /// `declared` as WGSL, each field at the offset the uploaded struct has it: a field followed
     /// by bytes WGSL's layout wouldn't leave (a removed field's, or the epochs' without
-    /// `[[resource]]`) keeps them (`@size`). Without `full_lightmap` the struct ends where it did
-    /// before it, 16 bytes short of the uploaded one.
+    /// `[[resource]]`, or `full_lightmap`'s without it) keeps them (`@size`). Without the jitter's
+    /// fields the struct ends where it did before them, 16 bytes short of the uploaded one, and
+    /// without `full_lightmap` too, 32 bytes short.
     pub fn declared_wgsl(
         ray_tracing: bool,
         kept: bool,
         moon_phase: bool,
         full_lightmap: bool,
+        jitter: bool,
     ) -> String {
         let mut out = format!("struct {} {{\n", Self::WGSL.name);
-        let at = Self::declared_at(ray_tracing, kept, moon_phase, full_lightmap);
+        let at = Self::declared_at(ray_tracing, kept, moon_phase, full_lightmap, jitter);
         for (n, &i) in at.iter().enumerate() {
             let f = Self::WGSL.fields[i];
             out += "    ";
@@ -409,10 +431,10 @@ pub const MATERIAL_INPUT: Struct = Struct {
 /// What the material stage returns.
 pub const SURFACE: Struct = Struct {
     name: "Surface",
-    doc: "What `material` returns. Vanilla's own is \
-          `albedo * vec4(tint.rgb * shade * ao * lightmap, 1.0)`, which \
-          `albedo * vec4(shaded_tint.rgb * lightmap, 1.0)` gives within two steps of 255 for nothing; \
-          Horizon then applies the alpha test (cutout and translucent; on the texture's alpha \
+    doc: "What `material` returns. Vanilla's own is `albedo * vec4(lit_tint, 1.0)`, its \
+          vertex colour lit at each corner; `albedo * vec4(shaded_tint.rgb * lightmap, 1.0)` \
+          costs nothing and is close, but smooths colour and light apart, so it differs where \
+          both change across a face (an occluded corner beside a torch). Horizon then applies the alpha test (cutout and translucent; on the texture's alpha \
           unless `[material] coverage = \"pack\"`) and fog (unless `[frame] fog = \"pack\"`).",
     fields: fields! {
         color: "vec4<f32>" = "The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha translucent terrain's opacity, and what the alpha test reads under `[material] coverage = \"pack\"`.",
@@ -556,8 +578,17 @@ pub const SHADED_TINT: Field = Field {
 
 /// `input` with `SHADED_TINT` last where `shaded`.
 pub fn shaded(input: &Struct, shaded: bool) -> String {
-    declared(input, false, shaded)
+    declared(input, false, false, shaded)
 }
+
+/// `lit_tint`, in `MaterialInput` after its light-source fields and before `shaded_tint`, in a
+/// pack whose files name it (`stages::names_lit_tint`): the renderer hands it down in a varying
+/// of its own, the last one the terrain has on the weakest GPUs.
+pub const LIT_TINT: Field = Field {
+    name: "lit_tint",
+    ty: "vec3<f32>",
+    doc: "Only in a pack whose files name `lit_tint`: vanilla's lit vertex colour, `shaded_tint.rgb * lightmap` multiplied at each corner and then smoothed over the face, as Horizon's own terrain draws blocks, with the frame's coloured lights added under the vertex colour at each corner (`min(shaded_tint.rgb * (lightmap + colored_light), 1)` there, wherever any reaches). Those products are taken in vanilla's gamma at each corner, on the corner's own values; the smoothed result is then decoded with the 2.2 power, as `shaded_tint` and `lightmap` are, so the formula doesn't hold for the decoded fields a stage gets. So `albedo.rgb * lit_tint` is vanilla's lit colour, where multiplying `shaded_tint` by `lightmap`, each smoothed apart, differs from it where both change across a face (an occluded corner beside a torch). `[displacement]`'s grid has it at each of its points between the face's four corners' products, as it has the vertex colour, each lit where the mesh puts the corner (before `[vertex]` moves it).",
+};
 
 /// What a pack whose files name one of their names (`stages::names_light_source`) has after
 /// `MaterialInput`'s other fields, before `shaded_tint`: Horizon's own look's light sources,
@@ -597,13 +628,14 @@ pub fn light_source(input: &Struct) -> &'static [Field] {
     }
 }
 
-/// `input` with its `light_source` fields where `light_source`, then `SHADED_TINT` where
-/// `shaded`.
-pub fn declared(input: &Struct, light_source: bool, shaded: bool) -> String {
+/// `input` with its `light_source` fields where `light_source`, `LIT_TINT` where `lit` (only
+/// `MaterialInput` has it), then `SHADED_TINT` where `shaded`.
+pub fn declared(input: &Struct, light_source: bool, lit: bool, shaded: bool) -> String {
     let mut out = input.wgsl();
     out.truncate(out.len() - 2);
     let more = (self::light_source(input).iter()).filter(|_| light_source);
-    for f in more.chain(shaded.then_some(&SHADED_TINT)) {
+    let lit = (lit && input.name == MATERIAL_INPUT.name).then_some(&LIT_TINT);
+    for f in more.chain(lit).chain(shaded.then_some(&SHADED_TINT)) {
         out += &format!("    {}: {},\n", f.name, f.ty);
     }
     out + "}\n"
@@ -627,36 +659,27 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 63);
+        assert_eq!(wgsl.fields.len(), 65);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
         // `luminance` is a `vec3`, on the next 16 bytes, the epochs after it, then the fog's
         // two pairs and the moon's phase, to the end of the next 16; the full light's colour on
-        // the 16 after them.
+        // the 16 after them, and the two jitters on the 16 after that.
         let size = std::mem::size_of::<Frame>();
-        assert_eq!(size, 6 * 64 + 15 * 16 + 8 * 16 + 6 * 16);
+        assert_eq!(size, 864);
         assert_eq!(
             Frame::OFFSETS[55..],
-            [
-                size - 64,
-                size - 52,
-                size - 48,
-                size - 44,
-                size - 40,
-                size - 32,
-                size - 24,
-                size - 16
-            ]
+            [784, 796, 800, 804, 808, 816, 824, 832, 848, 856]
         );
         // The scene's two fields are only a `[ray_tracing]` pack's, the epochs only a
         // `[[resource]]` pack's; the fog's every pack's; the moon's phase, last, only a pack's
         // that names it.
         let names = |s: Vec<Field>| s.iter().map(|f| f.name).collect::<Vec<_>>();
-        let traced = names(Frame::declared(true, false, false, false));
+        let traced = names(Frame::declared(true, false, false, false, false));
         assert_eq!(
             traced[Frame::RAY_FIELDS],
             ["has_ray_tracing", "ray_distance"]
         );
-        let untraced = names(Frame::declared(false, false, false, false));
+        let untraced = names(Frame::declared(false, false, false, false, false));
         assert_eq!(untraced.len(), 56);
         assert!(!untraced.iter().any(|n| n.contains("ray")));
         assert!(
@@ -667,14 +690,19 @@ mod tests {
         let epochs = ["view_epoch", "world_epoch", "reset_reasons"];
         let fog = ["fog_environment", "fog_render"];
         for ray_tracing in [false, true] {
-            let kept = names(Frame::declared(ray_tracing, true, false, false));
+            let kept = names(Frame::declared(ray_tracing, true, false, false, false));
             assert_eq!(kept[kept.len() - 5..kept.len() - 2], epochs);
-            let plain = names(Frame::declared(ray_tracing, false, false, false));
+            let plain = names(Frame::declared(ray_tracing, false, false, false, false));
             assert_eq!(plain[plain.len() - 3..], ["luminance", fog[0], fog[1]]);
-            let mooned = names(Frame::declared(ray_tracing, false, true, false));
+            let mooned = names(Frame::declared(ray_tracing, false, true, false, false));
             assert_eq!(mooned[mooned.len() - 3..], [fog[0], fog[1], "moon_phase"]);
-            let full = names(Frame::declared(ray_tracing, false, false, true));
+            let full = names(Frame::declared(ray_tracing, false, false, true, false));
             assert_eq!(full[full.len() - 3..], [fog[0], fog[1], "full_lightmap"]);
+            let jittered = names(Frame::declared(ray_tracing, false, false, false, true));
+            assert_eq!(
+                jittered[jittered.len() - 3..],
+                [fog[1], "jitter", "previous_jitter"]
+            );
         }
         assert_eq!(
             names(Frame::WGSL.fields.to_vec())[Frame::FULL_LIGHTMAP_FIELDS],

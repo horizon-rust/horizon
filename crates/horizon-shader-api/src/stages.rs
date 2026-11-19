@@ -1147,7 +1147,7 @@ struct HorizonMaterialIn {
     let input = MaterialInput(horizon_decode_rgba(in.albedo), horizon_decode_rgba(in.tint), in.shade,
         in.ao, in.light, horizon_decode(in.lightmap), in.world, in.uv, in.translucent != 0u, in.tags,
         in.material, in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent,
-        vec3<f32>(0.0), 0.0@light_source@@shaded_tint@);
+        vec3<f32>(0.0), 0.0@light_source@@lit_tint@@shaded_tint@);
     return horizon_encode_rgba(material(input).color);
 }
 "
@@ -1403,7 +1403,7 @@ impl StageKind {
             StageKind::Post | StageKind::Material | StageKind::Compute | StageKind::BeforeWorld
         );
         self.prelude_rays(
-            tracing, rays, false, false, false, false, false, false, false, false,
+            tracing, rays, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -1413,10 +1413,12 @@ impl StageKind {
     /// pack's files name `RAY_ENTITY`) the trace functions have the entity layer too. `fog`:
     /// `vanilla_fog`, for a pack with `[frame] fog = "pack"`.
     /// `shaded`: `SHADED_TINT` last in the terrain's inputs and `RayHit`, for a pack whose files
-    /// name it. `moon_phase`: the frame's `moon_phase`, for a pack whose files name it.
+    /// name it. `lit`: `LIT_TINT` in `MaterialInput`, for a pack whose files name it.
+    /// `moon_phase`: the frame's `moon_phase`, for a pack whose files name it.
     /// `light_source`: the input's `inputs::light_source` fields, for a pack whose files name
     /// one of them (`names_light_source`). `full_lightmap`: the frame's `full_lightmap`, for a
-    /// pack whose files name it.
+    /// pack whose files name it. `jitter`: the frame's `jitter` and `previous_jitter`, for a pack
+    /// whose files name one of them (`names_jitter`).
     /// `looks`: a terrain hit reads its quad's look (`RAY_LOOKS`), for a stage that
     /// reads one (`check::RAY_LOOK_FIELDS`).
     #[allow(clippy::too_many_arguments)]
@@ -1431,6 +1433,8 @@ impl StageKind {
         moon_phase: bool,
         light_source: bool,
         full_lightmap: bool,
+        jitter: bool,
+        lit: bool,
         looks: bool,
     ) -> String {
         let rays = rays && tracing != Tracing::None;
@@ -1443,11 +1447,18 @@ impl StageKind {
             crate::API,
             crate::reference::PATH
         );
-        out += &Frame::declared_wgsl(tracing != Tracing::None, kept, moon_phase, full_lightmap);
+        out += &Frame::declared_wgsl(
+            tracing != Tracing::None,
+            kept,
+            moon_phase,
+            full_lightmap,
+            jitter,
+        );
         if kept {
             out += &crate::kept::reasons_wgsl();
         }
-        out += &crate::inputs::declared(self.input(), light_source, shaded && self.terrain());
+        let terrain = self.terrain();
+        out += &crate::inputs::declared(self.input(), light_source, lit, shaded && terrain);
         if matches!(self, StageKind::Material | StageKind::Entity) {
             out += &SURFACE.wgsl();
         }
@@ -1873,6 +1884,27 @@ pub fn shaded_entries(entries: &str, shaded: bool) -> String {
     )
 }
 
+/// Whether the files of `pack` name `lit_tint` anywhere outside a comment, dead code included:
+/// only then does `MaterialInput` have it, and the renderer's terrain the varying that carries
+/// it (a false positive only declares the field and takes the varying).
+pub fn names_lit_tint(pack: &Pack) -> bool {
+    files_name(pack, &[crate::inputs::LIT_TINT.name])
+}
+
+/// Where an entry point's constructor of `MaterialInput` takes `lit_tint` in a pack that names
+/// it, after `LIGHT_SOURCE_ARGUMENT` and before `SHADED_TINT_ARGUMENT`.
+pub const LIT_TINT_ARGUMENT: &str = "@lit_tint@";
+
+/// `entries` with `LIT_TINT_ARGUMENT` filled in with `argument` (after a comma) for a pack that
+/// names `lit_tint`, removed for one that doesn't (`None`).
+pub fn lit_entries(entries: &str, argument: Option<&str>) -> String {
+    entries.replace(LIT_TINT_ARGUMENT, argument.unwrap_or_default())
+}
+
+/// The check's stand-in for `lit_tint`: the product smoothed apart (the renderer smooths it at
+/// each corner, in a varying the check's entry point has no room left for).
+const LIT_TINT_STUB: &str = ", horizon_decode(in.shaded.rgb * in.lightmap)";
+
 /// Whether the files of `pack` name `moon_phase` anywhere outside a comment, dead code included:
 /// only then does its `Frame` have the field, so a pack that doesn't is built from the WGSL it
 /// had before it.
@@ -1915,6 +1947,12 @@ pub fn names_light_source(pack: &Pack) -> bool {
 /// Whether the files of `pack` name `full_lightmap`: only then does its `Frame` have the field.
 pub fn names_full_lightmap(pack: &Pack) -> bool {
     files_name(pack, &["full_lightmap"])
+}
+
+/// Whether the files of `pack` name `jitter` or `previous_jitter`: only then does its `Frame`
+/// have both fields (`Frame::JITTER_FIELDS`).
+pub fn names_jitter(pack: &Pack) -> bool {
+    files_name(pack, &["jitter", "previous_jitter"])
 }
 
 /// Where an entry point's constructor of `MaterialInput` or `EntityInput` takes its
@@ -2012,6 +2050,8 @@ pub(crate) fn compose_traced(
     let moon_phase = names_moon_phase(pack);
     let light = names_light_source(pack);
     let full_lightmap = names_full_lightmap(pack);
+    let jitter = names_jitter(pack);
+    let lit = names_lit_tint(pack);
     // Read off the stage as the stub builds it, which has the same files and `RayHit`.
     let looks = rays
         && tracing == Tracing::Scene
@@ -2026,6 +2066,8 @@ pub(crate) fn compose_traced(
         moon_phase,
         light,
         full_lightmap,
+        jitter,
+        lit,
         looks,
     ) + &texture_declarations(&pack.manifest.textures);
     if matches!(kind, StageKind::Post | StageKind::Compute) {
@@ -2043,7 +2085,8 @@ pub(crate) fn compose_traced(
     }
     let entries = |text: &str| {
         let stub = light.then(|| light_source_stub(kind));
-        light_source_entries(&shaded_entries(text, shaded), stub)
+        let lit = lit_entries(&shaded_entries(text, shaded), lit.then_some(LIT_TINT_STUB));
+        light_source_entries(&lit, stub)
     };
     if kind == StageKind::Material && m.displacement.is_some() {
         push(
