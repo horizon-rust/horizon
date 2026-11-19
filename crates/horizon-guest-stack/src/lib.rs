@@ -170,7 +170,9 @@ fn inspect_current() -> Result<(), &'static str> {
 
 /// The main thread's stack grows on demand up to `RLIMIT_STACK`, so its size is the limit, not the
 /// pages mapped so far (what musl's `pthread_getattr_np` reports for it). Reads the stack's top and
-/// the mapping below it from `/proc/self/maps`.
+/// the mapping below it from `/proc/self/maps`, and where the arguments and environment end (the
+/// initial stack pointer, `startstack`) from `/proc/self/stat`. The answer doesn't depend on how
+/// deep the caller is, so `check_current` may cache it.
 #[cfg(target_os = "linux")]
 fn main_thread_room() -> Option<usize> {
     let mut limit = libc::rlimit {
@@ -183,33 +185,52 @@ fn main_thread_room() -> Option<usize> {
     }
     // RLIM_INFINITY is the largest value, so it stays unbounded here.
     let soft_limit = usize::try_from(limit.rlim_cur).unwrap_or(usize::MAX);
-    let here = std::hint::black_box(0u8);
-    let current = std::ptr::addr_of!(here) as usize;
-    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    // SAFETY: sysconf only reads a system setting.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+    // The kernel keeps `stack_guard_gap` (256 pages by default) free above the mapping below.
+    let guard_gap = 256 * page;
+    let stat = std::fs::read("/proc/self/stat").ok()?;
+    // Field 28; the fields after the command name, which ends at the last ')', start at field 3.
+    let after_name = &stat[stat.iter().rposition(|&byte| byte == b')')? + 1..];
+    let start_stack: usize = std::str::from_utf8(after_name)
+        .ok()?
+        .split_ascii_whitespace()
+        .nth(25)?
+        .parse()
+        .ok()?;
+    // Mapped file names need not be UTF-8: parse the bytes.
+    let maps = std::fs::read("/proc/self/maps").ok()?;
     let mut below = 0;
-    for line in maps.lines() {
-        let (range, rest) = line.split_once(' ')?;
-        let (start, end) = range.split_once('-')?;
+    for line in maps
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let range = line.split(|&byte| byte == b' ').next()?;
+        let (start, end) = std::str::from_utf8(range).ok()?.split_once('-')?;
         let start = usize::from_str_radix(start, 16).ok()?;
         let end = usize::from_str_radix(end, 16).ok()?;
-        if rest.trim_end().ends_with("[stack]") {
-            return (start..end)
-                .contains(&current)
-                .then(|| main_stack_room(soft_limit, below, end, current));
+        if line.trim_ascii_end().ends_with(b"[stack]") {
+            return (start..end).contains(&start_stack).then(|| {
+                main_stack_room(
+                    soft_limit,
+                    below.saturating_add(guard_gap),
+                    end,
+                    start_stack,
+                )
+            });
         }
         below = end;
     }
     None
 }
 
-/// Room left below `current` on a stack whose top is `top`: it may grow to `soft_limit` bytes in all
-/// (the argument and environment pages and the frames above `current` included), and never into
-/// the mapping that ends at `below`.
+/// Room left below `used_from` on a stack whose top is `top`: it may grow to `soft_limit` bytes in
+/// all (the pages above `used_from` included), and never below `floor`.
 #[cfg(target_os = "linux")]
-fn main_stack_room(soft_limit: usize, below: usize, top: usize, current: usize) -> usize {
-    top.saturating_sub(below)
+fn main_stack_room(soft_limit: usize, floor: usize, top: usize, used_from: usize) -> usize {
+    top.saturating_sub(floor)
         .min(soft_limit)
-        .saturating_sub(top.saturating_sub(current))
+        .saturating_sub(top.saturating_sub(used_from))
 }
 
 #[cfg(windows)]
@@ -300,7 +321,7 @@ mod tests {
         assert!(super::main_stack_room(usize::MAX, far, top, top - 300 * 1024) >= needed);
         // Exactly 136 MiB, but 2 MiB of environment above the caller already count against it.
         assert!(super::main_stack_room(136 * MIB, far, top, top - 2 * MIB) < needed);
-        // A mapping 100 MiB below the top stops growth before the limit does.
+        // Growth stops 100 MiB below the top, before the limit does.
         assert!(super::main_stack_room(144 * MIB, top - 100 * MIB, top, top - 300 * 1024) < needed);
     }
 
