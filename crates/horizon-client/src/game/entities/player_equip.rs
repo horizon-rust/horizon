@@ -181,7 +181,7 @@ mod tests {
     #[ignore = "daily"]
     fn a_swap_and_a_jab_in_one_tick_charge_on_the_last_item() {
         let mut resources = None;
-        let mut game = game(&mut resources);
+        let (mut game, _rx) = game(&mut resources);
         game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
             guest.inventory[1] = Some(ItemStack::new("minecraft:iron_spear", 1))
         });
@@ -262,7 +262,7 @@ mod tests {
         };
         for (held, worn, swaps, attribute, before, after) in cases {
             let mut resources = None;
-            let mut game = game(&mut resources);
+            let (mut game, _rx) = game(&mut resources);
             game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
                 guest.inventory[1] = held
             });

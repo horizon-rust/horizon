@@ -13,8 +13,11 @@ use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 pub(super) const GUEST: &str = "H274Guest";
 
-/// A host on a stone floor with one connected, placed guest (conn 2).
-pub(super) fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_> {
+/// A host on a stone floor with one connected, placed guest (conn 2), and
+/// what the guest is sent.
+pub(super) fn game(
+    resources: &mut Option<std::sync::Arc<Resources>>,
+) -> (Game<'_>, mpsc::Receiver<horizon_client::lan::Out>) {
     let root = std::path::PathBuf::from(
         std::env::var_os("HORIZON_TEST_RESOURCES")
             .expect("set HORIZON_TEST_RESOURCES to prepared resources"),
@@ -86,7 +89,7 @@ pub(super) fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_
         },
     )
     .unwrap();
-    let (tx, _rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut guest = Guest::new(
         Joined {
             conn: 2,
@@ -109,7 +112,7 @@ pub(super) fn game(resources: &mut Option<std::sync::Arc<Resources>>) -> Game<'_
     // Its view, as the client sent it: straight down.
     guest.pitch = 90.0;
     game.lan.as_mut().unwrap().hub.guests.push(guest);
-    game
+    (game, rx)
 }
 
 /// Runs `command`: whether it succeeded and what the issuer was told.
@@ -127,7 +130,7 @@ fn run(game: &mut Game<'_>, command: &str) -> (bool, Vec<String>) {
 #[ignore = "daily"]
 fn test_pos_as_a_guest_uses_the_guest_s_view() {
     let mut game_resources = None;
-    let mut game = game(&mut game_resources);
+    let (mut game, _rx) = game(&mut game_resources);
     // One test box, under the guest (TestCommand.createTestPositionAround:
     // around the host, who stands there for it).
     game.player.as_mut().unwrap().position = Vec3::new(16.5, 100.0, 0.5);
@@ -168,7 +171,7 @@ fn test_pos_as_a_guest_uses_the_guest_s_view() {
 #[ignore = "daily"]
 fn test_pos_refuses_other_sources_and_restores_the_views() {
     let mut game_resources = None;
-    let mut game = game(&mut game_resources);
+    let (mut game, _rx) = game(&mut game_resources);
     game.player.as_mut().unwrap().position = Vec3::new(16.5, 100.0, 0.5);
     assert!(run(&mut game, "test create minecraft:always_pass 10 10 10").0);
     game.player.as_mut().unwrap().position = Vec3::new(4.5, 101.0, 6.5);
