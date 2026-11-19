@@ -48,8 +48,19 @@ fn a_blocked_hit_still_plays_the_hurt_sound() {
         angle: 0.0,
     };
     let id = health.damage.id("minecraft:mob_attack").unwrap();
+    let mut test_level = super::TestLevel::new(0);
     let o = player
-        .hurt_caused_by(health, rules, id, 4.0, Some(shield), true, 0)
+        .hurt_caused_by(
+            &mut test_level.level(),
+            health,
+            rules,
+            id,
+            4.0,
+            Some(shield),
+            true,
+            0,
+            false,
+        )
         .unwrap();
     assert!(o.fully_blocked && o.sound, "the shield's own block sound");
     assert_eq!(
@@ -75,7 +86,12 @@ fn a_dying_player_posts_its_death_sound_for_the_players_around() {
         crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO).unwrap();
     let (health, rules) = (&resources.health, super::HealthRules::default());
     let id = health.damage.id("minecraft:mob_attack").unwrap();
-    assert!(player.hurt(health, rules, id, 100.0).unwrap());
+    let mut test_level = super::TestLevel::new(0);
+    assert!(
+        player
+            .hurt(&mut test_level.level(), health, rules, id, 100.0)
+            .unwrap()
+    );
     assert!(player.health.dead_or_dying(), "the hit must kill");
     assert_eq!(
         posted_sounds(&mut player),
