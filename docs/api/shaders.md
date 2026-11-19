@@ -47,6 +47,7 @@ id = "soft_light"          # [a-z0-9_]{1,64}: the settings key and the registry 
 name = "Soft Light"
 version = "1.0.0"
 api = "0.2"                # the shader API line the WGSL is written for
+post_opaque = true         # optional, let post passes read the world before translucent terrain
 description = "..."        # optional, like authors and license
 shared = ["common.wgsl"]   # optional: WGSL put before every stage's file, in order
 
@@ -296,6 +297,10 @@ but still lights dropped and framed items and particles itself. Block entities k
 no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
+
+- API 0.2 (addition): `post_opaque = true` lets native post passes read the pre-translucent
+  color and depth. They reuse the material stage's capture, and only packs that read it request
+  that capture (#3734).
 
 - 2026-11-19: API 0.2 (addition, preview): `MaterialInput.lit_tint`, vanilla's lit vertex colour as Horizon's terrain
   draws it: `shaded_tint` times the lightmap (coloured lights added under it) at each corner, then smoothed over the
