@@ -191,9 +191,13 @@ pub struct Capabilities {
     /// Its terrain pipelines bind the arenas' quad looks (`looks::wanted`): sections carry them.
     pub looks: bool,
     /// The renderer anti-aliases its world before the output reads it
-    /// (`WorldOutput::resolved`): it has no post passes (`[[post]]`) that draw the picture, and
-    /// its frame holds gamma light, which FXAA's blend is made for (not `blend = "linear"`).
-    pub engine_fxaa: bool,
+    /// (`WorldOutput::resolved`), with the player's TAA or FXAA: it has no post passes
+    /// (`[[post]]`) that draw the picture, and its frame holds gamma light, which their blends
+    /// are made for (not `blend = "linear"`).
+    pub engine_resolve: bool,
+    /// Besides `engine_resolve`, TAA upscales its world and sharpens it as without a pack: its
+    /// `[tonemap]`, if it has one, never reads `previous`, which is then larger than the world.
+    pub engine_upscale: bool,
 }
 
 /// What the renderer hands the pack's post stage (`ExternalPipeline::run_post`).
@@ -203,6 +207,9 @@ pub struct WorldPost<'a> {
     /// The world's scaled target (colour, depth), of `size`.
     pub world: (&'a wgpu::TextureView, &'a wgpu::TextureView),
     pub size: [u32; 2],
+    /// The size of the world the renderer resolves (`WorldOutput::resolved`): larger than
+    /// `size` where TAA upscales it (`Capabilities::engine_upscale`).
+    pub display: [u32; 2],
     /// The window's size, the frame's.
     pub window: [u32; 2],
     /// The ray scene and the camera, when the game traces rays.
@@ -215,8 +222,10 @@ pub struct WorldOutput<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     /// The window's frame, which the output draws.
     pub screen: &'a wgpu::TextureView,
-    /// The world as the renderer resolved it (the player's FXAA), at the world's size and in
-    /// its format, for the output to read in its place; `None`: the world as drawn.
+    /// The world as the renderer resolved it (the player's TAA or FXAA), at
+    /// `WorldPost::display`, for the output to read in its place; `None`: the world as drawn.
+    /// TAA's is its `Rgba16Float` history, or that sharpened where TAA upscales; FXAA's and
+    /// the sharpened history are in the world's format.
     pub resolved: Option<&'a wgpu::TextureView>,
 }
 
@@ -237,6 +246,10 @@ pub struct FrameStart<'a> {
     pub frame: &'a Frame<'a>,
     /// The world's size this frame: the scaled target's, else the window's.
     pub size: [u32; 2],
+    /// The lens the world is drawn with this frame, unjittered and before the pose
+    /// (`View::projection`): its aspect is the window's, which the world's rounded `size`
+    /// can miss.
+    pub projection: glam::Mat4,
     /// This frame's output, whose display values a 0.2 pack reads.
     pub output: &'a EffectiveOutput,
     /// The light sources the section meshes list, and their revision (`BlockLight::update`).
