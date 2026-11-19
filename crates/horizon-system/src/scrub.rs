@@ -82,15 +82,15 @@ impl Scrubber {
 
     /// The host pass, before every other one and on the text as it came: each registered host
     /// standing alone becomes [`PRIVATE`], overlapping matches (a host and its trailing-dot
-    /// spelling) as one, except where it crosses what the term or e-mail pass will match: that
+    /// spelling) as one, except where a term or e-mail match reaches past it on either side: that
     /// pass then hides the whole term or address, as without hosts. With no host registered the
     /// text is unchanged.
     fn hide_hosts(&self, text: &str) -> String {
         if self.hosts.is_empty() {
             return text.to_owned();
         }
-        // What the term and e-mail passes match in the text as it came: a host inside one of these
-        // is left for that pass, which hides the whole term or address.
+        // What the term and e-mail passes match in the text as it came: a host inside one of them
+        // that reaches past it is left for that pass, which hides the whole term or address.
         let mut theirs: Vec<(usize, usize)> = Vec::new();
         for term in &self.terms {
             theirs.extend(
@@ -122,7 +122,13 @@ impl Scrubber {
                     .match_indices(host.as_str())
                     .map(|(at, m)| (at, at + m.len()))
                     .filter(|&(start, end)| host_alone(text, start, end))
-                    .filter(|&(start, end)| !theirs.iter().any(|&(s, e)| start < e && s < end)),
+                    // A span wholly inside the host (a world named `Play` in `Play.example.net`)
+                    // goes with it: hiding the whole host hides more than that pass would.
+                    .filter(|&(start, end)| {
+                        !theirs
+                            .iter()
+                            .any(|&(s, e)| start < e && s < end && (s < start || e > end))
+                    }),
             );
         }
         found.sort_unstable();
