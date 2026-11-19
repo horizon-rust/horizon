@@ -9215,7 +9215,8 @@ impl Renderer {
             && !self.terrain_looks
             && self.external.is_none()
             && shadow_view.is_none()
-            && self.lods.is_empty();
+            && self.lods.is_empty()
+            && !self.own_timing.as_ref().is_some_and(|t| t.counters_frame());
         if mesh_frame
             && !flat_frame
             && let Some(flat) = &mut self.flat
@@ -9276,7 +9277,20 @@ impl Renderer {
                 [eye_xyz[0], eye_xyz[1], eye_xyz[2], low_y],
                 eye.is_none(),
             );
-            section_draw_calls = mesh_calls + translucent_draws as usize;
+            let translucent_calls = if flat_frame {
+                self.flat
+                    .as_ref()
+                    .map_or(0, |f| f.translucent_calls().len())
+            } else if self.multi_draw && self.info.backend != wgpu::Backend::Metal {
+                (solid_draws as usize..section_draws)
+                    .filter(|&i| {
+                        i == solid_draws as usize || self.draw_pages[i] != self.draw_pages[i - 1]
+                    })
+                    .count()
+            } else {
+                translucent_draws as usize
+            };
+            section_draw_calls = mesh_calls + translucent_calls;
         }
         let view_target = target_texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.output.frame.format),

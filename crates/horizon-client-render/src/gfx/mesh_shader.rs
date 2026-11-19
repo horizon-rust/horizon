@@ -282,6 +282,21 @@ pub fn task_workgroups(meshlet_count: u32) -> u32 {
     meshlet_count.div_ceil(TASK_WORKGROUP_SIZE)
 }
 
+/// Computes `[x, y, z]` task workgroup counts keeping every dimension within `max_per_dim`.
+#[allow(dead_code)]
+pub fn task_dispatch_dims(meshlet_count: u32, max_per_dim: u32) -> [u32; 3] {
+    let total = task_workgroups(meshlet_count);
+    if total == 0 {
+        return [0, 0, 0];
+    }
+    let cap = max_per_dim.max(1);
+    if total <= cap {
+        [total, 1, 1]
+    } else {
+        [cap, total.div_ceil(cap), 1]
+    }
+}
+
 #[derive(Default)]
 struct PageTable {
     sections: std::collections::BTreeMap<u32, Vec<GpuMeshlet>>,
@@ -460,6 +475,7 @@ pub(in crate::gfx) struct MeshPageDraw<'a> {
     pub bind_group: &'a wgpu::BindGroup,
     pub uniform_offset: u32,
     pub meshlet_count: u32,
+    pub dispatch: [u32; 3],
 }
 
 /// GPU store managing independent per-page [`GpuMeshlet`] storage buffers and dynamic multi-pass
@@ -469,6 +485,7 @@ pub(in crate::gfx) struct MeshSectionStore {
     table: MeshletTable,
     gpu_pages: std::collections::BTreeMap<u32, PageGpu>,
     uniform_stride: u32,
+    max_task_workgroups: u32,
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -625,8 +642,10 @@ impl MeshSectionStore {
             pg.prepared_passes = [None; PASS_SLOTS as usize];
         }
 
+        let dispatch = task_dispatch_dims(count, self.max_task_workgroups);
         let mut updated = *params;
         updated.counts[0] = count;
+        updated.counts[3] = dispatch[0];
         queue.write_buffer(
             &pg.uniform,
             u64::from(pass_slot) * u64::from(self.uniform_stride),
@@ -653,6 +672,7 @@ impl MeshSectionStore {
             bind_group: &pg.bind_group,
             uniform_offset: pass_kind * self.uniform_stride,
             meshlet_count,
+            dispatch: task_dispatch_dims(meshlet_count, self.max_task_workgroups),
         })
     }
 
@@ -702,10 +722,12 @@ pub(in crate::gfx) fn new_store(device: &wgpu::Device) -> Option<MeshSectionStor
     }
     let align = device.limits().min_uniform_buffer_offset_alignment.max(1);
     let uniform_stride = (std::mem::size_of::<MeshCullParams>() as u32).next_multiple_of(align);
+    let max_task_workgroups = device.limits().max_task_workgroups_per_dimension.max(1);
     Some(MeshSectionStore {
         table: MeshletTable::new(),
         gpu_pages: std::collections::BTreeMap::new(),
         uniform_stride,
+        max_task_workgroups,
         bind_group_layout: bind_group_layout(device),
     })
 }
@@ -778,7 +800,7 @@ pub(in crate::gfx) fn draw_mesh_page<'a>(
         pass.set_pipeline(pipeline);
         pass.set_bind_group(1, group1, &[]);
         pass.set_bind_group(2, draw.bind_group, &[draw.uniform_offset]);
-        pass.draw_mesh_tasks(task_workgroups(draw.meshlet_count), 1, 1);
+        pass.draw_mesh_tasks(draw.dispatch[0], draw.dispatch[1], draw.dispatch[2]);
     }
 }
 
@@ -1077,6 +1099,11 @@ mod tests {
         assert_eq!(task_workgroups(1), 1);
         assert_eq!(task_workgroups(32), 1);
         assert_eq!(task_workgroups(33), 2);
+        assert_eq!(task_dispatch_dims(0, 1024), [0, 0, 0]);
+        assert_eq!(task_dispatch_dims(32_768, 1024), [1024, 1, 1]);
+        assert_eq!(task_dispatch_dims(32_769, 1024), [1024, 2, 1]);
+        assert_eq!(task_dispatch_dims(65_536, 1024), [1024, 2, 1]);
+        assert_eq!(task_dispatch_dims(65_537, 1024), [1024, 3, 1]);
     }
 
     #[test]
@@ -2007,6 +2034,22 @@ mod tests {
         assert!(opaque_handle.meshlet_count > 0 && cutout_handle.meshlet_count > 0);
         assert!(px(&wrapper_pixels, 8, 32)[0] > 200);
         assert!(px(&wrapper_pixels, 56, 24)[2] > 200);
+
+        // Case 6: Capped max_task_workgroups dispatches 2D [1, 2, 1] and still draws meshlets at wg.y == 1.
+        terrain.store.max_task_workgroups = 1;
+        let mut capped_meshlets = vec![MeshletDesc::new(0, 0, 2, 0, 0, [0, 0, 0, 1, 1, 1]); 32];
+        capped_meshlets.extend_from_slice(&p0_meshlets);
+        terrain
+            .store
+            .insert_section(0, PACKED_BASE, &capped_meshlets);
+        terrain.prepare_frame(&device, &queue, [0], box_planes, eye_above, false);
+        let capped_draw = terrain.store.page_draw(0, PASS_OPAQUE).unwrap();
+        assert_eq!(capped_draw.dispatch, [1, 2, 1]);
+        let capped_pixels = render_and_readback(
+            &terrain.store,
+            &[(0, PASS_OPAQUE, &terrain.opaque_plain, &_p0_bufs.3)],
+        );
+        assert!(px(&capped_pixels, 8, 32)[0] > 200);
     }
 
     #[test]

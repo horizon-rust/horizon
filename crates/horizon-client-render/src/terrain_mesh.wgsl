@@ -5,7 +5,7 @@ struct MeshCullParams {
     planes: array<vec4<f32>, 6>,
     // xyz: camera eye (camera-relative), w: low eye y (water mirror).
     eye: vec4<f32>,
-    // x: meshlet count, y: pass_kind (0 = all, 1 = opaque, 2 = cutout), z: flags (bit 0 = skip facing cull), w: reserved.
+    // x: meshlet count, y: pass_kind (0 = all, 1 = opaque, 2 = cutout), z: flags (bit 0 = skip facing cull), w: task workgroup X stride (0 = wg.x only).
     counts: vec4<u32>,
 }
 // Array of 16-byte `GpuMeshlet` descriptors (rebased via `MeshletDesc::to_gpu(solid_base)`):
@@ -71,7 +71,8 @@ fn ts_terrain(
     var my_vertex_base = 0u;
     var my_quad_count = 0u;
 
-    let idx = wg.x * 32u + lane;
+    let wg_linear = select(wg.x, wg.y * mesh_cull.counts.w + wg.x, mesh_cull.counts.w > 0u);
+    let idx = wg_linear * 32u + lane;
     if idx < mesh_cull.counts.x {
         let desc = meshlets[idx];
         let vertex_base = desc.x;
