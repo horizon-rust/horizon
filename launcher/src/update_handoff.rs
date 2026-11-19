@@ -61,7 +61,14 @@ enum Close {
 /// Whether closing the window installs a staged update: not in a copy that doesn't replace itself
 /// (a development build, `HORIZON_LAUNCHER_NO_SELF_UPDATE`) or that a package manager owns.
 pub fn installs_on_close() -> bool {
-    backend::self_update_allowed() && !backend::package_managed_launcher()
+    installs_when(
+        backend::self_update_allowed(),
+        backend::package_managed_launcher(),
+    )
+}
+
+fn installs_when(self_update_allowed: bool, package_managed: bool) -> bool {
+    self_update_allowed && !package_managed
 }
 
 fn close_with(staged: Option<Staged>, installs: bool) -> Close {
@@ -368,8 +375,10 @@ mod tests {
         assert!(!args.iter().any(|a| a == RESTART));
         assert_eq!(parse(args, "abc".into()).unwrap().restart, None);
         assert_eq!(close_with(Some(staged()), false), Close::Drop(staged()));
-        // This test build is a development build, which never replaces itself.
-        assert!(!installs_on_close());
+        assert!(installs_when(true, false));
+        for (allowed, package_managed) in [(false, false), (true, true), (false, true)] {
+            assert!(!installs_when(allowed, package_managed));
+        }
         // The data move: `forget` empties what the close would hand over.
         set_pending(Some(Staged {
             payload: std::env::temp_dir().join("horizon-no-stage"),
