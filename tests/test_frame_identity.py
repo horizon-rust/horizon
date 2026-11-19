@@ -448,9 +448,32 @@ class LookGateTests(unittest.TestCase):
                         rows[y][x * len(grey) * 3:(x + 1) * len(grey) * 3] = b''.join(
                             (v << 6).to_bytes(2, 'big') if depth == 16 else bytes((v,)) for v in rgb)
                     encode(self.dir / f'{name}.{scene}{kind}', self.WIDTH, self.HEIGHT, depth, rows, 0)
+        self.loaded('Blocks, Tone curve, Entities')
+
+    def loaded(self, labels):
+        (self.dir / 'horizon_hdr.log').write_text(
+            f'[10:22:24] [Render thread/INFO]: shader pack horizon_hdr 1.0.0: {labels} in 9 ms\n')
 
     def gate(self):
         return identity.look_gates(self.dir, ['float_hdr', 'horizon_hdr'])
+
+    def test_the_pack_must_have_run_every_stage(self):
+        self.shots()
+        self.assertEqual(self.gate(), [])
+        # 🤖 Agent: Without its [tonemap] the game's own curve draws the same picture.
+        self.loaded('Blocks, Entities')
+        self.assertEqual(self.gate(), ['horizon_hdr: the log has no load line of horizon_hdr with Blocks, Entities, '
+                                       'Tone curve'])
+        (self.dir / 'horizon_hdr.log').unlink()
+        self.assertEqual(len(self.gate()), 1)
+
+    def test_a_shot_that_holds_nothing_or_is_missing(self):
+        white = {(x, y): (255, 255, 255) for x in range(self.WIDTH) for y in range(self.HEIGHT)}
+        self.shots({('glass', '.png'): white})
+        self.assertEqual(self.gate(), ['horizon_hdr.glass.png: no pixel is held'])
+        self.shots()
+        (self.dir / 'horizon_hdr.glass-hdr.png').unlink()
+        self.assertEqual(self.gate(), [])
 
     def test_the_packs_rounding_passes_and_a_larger_step_fails(self):
         self.shots({('glass', '.png'): {(0, 0): (101, 100, 99)}, ('glass', '-hdr.png'): {(0, 0): (402, 400, 398)}})

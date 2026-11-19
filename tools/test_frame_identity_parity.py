@@ -827,6 +827,9 @@ LOOK_STEPS = {'.png': 1, '-hdr.png': 2}
 # beside the cow, whose glass is drawn from both sides (the pack's README, "What it can't draw yet": the back faces
 # of a model that shines and is drawn from both sides).
 LOOK_APART = {'entities': ((0.73, 0.42, 0.83, 0.63),)}
+# 🤖 Agent: The stages the pack's load line must name (its manifest's names). Without one, or without the pack, the
+# game draws that part of the look itself, and the pictures would match without the pack having drawn them.
+LOOK_STAGES = ('Blocks', 'Entities', 'Tone curve')
 
 
 def look_gates(shots, sessions):
@@ -842,10 +845,25 @@ def look_gates(shots, sessions):
     for packed, plain in LOOK_PAIRS.items():
         if packed not in sessions or plain not in sessions:
             continue
+        log = shots / f'{packed}.log'
+        # 🤖 Agent: "[time] [Render thread/INFO]: shader pack horizon_hdr 1.0.0: Blocks, Entities, Tone curve in 58 ms".
+        lines = [line.split('shader pack horizon_hdr ', 1)[1].split(': ', 1)[-1].rsplit(' in ', 1)[0].split(', ')
+                 for line in (log.read_text(encoding='utf-8') if log.exists() else '').splitlines()
+                 if 'shader pack horizon_hdr ' in line and ' ms' in line]
+        if not any(all(s in labels for s in LOOK_STAGES) for labels in lines):
+            problems.append(f'{packed}: the log has no load line of horizon_hdr with {", ".join(LOOK_STAGES)}')
+            continue
         for scene in SESSIONS[packed][2]:
             for kind, most in LOOK_STEPS.items():
-                width, a = pixels(shots / f'{plain}.{scene}{kind}')
-                _, b = pixels(shots / f'{packed}.{scene}{kind}')
+                first, second = shots / f'{plain}.{scene}{kind}', shots / f'{packed}.{scene}{kind}'
+                # 🤖 Agent: A missing shot is session_checks' to report.
+                if not (first.is_file() and second.is_file()):
+                    continue
+                width, a = pixels(first)
+                other, b = pixels(second)
+                if (width, len(a)) != (other, len(b)):
+                    problems.append(f'{packed}.{scene}{kind}: not the size of {plain}\'s')
+                    continue
                 height = len(a) // width
                 apart = hud_boxes(width, height) + tuple(
                     (x0 * width, y0 * height, x1 * width, y1 * height) for x0, y0, x1, y1 in LOOK_APART.get(scene, ()))
@@ -855,7 +873,9 @@ def look_gates(shots, sessions):
                 largest = max(steps, default=0)
                 print(f'  {packed}.{scene}{kind} against {plain}: {sum(1 for s in steps if s)} of {len(steps)} '
                       f'pixels held differ, largest step {largest}', flush=True)
-                if largest > most:
+                if not steps:
+                    problems.append(f'{packed}.{scene}{kind}: no pixel is held')
+                elif largest > most:
                     problems.append(f'{packed}.{scene}{kind}: {sum(1 for s in steps if s > most)} pixels differ '
                                     f'from {plain} by more than {most}, largest step {largest}')
     return problems
