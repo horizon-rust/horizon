@@ -351,6 +351,94 @@ fn java_mods_are_ported_turned_on_refused_on_clashes_and_removed() {
     fs::remove_dir_all(&home).unwrap();
 }
 
+/// A source with Fabric mod `a-b` (one block, so it Works), and the jar's bytes.
+fn hyphenated_mod() -> (Fake, Vec<u8>) {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, text) in [
+        (
+            "fabric.mod.json",
+            r#"{"schemaVersion": 1, "id": "a-b", "version": "1.0"}"#,
+        ),
+        (
+            "assets/a-b/blockstates/chair.json",
+            r#"{"variants": {"": {"model": "a-b:block/chair"}}}"#,
+        ),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(text.as_bytes()).unwrap();
+    }
+    let jar = zip.finish().unwrap().into_inner();
+    let mut fake = Fake::default();
+    let mut p = project("ab", Kind::Mod);
+    p.loaders = vec!["fabric".into()];
+    fake.add(p);
+    fake.release("ab", "1", &[], &jar, false);
+    (fake, jar)
+}
+
+#[test]
+fn a_cached_refusal_of_a_hyphenated_id_is_checked_again() {
+    let home = home("hyphen-cache");
+    let (fake, jar) = hyphenated_mod();
+    // The check an older launcher kept for this jar: refused for its id.
+    let sha: String = sha2::Sha512::digest(&jar)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let dir = home.join("mod-browser/checks-1").join(&sha[..40]);
+    let jar_path = home.join("a-b.jar");
+    fs::write(&jar_path, &jar).unwrap();
+    let mut old = horizon_port_pack::check::check(&jar_path, &dir).unwrap();
+    let _ = fs::remove_dir_all(dir.join("carry"));
+    old.verdict = horizon_port_pack::check::Verdict::No;
+    old.summary = "Can't be carried over: mod id \"a-b\" is not [a-z0-9_]{1,64}: rename it before carrying over".into();
+    fs::write(dir.join("check.json"), serde_json::to_string(&old).unwrap()).unwrap();
+    let file = fake.versions.lock().unwrap()["ab"][0].files[0].clone();
+    assert!(super::super::java::cached(&home, &file).is_none());
+
+    let done = install(&fake, &fake.project("ab").unwrap(), false, &home, NONE).unwrap();
+    assert_eq!(done[0].file, "horizon-mods/a_b");
+    assert_eq!(done[0].verdict.as_deref(), Some("Works"));
+    assert!(home
+        .join("horizon-mods/a_b/assets/a-b/blockstates/chair.json")
+        .is_file());
+
+    // Any other cached refusal stands.
+    old.summary = "Nothing in it ports.".into();
+    fs::write(dir.join("check.json"), serde_json::to_string(&old).unwrap()).unwrap();
+    assert!(super::super::java::cached(&home, &file).is_some());
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn a_hyphenated_id_that_another_installed_mod_has_is_refused() {
+    let home = home("hyphen-clash");
+    let (fake, _) = hyphenated_mod();
+    fs::create_dir_all(home.join("horizon-mods")).unwrap();
+    fs::write(home.join("horizon-mods/a_b.hmod"), b"archive").unwrap();
+    fs::write(
+        home.join("horizon-mods.txt"),
+        "mod.a_b:true
+",
+    )
+    .unwrap();
+    let refused = install(&fake, &fake.project("ab").unwrap(), false, &home, NONE).unwrap_err();
+    assert!(
+        refused.contains("Another mod already uses the id a_b"),
+        "{refused}"
+    );
+    assert!(!home.join("horizon-mods/a_b").exists());
+    assert_eq!(
+        fs::read_to_string(home.join("horizon-mods.txt")).unwrap(),
+        "mod.a_b:true
+"
+    );
+    assert!(Installed::load(&home).entries.is_empty());
+    fs::remove_dir_all(&home).unwrap();
+}
+
 #[test]
 fn shader_packs_older_launchers_installed_are_left_alone() {
     let home = home("old-shader-pack");

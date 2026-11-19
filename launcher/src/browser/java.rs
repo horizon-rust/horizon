@@ -49,7 +49,38 @@ fn checked_dir(home: &Path, file: &FileRef) -> Option<PathBuf> {
 }
 
 fn read_check(dir: &Path) -> Option<Check> {
-    serde_json::from_str(&fs::read_to_string(dir.join("check.json")).ok()?).ok()
+    let check: Check =
+        serde_json::from_str(&fs::read_to_string(dir.join("check.json")).ok()?).ok()?;
+    (!refused_id(&check)).then_some(check)
+}
+
+/// A `No` from before ids with `-` (Fabric's) carried over (#18616): checked again.
+fn refused_id(check: &Check) -> bool {
+    check.verdict == Verdict::No
+        && check.summary.starts_with("Can't be carried over: mod id ")
+        && check
+            .summary
+            .ends_with(" is not [a-z0-9_]{1,64}: rename it before carrying over")
+}
+
+/// An installed mod other than `except` that has mod id `id`: a folder or `.hmod` of that name
+/// (in either mod folder: they share `horizon-mods.txt`), or a package whose manifest says it.
+fn id_in_use(home: &Path, id: &str, except: &Path) -> Option<PathBuf> {
+    let dirs = [MODS_DIR, crate::native_mods::INSTALLED];
+    let paths = dirs
+        .iter()
+        .filter_map(|d| fs::read_dir(home.join(d)).ok())
+        .flat_map(|dir| dir.flatten().map(|e| e.path()));
+    paths.filter(|p| p != except).find(|path| {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let hmod = name.strip_suffix(".hmod");
+        if !(hmod.is_some() || path.is_dir()) || name.starts_with('.') {
+            return false;
+        }
+        hmod.unwrap_or(name) == id
+            || horizon_platform::mod_package::Package::read(path)
+                .is_ok_and(|package| package.manifest.id == id)
+    })
 }
 
 /// The check of `file` if it was made before.
@@ -256,6 +287,16 @@ impl Job<'_> {
         if target.exists() && old.as_ref().is_none_or(|o| o.file != relative) {
             return Err(format!(
                 "{relative} is already there and wasn't installed by the browser: move it away first."
+            ));
+        }
+        // A Fabric id's `-` is `_` here: `a-b` would take the id of an installed `a_b.hmod`, which
+        // the game refuses twice and whose `mod.a_b` setting removing this mod would clear.
+        if let Some(other) = id_in_use(home, &check.mod_id, &target) {
+            return Err(format!(
+                "Another mod already uses the id {} ({}): remove it first to install {}.",
+                check.mod_id,
+                other.display(),
+                project.title
             ));
         }
         progress(&format!("Installing {}", project.title), 1.);
