@@ -32,7 +32,7 @@ mod spawn_egg_mob_tests;
 #[path = "../../creatures/spectator_view_tests.rs"]
 mod spectator_view_tests;
 mod world_view;
-use super::api_values::{TryIntoApi, TryIntoEngine};
+use super::api_values::TryIntoApi;
 use super::level_sounds::LevelSound;
 use super::piston_push::Lid;
 use super::{
@@ -630,7 +630,7 @@ impl Game<'_> {
             SpawnSite::Finalizing(reason) => match self.finalize_with(&mut mob, reason, None) {
                 Finalized::Cancelled => return self.discard_unjoined_mob(mob.id),
                 Finalized::Skipped => return Some(mob),
-                Finalized::Done => {}
+                Finalized::Done => horizon_client::mobs::shulker::finalize_spawn(&mut mob),
             },
             // A plain spawn finalizes as a summoned one (vanilla's /summon
             // and egg path): its few reason-gated arms behave the same.
@@ -642,6 +642,7 @@ impl Game<'_> {
                     &difficulty,
                     horizon_client::mobs::spawn_rules::Reason::MobSummoned,
                 );
+                horizon_client::mobs::shulker::finalize_spawn(&mut mob);
             }
         }
         Some(mob)
@@ -1874,7 +1875,9 @@ impl Game<'_> {
                 drops: &mut snapshots,
                 cancel: &mut cancel,
             });
-            if let Ok(mut next) = snapshots.try_into_engine(self.items()) {
+            if let Ok(mut next) =
+                super::api_values::item_drops_into_engine(&snapshots, self.items())
+            {
                 for (drop, original) in next.iter_mut().zip(&drops) {
                     drop.random = original.random;
                 }

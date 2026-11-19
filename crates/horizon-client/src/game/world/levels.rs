@@ -26,6 +26,7 @@ use horizon_client::join_seq::{
         table::{EntityLookup, Location, SourceEntity},
     },
 };
+use horizon_client::spans::time as span;
 use horizon_client::{
     Result,
     block_entity_anim::BlockEntityAnims,
@@ -149,6 +150,9 @@ pub(super) struct Parked {
     level_events: Vec<LevelEvent>,
     /// Entity portal processes and cooldowns belong to this level's entities.
     pub(super) portal_states: HashMap<u32, horizon_client::nether_portal::PortalState>,
+    /// Which of this level's chunks may hold a portal (`Game::find_portals`), kept per level:
+    /// one cache asked by two levels in turn read every palette of both again each tick.
+    pub(super) portal_sections: horizon_client::portal_sections::PortalSections,
     falling: horizon_client::join_seq::JoinList<FallingBlock, false>,
     paintings: horizon_client::join_seq::JoinList<horizon_client::entities::Painting>,
     item_frames: horizon_client::join_seq::JoinList<horizon_client::entities::ItemFrame>,
@@ -752,6 +756,7 @@ impl Game<'_> {
             random_tick_sections: Default::default(),
             level_events: Vec::new(),
             portal_states: HashMap::new(),
+            portal_sections: Default::default(),
             falling: Default::default(),
             paintings: Default::default(),
             item_frames: Default::default(),
@@ -907,6 +912,7 @@ impl Game<'_> {
         swap(&mut self.random_tick_sections, &mut p.random_tick_sections);
         swap(&mut self.level_events, &mut p.level_events);
         swap(&mut self.portals.entities, &mut p.portal_states);
+        swap(&mut self.portals.sections, &mut p.portal_sections);
         swap(&mut self.falling, &mut p.falling);
         swap(&mut self.paintings, &mut p.paintings);
         swap(&mut self.item_frames, &mut p.item_frames);
@@ -1395,6 +1401,83 @@ impl Game<'_> {
         result
     }
 
+    /// What `Game::tick` runs for a server's first level, after the window's lead.
+    pub(super) fn tick_first_level(&mut self) -> Result<()> {
+        // Only a server ticks its own world from here: its players are guests, swapped in for
+        // their turns (`as_guest`), and the window's player is a client of it.
+        self.ticks += 1;
+        self.repro_tick();
+        let window = !self.is_logical_server();
+        if window {
+            self.track_experience_display();
+            self.tick_enchanting_book();
+        }
+        // `/tick freeze` stops the world but not the player.
+        let running = match self.level_pass.running {
+            Some(running) => running,
+            None => self.clock.world_runs(),
+        };
+        if window {
+            // GameRenderer.tick: a wither's bar darkens the world, then fades;
+            // the activated item counts down.
+            self.boss_overlay.tick_darken(running);
+            self.tick_item_activation();
+        }
+        span("mods_inventory_ticks", || self.native_inventory_ticks());
+        if running {
+            // `MinecraftServer.tickChildren`: `commandFunctions` runs before
+            // any level ticks, so a tick function reads the game time and the
+            // day clock from before this tick. Vanilla's SavedData is loaded
+            // long before this point; the lazy scoreboard/storage read has to
+            // be done by then too, or a load tag writes over what it restores.
+            self.load_scoreboard();
+            span("tick_functions", || self.tick_functions());
+            self.world.game_time += 1;
+            if self
+                .ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::ADVANCE_WEATHER)
+            {
+                self.world.weather.tick_timers(&mut self.world.random);
+            }
+            self.world.weather.tick_levels();
+        } else if self.clock.still() {
+            // Under `HORIZON_STILL` a frozen world's rain and thunder sit at their levels, as a
+            // shader pack's smoothed values do, so `/weather rain` shows full rain without
+            // stepping the world (and its mobs) through the fade.
+            self.world.weather.settle_levels();
+        }
+        // ClientLevel.tick: the sky flash fades in a frozen level too.
+        self.tick_weather_effects();
+        let _ = span("player_autosaves", || self.finish_player_autosaves(false));
+        // MinecraftServer.tickServer's countdown, then autoSave: three
+        // hundred seconds of ticks at the rate the server runs at now.
+        self.ticks_until_autosave -= 1;
+        self.autosaving = self.ticks_until_autosave <= 0;
+        if let Some(serving) = &self.serving {
+            serving.set_saving(self.autosaving);
+        }
+        if self.autosaving {
+            span("autosave", || self.save_game_with(false))?;
+            self.ticks_until_autosave = self.next_autosave_interval();
+            if let Some(serving) = &self.serving {
+                serving.set_saving(false);
+            }
+        }
+        if running {
+            self.advance_clock();
+            // `ServerLevel.tickTime`, once the clock has moved on.
+            span("scheduled_functions", || self.run_scheduled_functions());
+        }
+        if window && self.use_delay > 0 {
+            self.use_delay -= 1;
+        }
+        self.tick_totem();
+        self.update_totem_ready();
+        span("tick_command_extras", || self.tick_command_extras());
+        self.tick_world(running)
+    }
+
     /// The end of `MinecraftServer.runServer`'s loop for a server thread:
     /// the next tick starts one tick length after this one, or straight away
     /// while the sprint runs (`checkShouldSprintThisTick`). A server more
@@ -1779,6 +1862,44 @@ mod tests {
         assert_eq!(game.border.size(), 1000.0);
         let nether = game.levels.parked_border(Dim::Nether).unwrap();
         assert_eq!(nether.size(), 100.0);
+    }
+
+    /// `Game::find_portals` asks every tick whether a palette of the level's chunks may hold a
+    /// portal (`PortalSections::any`). A level keeps its answers while another level ticks: its
+    /// unchanged chunks' palettes are not read again, though the other level has chunks at the
+    /// same x and z (a server ticks the Overworld and the Nether one after the other).
+    #[test]
+    #[ignore = "daily"]
+    fn a_level_keeps_its_portal_palettes_while_another_ticks() {
+        let mut game = prepared_game();
+        let columns = |game: &mut Game| {
+            for x in 0..4 {
+                for z in 0..4 {
+                    let chunk = horizon_client::chunk::Chunk::empty(x, z);
+                    game.world.chunks.insert((x, z), Arc::new(chunk));
+                }
+            }
+        };
+        // Asked as `level_may_hold_portal` asks, counting the palette entries read.
+        let reads = |game: &mut Game| {
+            let mut reads = 0;
+            game.portals.sections.any(&game.world.chunks, |_| {
+                reads += 1;
+                false
+            });
+            reads
+        };
+        columns(&mut game);
+        assert!(reads(&mut game) > 0, "the first ask reads the palettes");
+        game.enter_level(Dim::Nether).unwrap();
+        columns(&mut game);
+        reads(&mut game);
+        game.enter_level(Dim::Overworld).unwrap();
+        assert_eq!(
+            reads(&mut game),
+            0,
+            "the Overworld's palettes were read again"
+        );
     }
 
     struct LogCapture;

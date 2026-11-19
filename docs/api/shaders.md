@@ -250,14 +250,19 @@ linear light: decode a constant written for display values with a 2.2 power, com
 `frame.luminance`, and stop returning `input.color.a` from post passes (their alpha is ignored). The example pack,
 `crates/horizon-shader-api/packs/golden_hour`, was moved this way. `packs/traced_shadows` and
 `packs/traced_water` are the smallest packs that trace rays, from a post pass and from the material stage
-([the guide](../shaders.md#ray-tracing)).
+([the guide](../shaders.md#ray-tracing)). `packs/horizon_hdr` is Horizon's own HDR look as a pack, from the look file
+the renderer's own shaders start with: it reads the light-source fields, `frame.full_lightmap` and `lit_tint`
+(changelog, 2026-11-19), and its README lists what a pack can't draw of the look yet.
 
 A 0.2 pack from before 2026-11-16 moves to the terrain's own inputs so: where it drew vanilla's colour with
 `input.tint` or `hit.tint`, it reads `shaded_tint` (the old value, the shade and ambient occlusion in it), or lights
 with `tint`, `shade` and `ao` apart; `[material] fog = false` becomes `[frame] fog = "pack"`; `frame.fog_start` and
 `fog_end` become `fog_environment` and `fog_render`; the post stage's `history` becomes a
 `[[resource]]` with `keep = "view"` that a pass writes as its `output` and reads as `<name>_previous` next frame; and
-`EntityInput.emission` is `full_light`.
+`EntityInput.emission` is `full_light`. A terrain hit's `emission` is the block's light level over 15 from
+2026-11-18, as `input.emission`, no longer its brightness class. `shaded_tint` and `MaterialInput.emission` take no
+look storage, and reading them triggers no remesh (a pack's LabPBR maps still can, the first time one starts); reading `tint`, `shade`, `ao` or `face` makes the world
+load again when the pack starts and terrain take a third again its memory.
 
 ## Testing a pack frame by frame
 
@@ -292,6 +297,33 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
 
+- 2026-11-19: API 0.2 (addition, preview): `MaterialInput.lit_tint`, vanilla's lit vertex colour as Horizon's terrain
+  draws it: `shaded_tint` times the lightmap (coloured lights added under it) at each corner, then smoothed over the
+  face, so `albedo * lit_tint` is vanilla's lit colour where multiplying the two smoothed apart is not (6.6 steps of
+  255 off at an occluded corner beside a torch). Decoded as `shaded_tint` is, declared after the light-source fields
+  and before `shaded_tint` only for a pack whose files name it. It takes one varying, the terrain's last on the weakest
+  GPUs, and no look storage; a pack that doesn't name it sees the same prelude and entry points as before, and its
+  picture is unchanged. `packs/horizon_hdr` draws its blocks with it.
+- 2026-11-19: API 0.2 (additions, preview): what Horizon's own HDR look reads of light sources, for a pack that
+  draws it. `MaterialInput.light_source_tier` (0 none, 1 low to 4 very bright), `light_source_whole` (the whole sprite
+  shines) and `light_source_threshold` (the brightness a texel of the sprite must reach to shine), and
+  `EntityInput.light_source_tier`, declared after their other fields (before `shaded_tint`) only for a pack whose
+  files name one of the three; and `frame.full_lightmap`, the lightmap at full block and sky light, declared only for
+  a pack whose files name it, at the end of `Frame`. The vertex, the sprite and the lightmap already hold them: they
+  cost no vertex data, no look storage and no reload. A pack that names none of them sees the same prelude and entry
+  points as before, and its picture is unchanged.
+- 2026-11-18: API 0.2 (terrain ray-hit fix): a terrain hit's `tint`, `shade` and `ao` match
+  `MaterialInput` when a usable look record is available. Reading any of them queues fresh meshes for
+  loaded sections and costs eight bytes per face in CPU memory for loaded sections and in video
+  memory within the ray scene's reach. Without a usable record, `tint` uses the baked vertex
+  colour, with `shade` and `ao` both 1. `shaded_tint` and `emission` come from the vertex.
+- 2026-11-18: API 0.2 (preview), a fix toward the reference: a terrain hit's `RayHit.emission` is its block's light
+  level over 15, as `MaterialInput.emission` (one candle 3/15, a lantern 1), no longer its brightness class (7/15,
+  14/15 or 1); an entity hit's stays 0. `MaterialInput.emission` comes with the vertex, as `shaded_tint` does: of
+  the terrain's inputs only `tint`, `shade`, `ao` and `face` turn on terrain look storage, which can make the world
+  load again when a pack starts and needs a vertex stage that reads storage buffers. A pack that reads `emission` and
+  none of them pays none of that, and terrain takes a third again its memory for them, not half. No WGSL name
+  changes.
 - 2026-11-18: API 0.2 is final (preview): #17834 was the last change that breaks a 0.2 pack. A breaking change now
   starts 0.3, after a deprecation. No WGSL or manifest change.
 - 2026-11-17: API 0.2 (experimental, #18023): an R-relative kept texture takes its two versions at their size of the
@@ -307,7 +339,7 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
   storage buffers refuses it. A pack that names `shaded_tint` gets the old `tint` last in `MaterialInput`,
   `VertexInput` and `RayHit`, free (on an entity hit, its `tint` times its `shade`). `RayHit` gains `shade`, `ao` and
   `back` and is ordered as the reference lists it; an entity hit has vanilla's entity shade, the Nether's in the
-  Nether. A terrain hit's `tint`, `shade`, `ao` and `emission` change value, not type, in a later version (to what
+  Nether. A terrain hit's `tint`, `shade` and `ao` change value, not type, in a later version (to what
   `MaterialInput` gives), without a source break; its `shaded_tint` stays their product. `EntityInput.emission` is
   `full_light: bool`. Gone: the post stage's `history`, `[material] fog` (a check error naming `[frame] fog`), and
   `frame.fog_start` and `fog_end`; the fog's fields are declared for every pack. [Moving a
