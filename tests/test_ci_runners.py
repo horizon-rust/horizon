@@ -169,6 +169,8 @@ class TryRunTests(unittest.TestCase):
         self.assertNotIn("actions/cache", block)
         self.assertIn("persist-credentials: false", block)
         self.assertIn("retention-days: 3", block)
+        # Not the workflow's actions: read.
+        self.assertIn("    permissions:\n      contents: read\n", block)
 
 
 if __name__ == "__main__":
