@@ -1065,8 +1065,8 @@ def hdr_gates(shots, sessions):
 
 
 def build_checks(shots, sessions, base_sessions=None):
-    """session_checks, hdr_gates, entity_gates and look_gates in each build's folder, each problem naming its build. The base
-    is checked on `base_sessions` (the ones it drew with the pack), by default the same as the change."""
+    """session_checks, hdr_gates, entity_gates and look_gates in each build's folder, each problem naming its build.
+    The base is checked on `base_sessions` (the ones it drew with the pack), by default the same as the change."""
     base_sessions = sessions if base_sessions is None else base_sessions
     return [f'{label}: {p}' for label, drawn in (('base', base_sessions), ('change', sessions))
             for p in session_checks(shots / label, drawn, label) + hdr_gates(shots / label, drawn)

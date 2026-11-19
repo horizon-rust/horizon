@@ -443,7 +443,8 @@ class LookGateTests(unittest.TestCase):
             for scene in identity.SESSIONS['horizon_hdr'][2]:
                 for kind, depth, grey in (('.png', 8, bytes((100,))), ('-hdr.png', 16, (400 << 6).to_bytes(2, 'big'))):
                     rows = [bytearray(grey * 3 * self.WIDTH) for _ in range(self.HEIGHT)]
-                    for (x, y), rgb in ((changed or {}).get((scene, kind), {}) if name == 'horizon_hdr' else {}).items():
+                    pack = (changed or {}).get((scene, kind), {}) if name == 'horizon_hdr' else {}
+                    for (x, y), rgb in pack.items():
                         rows[y][x * len(grey) * 3:(x + 1) * len(grey) * 3] = b''.join(
                             (v << 6).to_bytes(2, 'big') if depth == 16 else bytes((v,)) for v in rgb)
                     encode(self.dir / f'{name}.{scene}{kind}', self.WIDTH, self.HEIGHT, depth, rows, 0)
