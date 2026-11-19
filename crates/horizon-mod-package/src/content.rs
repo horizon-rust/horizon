@@ -49,12 +49,11 @@ pub fn check_path(name: &str) -> Result<(), String> {
         let chars_ok = part
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
-        if part.is_empty()
-            || part.ends_with('.')
-            || !chars_ok
-            || !crate::manifest::portable_part(part)
-        {
+        if part.is_empty() || part.ends_with('.') || !chars_ok {
             return Err(bad());
+        }
+        if let Some(why) = crate::manifest::part_problem(part) {
+            return Err(format!("{name:?}: {why}; rename it"));
         }
     }
     // assets/<namespace>/<file> at least.
@@ -961,8 +960,9 @@ impl Content {
                     let name = entry.name().map_err(|e| e.to_string())?.into_owned();
                     // As `Package::read_zip`: the loader reads `\` as `/`, so no entry may
                     // name a path these checks would read differently.
-                    if !crate::manifest::plain_path(name.strip_suffix('/').unwrap_or(&name)) {
-                        return Err(format!("invalid package path: {name}"));
+                    let bare = name.strip_suffix('/').unwrap_or(&name);
+                    if let Some(why) = crate::manifest::path_problem(bare) {
+                        return Err(format!("invalid package path: {name:?}: {why}; rename it"));
                     }
                     if (name.starts_with("assets/") || name.starts_with("data/")) && !entry.is_dir()
                     {

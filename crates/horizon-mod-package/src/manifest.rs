@@ -736,29 +736,51 @@ pub fn source_file(name: &str) -> bool {
                 .any(|prefix| name.starts_with(prefix)))
 }
 
-/// ASCII only, so the case-folded names below are the file system's: no normalisation tells
-/// a composed `é` from `e` and a combining accent, which macOS stores as one.
 pub(crate) fn plain_path(name: &str) -> bool {
-    name.is_ascii()
-        && !name.starts_with('/')
-        && !name.contains(['\\', ':'])
-        && !name
-            .split('/')
-            .any(|part| part.is_empty() || !portable_part(part))
+    path_problem(name).is_none()
 }
 
-/// A path part every platform writes as the file it names: not ending in a dot or space (Windows
-/// drops them, so `a.` and `a ` are `a`), not a Windows device name whatever its case, extension
-/// or trailing spaces (`COM¹`-`COM³` and `LPT¹`-`LPT³` too), and not longer than the 255 bytes
-/// file systems take.
-pub(crate) fn portable_part(part: &str) -> bool {
+/// Why `name` is no plain relative path every platform writes as the file it names. ASCII only,
+/// so the case-folded names the package checks compare are the file system's: no normalisation
+/// tells a composed `é` from `e` and a combining accent, which macOS stores as one.
+pub(crate) fn path_problem(name: &str) -> Option<&'static str> {
+    if !name.is_ascii() {
+        return Some("entry names must be ASCII");
+    }
+    if name.starts_with('/') || name.contains(['\\', ':']) {
+        return Some("entry names are relative and separated by `/`");
+    }
+    name.split('/').find_map(|part| {
+        if part.is_empty() || part == "." || part == ".." {
+            Some("entry names have no empty, `.` or `..` parts")
+        } else {
+            part_problem(part)
+        }
+    })
+}
+
+/// Why a path part names another file, or none, on some platform: a trailing dot or space
+/// (Windows drops them, so `a.` and `a ` are `a`), a `~` (NTFS short names such as `resour~1.rs`
+/// alias long ones), a Windows device name whatever its case, extension or trailing spaces
+/// (`COM¹`-`COM³` and `LPT¹`-`LPT³` too), or more than the 255 bytes file systems take.
+pub(crate) fn part_problem(part: &str) -> Option<&'static str> {
     let stem = part.split('.').next().unwrap_or(part).trim_end_matches(' ');
     let stem = stem.to_ascii_lowercase();
     let superscript = ["com", "lpt"].iter().any(|device| {
         stem.strip_prefix(device)
             .is_some_and(|n| ["¹", "²", "³"].contains(&n))
     });
-    part.len() <= 255 && !part.ends_with(['.', ' ']) && !reserved_mod_id(&stem) && !superscript
+    if part.ends_with(['.', ' ']) {
+        Some("no part of an entry name may end in a dot or space, which Windows drops")
+    } else if part.contains('~') {
+        Some("entry names may not hold `~`, which Windows short names use")
+    } else if reserved_mod_id(&stem) || superscript {
+        Some("no part of an entry name may be a Windows device name")
+    } else if part.len() > 255 {
+        Some("no part of an entry name may be longer than 255 bytes")
+    } else {
+        None
+    }
 }
 
 /// A mod as found on disk.
@@ -926,8 +948,8 @@ impl Package {
             entries.push((name.clone(), entry.size(), entry.is_dir()));
             // Every entry, a content-only package's too: a reader that takes `\` for `/` (the
             // resource loader does) must see the same names the checks below saw.
-            if !plain_path(name.strip_suffix('/').unwrap_or(&name)) {
-                return Err(format!("invalid package path: {name}"));
+            if let Some(why) = path_problem(name.strip_suffix('/').unwrap_or(&name)) {
+                return Err(format!("invalid package path: {name:?}: {why}; rename it"));
             }
             // One file where case is ignored (Windows, macOS): staging writes one over the other.
             if !folded.insert(name.strip_suffix('/').unwrap_or(&name).to_ascii_lowercase()) {
@@ -1242,7 +1264,10 @@ impl Package {
         put(MANIFEST, manifest_text.as_bytes())?;
         for (name, bytes) in files {
             let code = manifest.native.is_some() || manifest.wasm.is_some();
-            let source = code && source_file(name) && plain_path(name);
+            let source = code && source_file(name);
+            if let Some(why) = path_problem(name).filter(|_| source) {
+                return Err(format!("{name:?}: {why}; rename it"));
+            }
             if *name == crate::layouts::FILE {
                 crate::layouts::Layouts::read(*bytes)?;
                 put(name, bytes)?;
@@ -1777,6 +1802,18 @@ capabilities = ["registries"]
             Package::write_files(&manifest, &[("Cargo.toml", b""), ("src/../bad.rs", b"")])
                 .is_err()
         );
+        // A source or documentation name says why it is refused.
+        let error = Package::write_files(
+            &manifest,
+            &[("Cargo.toml", b""), ("README.fran\u{e7}ais.md", b"")],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("README.fran\u{e7}ais.md")
+                && error.contains("must be ASCII")
+                && error.contains("rename it"),
+            "{error}"
+        );
         assert!(
             Package::write_files(
                 &manifest,
@@ -2103,23 +2140,30 @@ issues = \"http://example.org/issues\"
         for (names, expected) in [
             (&["README", "readme"][..], "ignoring case"),
             (&["NOTICE", "notice/"][..], "ignoring case"),
-            (&["NUL.txt"][..], "invalid package path"),
-            (&["nul .txt"][..], "invalid package path"),
-            (&["README", "README."][..], "invalid package path"),
-            (&["README", "README "][..], "invalid package path"),
-            (&["docs/cafe\u{301}.txt"][..], "invalid package path"),
-            (&["docs/COM\u{b9}.txt"][..], "invalid package path"),
-            (&["docs/com9"][..], "invalid package path"),
-            (&[long.as_str()][..], "invalid package path"),
+            (&["NUL.txt"][..], "Windows device name"),
+            (&["nul .txt"][..], "Windows device name"),
+            (&["README", "README."][..], "end in a dot or space"),
+            (&["README", "README "][..], "end in a dot or space"),
+            (&["docs/cafe\u{301}.txt"][..], "must be ASCII"),
+            (&["README.fran\u{e7}ais.md"][..], "must be ASCII"),
+            (&["docs/COM\u{b9}.txt"][..], "must be ASCII"),
+            (&["docs/com9"][..], "Windows device name"),
+            // An NTFS short name: on a volume that makes them, it is `resource_source.rs`.
+            (&["src/resource_source.rs", "src/resour~1.rs"][..], "`~`"),
+            (&[long.as_str()][..], "255 bytes"),
         ] {
             let error = read(names).err().unwrap_or_default();
-            assert!(error.contains(expected), "{names:?}: {error}");
+            assert!(
+                error.contains(expected)
+                    && (expected == "ignoring case" || error.contains("rename it")),
+                "{names:?}: {error}"
+            );
         }
         for device in ["COM\u{b9}.rs", "lpt\u{b3}", "aux .rs"] {
-            assert!(!portable_part(device), "{device}");
+            assert!(part_problem(device).is_some(), "{device}");
         }
         for part in ["com0.rs", "com10", "lpt\u{b9}0", "auxiliary.rs", "a.b"] {
-            assert!(portable_part(part), "{part}");
+            assert_eq!(part_problem(part), None, "{part}");
         }
     }
 
