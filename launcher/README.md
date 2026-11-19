@@ -143,7 +143,11 @@ The opening, then Play ([clip](docs/opening.webm)):
   (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in
   `instances.json` (`horizon_launcher::launch`). The game stays one process the launcher follows:
   on Unix `/bin/sh` runs the command and then `exec`s the wrapper and the game, whose words pass
-  through `"$@"` untouched; on Windows `cmd /C` runs `<command> && <game>`. Both the window's Play
+  through `"$@"` untouched; on Windows `cmd /C` runs the command to its end, then the wrapper and
+  the game start with their words as they are, never through cmd. While that command runs, Play's
+  Stop (Cancel in the classic layout) ends it with what it started, and so does closing the
+  launcher. On Windows a wrapper that is a shell (`cmd` or PowerShell) can't join
+  a server or open a world: it would read their names as commands. Both the window's Play
   and `play` use them. `horizon-launcher instance launch <instance> [--pre-launch …]
   [--wrapper …] [--env …]` (an MCP agent needs `confirm: true`: it sets commands Play runs).
   On Linux the panel also has switches for what the computer has: **GameMode** (`gamemoderun`
@@ -290,6 +294,9 @@ When the top bar's page tabs overflow, an arrow on a fading edge shows each side
 (`src/nav_strip.rs`); the arrows go at the ends and when all tabs fit. They fade in and out over
 150 ms, and a click scrolls three quarters of the strip over 240 ms; another click goes on from where
 that one is headed, and the wheel stops it. Performance mode and reduced motion make both instant.
+
+A mouse wheel's notch glides over 240 ms instead of jumping (`src/glide.rs`); trackpads scroll as
+they are. Performance mode and reduced motion (`HORIZON_LAUNCHER_MOTION=off`) turn the glide off.
 
 Pages and Home's landscape fill the window as it resizes. The title bar is transparent over the
 launcher on every platform: Windows keeps native dragging, resizing, Snap, minimize,
@@ -453,6 +460,14 @@ scripts and tests). Test runs also set `HORIZON_LAUNCHER_TRASH=<folder>` and
 system's trash goes into that folder, and what Copy would put on the clipboard is written to that
 file, so a test never touches the real trash or clipboard.
 
+Game-cache inventory, cleanup and direct game entry resolve aliases above configured roots
+(including macOS's `/var` and `/tmp`) before entering the lease protocol. Direct entry checks
+the discovered data root before resolving its ancestors and only opens an existing registry.
+The data folder itself and managed descendants may not be symbolic links. A deleted selected
+home remains a managed lease requirement, so a late game cannot start after cleanup. Unknown
+game builds still block shared-cache deletion, and a running game's leases prevent deletion
+until its final owner exits.
+
 ## AI agents (MCP)
 
 `horizon-launcher mcp` is a Model Context Protocol server over stdio. `horizon-launcher
@@ -581,6 +596,14 @@ client starts (`--help`) and that the binaries import only system libraries (Win
 
     cargo test --lib    # tag separation, version order, update selection, notes as text,
                         # the auto-install default, the links fallback
+
+Run the complete launcher checks through `python3 tools/pr_ready.py` from the repository root.
+It and the launcher workflow give every Cargo test target fresh launcher/game homes, a private
+location pointer, XDG data/config folders, trash, clipboard and desktop paths, and remove the
+scratch home on exit. On Windows the scratch path must also be ASCII and contain no spaces,
+or build tools can fall back outside it. Direct Cargo runs of binary or integration tests need
+the same overrides: they link the library without `cfg(test)`, so its library-test fallback
+alone does not keep them out of the player's profile.
 
 Geist and Geist Mono (SIL Open Font License, `crates/horizon-theme/fonts/OFL-*.txt`, shared with the game's on-screen keyboard) are
 bundled so the type is the same on every platform.

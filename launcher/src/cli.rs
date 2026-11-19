@@ -1201,7 +1201,10 @@ fn json(value: serde_json::Value) {
 
 /// Runs a game process in this terminal and reports how it ended.
 fn attached(cmd: Command) -> Result<i32, String> {
-    let (mut cmd, _runtime) = backend::prepare_command(cmd)?;
+    let (mut cmd, mut runtime) = backend::prepare_command(cmd)?;
+    if let Some(warning) = runtime.warning.take() {
+        eprintln!("warning: {warning}");
+    }
     let status = backend::spawn_attached(&mut cmd)
         .and_then(|mut child| child.wait())
         .map_err(|e| format!("Could not start {:?}: {e}", cmd.get_program()))?;
@@ -1455,7 +1458,12 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             download,
             version,
         } => {
-            let tag = backend::resolve_version(version.as_deref())?;
+            // What Play would start: the selected instance's version (a Java one has none).
+            let selected = instances::selected();
+            let tag = match selected.java {
+                None => selected.resolve_version(version.as_deref())?,
+                Some(_) => backend::resolve_version(version.as_deref())?,
+            };
             let minecraft = backend::minecraft_dir(minecraft)?;
             let from = if download {
                 backend::MinecraftFrom::Mojang
@@ -1519,7 +1527,8 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 let vars = instance.vars(cmd.get_program());
                 cmd.envs(vars.iter().map(|(k, v)| (k, v)));
                 let started = std::time::Instant::now();
-                let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
+                let played =
+                    horizon_launcher::launch::wrap(cmd, &instance.launch).and_then(attached);
                 if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                     eprintln!("Play time not saved: {e}");
                 }
@@ -1568,7 +1577,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 horizon_launcher::jars::Permission::headless(allow_jar_downloads),
             )
             .map_err(|error| error.to_string())?;
-            let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
+            let played = horizon_launcher::launch::wrap(cmd, &instance.launch).and_then(attached);
             if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                 eprintln!("Play time not saved: {e}");
             }

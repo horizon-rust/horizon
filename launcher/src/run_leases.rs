@@ -9,6 +9,11 @@ pub(crate) fn mark(command: &mut Command, source: &Path) {
     command.env(SOURCE, source);
 }
 
+/// Whether `command` is Horizon's own game, [`mark`]ed with the folder it runs from.
+pub(crate) fn is_horizon(command: &Command) -> bool {
+    override_value(command, SOURCE).flatten().is_some()
+}
+
 // Outer None inherits the environment; inner None explicitly removes the variable.
 fn override_value<'a>(command: &'a Command, key: &str) -> Option<Option<&'a std::ffi::OsStr>> {
     command
@@ -103,29 +108,21 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
         .flatten()
         .map(Path::new)
         .or_else(|| {
+            // Another program's folder is the launcher's to stamp and lease only inside its own
+            // folders, the only ones its cleanup removes. Java Edition's Java can be installed
+            // where the player can't write, and stamping it there failed the launch (#18018).
             let program = Path::new(command.get_program());
-            program.is_absolute().then(|| program.parent()).flatten()
+            program
+                .is_absolute()
+                .then(|| program.parent())
+                .flatten()
+                .filter(|folder| launcher_owned(folder))
         });
-    let mut paths = Vec::new();
-    if let Some(game) = game_snapshot(command)? {
-        let selection =
-            horizon_platform::mod_package::selection::LaunchArguments::for_command(&game)?;
-        paths.push(selection.context.game_dir);
-        paths.push(selection.context.home);
-        let cwd = command.get_current_dir().unwrap_or(Path::new("."));
-        for argument in selection.rest {
-            if let horizon_platform::mod_package::selection::Argument::Value(name, value) = argument
-            {
-                if name == "--resources" {
-                    paths.push(cwd.join(value));
-                }
-            }
-        }
-    }
+    let mut paths = argument_paths(command)?;
     if let Some(home) = command.get_current_dir() {
         let home = home.canonicalize()?;
         for relative in [".horizon-cache", "wasm-cache", "cache"] {
-            crate::storage::mark_used(&home.join(relative))?;
+            stamp(&home.join(relative))?;
         }
         use horizon_platform::mod_package::{mod_list, Package};
         for folder in [mod_list::DIR, mod_list::NATIVE_DIR] {
@@ -133,7 +130,7 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
                 if let Ok(package) = Package::read(&path) {
                     if crate::browser::java::is_enabled(&home, &package.manifest.id) {
                         for jar in package.manifest.jar {
-                            crate::storage::mark_used(&jar.cache_path(&home.join("jars")))?;
+                            stamp(&jar.cache_path(&home.join("jars")))?;
                         }
                     }
                 }
@@ -151,29 +148,6 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
             paths.push(parent.to_owned());
         }
         paths.push(source);
-    }
-    // Native clients read prepared data from a different installed version. Hold that
-    // tree explicitly as well as the executable's tree for the child's entire lifetime.
-    // prepare_command also runs non-game commands (including hooks and tools), whose
-    // arguments must not be interpreted by the game's parser.
-    if command.get_args().any(|argument| argument == "--resources") {
-        let arguments =
-            horizon_platform::mod_package::selection::LaunchArguments::for_command(command)?;
-        for argument in arguments.rest {
-            if let horizon_platform::mod_package::selection::Argument::Value(flag, resources) =
-                argument
-            {
-                if flag == "--resources" {
-                    paths.push(
-                        command
-                            .get_current_dir()
-                            .unwrap_or(Path::new("."))
-                            .join(resources)
-                            .canonicalize()?,
-                    );
-                }
-            }
-        }
     }
     paths = paths
         .into_iter()
@@ -194,24 +168,100 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
         return Ok(Vec::new());
     }
     for path in &paths {
-        crate::storage::mark_used(path)?;
+        stamp(path)?;
     }
     paths
         .into_iter()
         .map(|path| {
-            let directory = Dir::open_ambient_dir(path, cap_std::ambient_authority())?;
-            registry.lock(&directory, LockMode::Shared)
+            Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+                .map_err(Error::from)
+                .and_then(|directory| registry.lock(&directory, LockMode::Shared))
+                .map_err(|error| naming(&path, error))
         })
         .collect()
+}
+
+/// The folders the game's own arguments name, against the command's folder: the game and home
+/// folders and every `--resources`. Native clients read prepared data from a different installed
+/// version, so that tree is held as well as the executable's.
+fn argument_paths(command: &Command) -> std::io::Result<Vec<std::path::PathBuf>> {
+    use horizon_platform::mod_package::selection::{Argument, LaunchArguments};
+    let cwd = command.get_current_dir().unwrap_or(Path::new("."));
+    let (rest, mut paths) = match game_snapshot(command)? {
+        // The words before wrappers: a wrapper's own words shift the parser's option/value
+        // pairs, and the game's last argument then has no value (#18328).
+        Some(game) => {
+            let selection = LaunchArguments::for_command(&game)?;
+            let mut folders = vec![selection.context.game_dir, selection.context.home];
+            // A wrapper can read another version's data (`wrapper --resources <B> -- game…`):
+            // hold every folder its words name too. Only a scan, never fatal: an extra lease is
+            // safe, and a word that names no folder has nothing to hold.
+            let words: Vec<_> = command.get_args().collect();
+            folders.extend(
+                words
+                    .windows(2)
+                    .filter(|pair| pair[0] == "--resources")
+                    .map(|pair| cwd.join(pair[1]))
+                    .filter(|path| path.is_dir()),
+            );
+            (selection.rest, folders)
+        }
+        // prepare_command also runs non-game commands (including hooks and tools), whose
+        // arguments must not be interpreted by the game's parser.
+        None if command.get_args().any(|argument| argument == "--resources") => {
+            (LaunchArguments::for_command(command)?.rest, Vec::new())
+        }
+        None => return Ok(Vec::new()),
+    };
+    paths.extend(rest.into_iter().filter_map(|argument| match argument {
+        Argument::Value(flag, value) if flag == "--resources" => Some(cwd.join(value)),
+        _ => None,
+    }));
+    Ok(paths)
+}
+
+/// Whether `path` is inside the launcher's data or build folder.
+fn launcher_owned(path: &Path) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    [crate::backend::data_dir(), crate::backend::build_dir()]
+        .into_iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| path.starts_with(root))
+}
+
+/// [`crate::storage::mark_used`], its error naming the folder.
+fn stamp(path: &Path) -> Result<(), Error> {
+    crate::storage::mark_used(path).map_err(|error| naming(path, error))
+}
+
+/// An I/O error at `path`, with the path: the bare OS error says nothing a player can act on.
+fn naming(path: &Path, error: Error) -> Error {
+    match error {
+        Error::Io(error) => Error::Io(std::io::Error::new(
+            error.kind(),
+            format!(
+                "{}: {error}",
+                crate::backend::plain(path.to_owned()).display()
+            ),
+        )),
+        error => error,
+    }
 }
 
 #[cfg(test)]
 mod tests;
 
-const GAME: &str = "HORIZON_LAUNCHER_GAME_COMMAND";
+pub(crate) const GAME: &str = "HORIZON_LAUNCHER_GAME_COMMAND";
 
 /// Preserve the engine-owned argument grammar before wrappers obscure it.
 pub(crate) fn snapshot(command: &mut Command) {
+    // Only Horizon's game ([`mark`]ed) has that grammar: Minecraft: Java Edition's arguments
+    // read as Horizon's fail to pair up (#17950).
+    if !is_horizon(command) {
+        return;
+    }
     let words: Vec<_> = std::iter::once(command.get_program().to_owned())
         .chain(command.get_args().map(std::ffi::OsStr::to_owned))
         .collect();
