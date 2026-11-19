@@ -471,7 +471,11 @@ pub(crate) fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
     ));
     fs::write(&partial, data)
         .and_then(|_| fs::rename(&partial, path))
-        .map_err(error)
+        .map_err(|e| {
+            // A full disk leaves no half-written file behind.
+            let _ = fs::remove_file(&partial);
+            error(e)
+        })
 }
 
 /// Links a launcher's files into the official layout in `linked`: the client jar as
@@ -543,8 +547,11 @@ fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 pub(crate) fn junction(target: &Path, link: &Path) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
-    // Always quoted: cmd reads `&`, `^` or `(` in an unquoted path (a user folder may have
-    // them) as its own syntax. A Windows path never holds a quote.
+    // `/D` skips cmd's AutoRun registry command (for example, ANSICon), which
+    // can otherwise change or fail the junction command before it runs.
+    // Always quoted: cmd reads `&`, `^` or `(` in an unquoted path (a user
+    // folder may have them) as its own syntax. A Windows path never holds a
+    // quote.
     let quoted = |path: &Path| {
         let mut arg = std::ffi::OsString::from("\"");
         arg.push(path);
@@ -552,7 +559,7 @@ pub(crate) fn junction(target: &Path, link: &Path) -> std::io::Result<()> {
         arg
     };
     let out = crate::process::command("cmd")
-        .args(["/C", "mklink", "/J"])
+        .args(["/D", "/C", "mklink", "/J"])
         .raw_arg(quoted(link))
         .raw_arg(quoted(target))
         .output()?;

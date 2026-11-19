@@ -13,7 +13,7 @@ fn wolf() -> Mob {
     k.id = "minecraft:wolf".into();
     k.species = Species::Wolf;
     let mut m = Mob::new(7, kind, Vec3::ZERO, 0.0);
-    m.extra.body = Some("minecraft:wolf_armor".into());
+    m.extra.set_body(Some("minecraft:wolf_armor".into()));
     m
 }
 
@@ -42,15 +42,17 @@ fn owed(m: &Mob) -> Option<f32> {
 /// `ceil(damage)` itself.
 #[test]
 fn a_thorns_hit_wears_the_body_piece_it_does_not_absorb() {
+    let mut test_level = crate::health::TestLevel::new(0);
+    let level = &mut test_level.level();
     let mut m = wolf();
-    assert!(m.damage(24.0, thorns()), "the hit landed");
+    assert!(m.damage(level, 24.0, thorns()), "the hit landed");
     assert_eq!(owed(&m), Some(24.0), "the wear doHurtEquipment owes");
-    assert_eq!(m.extra.body_damage, 0, "the armour absorbed nothing");
+    assert_eq!(m.extra.body_damage(), 0, "the armour absorbed nothing");
     assert!(m.health < 40.0, "the wolf took the hit: {}", m.health);
 
     let mut m = wolf();
-    assert!(m.damage(24.0, Damage::of(DamageKind::MobAttack)));
-    assert_eq!(m.extra.body_damage, 24, "ceil(24) on the armour itself");
+    assert!(m.damage(level, 24.0, Damage::of(DamageKind::MobAttack)));
+    assert_eq!(m.extra.body_damage(), 24, "ceil(24) on the armour itself");
     assert_eq!(
         owed(&m),
         None,
@@ -65,14 +67,16 @@ fn a_thorns_hit_wears_the_body_piece_it_does_not_absorb() {
 /// on silence, and throws five crumbs.
 #[test]
 fn a_broken_body_piece_sends_the_body_break_event() {
+    let mut test_level = crate::health::TestLevel::new(0);
+    let level = &mut test_level.level();
     let mut m = wolf();
-    m.extra.body_damage = 63;
+    m.extra.set_body_damage(63);
     assert!(
-        m.damage(1.0, Damage::of(DamageKind::MobAttack)),
+        m.damage(level, 1.0, Damage::of(DamageKind::MobAttack)),
         "the hit landed"
     );
-    assert_eq!(m.extra.body, None, "the piece broke");
-    assert_eq!(m.extra.body_damage, 0);
+    assert_eq!(m.extra.body_id(), None, "the piece broke");
+    assert_eq!(m.extra.body_damage(), 0);
     let events: Vec<_> = m
         .outbox
         .iter()
