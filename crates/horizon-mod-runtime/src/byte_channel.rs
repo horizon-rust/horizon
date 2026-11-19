@@ -1,4 +1,5 @@
-//! Nonblocking producers and a blocking consumer sharing a byte budget.
+//! Producers that never wait (or, with [`Sender::reserve_waiting`], wait for room) and a
+//! blocking consumer sharing a byte budget.
 //!
 //! Charge each value's owned heap allocations (for a `Vec`, its capacity, not length).
 //! The channel adds inline value and queue-node storage to that charge. Allocator
@@ -68,6 +69,8 @@ impl<T> Drop for ReceiveLease<T> {
         let mut state = self.shared.lock();
         state.held_bytes -= self.charge;
         state.stats.reserved_bytes -= self.charge;
+        drop(state);
+        self.shared.room.notify_all();
     }
 }
 
@@ -83,6 +86,8 @@ struct Shared<T> {
     capacity: usize,
     state: Mutex<State<T>>,
     ready: Condvar,
+    /// Signalled whenever reserved bytes are released or the receiver closes.
+    room: Condvar,
 }
 impl<T> Shared<T> {
     fn lock(&self) -> MutexGuard<'_, State<T>> {
@@ -121,6 +126,7 @@ pub fn channel<T>(capacity: usize) -> Result<(Sender<T>, Receiver<T>), InvalidCa
             receiver_alive: true,
         }),
         ready: Condvar::new(),
+        room: Condvar::new(),
     });
     Ok((Sender(shared.clone()), Receiver(shared)))
 }
@@ -148,16 +154,39 @@ impl<T> Sender<T> {
         if charge > self.0.capacity - state.stats.reserved_bytes {
             return Err(ReserveError::Full);
         }
+        Ok(self.take(&mut state, charge))
+    }
+    /// Like [`Self::reserve`], but waits until released charges make room. Waits
+    /// without a deadline, so the consumer must keep receiving and dropping leases.
+    /// `Full` here means the charge exceeds the whole capacity and could never fit;
+    /// `Disconnected` means the receiver closed, before or while waiting.
+    pub fn reserve_waiting(&self, owned_bytes: usize) -> Result<Permit<T>, ReserveError> {
+        let charge = owned_bytes
+            .checked_add(message_overhead::<T>())
+            .filter(|&charge| charge <= self.0.capacity)
+            .ok_or(ReserveError::Full)?;
+        let mut state = self.0.lock();
+        loop {
+            if !state.receiver_alive {
+                return Err(ReserveError::Disconnected);
+            }
+            if charge <= self.0.capacity - state.stats.reserved_bytes {
+                return Ok(self.take(&mut state, charge));
+            }
+            state = self.0.room.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+    fn take(&self, state: &mut State<T>, charge: usize) -> Permit<T> {
         state.pending_bytes += charge;
         state.stats.reserved_bytes += charge;
         state.stats.peak_reserved_bytes = state
             .stats
             .peak_reserved_bytes
             .max(state.stats.reserved_bytes);
-        Ok(Permit {
+        Permit {
             shared: self.0.clone(),
             charge,
-        })
+        }
     }
     pub fn stats(&self) -> Stats {
         self.0.lock().stats
@@ -182,9 +211,11 @@ impl<T> Permit<T> {
 impl<T> Drop for Permit<T> {
     fn drop(&mut self) {
         let mut state = self.shared.lock();
-        if state.receiver_alive && state.senders != 0 {
+        if state.receiver_alive && state.senders != 0 && self.charge != 0 {
             state.pending_bytes -= self.charge;
             state.stats.reserved_bytes -= self.charge;
+            drop(state);
+            self.shared.room.notify_all();
         }
     }
 }
@@ -206,6 +237,7 @@ impl<T> Drop for Sender<T> {
         drop(state);
         if closed {
             self.0.ready.notify_all();
+            self.0.room.notify_all();
         }
     }
 }
@@ -257,16 +289,23 @@ impl<T> Receiver<T> {
     }
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         let mut state = self.0.lock();
-        Self::pop(&mut state).ok_or(if state.senders == 0 {
+        let value = Self::pop(&mut state).ok_or(if state.senders == 0 {
             TryRecvError::Disconnected
         } else {
             TryRecvError::Empty
-        })
+        });
+        drop(state);
+        if value.is_ok() {
+            self.0.room.notify_all();
+        }
+        value
     }
     pub fn recv(&self) -> Result<T, RecvError> {
         let mut state = self.0.lock();
         loop {
             if let Some(value) = Self::pop(&mut state) {
+                drop(state);
+                self.0.room.notify_all();
                 return Ok(value);
             }
             if state.senders == 0 {
@@ -316,6 +355,7 @@ impl<T> Drop for Receiver<T> {
             state.stats.queued_items = 0;
             std::mem::take(&mut state.queue)
         };
+        self.0.room.notify_all();
         // Arbitrary value destructors must run outside the lock.
         drop(queue);
     }
@@ -563,6 +603,40 @@ mod tests {
         assert_eq!(tx.stats().reserved_bytes, capacity);
         drop(credit);
         assert_eq!(tx.stats().reserved_bytes, 0);
+    }
+
+    #[test]
+    fn waiting_reserve_wakes_when_room_returns_or_the_receiver_closes() {
+        let charge = message_overhead::<u32>() + 4;
+        let (tx, rx) = channel::<u32>(charge).unwrap();
+        // Larger than the whole budget: refused at once instead of waiting forever.
+        assert!(matches!(
+            tx.reserve_waiting(charge),
+            Err(ReserveError::Full)
+        ));
+        tx.try_send(1, 4).unwrap();
+        let receipt = rx.recv_owned().unwrap();
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| tx.reserve_waiting(4).map(|p| p.publish(2)));
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!waiter.is_finished());
+            drop(receipt);
+            assert!(matches!(waiter.join().unwrap(), Ok(Ok(()))));
+        });
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| tx.reserve_waiting(4).map(|p| p.publish(3)));
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!waiter.is_finished());
+            assert_eq!(rx.recv(), Ok(2));
+            assert!(matches!(waiter.join().unwrap(), Ok(Ok(()))));
+        });
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| tx.reserve_waiting(4).err());
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!waiter.is_finished());
+            drop(rx);
+            assert_eq!(waiter.join().unwrap(), Some(ReserveError::Disconnected));
+        });
     }
 
     #[test]
