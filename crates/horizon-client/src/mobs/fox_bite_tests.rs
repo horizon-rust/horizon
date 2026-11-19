@@ -23,13 +23,13 @@ fn bite_sounds(silent: bool) -> Option<Vec<([f64; 3], f32, f32)>> {
         world.player = Some(test_player(at));
         let mut goals = GoalSelector::default();
         goals.add(1, MeleeAttack::new(1.2, true).bite("entity.fox.bite"));
-        let mut lr = crate::mobs::world::level_random(0);
+        let mut fixture = crate::health::TestLevel::new(0);
         let mut events = Vec::new();
         goals.tick(
             &mut m,
             &mut Cx {
                 w: &world,
-                lr: &mut lr,
+                level: &mut fixture.level(),
                 events: &mut events,
             },
         );

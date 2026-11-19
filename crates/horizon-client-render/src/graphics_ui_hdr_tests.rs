@@ -22,7 +22,7 @@ fn hdr_waits_for_a_device_that_draws_its_frame() {
         let hdr = Item::Horizon(H::Hdr);
         assert_eq!(hdr.blocked(&s, &out), Some(unsupported));
         assert_eq!(hdr.label(&s, &out).plain(), "HDR: Off");
-        for h in [H::HdrCalibrate, H::HdrPeak, H::HdrLighting] {
+        for h in [H::HdrCalibrate, H::HdrPeak, H::HdrLook] {
             assert_eq!(Item::Horizon(h).blocked(&s, &out), Some(unsupported));
         }
         let mut ui = ui();
@@ -33,16 +33,46 @@ fn hdr_waits_for_a_device_that_draws_its_frame() {
     }
 }
 
+/// The Look row steps between Horizon's two looks. While a shader pack runs the look is the
+/// pack's: the row reads its name, greyed, and the saved look waits.
 #[test]
-fn hdr_lighting_is_greyed_only_while_a_pack_runs() {
+fn look_is_the_packs_and_greyed_while_a_pack_runs() {
     let mut s = Settings::default();
     s.horizon.hdr = HdrMode::On;
-    let item = Item::Horizon(H::HdrLighting);
-    let lights = Some("The shader pack lights the world itself.");
+    s.horizon.shader_pack = "Sunny.zip".into();
+    let item = Item::Horizon(H::HdrLook);
+    let lights = Some("The shader pack lights the world. Pick it under Shaders.");
     let out = offering(true, None);
     // No pack running, as with one picked but refused, missing or its mod off: live.
     assert_eq!(item.blocked(&s, &out.with_pack(false)), None);
+    assert_eq!(
+        item.label(&s, &out.with_pack(false)).plain(),
+        "Look: Horizon"
+    );
+    let mut ui = ui();
+    ui.screen.output = out.with_pack(false);
+    let [x, y, ..] = row(&mut ui, &s, item);
+    assert_eq!(press(&mut ui, &mut s, (x + 8.0, y + 4.0)), [CLICK, CHANGED]);
+    assert_eq!(s.horizon.hdr_look, HdrLook::Vanilla);
+    assert_eq!(
+        item.label(&s, &out.with_pack(false)).plain(),
+        "Look: Vanilla"
+    );
     assert_eq!(item.blocked(&s, &out.with_pack(true)), lights);
+    assert_eq!(item.label(&s, &out.with_pack(true)).plain(), "Look: Sunny");
+    // A Horizon pack is saved by its id, and after a start no page has listed the packs: the
+    // name is the running pack's own.
+    let mut started = Settings::default();
+    started.horizon.shader_pack = "horizon:sunny".into();
+    started.running_pack = Some("Sunny Day".into());
+    assert_eq!(
+        item.label(&started, &out.with_pack(true)).plain(),
+        "Look: Sunny Day"
+    );
+    ui.screen.output = out.with_pack(true);
+    let [x, y, ..] = row(&mut ui, &s, item);
+    assert!(press(&mut ui, &mut s, (x + 8.0, y + 4.0)).is_empty());
+    assert_eq!(s.horizon.hdr_look, HdrLook::Vanilla);
     // HDR's own reasons come first.
     assert_eq!(
         item.blocked(&s, &NONE.with_pack(true)),
@@ -56,7 +86,7 @@ fn hdr_lighting_is_greyed_only_while_a_pack_runs() {
 }
 
 /// Under a `shaders/` pack HDR output shows the pack's picture, the HUD in it, at paper white:
-/// UI Brightness waits, greyed. The rest stay live, Peak Brightness too: it is still the peak
+/// UI Brightness waits, greyed, and Look says the same. The rest stay live, Peak Brightness too: it is still the peak
 /// the metadata declares and where the black level's lift fades out. Under no pack or one of
 /// Horizon's own, on the layered frame, all of them are live.
 #[test]
@@ -76,10 +106,9 @@ fn ui_brightness_is_greyed_under_a_shaders_pack() {
     assert!(layered.hdr_on() && flat.hdr_on());
     let ui_brightness = Item::Horizon(H::HdrUiBrightness);
     assert_eq!(ui_brightness.blocked(&s, &layered), None);
-    assert_eq!(
-        ui_brightness.blocked(&s, &flat),
-        Some("The shader pack's picture is shown at Paper White.")
-    );
+    let paper_white = Some("The shader pack's picture is shown at Paper White.");
+    assert_eq!(ui_brightness.blocked(&s, &flat), paper_white);
+    assert_eq!(Item::Horizon(H::HdrLook).blocked(&s, &flat), paper_white);
     for h in [
         H::Hdr,
         H::HdrCalibrate,
@@ -99,6 +128,29 @@ fn ui_brightness_is_greyed_under_a_shaders_pack() {
     assert_eq!(s.horizon.hdr_ui_nits, saved);
     let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
     assert_eq!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)), [DRAGGED]);
+}
+
+/// scRGB on Wayland is stretched by the compositor itself: Color Boost is greyed there and
+/// says why. PQ on Wayland keeps it.
+#[test]
+fn color_boost_is_greyed_for_scrgb_on_wayland() {
+    use crate::gfx::{HdrOutput, output::tests};
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::On;
+    let boost = Item::Horizon(H::HdrColorBoost);
+    for (hdr, why) in [
+        (HdrOutput::Pq, None),
+        (
+            HdrOutput::ScRgb,
+            Some("In scRGB, your desktop's own color setting applies."),
+        ),
+    ] {
+        let (caps, mut reading) = tests::window(Some(hdr), Some(true));
+        reading.compositor = true;
+        let out = tests::snapshot(&s.horizon, Default::default(), caps, reading);
+        assert!(out.hdr_on());
+        assert_eq!(boost.blocked(&s, &out), why, "{hdr:?}");
+    }
 }
 
 #[test]
@@ -407,7 +459,10 @@ fn undo_never_restores_a_held_hdr_start() {
 /// 1080p window at scale 4 is wider): a longer one would end in "…".
 #[test]
 fn the_calibrate_descriptions_fit_the_strip() {
-    let atlas = crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent")).unwrap();
+    let atlas = crate::hud::HudAtlas::build(
+        &horizon_assets::resource_source::ResourceSource::directory("/nonexistent".into()),
+    )
+    .unwrap();
     let mut guessed = offering(true, Some(true));
     guessed.reported = guessed.reported.map(|r| crate::graphics::Reported {
         peak_guessed: true,
