@@ -1799,7 +1799,7 @@ impl<'s, 't> Walk<'_, '_, 's, 't> {
                             let path: Vec<&str> = target.iter().chain(rest).copied().collect();
                             resolver.own_variant(index, &path, false)
                         }),
-                    [name] if !build.rooted => resolver.imported_variant(index, *name),
+                    [name] if !build.rooted => resolver.imported_variant(index, name),
                     path => resolver.own_variant(index, path, build.rooted),
                 };
             if variant {
