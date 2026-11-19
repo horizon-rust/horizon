@@ -1472,7 +1472,7 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
             .iter()
             .map(|file| file.use_metavariable || !trusted.followed(file))
             .collect();
-        let certain = files
+        let certain: Vec<bool> = files
             .iter()
             .zip(&opaque)
             .map(|(file, opaque)| {
