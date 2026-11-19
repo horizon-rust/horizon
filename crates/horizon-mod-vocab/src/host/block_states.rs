@@ -207,7 +207,7 @@ pub trait BlockStatesBackend {
     fn block_state_friction(&self, state: BlockState) -> Option<f32>;
     /// Side: both.
     /// `BlockState.isSolidRender()`: an opaque full cube that hides the faces beside it (stone
-    /// yes; glass, leaves and slabs no). None for an unknown state.
+    /// yes; glass, leaves and single slabs no). None for an unknown state.
     #[access(Metadata)]
     fn block_state_solid_render(&self, state: BlockState) -> Option<bool>;
     /// Side: both.

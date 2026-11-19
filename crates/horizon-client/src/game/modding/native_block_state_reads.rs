@@ -1,13 +1,11 @@
 //! Block-state facts a mod reads without a position (light, friction, solid render, the
-//! correct-tool rule), a player's harvest rule and a block's redstone conduction: the game's own
-//! tables (`StateFacts`, the world's `Items::correct_for_drops` as the dig reads it, the
-//! behaviours' conductor flag).
+//! correct-tool rule) and a player's harvest rule: the game's own tables (`StateFacts`, the
+//! world's `Items::correct_for_drops` as the dig reads it).
 use super::Game;
 use super::native_server::PlayerRead;
 use horizon_client::items::ItemStack;
-use horizon_world::level::data::state_flags;
 use horizon_world::registry::BlockStateId;
-use mod_api::{LevelRef, PlayerRef};
+use mod_api::PlayerRef;
 
 impl Game<'_> {
     /// `BlockState.getLightEmission()`. None for an unknown state.
@@ -48,8 +46,10 @@ impl Game<'_> {
         state: BlockStateId,
     ) -> Option<bool> {
         self.pack.assets.registry.state(state)?;
+        // The selected hotbar stack (`Inventory.getSelectedItem`), never the acting hand: an
+        // off-hand use leaves the player's tool rule as it was.
         let held = match self.player_read_both(player)? {
-            PlayerRead::Acting { .. } => self.held(),
+            PlayerRead::Acting { .. } => self.stack_in(self.selected),
             PlayerRead::Guest(guest) => guest.inventory.get(guest.selected)?.as_ref(),
         };
         let facts = self.res.facts().get(state);
@@ -57,15 +57,6 @@ impl Game<'_> {
             self.items()
                 .has_correct_tool_for_drops(held, facts.requires_tool, &facts.name),
         )
-    }
-    /// `BlockState.isRedstoneConductor` for the block at `pos`. None as for `block_state`.
-    pub(super) fn level_is_redstone_conductor(
-        &self,
-        level: LevelRef,
-        pos: [i32; 3],
-    ) -> Option<bool> {
-        let state = self.level_block_state(level, pos)?;
-        Some(self.res.behaviours().facts(state).flags & state_flags::CONDUCTOR != 0)
     }
 }
 
@@ -137,6 +128,37 @@ mod tests {
                 player.has_correct_tool_for_drops(game, obsidian),
                 Some(false)
             );
+        });
+    }
+
+    /// The acting player's tool rule reads the selected slot even while the off hand acts
+    /// (`Player.hasCorrectToolForDrops` asks `Inventory.getSelectedItem`).
+    #[test]
+    #[ignore = "daily"]
+    fn the_acting_players_tool_rule_reads_the_selected_slot_during_an_off_hand_use() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            use horizon_client::motion::PlayerMotion;
+            use horizon_core::geometry::Vec3;
+
+            game.options.dedicated = Some(Vec::new());
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 64.0, 4.5)).unwrap());
+            game.lan_acting_uuid = Some(123);
+            game.lan_acting_entity = Some(0);
+            game.lan_acting_name = Some("Miner".into());
+            game.lan_acting_permission = Some(0);
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:wooden_pickaxe", 1));
+            game.offhand = Some(ItemStack::new("minecraft:stick", 1));
+            game.hand = crate::game::Hand::Off;
+            let player = game.native_acting_player().unwrap();
+            let stone: BlockState = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap()
+                .try_into_api()
+                .unwrap();
+            assert_eq!(player.has_correct_tool_for_drops(game, stone), Some(true));
         });
     }
 

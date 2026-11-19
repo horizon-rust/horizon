@@ -20,7 +20,7 @@ A `BlockState` is an API-owned value pairing a `BlockKey` with a block-local can
 
 Use `StateConstraint` for each partial constraint; `StateMatchError` identifies an invalid property or value by index. `StateProperty` describes a property's legal values. These types are shared by state-definition services.
 
-A player's whole answer is `player.has_correct_tool_for_drops(host, state)` (`Player.hasCorrectToolForDrops`: no tool needed, or the selected hotbar stack is a correct one). It is vanilla's rule alone: the `can_harvest_block` and `player_harvest_check` hooks are not asked, so their listeners may call it. Whether the block at a position conducts redstone is `level.is_redstone_conductor(host, pos)` (`BlockState.isRedstoneConductor`).
+A player's whole answer is `player.has_correct_tool_for_drops(host, state)` (`Player.hasCorrectToolForDrops`: no tool needed, or the selected hotbar stack is a correct one). It is vanilla's rule alone: the `can_harvest_block` and `player_harvest_check` hooks are not asked, so their listeners may call it. Whether the block at a position conducts redstone is `level.is_redstone_conductor(host, pos)` (`BlockState.isRedstoneConductor`), on a server, answered by the game's redstone engine; like the engine it ignores a block entity's live shape today, so an open shulker box still conducts.
 
 Queries return `None` for an unknown state or block, including an invalid local ordinal, and on a host with no game behind it (a mod's test double). The ordinal order is defined by the complete canonical property constraints, not by the engine's numeric enumeration.
 
