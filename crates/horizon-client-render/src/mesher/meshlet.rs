@@ -7,7 +7,7 @@
 //! - `quad_offset`: u32 (starting quad index in section / arena page)
 //! - `quad_count`: u8 (1..=64)
 //! - `bucket`: u8 (0..7, corresponding to `Sides::BUCKETS`)
-//! - `flags`: u8 (bit 0: cutout quad, bit 1: full-quad vertex fallback)
+//! - `flags`: u8 (bit 0: cutout quad, bit 1: full-quad vertex fallback, bit 2: unbounded vertices)
 //! - `plane_quant`: u8 (quantized plane threshold for directional culling)
 //! - `sub_aabb`: [u8; 6] (quantized 4-bit min/max X, Y, Z coordinates [0..16] within the 16x16x16 section)
 //! - `padding`: [u8; 2]
@@ -28,7 +28,7 @@ pub struct MeshletDesc {
     pub quad_count: u8,
     /// The directional bucket (0..7, see `Sides::BUCKETS`).
     pub bucket: u8,
-    /// Flags: bit 0 = is_cutout, bit 1 = contains_full_vertices.
+    /// Flags: bit 0 = is_cutout, bit 1 = contains_full_vertices, bit 2 = unbounded_vertices.
     pub flags: u8,
     /// Quantized plane threshold across the bucket's axis.
     pub plane_quant: u8,
@@ -41,6 +41,7 @@ pub struct MeshletDesc {
 impl MeshletDesc {
     pub const FLAG_CUTOUT: u8 = 1 << 0;
     pub const FLAG_FULL_VERTICES: u8 = 1 << 1;
+    pub const FLAG_UNBOUNDED: u8 = 1 << 2;
 
     /// Creates a new meshlet descriptor.
     pub fn new(
@@ -65,6 +66,11 @@ impl MeshletDesc {
     /// Whether this meshlet contains cutout quads.
     pub fn is_cutout(&self) -> bool {
         self.flags & Self::FLAG_CUTOUT != 0
+    }
+
+    /// Whether any vertex in this meshlet extends beyond the representable `0..=255` bounds.
+    pub fn is_unbounded(&self) -> bool {
+        self.flags & Self::FLAG_UNBOUNDED != 0
     }
 
     /// Quantized min corner in section coordinates [0..16].
@@ -117,7 +123,7 @@ pub struct GpuMeshlet {
     pub quad_count: u8,
     /// The directional bucket (0..7, see `Sides::BUCKETS`).
     pub bucket: u8,
-    /// Flags: bit 0 = is_cutout, bit 1 = contains_full_vertices.
+    /// Flags: bit 0 = is_cutout, bit 1 = contains_full_vertices, bit 2 = unbounded_vertices.
     pub flags: u8,
     /// Quantized plane threshold across the bucket's axis.
     pub plane_quant: u8,
@@ -153,6 +159,11 @@ impl GpuMeshlet {
         self.flags & MeshletDesc::FLAG_CUTOUT != 0
     }
 
+    /// Whether any vertex in this meshlet extends beyond the representable `0..=255` bounds.
+    pub fn is_unbounded(&self) -> bool {
+        self.flags & MeshletDesc::FLAG_UNBOUNDED != 0
+    }
+
     /// Quantized min corner in section coordinates [0..16].
     pub fn min_corner(&self) -> [u8; 3] {
         [self.sub_aabb[0], self.sub_aabb[1], self.sub_aabb[2]]
@@ -164,18 +175,20 @@ impl GpuMeshlet {
     }
 }
 
-/// Bounding box helper for building quantized sub-AABBs [0..16].
+/// Bounding box helper for building quantized sub-AABBs [0..16] (or conservative bounds up to 255).
 #[derive(Clone, Copy, Debug)]
 pub struct SubAabbBuilder {
     pub min: [u8; 3],
     pub max: [u8; 3],
+    pub unbounded: bool,
 }
 
 impl Default for SubAabbBuilder {
     fn default() -> Self {
         Self {
-            min: [16, 16, 16],
+            min: [u8::MAX; 3],
             max: [0, 0, 0],
+            unbounded: false,
         }
     }
 }
@@ -198,14 +211,26 @@ impl SubAabbBuilder {
     pub fn include_vertices(&mut self, quad: &[super::TerrainVertex; 4]) {
         for v in quad {
             for (axis, &coord) in v.pos.iter().enumerate() {
-                let lo = coord.floor().clamp(0.0, 15.0) as u8;
-                let hi = coord.ceil().clamp(1.0, 16.0) as u8;
+                let (lo, hi) = if (0.0..=16.0).contains(&coord) {
+                    (
+                        coord.floor().clamp(0.0, 15.0) as u8,
+                        coord.ceil().clamp(1.0, 16.0) as u8,
+                    )
+                } else if (16.0..=255.0).contains(&coord) {
+                    (
+                        coord.floor().clamp(16.0, 254.0) as u8,
+                        coord.ceil().clamp(17.0, 255.0) as u8,
+                    )
+                } else {
+                    self.unbounded = true;
+                    (0, 16)
+                };
                 self.min[axis] = self.min[axis].min(lo);
                 self.max[axis] = self.max[axis].max(hi);
             }
         }
         for axis in 0..3 {
-            if self.min[axis] <= 15 {
+            if self.min[axis] <= 254 {
                 self.max[axis] = self.max[axis].max(self.min[axis] + 1);
             }
         }
@@ -397,6 +422,9 @@ pub fn build_section_meshlets(
             let mut extra_flags = 0u8;
             for q in offset..(offset + u32::from(count)) {
                 extra_flags |= include_section_quad(q, solid, packed, &mut aabb);
+            }
+            if aabb.unbounded {
+                extra_flags |= MeshletDesc::FLAG_UNBOUNDED;
             }
             (extra_flags, aabb.build())
         },
@@ -590,5 +618,93 @@ mod tests {
                 assert_eq!(m.is_cutout(), q_cutout);
             }
         }
+    }
+
+    fn desc_in_frustum(desc: &MeshletDesc, planes: &[[f32; 4]; 6]) -> bool {
+        if desc.is_unbounded() {
+            return true;
+        }
+        let bmin = desc.min_corner().map(f32::from);
+        let bmax = desc.max_corner().map(f32::from);
+        planes.iter().all(|&[nx, ny, nz, w]| {
+            let px = if nx >= 0.0 { bmax[0] } else { bmin[0] };
+            let py = if ny >= 0.0 { bmax[1] } else { bmin[1] };
+            let pz = if nz >= 0.0 { bmax[2] } else { bmin[2] };
+            nx * px + ny * py + nz * pz + w >= 0.0
+        })
+    }
+
+    #[test]
+    fn build_section_meshlets_keeps_conservative_bounds_across_section_edges() {
+        let mut q_ext_east = test_quad(15.0, 2.0, 2.0, super::super::OPAQUE_LAYER);
+        q_ext_east[2].pos[0] = 16.25;
+        q_ext_east[3].pos[0] = 16.25;
+
+        let mut q_ext_west = test_quad(0.0, 2.0, 2.0, super::super::OPAQUE_LAYER);
+        q_ext_west[0].pos[0] = -0.25;
+        q_ext_west[1].pos[0] = -0.25;
+
+        let q_in = test_quad(4.0, 2.0, 2.0, super::super::OPAQUE_LAYER);
+
+        // Frustum plane between section edge x=16.0 and extending vertex x=16.25 (x >= 16.125).
+        let east_planes = [
+            [1.0, 0.0, 0.0, -16.125],
+            [-1.0, 0.0, 0.0, 32.0],
+            [0.0, 1.0, 0.0, 16.0],
+            [0.0, -1.0, 0.0, 16.0],
+            [0.0, 0.0, 1.0, 16.0],
+            [0.0, 0.0, -1.0, 16.0],
+        ];
+        // Frustum plane between section edge x=0.0 and extending vertex x=-0.25 (x <= -0.125).
+        let west_planes = [
+            [1.0, 0.0, 0.0, 16.0],
+            [-1.0, 0.0, 0.0, -0.125],
+            [0.0, 1.0, 0.0, 16.0],
+            [0.0, -1.0, 0.0, 16.0],
+            [0.0, 0.0, 1.0, 16.0],
+            [0.0, 0.0, -1.0, 16.0],
+        ];
+
+        // In-range geometry retains compact [0..16] bounds and is correctly culled beyond x=16.125.
+        let in_solid: Vec<_> = q_in.into_iter().collect();
+        let in_meshlets = build_section_meshlets(&Sides::unsorted(1), &in_solid, &[]);
+        assert!(!in_meshlets[0].is_unbounded());
+        assert_eq!(in_meshlets[0].max_corner(), [5, 4, 3]);
+        assert!(!desc_in_frustum(&in_meshlets[0], &east_planes));
+
+        // 1. Raw solid quads extending past east (+X = 16.25) and west (-X = -0.25) section edges.
+        let east_raw: Vec<_> = q_ext_east.into_iter().collect();
+        let east_meshlets = build_section_meshlets(&Sides::unsorted(1), &east_raw, &[]);
+        assert!(!east_meshlets[0].is_unbounded());
+        assert_eq!(east_meshlets[0].max_corner()[0], 17);
+        assert!(desc_in_frustum(&east_meshlets[0], &east_planes));
+
+        let west_raw: Vec<_> = q_ext_west.into_iter().collect();
+        let west_meshlets = build_section_meshlets(&Sides::unsorted(1), &west_raw, &[]);
+        assert!(west_meshlets[0].is_unbounded());
+        assert!(desc_in_frustum(&west_meshlets[0], &west_planes));
+
+        // 2. Spilled FULL packed quads preserve the exact same conservative/unbounded behavior.
+        let spill_tints = [super::super::packed::WHITE; 5];
+        let east_spill_solid: Vec<_> = [q_in, q_in, q_in, q_in, q_ext_east]
+            .into_iter()
+            .flatten()
+            .collect();
+        let east_packed = super::super::packed::layout(&east_spill_solid, &spill_tints);
+        assert!(!east_packed.is_empty());
+        let east_spill_meshlets = build_section_meshlets(&Sides::unsorted(5), &[], &east_packed);
+        assert!(!east_spill_meshlets[0].is_unbounded());
+        assert_eq!(east_spill_meshlets[0].max_corner()[0], 17);
+        assert!(desc_in_frustum(&east_spill_meshlets[0], &east_planes));
+
+        let west_spill_solid: Vec<_> = [q_in, q_in, q_in, q_in, q_ext_west]
+            .into_iter()
+            .flatten()
+            .collect();
+        let west_packed = super::super::packed::layout(&west_spill_solid, &spill_tints);
+        assert!(!west_packed.is_empty());
+        let west_spill_meshlets = build_section_meshlets(&Sides::unsorted(5), &[], &west_packed);
+        assert!(west_spill_meshlets[0].is_unbounded());
+        assert!(desc_in_frustum(&west_spill_meshlets[0], &west_planes));
     }
 }

@@ -160,17 +160,23 @@ pub(in crate::gfx) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGrou
     })
 }
 
-/// Mesh-stage-compatible `@group(0)` layout (`terrain.wgsl` globals, sprites, lightmap, and emission
-/// thresholds with `SHADER_STAGES::MESH` visibility in addition to vertex/fragment).
-#[allow(dead_code)]
-pub(in crate::gfx) fn group0_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+/// Bind group layout entries for `terrain.wgsl` `@group(0)` extended with `ShaderStages::MESH`
+/// visibility alongside vertex and fragment stages.
+pub(in crate::gfx) fn terrain_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut entries = crate::gfx::native_material::terrain_entries();
     for entry in &mut entries {
         entry.visibility |= wgpu::ShaderStages::MESH;
     }
+    entries
+}
+
+/// Mesh-stage-compatible `@group(0)` layout (`terrain.wgsl` globals, sprites, lightmap, and emission
+/// thresholds with `SHADER_STAGES::MESH` visibility in addition to vertex/fragment).
+#[allow(dead_code)]
+pub(in crate::gfx) fn group0_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Terrain mesh group 0"),
-        entries: &entries,
+        entries: &terrain_entries(),
     })
 }
 
@@ -220,6 +226,9 @@ pub(in crate::gfx) fn pipeline_layout(
 /// bucket can face `rel_eye` (or `rel_low` for `-Y` water-mirror bounds) relative to the section origin.
 #[allow(dead_code)]
 pub fn meshlet_facing(desc: &MeshletDesc, rel_eye: [f32; 3], rel_low: f32) -> bool {
+    if desc.is_unbounded() {
+        return true;
+    }
     let min = desc.min_corner().map(f32::from);
     let max = desc.max_corner().map(f32::from);
     match desc.bucket {
@@ -237,6 +246,9 @@ pub fn meshlet_facing(desc: &MeshletDesc, rel_eye: [f32; 3], rel_low: f32) -> bo
 /// offset by the section `origin` against the six inward-facing frustum planes.
 #[allow(dead_code)]
 pub fn meshlet_in_frustum(desc: &MeshletDesc, origin: [f32; 3], planes: &[[f32; 4]; 6]) -> bool {
+    if desc.is_unbounded() {
+        return true;
+    }
     let min = desc.min_corner().map(f32::from);
     let max = desc.max_corner().map(f32::from);
     let bmin = [origin[0] + min[0], origin[1] + min[1], origin[2] + min[2]];
@@ -275,6 +287,7 @@ struct PageTable {
     sections: std::collections::BTreeMap<u32, Vec<GpuMeshlet>>,
     staging: Vec<GpuMeshlet>,
     dirty: bool,
+    revision: u64,
 }
 
 /// CPU staging table managing rebased [`GpuMeshlet`] descriptors per arena page and
@@ -283,6 +296,7 @@ struct PageTable {
 #[derive(Default)]
 pub(in crate::gfx) struct MeshletTable {
     pages: std::collections::BTreeMap<u32, PageTable>,
+    next_revision: u64,
 }
 
 #[allow(dead_code)]
@@ -292,6 +306,11 @@ impl MeshletTable {
         Self::default()
     }
 
+    fn alloc_revision(&mut self) -> u64 {
+        self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        self.next_revision
+    }
+
     /// Registers or replaces a section's meshlets at `(page, solid_base)`, rebasing each descriptor
     /// into its GPU representation via [`MeshletDesc::to_gpu`].
     pub fn insert_section(&mut self, page: u32, solid_base: u32, meshlets: &[MeshletDesc]) {
@@ -299,24 +318,90 @@ impl MeshletTable {
             self.remove_section(page, solid_base);
             return;
         }
+        let rev = self.alloc_revision();
         let relocated: Vec<GpuMeshlet> = meshlets.iter().map(|m| m.to_gpu(solid_base)).collect();
         let entry = self.pages.entry(page).or_default();
         entry.sections.insert(solid_base, relocated);
         entry.dirty = true;
+        entry.revision = rev;
     }
 
     /// Removes the section at `(page, solid_base)` from the table.
     pub fn remove_section(&mut self, page: u32, solid_base: u32) {
-        let Some(entry) = self.pages.get_mut(&page) else {
+        let removed = if let Some(entry) = self.pages.get_mut(&page)
+            && entry.sections.remove(&solid_base).is_some()
+        {
+            Some(entry.sections.is_empty())
+        } else {
+            None
+        };
+        match removed {
+            Some(true) => {
+                self.pages.remove(&page);
+            }
+            Some(false) => {
+                let rev = self.alloc_revision();
+                if let Some(entry) = self.pages.get_mut(&page) {
+                    entry.dirty = true;
+                    entry.revision = rev;
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Moves a section's meshlets from `(from_page, from_solid_base)` to `(to_page, to_solid_base)`
+    /// during arena compaction, rebasing each descriptor's `vertex_base`.
+    pub fn relocate_section(
+        &mut self,
+        from_page: u32,
+        from_solid_base: u32,
+        to_page: u32,
+        to_solid_base: u32,
+    ) {
+        if (from_page, from_solid_base) == (to_page, to_solid_base) {
+            return;
+        }
+        let Some(from_entry) = self.pages.get_mut(&from_page) else {
             return;
         };
-        if entry.sections.remove(&solid_base).is_some() {
-            if entry.sections.is_empty() {
-                self.pages.remove(&page);
-            } else {
+        let Some(mut list) = from_entry.sections.remove(&from_solid_base) else {
+            return;
+        };
+        let from_empty = from_entry.sections.is_empty();
+        if from_empty {
+            self.pages.remove(&from_page);
+        } else {
+            let from_rev = self.alloc_revision();
+            if let Some(entry) = self.pages.get_mut(&from_page) {
                 entry.dirty = true;
+                entry.revision = from_rev;
             }
         }
+        for m in &mut list {
+            m.vertex_base = m
+                .vertex_base
+                .wrapping_sub(from_solid_base)
+                .wrapping_add(to_solid_base);
+        }
+        let to_rev = self.alloc_revision();
+        let to_entry = self.pages.entry(to_page).or_default();
+        to_entry.sections.insert(to_solid_base, list);
+        to_entry.dirty = true;
+        to_entry.revision = to_rev;
+    }
+
+    /// Retires staging data for an empty or freed arena `page`.
+    pub fn retire_page(&mut self, page: u32) {
+        self.pages.remove(&page);
+    }
+
+    /// Returns the current revision of `page` when non-empty.
+    pub fn page_revision(&self, page: u32) -> Option<u64> {
+        self.pages
+            .get(&page)
+            .filter(|entry| !entry.sections.is_empty())
+            .map(|entry| entry.revision)
     }
 
     /// Drops all tracked sections across every page.
@@ -364,6 +449,8 @@ struct PageGpu {
     storage_capacity: usize,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    uploaded_revision: u64,
+    prepared_passes: [Option<(u64, u32)>; PASS_SLOTS as usize],
 }
 
 /// Prepared immutable GPU draw handle for a `(page, pass_kind)` pair inside a `RenderPass`.
@@ -387,14 +474,63 @@ pub(in crate::gfx) struct MeshSectionStore {
 
 #[allow(dead_code)]
 impl MeshSectionStore {
+    fn invalidate_page_passes(&mut self, page: u32) {
+        if let Some(pg) = self.gpu_pages.get_mut(&page) {
+            pg.prepared_passes = [None; PASS_SLOTS as usize];
+        }
+    }
+
     /// Registers or replaces a section's meshlets at `(page, solid_base)`.
     pub fn insert_section(&mut self, page: u32, solid_base: u32, meshlets: &[MeshletDesc]) {
         self.table.insert_section(page, solid_base, meshlets);
+        self.invalidate_page_passes(page);
     }
 
     /// Removes the section at `(page, solid_base)` from the meshlet store.
+    /// Keeps existing `PageGpu` buffers so ordinary section replacement reuses the allocation;
+    /// use [`Self::retire_page`] or [`Self::trim`] when the arena releases an empty vertex page.
     pub fn remove_section(&mut self, page: u32, solid_base: u32) {
         self.table.remove_section(page, solid_base);
+        self.invalidate_page_passes(page);
+    }
+
+    /// Moves a section's meshlets from `(from_page, from_solid_base)` to `(to_page, to_solid_base)`.
+    pub fn relocate_section(
+        &mut self,
+        from_page: u32,
+        from_solid_base: u32,
+        to_page: u32,
+        to_solid_base: u32,
+    ) {
+        self.table
+            .relocate_section(from_page, from_solid_base, to_page, to_solid_base);
+        self.invalidate_page_passes(from_page);
+        self.invalidate_page_passes(to_page);
+    }
+
+    /// Releases GPU meshlet and uniform buffers for a retired arena `page`.
+    pub fn retire_page(&mut self, page: u32) {
+        self.table.retire_page(page);
+        self.gpu_pages.remove(&page);
+    }
+
+    /// Retires any pages for which `live(page)` returns `false`, freeing their `PageGpu` buffers.
+    pub fn trim(&mut self, live: impl Fn(u32) -> bool) {
+        let dead: Vec<u32> = self
+            .gpu_pages
+            .keys()
+            .chain(self.table.pages.keys())
+            .copied()
+            .filter(|&page| !live(page))
+            .collect();
+        for page in dead {
+            self.retire_page(page);
+        }
+    }
+
+    /// Whether `page` currently retains allocated GPU buffers in this store.
+    pub fn has_gpu_page(&self, page: u32) -> bool {
+        self.gpu_pages.contains_key(&page)
     }
 
     /// Drops all tracked sections and per-page GPU buffers.
@@ -420,9 +556,14 @@ impl MeshSectionStore {
         let pass_slot = params.counts[1];
         assert!(pass_slot < PASS_SLOTS, "invalid mesh pass kind {pass_slot}");
 
+        let Some(revision) = self.table.page_revision(page) else {
+            self.invalidate_page_passes(page);
+            return 0;
+        };
         let (rebuilt, staged) = self.table.stage_page(page);
         let count = staged.len() as u32;
         if count == 0 {
+            self.invalidate_page_passes(page);
             return 0;
         }
 
@@ -454,6 +595,8 @@ impl MeshSectionStore {
                         storage_capacity: cap,
                         uniform,
                         bind_group,
+                        uploaded_revision: 0,
+                        prepared_passes: [None; PASS_SLOTS as usize],
                     });
                 }
                 std::collections::btree_map::Entry::Occupied(mut slot) => {
@@ -466,16 +609,20 @@ impl MeshSectionStore {
                     );
                     pg.storage = storage;
                     pg.storage_capacity = cap;
+                    pg.uploaded_revision = 0;
+                    pg.prepared_passes = [None; PASS_SLOTS as usize];
                 }
             }
         }
 
         let pg = self
             .gpu_pages
-            .get(&page)
+            .get_mut(&page)
             .expect("page GPU storage must exist after allocation");
-        if rebuilt || needs_alloc {
+        if rebuilt || needs_alloc || pg.uploaded_revision != revision {
             queue.write_buffer(&pg.storage, 0, bytemuck::cast_slice(staged));
+            pg.uploaded_revision = revision;
+            pg.prepared_passes = [None; PASS_SLOTS as usize];
         }
 
         let mut updated = *params;
@@ -485,19 +632,23 @@ impl MeshSectionStore {
             u64::from(pass_slot) * u64::from(self.uniform_stride),
             bytemuck::bytes_of(&updated),
         );
+        pg.prepared_passes[pass_slot as usize] = Some((revision, count));
         count
     }
 
-    /// Returns the prepared immutable draw handle for `(page, pass_kind)`, or `None` when empty.
+    /// Returns the prepared immutable draw handle for `(page, pass_kind)` if that pass was prepared
+    /// against the current uploaded page revision, or `None` otherwise.
     pub fn page_draw(&self, page: u32, pass_kind: u32) -> Option<MeshPageDraw<'_>> {
         if pass_kind >= PASS_SLOTS {
             return None;
         }
-        let meshlet_count = self.table.page_count(page);
-        if meshlet_count == 0 {
+        let current_rev = self.table.page_revision(page)?;
+        let pg = self.gpu_pages.get(&page)?;
+        let (prepared_rev, meshlet_count) = pg.prepared_passes[pass_kind as usize]?;
+        if prepared_rev != current_rev || pg.uploaded_revision != current_rev || meshlet_count == 0
+        {
             return None;
         }
-        let pg = self.gpu_pages.get(&page)?;
         Some(MeshPageDraw {
             bind_group: &pg.bind_group,
             uniform_offset: pass_kind * self.uniform_stride,
@@ -620,12 +771,196 @@ pub(in crate::gfx) fn create_mesh_terrain_pipeline(
 pub(in crate::gfx) fn draw_mesh_page<'a>(
     pass: &mut wgpu::RenderPass<'a>,
     pipeline: &'a wgpu::RenderPipeline,
+    group1: &'a wgpu::BindGroup,
     draw: MeshPageDraw<'a>,
 ) {
     if draw.meshlet_count > 0 {
         pass.set_pipeline(pipeline);
+        pass.set_bind_group(1, group1, &[]);
         pass.set_bind_group(2, draw.bind_group, &[draw.uniform_offset]);
         pass.draw_mesh_tasks(task_workgroups(draw.meshlet_count), 1, 1);
+    }
+}
+
+/// Renderer-owned hardware mesh-shader terrain store and pipelines (#17243 step 3/4).
+pub(in crate::gfx) struct MeshTerrain {
+    pub(in crate::gfx) store: MeshSectionStore,
+    opaque_plain: wgpu::RenderPipeline,
+    opaque_hdr: Option<wgpu::RenderPipeline>,
+    cutout_plain: wgpu::RenderPipeline,
+    cutout_hdr: Option<wgpu::RenderPipeline>,
+}
+
+impl MeshTerrain {
+    /// Initializes the mesh section store and builds opaque/cutout hardware task+mesh pipelines
+    /// when `device` was opened with `EXPERIMENTAL_MESH_SHADER`.
+    pub fn new(
+        device: &wgpu::Device,
+        group0: &wgpu::BindGroupLayout,
+        group1: &wgpu::BindGroupLayout,
+        (color_format, linear_light): (wgpu::TextureFormat, bool),
+        sprite_constants: &[(&str, f64)],
+        has_hdr: bool,
+    ) -> Option<Self> {
+        let store = new_store(device)?;
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Horizon terrain mesh shader"),
+            source: wgpu::ShaderSource::Wgsl(shader().into()),
+        });
+        let layout = pipeline_layout(device, group0, group1, store.bind_group_layout());
+        let frame_consts = crate::gfx::linear_blend::frame_constants(color_format, linear_light);
+        let mut hdr_constants = Vec::with_capacity(sprite_constants.len() + frame_consts.len());
+        hdr_constants.extend_from_slice(sprite_constants);
+        hdr_constants.extend_from_slice(&frame_consts);
+
+        let mut plain_constants = Vec::with_capacity(hdr_constants.len() + 1);
+        plain_constants.extend_from_slice(sprite_constants);
+        plain_constants.push(("HDR_LIGHTING", 0.0));
+        plain_constants.extend_from_slice(&frame_consts);
+
+        let depth = Some(wgpu::TextureFormat::Depth32Float);
+        let opaque_plain = create_mesh_terrain_pipeline(
+            device,
+            Some(&layout),
+            &module,
+            "fs_opaque",
+            color_format,
+            depth,
+            &plain_constants,
+        );
+        let cutout_plain = create_mesh_terrain_pipeline(
+            device,
+            Some(&layout),
+            &module,
+            "fs_solid",
+            color_format,
+            depth,
+            &plain_constants,
+        );
+        let (opaque_hdr, cutout_hdr) = if has_hdr {
+            (
+                Some(create_mesh_terrain_pipeline(
+                    device,
+                    Some(&layout),
+                    &module,
+                    "fs_opaque",
+                    color_format,
+                    depth,
+                    &hdr_constants,
+                )),
+                Some(create_mesh_terrain_pipeline(
+                    device,
+                    Some(&layout),
+                    &module,
+                    "fs_solid",
+                    color_format,
+                    depth,
+                    &hdr_constants,
+                )),
+            )
+        } else {
+            (None, None)
+        };
+        Some(Self {
+            store,
+            opaque_plain,
+            opaque_hdr,
+            cutout_plain,
+            cutout_hdr,
+        })
+    }
+
+    /// Swaps the retained mesh section store during renderer replacement on the same device,
+    /// rebinding each page's `@group(2)` bind group against each store's own pipeline layout.
+    pub fn take_store(&mut self, device: &wgpu::Device, from: &mut Self) {
+        std::mem::swap(&mut self.store.table, &mut from.store.table);
+        std::mem::swap(&mut self.store.gpu_pages, &mut from.store.gpu_pages);
+        for store in [&mut self.store, &mut from.store] {
+            for pg in store.gpu_pages.values_mut() {
+                pg.bind_group = create_page_bind_group(
+                    device,
+                    &store.bind_group_layout,
+                    &pg.storage,
+                    &pg.uniform,
+                );
+                pg.prepared_passes = [None; PASS_SLOTS as usize];
+            }
+        }
+    }
+
+    /// Extracts sub-section meshlets for an uploaded section mesh and inserts them into the store.
+    pub fn insert_section_mesh(
+        &mut self,
+        page: u32,
+        solid_base: u32,
+        packed: bool,
+        sides: &crate::mesher::Sides,
+        mesh: &crate::mesher::SectionMesh,
+    ) {
+        let meshlets = crate::mesher::meshlet::build_section_meshlets(
+            sides,
+            &mesh.solid,
+            if packed { &mesh.packed } else { &[] },
+        );
+        self.store.insert_section(page, solid_base, &meshlets);
+    }
+
+    /// Uploads dirty meshlet staging pages and updates `PASS_OPAQUE` / `PASS_CUTOUT` culling uniforms.
+    /// Returns the number of non-empty page-pass dispatches prepared for this frame.
+    pub fn prepare_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pages: impl IntoIterator<Item = u32>,
+        planes: [[f32; 4]; 6],
+        eye: [f32; 4],
+        no_eye: bool,
+    ) -> usize {
+        let skip_facing = u32::from(no_eye);
+        let mut dispatches = 0usize;
+        for page in pages {
+            for pass_kind in [PASS_OPAQUE, PASS_CUTOUT] {
+                let params = MeshCullParams {
+                    planes,
+                    eye,
+                    counts: [0, pass_kind, skip_facing, 0],
+                };
+                if self.store.prepare_page(device, queue, page, &params) > 0 {
+                    dispatches += 1;
+                }
+            }
+        }
+        dispatches
+    }
+
+    /// Records the opaque then cutout hardware mesh passes across all prepared arena pages.
+    pub fn draw_solid<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        flat: &'a crate::gfx::flat::Flat,
+        pages: impl IntoIterator<Item = u32>,
+        hdr: bool,
+    ) {
+        let page_list: Vec<u32> = pages.into_iter().collect();
+        let opaque_pipe = if hdr {
+            self.opaque_hdr.as_ref().unwrap_or(&self.opaque_plain)
+        } else {
+            &self.opaque_plain
+        };
+        let cutout_pipe = if hdr {
+            self.cutout_hdr.as_ref().unwrap_or(&self.cutout_plain)
+        } else {
+            &self.cutout_plain
+        };
+        for (pass_kind, pipeline) in [(PASS_OPAQUE, opaque_pipe), (PASS_CUTOUT, cutout_pipe)] {
+            for &page in &page_list {
+                if let (Some(group1), Some(draw)) =
+                    (flat.page_group(page), self.store.page_draw(page, pass_kind))
+                {
+                    draw_mesh_page(pass, pipeline, group1, draw);
+                }
+            }
+        }
     }
 }
 
@@ -1524,11 +1859,10 @@ mod tests {
                     });
                     pass.set_bind_group(0, &group0, &[]);
                     for &(page, pass_kind, pipe, g1) in draws {
-                        pass.set_bind_group(1, g1, &[]);
                         let draw = store
                             .page_draw(page, pass_kind)
                             .expect("page draw must be prepared");
-                        draw_mesh_page(&mut pass, pipe, draw);
+                        draw_mesh_page(&mut pass, pipe, g1, draw);
                     }
                 }
                 encoder.copy_texture_to_buffer(
@@ -1634,5 +1968,141 @@ mod tests {
             chunks.iter().all(|&c| c == [0, 0, 0, 255]),
             "eye below +Y faces must cull all pixels"
         );
+
+        // Case 4: Inactive/cave-culled section slot (origin.w == 0.0) renders zero pixels.
+        let hidden_origin = [-4.0f32, -4.0, -4.0, 0.0];
+        let _hidden_bufs = build_group1(&[0, 0], &[hidden_origin], &p0_packed);
+        store.prepare_page(&device, &queue, 0, &params(PASS_ALL, eye_above));
+        let hidden =
+            render_and_readback(&store, &[(0, PASS_ALL, &cutout_pipeline, &_hidden_bufs.3)]);
+        let (hidden_chunks, hidden_rem) = hidden.as_chunks::<4>();
+        assert!(hidden_rem.is_empty());
+        assert!(
+            hidden_chunks.iter().all(|&c| c == [0, 0, 0, 255]),
+            "inactive slot (origin.w == 0.0) must not emit geometry"
+        );
+
+        // Case 5: Verify MeshTerrain wrapper pipelines + prepare_frame dispatch end-to-end.
+        let mut terrain = MeshTerrain::new(
+            &device,
+            &g0_layout,
+            &g1_layout,
+            (color_format, false),
+            &[("SPRITE_ARRAYS", 1.0), ("SPRITE_SPLIT", 2048.0)],
+            false,
+        )
+        .expect("MeshTerrain initialized on mesh shader adapter");
+        terrain.store.insert_section(0, PACKED_BASE, &p0_meshlets);
+        let dispatches = terrain.prepare_frame(&device, &queue, [0], box_planes, eye_above, false);
+        assert_eq!(dispatches, 2);
+        let opaque_handle = terrain.store.page_draw(0, PASS_OPAQUE).unwrap();
+        let cutout_handle = terrain.store.page_draw(0, PASS_CUTOUT).unwrap();
+        let wrapper_pixels = render_and_readback(
+            &terrain.store,
+            &[
+                (0, PASS_OPAQUE, &terrain.opaque_plain, &_p0_bufs.3),
+                (0, PASS_CUTOUT, &terrain.cutout_plain, &_p0_bufs.3),
+            ],
+        );
+        assert!(opaque_handle.meshlet_count > 0 && cutout_handle.meshlet_count > 0);
+        assert!(px(&wrapper_pixels, 8, 32)[0] > 200);
+        assert!(px(&wrapper_pixels, 56, 24)[2] > 200);
+    }
+
+    #[test]
+    fn page_draw_requires_pass_prepared_for_current_page_revision() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(adapter) = mesh_shader_adapter() else {
+            return;
+        };
+        let (device, queue) = open_mesh_device(&adapter, "Mesh pass revision test");
+        let mut store = new_store(&device).expect("mesh shaders are enabled");
+
+        let m_one: Vec<MeshletDesc> = (0..32)
+            .map(|i| MeshletDesc::new(i, 1, 2, 0, 0, [0, 0, 0, 4, 4, 4]))
+            .collect();
+        let m_extra = MeshletDesc::new(0, 1, 2, 0, 0, [0, 0, 0, 4, 4, 4]);
+        let params_for = |pass| MeshCullParams {
+            planes: [[0.0; 4]; 6],
+            eye: [0.0; 4],
+            counts: [0, pass, 0, 0],
+        };
+
+        // Preparing only PASS_OPAQUE leaves PASS_CUTOUT unprepared (`None`).
+        store.insert_section(0, 0, &m_one);
+        assert_eq!(
+            store.prepare_page(&device, &queue, 0, &params_for(PASS_OPAQUE)),
+            32
+        );
+        assert_eq!(store.page_draw(0, PASS_OPAQUE).unwrap().meshlet_count, 32);
+        assert!(store.page_draw(0, PASS_CUTOUT).is_none());
+
+        // Adding a 33rd meshlet changes page 0's revision, invalidating PASS_OPAQUE immediately.
+        store.insert_section(0, 1024, &[m_extra]);
+        assert!(store.page_draw(0, PASS_OPAQUE).is_none());
+
+        // Preparing PASS_CUTOUT on the new revision must keep PASS_OPAQUE returning None until re-prepared.
+        assert_eq!(
+            store.prepare_page(&device, &queue, 0, &params_for(PASS_CUTOUT)),
+            33
+        );
+        assert_eq!(store.page_draw(0, PASS_CUTOUT).unwrap().meshlet_count, 33);
+        assert!(store.page_draw(0, PASS_OPAQUE).is_none());
+
+        assert_eq!(
+            store.prepare_page(&device, &queue, 0, &params_for(PASS_OPAQUE)),
+            33
+        );
+        assert_eq!(store.page_draw(0, PASS_OPAQUE).unwrap().meshlet_count, 33);
+        assert_eq!(store.page_draw(0, PASS_CUTOUT).unwrap().meshlet_count, 33);
+    }
+
+    #[test]
+    fn retire_page_and_trim_release_gpu_buffers_while_remove_section_reuses_allocation() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(adapter) = mesh_shader_adapter() else {
+            return;
+        };
+        let (device, queue) = open_mesh_device(&adapter, "Mesh page retire test");
+        let mut store = new_store(&device).expect("mesh shaders are enabled");
+
+        let m = MeshletDesc::new(0, 8, 2, 0, 0, [0, 0, 0, 4, 4, 4]);
+        let params = MeshCullParams {
+            planes: [[0.0; 4]; 6],
+            eye: [0.0; 4],
+            counts: [0, PASS_OPAQUE, 0, 0],
+        };
+        store.insert_section(0, 100, &[m]);
+        store.insert_section(1, 200, &[m]);
+        assert_eq!(store.prepare_page(&device, &queue, 0, &params), 1);
+        assert_eq!(store.prepare_page(&device, &queue, 1, &params), 1);
+        assert!(store.has_gpu_page(0));
+        assert!(store.has_gpu_page(1));
+
+        // Removing the last section keeps PageGpu alive for buffer reuse during replacements.
+        store.remove_section(0, 100);
+        assert!(store.has_gpu_page(0));
+        assert!(store.page_draw(0, PASS_OPAQUE).is_none());
+
+        // Reinserting on page 0 works and reuses page 0's PageGpu allocation.
+        store.insert_section(0, 300, &[m, m]);
+        assert_eq!(store.prepare_page(&device, &queue, 0, &params), 2);
+        assert_eq!(store.page_draw(0, PASS_OPAQUE).unwrap().meshlet_count, 2);
+
+        // relocate_section transfers meshlets between pages, rebases vertex_base, and invalidates passes.
+        store.relocate_section(0, 300, 1, 500);
+        assert!(store.page_draw(0, PASS_OPAQUE).is_none());
+        assert!(store.page_draw(1, PASS_OPAQUE).is_none());
+        assert_eq!(store.prepare_page(&device, &queue, 1, &params), 3);
+        assert!(store.staged_page(1).contains(&m.to_gpu(500)));
+
+        // retire_page and trim drop GPU page buffers when Arena releases empty pages.
+        store.retire_page(0);
+        assert!(!store.has_gpu_page(0));
+        assert!(store.has_gpu_page(1));
+
+        store.trim(|page| page != 1);
+        assert!(!store.has_gpu_page(1));
+        assert_eq!(store.page_count(1), 0);
     }
 }
