@@ -1,0 +1,2 @@
+# A team with no member gives the mobs no team.
+horizon-client game::scoreboard::team_without_members_tests::a_team_without_members_gives_the_mobs_none lib daily resources

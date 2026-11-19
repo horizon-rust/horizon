@@ -702,6 +702,14 @@ impl Game<'_> {
         if self.score.board.teams.is_empty() {
             return Default::default();
         }
+        // No holder is on a team: no mob is, and neither is a pet's owner, so the pass below, which
+        // formats the scoreboard name of every entity of the level every tick, finds nothing.
+        if self.score.board.team_members().next().is_none() {
+            return horizon_client::mobs::Teams {
+                player: self.player_team(),
+                mobs: Default::default(),
+            };
+        }
         // One pass over the mobs, not one per mob.
         let tame_owners: HashMap<u32, [i32; 4]> = self
             .mobs
@@ -1346,6 +1354,8 @@ mod criterion_tests;
 
 #[cfg(test)]
 mod empty_tag_tests;
+#[cfg(test)]
+mod team_without_members_tests;
 #[cfg(test)]
 mod guest_advancement_tests;
 
