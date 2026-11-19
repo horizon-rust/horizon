@@ -41,6 +41,7 @@ mod package;
 mod patch;
 mod picker;
 mod prebuilt;
+pub mod prepare_first;
 pub mod sdk_cache;
 
 pub use isolate::{LeftOut, Why};
@@ -1653,6 +1654,9 @@ pub enum Failed {
     /// Mods this build can't use were saved into worlds: the player chooses (stay, or back the
     /// worlds up and build without them).
     Worlds(Box<AtStake>),
+    /// The base version (named) is installed but not prepared. The command line says how to
+    /// prepare it; the window prepares it (`prepare_first`).
+    NotPrepared(String),
     Other(String),
 }
 
@@ -1667,6 +1671,7 @@ impl std::fmt::Display for Failed {
         match self {
             Self::Mods { error, .. } | Self::Other(error) => f.write_str(error),
             Self::Worlds(stake) => f.write_str(&stake.text),
+            Self::NotPrepared(tag) => f.write_str(&backend::prepare_hint(tag)),
             Self::Nothing => f.write_str(tr("There are no mods to build: the folder has none, or every mod was left out.")),
             Self::NoConsent => f.write_str(tr("Native mods run inside your game with your rights; mixins compile code into the game. Allow native mods in Settings, Storage, or pass --trust-native-code.")),
         }
@@ -1874,7 +1879,10 @@ fn pipeline(
 ) -> Result<Built, Failed> {
     let started = std::time::Instant::now();
     let built_on = checked_about(base)?;
-    backend::need_prepared(base)?;
+    backend::ready(base).map_err(|not| match not {
+        backend::NotReady::Unprepared(tag) => Failed::NotPrepared(tag),
+        not => Failed::Other(not.into()),
+    })?;
     let platform = platform_for_game(base)?;
     fs::create_dir_all(root()).map_err(|e| e.to_string())?;
     // The mods are copied first: the build and its key use the copy, whatever happens to the
@@ -2387,6 +2395,7 @@ fn isolated(
             Err(Failed::Nothing) => return Err(said(&skip, last)),
             Err(Failed::NoConsent) => return Err(Failed::NoConsent),
             Err(Failed::Worlds(stake)) => return Err(Failed::Worlds(stake)),
+            Err(Failed::NotPrepared(tag)) => return Err(Failed::NotPrepared(tag)),
             Err(Failed::Other(error)) if error == CANCELLED => return Err(Failed::Other(error)),
             Err(Failed::Other(error)) => return Err(said(&skip, error)),
         }

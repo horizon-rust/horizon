@@ -1,4 +1,5 @@
 use super::*;
+use horizon_launcher::native_mods::prepare_first::First;
 
 impl Launcher {
     /// Records why a build failed. A mod's own compile failure reads as plain words with a way
@@ -25,6 +26,7 @@ impl Launcher {
         if self.native_step.is_some() {
             return;
         }
+        let asked = base.clone();
         // Every way to a build asks first while native mods aren't allowed (permission taken
         // back in Storage, say, with a card still open): the question, never a refusal.
         // The card stays under the question: Cancel goes back to it.
@@ -65,6 +67,20 @@ impl Launcher {
                 return;
             }
         };
+        // Not prepared: the window prepares the base as Prepare & play does, never the command
+        // line's hint (#18659).
+        match native_mods::prepare_first::first(backend::ready(&base), self.preparing) {
+            First::Build => {}
+            First::Prepare(tag) => {
+                self.prepare_version(tag, backend::MinecraftFrom::Install);
+                self.wait_for_prepare(asked, back_up);
+                return;
+            }
+            First::Wait => {
+                self.wait_for_prepare(asked, back_up);
+                return;
+            }
+        }
         self.native_step = Some(tr("Starting the build").into());
         self.native_progress = None;
         // The first build downloads the compiler: the card says so, with its size.
@@ -93,6 +109,42 @@ impl Launcher {
             );
             let _ = tx.send(Msg::Native(result));
         });
+    }
+
+    /// The build card shows Prepare's first words while the build waits for it.
+    fn wait_for_prepare(&mut self, asked: Option<String>, back_up: bool) {
+        self.native_prepare_first = Some((asked, back_up));
+        self.native_step = Some(tr("Getting ready…").into());
+        self.native_progress = None;
+    }
+
+    /// A preparation ended, with Prepare's `error` as the window shows it: a build waiting for it
+    /// starts again, or stops with that message.
+    pub(super) fn native_after_prepare(&mut self, error: Option<&str>) {
+        let Some((base, back_up)) = self.native_prepare_first.take() else {
+            return;
+        };
+        self.native_step = None;
+        match native_mods::prepare_first::after_prepare(error) {
+            Ok(()) => self.build_native_on(base, back_up),
+            Err(error) => {
+                self.play_after_build = None;
+                self.native_log_preflight(&error);
+                self.native_error = Some(error);
+            }
+        }
+    }
+
+    /// The build card's Stop: the build under way, or one waiting for a preparation (which goes
+    /// on, with its own Cancel on Home).
+    pub(super) fn stop_native_build(&mut self) {
+        self.play_after_build = None;
+        if self.native_prepare_first.take().is_some() {
+            self.native_step = None;
+            self.native_done = Some(tr(native_mods::CANCELLED).into());
+        } else {
+            native_mods::cancel();
+        }
     }
 }
 

@@ -326,7 +326,16 @@ impl Launcher {
                         // Read against the mods this build was given, not the instance now
                         // selected.
                         let built = std::mem::take(&mut self.native_built_mods);
-                        self.native_failed(String::from(e), &built);
+                        let error = match e {
+                            // Prepared when the build started, not by the time it looked: the
+                            // window's words, never the command line's (#18659).
+                            native_mods::Failed::NotPrepared(tag) => trf(
+                                "{version} is not prepared yet. Build again to prepare it first.",
+                                &[("version", &tag)],
+                            ),
+                            e => String::from(e),
+                        };
+                        self.native_failed(error, &built);
                     }
                     let play_now = wanted.is_some()
                         && built.is_some()
@@ -420,6 +429,8 @@ impl Launcher {
                                     .filter(|_| e.starts_with("Exited with"));
                                 tail.map_or(e.clone(), |t| format!("{e}: {t}"))
                             });
+                            let error = self.prepare_error.clone();
+                            self.native_after_prepare(error.as_deref());
                         }
                         Job::Client => {
                             self.client = None;
