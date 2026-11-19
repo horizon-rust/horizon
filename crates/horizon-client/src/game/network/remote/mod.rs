@@ -1518,7 +1518,8 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// Disconnect and return to the multiplayer screen (DisconnectedScreen).
+    /// Disconnect and return to the multiplayer screen (DisconnectedScreen), whose Back
+    /// leads to the title after a single player world.
     pub(super) fn leave_server(&mut self, reason: Option<Text>) -> Result<()> {
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
@@ -1630,6 +1631,7 @@ impl Game<'_> {
                 reason,
                 retry: None,
                 lines: std::cell::Cell::new(1),
+                to_title: single_player,
             },
             None => horizon_client::multiplayer::Screen::list(&saves),
         });
@@ -2511,9 +2513,8 @@ impl Game<'_> {
             renderer.remove_columns(gone.iter().copied());
         }
         horizon_client::chunk::free_columns(freed, gone.len());
-        self.world
-            .block_entities
-            .unload(|k| gone.contains(&(k.0 >> 4, k.2 >> 4)));
+        let gone_chunks: Vec<(i32, i32)> = gone.iter().copied().collect();
+        self.world.block_entities.unload_chunks(&gone_chunks);
         if let Some(r) = self.remote.as_mut() {
             r.attachments.retain(|holder, _| match *holder {
                 Holder::Chunk([x, z]) => !gone.contains(&(x, z)),
@@ -4147,7 +4148,7 @@ impl Game<'_> {
                     );
                 } else if let Some(at) = at {
                     let mut r = horizon_client::random_source::create();
-                    let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
+                    let pitch = (r.next_float() - r.next_float()) * 1.4 + 2.0;
                     self.audio
                         .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
                 }

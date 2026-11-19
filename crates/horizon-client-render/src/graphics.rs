@@ -903,6 +903,8 @@ pub struct Graphics {
     pub fxaa: bool,
     /// TAA over the world (FXAA is off while it is on).
     pub taa: bool,
+    /// 4x MSAA on opaque and cutout terrain (FXAA and TAA are off while it is on).
+    pub msaa4x: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
     /// How much the upscaled picture is sharpened, 0..=100 (percent of the most).
@@ -925,6 +927,11 @@ pub struct Graphics {
     /// HDR brightness of the HUD and menus, in nits; 0 is Auto: at paper white
     /// ([`Graphics::ui_nits`]). The first-person hand stays at the world's.
     pub hdr_ui_nits: u32,
+    /// HDR Color Boost, 0..=100 percent: how far HDR output stretches the picture's BT.709
+    /// colours toward the display's own primaries (`gfx::hdr::gamut`), as wide-gamut displays
+    /// often show SDR. 0, the default, shows the colours exactly. scRGB output on Wayland is left
+    /// unboosted (`EffectiveOutput::compositor_stretches`).
+    pub hdr_color_boost: u32,
     /// HDR's look with no shader pack running.
     pub hdr_look: HdrLook,
     /// The graphics driver whose last start ended before HDR output showed a frame (the
@@ -933,8 +940,11 @@ pub struct Graphics {
     /// Empty for a marker that named no driver: the first one seen holds it.
     pub hdr_failed_start: Option<String>,
     /// Battery mode: at most 60 frames per second in a world and 30 in menus
-    /// or behind other windows, and half the worker threads. Off by default;
-    /// it changes when frames are drawn, never what they show or the ticks.
+    /// or behind other windows, and half the automatic size of the pools the
+    /// client starts — chunk building, the tick's helpers, chunk decoding, saves,
+    /// network and chunk encoding — which they take at the next start; the frame
+    /// cap applies at once. Off by default; it changes when frames are drawn and
+    /// how many threads run, never what they show or the ticks.
     pub battery: bool,
     /// Reuse the shader pack's last shadow map when sun, view, scene revision and
     /// pack uniforms still match. Off by default: vanilla loaders redraw every frame
@@ -994,6 +1004,7 @@ impl Default for Graphics {
             target_fps: 60,
             fxaa: false,
             taa: false,
+            msaa4x: false,
             upscaling: Upscaling::Native,
             upscaling_sharpness: 85,
             screenshot_quality: 1,
@@ -1003,6 +1014,7 @@ impl Default for Graphics {
             hdr_peak: 0,
             hdr_black_level: 0,
             hdr_ui_nits: 0,
+            hdr_color_boost: 0,
             hdr_look: HdrLook::Horizon,
             hdr_failed_start: None,
             battery: false,
@@ -1159,6 +1171,7 @@ impl Graphics {
                 "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
+                "msaa4x" => g.msaa4x = flag(g.msaa4x),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "upscalingSharpness" => {
                     g.upscaling_sharpness = number(g.upscaling_sharpness).min(100)
@@ -1182,6 +1195,7 @@ impl Graphics {
                     }
                 }
                 "hdrBlackLevel" => g.hdr_black_level = number(g.hdr_black_level).min(100),
+                "hdrColorBoost" => g.hdr_color_boost = number(g.hdr_color_boost).min(100),
                 "hdrFailedStart" => g.hdr_failed_start = Some(value.to_owned()),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
@@ -1211,11 +1225,16 @@ impl Graphics {
             Some(false) => HdrLook::Vanilla,
             _ => HdrLook::Horizon,
         });
+        // 4x MSAA replaces FXAA and TAA, and TAA's upscaling with it: a file naming them too
+        // (edited by hand) keeps it, as the Anti-aliasing button would.
+        if g.msaa4x {
+            (g.fxaa, g.taa, g.upscaling) = (false, false, Upscaling::Native);
+        }
         g
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLook:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\ngpuCulling:{}\nparallelTick:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrColorBoost:{}\nhdrLook:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\ngpuCulling:{}\nparallelTick:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1265,6 +1284,7 @@ impl Graphics {
             self.hdr_peak,
             self.hdr_black_level,
             self.hdr_ui_nits,
+            self.hdr_color_boost,
             self.hdr_look.name(),
             bool_text(self.battery),
             bool_text(self.shadow_cache),
@@ -1277,6 +1297,7 @@ impl Graphics {
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
         }
+        text += &format!("msaa4x:{}\n", bool_text(self.msaa4x));
         text += &self.blue_map.serialize();
         text
     }
@@ -1320,7 +1341,9 @@ impl Graphics {
     pub fn black_level_nits(&self) -> f32 {
         self.hdr_black_level as f32 / 100.0
     }
-    /// Worker threads for chunk generation and meshing.
+    /// Worker threads for chunk generation and meshing: the player's own count, or
+    /// the automatic one, which Battery Mode halves (`horizon_threads::sizing`). The
+    /// pools take their size when they start.
     pub fn worker_threads(&self) -> usize {
         if self.workers > 0 {
             return self.workers as usize;
@@ -1335,8 +1358,7 @@ impl Graphics {
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer. On Apple
         // silicon only the performance cores count (horizon_threads::default_workers).
-        let auto = horizon_threads::jobs::default_threads();
-        if self.battery { auto.div_ceil(2) } else { auto }
+        horizon_threads::sizing::for_pool_with(self.battery, horizon_threads::sizing::Pool::Jobs)
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a
     /// world or while another window has focus.
@@ -1407,6 +1429,27 @@ mod tests {
         assert_eq!(g.ui_nits(reported), 120);
         g.hdr_ui_nits = 400;
         assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
+
+    /// Color Boost is saved as its percentage, 0 when the file has none, kept within 0..=100.
+    #[test]
+    fn color_boost_round_trips_through_the_file() {
+        for (file, boost) in [
+            ("", 0),
+            ("hdrColorBoost:35\n", 35),
+            ("hdrColorBoost:100\n", 100),
+            ("hdrColorBoost:250\n", 100),
+            ("hdrColorBoost:x\n", 0),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_color_boost, boost, "{file}");
+            let saved = g.serialize();
+            assert!(
+                saved.contains(&format!("\nhdrColorBoost:{boost}\n")),
+                "{file}"
+            );
+            assert_eq!(Graphics::parse(&saved), g, "{file}");
+        }
     }
 
     /// HDR Lighting's On and Off became the looks Horizon and Vanilla: an older file keeps its
@@ -1627,6 +1670,7 @@ mod tests {
             target_fps: 60,
             fxaa: true,
             taa: true,
+            msaa4x: false,
             upscaling: Upscaling::Balanced,
             upscaling_sharpness: 40,
             screenshot_quality: 4,
@@ -1636,6 +1680,7 @@ mod tests {
             hdr_peak: 1400,
             hdr_black_level: 12,
             hdr_ui_nits: 160,
+            hdr_color_boost: 35,
             hdr_look: HdrLook::Vanilla,
             hdr_failed_start: Some(
                 "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57".into(),
@@ -1647,6 +1692,12 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        // 4x MSAA replaces FXAA, TAA and its upscaling, in a file that names them too.
+        let msaa = Graphics::parse(&Graphics { msaa4x: true, ..g }.serialize());
+        assert_eq!(
+            (msaa.msaa4x, msaa.fxaa, msaa.taa, msaa.upscaling),
+            (true, false, false, Upscaling::Native)
+        );
         // A legacy marker's hold, which names no driver, round-trips too; none writes no line.
         for failed in [Some(String::new()), None] {
             let graphics = Graphics {
@@ -1969,6 +2020,22 @@ mod tests {
             let mut s = crate::settings::Settings::default();
             apply_preset(preset, &mut s);
             assert_eq!(s.horizon.far_detail, FarDetail::Full, "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn a_preset_picks_one_anti_aliasing_mode() {
+        // 4x MSAA left on beside a preset's FXAA ran both, FXAA blurring the resolved frame.
+        for preset in Preset::ALL {
+            let mut s = crate::settings::Settings::default();
+            s.horizon.msaa4x = true;
+            apply_preset(preset, &mut s);
+            let g = &s.horizon;
+            let modes = [g.fxaa, g.taa, g.msaa4x]
+                .into_iter()
+                .filter(|on| *on)
+                .count();
+            assert!(modes <= 1, "{preset:?} left {modes} anti-aliasing modes on");
         }
     }
 

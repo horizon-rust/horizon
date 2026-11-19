@@ -209,9 +209,13 @@ impl Game<'_> {
             return None;
         }
         match self.container_kind() {
+            // The inventory's grid, or a crafting table's (`CraftingScreen`);
+            // a server's other menus without a container have no book.
             None if self.container.is_none()
                 && self.remote.as_ref().is_none_or(|r| {
-                    crafting_grid_menu(r.menu.as_ref().map(|(_, kind)| kind.as_str()))
+                    r.menu
+                        .as_ref()
+                        .is_none_or(|(_, menu)| menu == "minecraft:crafting")
                 }) =>
             {
                 Some(BookType::Crafting)
@@ -2481,23 +2485,8 @@ mod request_generation_tests {
     }
 }
 
-/// Whether a server's open menu (none: the inventory) is a crafting grid the crafting book
-/// serves: the inventory's 2x2 or a crafting table's 3x3, not another menu without a block of its
-/// own here.
-fn crafting_grid_menu(kind: Option<&str>) -> bool {
-    kind.is_none_or(|kind| kind == "minecraft:crafting")
-}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn the_crafting_book_serves_the_inventory_and_a_servers_crafting_table_only() {
-        assert!(super::crafting_grid_menu(None));
-        assert!(super::crafting_grid_menu(Some("minecraft:crafting")));
-        assert!(!super::crafting_grid_menu(Some("minecraft:generic_9x3")));
-        assert!(!super::crafting_grid_menu(Some("minecraft:furnace")));
-        assert!(!super::crafting_grid_menu(Some("check_fixture:non_grid")));
-    }
     /// `RecipeBookComponent.keyPressed`: Escape closes a narrow window's open
     /// book (`!isOffsetNextToMainGUI`), not the container; a wide window's
     /// book leaves Escape to the container.
@@ -2506,6 +2495,29 @@ mod tests {
         assert!(super::escape_closes_book(super::NARROW - 1.0, true));
         assert!(!super::escape_closes_book(super::NARROW, true));
         assert!(!super::escape_closes_book(super::NARROW - 1.0, false));
+    }
+
+    /// `CraftingScreen` has the book; a server's menu without a grid has none.
+    #[test]
+    #[ignore = "daily"]
+    fn a_servers_crafting_table_has_the_book() {
+        use super::*;
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            let (pipe, _server) = horizon_protocol::connection::Pipe::pair();
+            game.connect_local(pipe, "Crafter").unwrap();
+            game.screen = Screen::Inventory;
+            game.container = None;
+            let open = |game: &mut Game<'_>, menu: &str| {
+                game.remote
+                    .as_mut()
+                    .unwrap()
+                    .menu
+                    .set(Some((3, menu.into())));
+                game.active_book()
+            };
+            assert_eq!(open(game, "minecraft:crafting"), Some(BookType::Crafting));
+            assert_eq!(open(game, "minecraft:cartography_table"), None);
+        });
     }
 }
 

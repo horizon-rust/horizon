@@ -21,6 +21,9 @@ struct WorldTarget {
     depth: wgpu::TextureView,
     group: wgpu::BindGroup,
     taa: Option<History>,
+    /// The world anti-aliased at its own size, made on first use (`resolved`); `Some(None)`
+    /// where there was no video memory for it, until the target is made again.
+    resolved: Option<Option<wgpu::TextureView>>,
 }
 
 /// TAA's two history textures at the output size (the world's, times the upscale), written
@@ -396,6 +399,14 @@ impl Post {
         sizes(window, self.scale, 1.0).0
     }
 
+    /// The scaled world's depth where it was drawn at `size`, the window's: what post effects
+    /// read when 4x MSAA drew the world there.
+    pub(super) fn depth_at(&self, size: [u32; 2]) -> Option<&wgpu::TextureView> {
+        (self.target.as_ref())
+            .filter(|t| t.size == size)
+            .map(|t| &t.depth)
+    }
+
     /// The next TAA frame's input size, even before its first jitter or resize.
     pub(super) fn taa_render_size(&self, window: [u32; 2]) -> [u32; 2] {
         self.sizes_with_upscale(window, self.upscale).0
@@ -432,6 +443,13 @@ impl Post {
             jitter: [jitter.x, jitter.y, reset, 0.0],
         };
         Mat4::from_translation(jitter.extend(0.0))
+    }
+
+    /// This frame's jitter in clip space, the translation `jitter` multiplies into the
+    /// projection (`frame.jitter` of a 0.2 pack); zero without TAA.
+    pub fn jitter_clip(&self) -> [f32; 2] {
+        let j = self.taa_this_frame.jitter;
+        if self.taa_on { [j[0], j[1]] } else { [0.0; 2] }
     }
 
     /// This frame's jitter in rendered pixels, y down (FSR's `jitterOffset`); zero
@@ -603,6 +621,7 @@ impl Post {
                 depth,
                 group,
                 taa,
+                resolved: None,
             }
         }
     }
@@ -620,6 +639,48 @@ impl Post {
             );
             self.sharpness = sharpness;
         }
+    }
+
+    /// A target of the world's size and format for `finish` to draw onto, where something
+    /// after it reads the world at its own size (a native pack without a post chain, #16126).
+    /// Made on first use, and dropped with the world's target. None where there is no video
+    /// memory for it: the pack then reads the world without FXAA.
+    pub(super) fn resolved(&mut self, device: &wgpu::Device) -> Option<wgpu::TextureView> {
+        let format = self.format;
+        let target = self.target.as_mut()?;
+        let size = target.size;
+        let view = target.resolved.get_or_insert_with(|| {
+            // As the world's own target: an error raised is fatal, so catch running out of
+            // memory, and the failed texture's view failing validation.
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let view = device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Resolved world"),
+                    size: wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default());
+            let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+            if let Some(error) = error {
+                log::warn!(
+                    "Horizon renderer: no video memory for the shader pack's FXAA at {size:?}; drawing it without ({error})"
+                );
+                return None;
+            }
+            Some(view)
+        });
+        view.clone()
     }
 
     /// The size of the world's own target, when it has one.

@@ -630,7 +630,7 @@ impl Game<'_> {
             SpawnSite::Finalizing(reason) => match self.finalize_with(&mut mob, reason, None) {
                 Finalized::Cancelled => return self.discard_unjoined_mob(mob.id),
                 Finalized::Skipped => return Some(mob),
-                Finalized::Done => {}
+                Finalized::Done => horizon_client::mobs::shulker::finalize_spawn(&mut mob),
             },
             // A plain spawn finalizes as a summoned one (vanilla's /summon
             // and egg path): its few reason-gated arms behave the same.
@@ -642,6 +642,7 @@ impl Game<'_> {
                     &difficulty,
                     horizon_client::mobs::spawn_rules::Reason::MobSummoned,
                 );
+                horizon_client::mobs::shulker::finalize_spawn(&mut mob);
             }
         }
         Some(mob)
@@ -3464,11 +3465,8 @@ impl Game<'_> {
                 MobEvent::Reinforcements { mob, target } => self.call_reinforcements(mob, target),
                 MobEvent::VillagerMeet { mob, other } => self.villager_meet(mob, other),
                 MobEvent::VillagerTrade { mob, player } => self.villager_traded_by(mob, player),
-                MobEvent::VillagerOffers { mob } => {
-                    if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
-                        self.ensure_offers(i);
-                    }
-                }
+                MobEvent::VillagerOffers { mob } => self.merchant_offers_generated(mob),
+                MobEvent::VillagerRestocked { mob } => self.merchant_restocked(mob),
                 MobEvent::VillagerBirth {
                     parent,
                     partner,

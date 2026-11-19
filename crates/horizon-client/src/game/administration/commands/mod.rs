@@ -301,14 +301,10 @@ impl Game<'_> {
             ..Style::default()
         };
         let mut context = Text::empty();
-        if cursor > 10 {
+        if horizon_client::command::java_index(input, cursor) > 10 {
             context.push("...");
         }
-        let start = (0..=cursor.saturating_sub(10))
-            .rev()
-            .find(|&i| input.is_char_boundary(i))
-            .unwrap_or(0);
-        context.push(&input[start..cursor]);
+        context.push(&input[horizon_client::command::context_start(input, cursor)..cursor]);
         if cursor < input.len() {
             context.push(
                 Text::literal(&input[cursor..])
@@ -1212,11 +1208,12 @@ impl Game<'_> {
         {
             // `CompassItem.getName`: a lodestone tracker names it, over `item_name`.
             Text::translate("item.minecraft.lodestone_compass", &[])
-        } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
+        } else if let Some(name) = s.item_name_text() {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
-            // renaming shows here as it does on the tooltip's first line.
-            horizon_client::component::name_text(name)
+            // renaming shows here as it does on the tooltip's first line, and
+            // a content mod's default name for its item as well.
+            name
         } else if let Some(title) = s
             .data()
             .and_then(|d| d.written.as_ref())
@@ -1407,6 +1404,23 @@ impl Game<'_> {
                 e.set_on_ground(true);
             });
         });
+    }
+    /// Writes `rotation` to the saved compound of an entity whose model has no slot for it (a cloud, a
+    /// cushion's pitch): where `/data get` and the save read it.
+    fn write_raw_rotation(&mut self, id: u32, rotation: [f32; 2]) {
+        use horizon_core::nbt::{Compound, JavaString, Tag};
+        let float = |v: f32| Tag::Float(if v == 0.0 { 0 } else { v.to_bits() });
+        if let Tag::Compound(raw) = self
+            .persist
+            .raw
+            .entry(id)
+            .or_insert_with(|| Tag::Compound(Compound::new()))
+        {
+            raw.insert(
+                JavaString::from("Rotation"),
+                Tag::List(vec![float(rotation[0]), float(rotation[1])]),
+            );
+        }
     }
     pub(in crate::game) fn teleport_to(
         &mut self,
@@ -1675,6 +1689,8 @@ impl Game<'_> {
                     c.pos = [v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32];
                     if let Some(r) = rotation {
                         c.yaw = r[0];
+                        // The cushion keeps its pitch in its saved compound, which a save writes back.
+                        self.write_raw_rotation(id, r);
                     }
                 }
             }
@@ -1719,6 +1735,11 @@ impl Game<'_> {
                     self.breath_clouds.update(i, |c| {
                         c.at = pos;
                     });
+                    // The cloud keeps its rotation in its saved compound: a teleport that sets one
+                    // writes it there, where `/data get` and the save read it.
+                    if let Some(r) = rotation {
+                        self.write_raw_rotation(id, r);
+                    }
                 }
             }
             // Wall-mounted entities do not move; a hook follows its own tick and a

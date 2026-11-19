@@ -1470,6 +1470,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             } else {
                 backend::MinecraftFrom::Install
             };
+            let tag = backend::prepared_in(&tag);
             let (preparer, minecraft) =
                 backend::preparer(&tag, &minecraft, from, &|line| eprintln!("{line}"))?;
             backend::sounds(&tag, &minecraft, &|line| println!("{line}"));
@@ -1483,6 +1484,12 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 backend::Preparer::InProcess(options) => {
                     backend::prepare_in_process(&options, &|line| println!("{line}"))?
                 }
+            }
+            if !backend::check_prepared(&tag) {
+                return Err(trf(
+                    "The preparation of {version} ended, but its files are still not ready, so the game can't start.",
+                    &[("version", &tag)],
+                ));
             }
             println!("{tag} is prepared.");
         }
@@ -1527,7 +1534,8 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 let vars = instance.vars(cmd.get_program());
                 cmd.envs(vars.iter().map(|(k, v)| (k, v)));
                 let started = std::time::Instant::now();
-                let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
+                let played =
+                    horizon_launcher::launch::wrap(cmd, &instance.launch).and_then(attached);
                 if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                     eprintln!("Play time not saved: {e}");
                 }
@@ -1576,7 +1584,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 horizon_launcher::jars::Permission::headless(allow_jar_downloads),
             )
             .map_err(|error| error.to_string())?;
-            let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
+            let played = horizon_launcher::launch::wrap(cmd, &instance.launch).and_then(attached);
             if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                 eprintln!("Play time not saved: {e}");
             }

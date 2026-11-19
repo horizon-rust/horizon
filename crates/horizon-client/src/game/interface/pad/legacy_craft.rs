@@ -114,9 +114,7 @@ impl Game<'_> {
     pub(in crate::game) fn legacy_choose(&mut self, console: bool) {
         let kind = self.legacy_kind().to_owned();
         self.settings.controller.legacy_views.insert(kind, console);
-        if let Some(dir) = Self::options_path().parent() {
-            self.settings.controller.save(dir);
-        }
+        self.settings.save(&Self::options_path());
         if console {
             self.legacy_start();
         } else {

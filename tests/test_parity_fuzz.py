@@ -32,6 +32,33 @@ class DispenserSyncTests(unittest.TestCase):
         self.assertEqual(sum(op['op'] == 'sync_randoms' for op in fuzz.render(quiet, 0)), 1)
 
 
+class KnownTests(unittest.TestCase):
+    def test_known_signatures_are_listed_under_their_issue_and_only_new_ones_are_new(self):
+        old = fuzz.KNOWN
+        try:
+            fuzz.KNOWN = [(r'persist\|trident\|live\|damage', 14823),
+                          (r'persist\|pig\|reloaded\|Fire', 99999)]
+            groups = {'persist|trident|live|damage': [('a', {})],
+                      'persist|pig|live|Air': [('b', {})]}
+            known, new, not_observed = fuzz.classify(groups)
+            self.assertEqual(known, {14823: ['persist|trident|live|damage']})
+            self.assertEqual(new, {'persist|pig|live|Air': [('b', {})]})
+            self.assertEqual(not_observed, [(99999, r'persist\|pig\|reloaded\|Fire')])
+        finally:
+            fuzz.KNOWN = old
+
+    def test_two_patterns_for_one_issue_are_each_tracked(self):
+        old = fuzz.KNOWN
+        try:
+            fuzz.KNOWN = [(r'one', 123), (r'two', 123)]
+            known, new, not_observed = fuzz.classify({'one': [('a', {})]})
+            self.assertEqual(known, {123: ['one']})
+            self.assertEqual(new, {})
+            self.assertEqual(not_observed, [(123, 'two')])
+        finally:
+            fuzz.KNOWN = old
+
+
 class SnbtDiffTests(unittest.TestCase):
     def test_a_difference_names_its_field_and_key_order_is_not_one(self):
         vanilla = record('Pig has the following entity data: {Motion: [0.0d, 0.1d, 0.0d], Tags: ["a b"], '
@@ -111,6 +138,11 @@ class FamilyTests(unittest.TestCase):
 
 
 class ReloadWitnessTests(unittest.TestCase):
+    def test_a_reload_gives_the_oracle_time_to_unload_the_chunk(self):
+        scenario = {'family': 'persist', 'seed': 1, 'steps': [{'k': 'reload'}, {'k': 'tick', 'n': 4}]}
+        ticks = [op for op in fuzz.render(scenario, 0) if op.get('op') == 'tick']
+        self.assertEqual([op.get('allow_chunk_io') for op in ticks], [True, None])  # only the reload's wait
+
     def test_a_reload_witnesses_the_chunk_and_every_entity_summoned_before_it(self):
         scenario = {'family': 'persist', 'seed': 1, 'steps': [
             {'k': 'summon', 'type': 'pig', 'at': [1.5, 0, 1.5], 'n': 0, 'nbt': {}},

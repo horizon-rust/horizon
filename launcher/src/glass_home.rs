@@ -388,7 +388,7 @@ impl Launcher {
         let running = self.client.is_some();
         let follows = self
             .selected_instance()
-            .is_some_and(|i| i.version.is_none());
+            .is_some_and(|i| i.follows_horizon());
         let stable = self
             .selected_instance()
             .is_some_and(|i| i.channel == horizon_launcher::instances::Channel::Stable);
@@ -510,8 +510,9 @@ impl Launcher {
                 }
                 cx.notify();
             }));
-        // A build under way is cancelled from the button it was started from.
-        let more = if building {
+        // A build under way, or a start's pre-launch command, is stopped from the button it was
+        // started from.
+        let more = if building || self.pre_launch_stoppable() {
             div()
                 .id("play-cancel")
                 .occlude()
@@ -525,11 +526,19 @@ impl Launcher {
                 .cursor_pointer()
                 .hover(|s| s.bg(gpui::black().opacity(0.2)))
                 .child(ui::icon("stop", 18., glyph))
-                .tooltip(ui::tip(tr("Stop the build")))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                .tooltip(ui::tip(if building {
+                    tr("Stop the build")
+                } else {
+                    tr("Stop")
+                }))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     cx.stop_propagation();
-                    this.play_after_build = None;
-                    native_mods::cancel();
+                    if building {
+                        this.play_after_build = None;
+                        native_mods::cancel();
+                    } else {
+                        this.stop_pre_launch();
+                    }
                     cx.notify();
                 }))
         } else {
