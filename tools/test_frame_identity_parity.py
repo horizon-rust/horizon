@@ -839,8 +839,9 @@ def look_gates(shots, sessions):
     nothing else that shines (no sun, moon or stars in view, no particles, no dropped items, no light source in
     fog), but for what LOOK_APART names. Not held: the pixels under the crosshair and the hotbar, where the HUD's
     8-bit target turns a rounding step of the world under it into one of its own; and in the screenshot the pixels
-    either build shows with a channel at white, which a screenshot clips channel by channel under a pack and by the
-    brightest channel with the look (the README's "Screenshots and world icons in HDR"; the HDR shot holds them)."""
+    the look's own screenshot shows with a channel at white, which a screenshot clips channel by channel under a pack
+    and by the brightest channel with the look (the README's "Screenshots and world icons in HDR"; the HDR shot holds
+    them). A pixel only the pack's screenshot shows white is held."""
     problems = []
     for packed, plain in LOOK_PAIRS.items():
         if packed not in sessions or plain not in sessions:
@@ -868,7 +869,7 @@ def look_gates(shots, sessions):
                 apart = hud_boxes(width, height) + tuple(
                     (x0 * width, y0 * height, x1 * width, y1 * height) for x0, y0, x1, y1 in LOOK_APART.get(scene, ()))
                 steps = [max(abs(x - y) for x, y in zip(p, q)) for i, (p, q) in enumerate(zip(a, b))
-                         if not (kind == '.png' and (255 in p or 255 in q))
+                         if not (kind == '.png' and 255 in p)
                          and not any(x0 <= i % width < x1 and y0 <= i // width < y1 for x0, y0, x1, y1 in apart)]
                 largest = max(steps, default=0)
                 print(f'  {packed}.{scene}{kind} against {plain}: {sum(1 for s in steps if s)} of {len(steps)} '

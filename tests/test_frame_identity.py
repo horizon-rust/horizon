@@ -436,15 +436,14 @@ class LookGateTests(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
 
-    def shots(self, changed=None):
-        """Both sessions' shots of every scene, a flat grey; `changed` maps (scene, kind) to the pack's pixels that
-        differ, as {(x, y): (r, g, b)}."""
-        for name in ('float_hdr', 'horizon_hdr'):
+    def shots(self, changed=None, look=None):
+        """Both sessions' shots of every scene, a flat grey; `changed` and `look` map (scene, kind) to the pack's and
+        the look's own pixels that differ, as {(x, y): (r, g, b)}."""
+        for name, own in (('float_hdr', look), ('horizon_hdr', changed)):
             for scene in identity.SESSIONS['horizon_hdr'][2]:
                 for kind, depth, grey in (('.png', 8, bytes((100,))), ('-hdr.png', 16, (400 << 6).to_bytes(2, 'big'))):
                     rows = [bytearray(grey * 3 * self.WIDTH) for _ in range(self.HEIGHT)]
-                    pack = (changed or {}).get((scene, kind), {}) if name == 'horizon_hdr' else {}
-                    for (x, y), rgb in pack.items():
+                    for (x, y), rgb in (own or {}).get((scene, kind), {}).items():
                         rows[y][x * len(grey) * 3:(x + 1) * len(grey) * 3] = b''.join(
                             (v << 6).to_bytes(2, 'big') if depth == 16 else bytes((v,)) for v in rgb)
                     encode(self.dir / f'{name}.{scene}{kind}', self.WIDTH, self.HEIGHT, depth, rows, 0)
@@ -469,7 +468,7 @@ class LookGateTests(unittest.TestCase):
 
     def test_a_shot_that_holds_nothing_or_is_missing(self):
         white = {(x, y): (255, 255, 255) for x in range(self.WIDTH) for y in range(self.HEIGHT)}
-        self.shots({('glass', '.png'): white})
+        self.shots(look={('glass', '.png'): white})
         self.assertEqual(self.gate(), ['horizon_hdr.glass.png: no pixel is held'])
         self.shots()
         (self.dir / 'horizon_hdr.glass-hdr.png').unlink()
@@ -488,14 +487,16 @@ class LookGateTests(unittest.TestCase):
         (_, y, x, _), (hx, _, _, hy) = identity.hud_boxes(self.WIDTH, self.HEIGHT)
         ax, ay = (int(f * size) + 1 for f, size in zip(identity.LOOK_APART['entities'][0], (self.WIDTH, self.HEIGHT)))
         far = (0, 0, 0)
-        # 🤖 Agent: Under the crosshair and the hotbar, the End crystal, and where a screenshot shows white.
-        self.shots({('glass', '.png'): {(x - 1, y): far, (hx, hy - 1): far, (5, 5): (255, 90, 90)},
+        # 🤖 Agent: Under the crosshair and the hotbar, the End crystal, and where the look's screenshot shows white.
+        self.shots({('glass', '.png'): {(x - 1, y): far, (hx, hy - 1): far},
                     ('glass', '-hdr.png'): {(x - 1, y): far, (hx, hy - 1): far},
-                    ('entities', '.png'): {(ax, ay): far}, ('entities', '-hdr.png'): {(ax, ay): far}})
+                    ('entities', '.png'): {(ax, ay): far}, ('entities', '-hdr.png'): {(ax, ay): far}},
+                   look={('glass', '.png'): {(5, 5): (255, 90, 90)}})
         self.assertEqual(self.gate(), [])
-        # 🤖 Agent: The same places in another scene, and beside them.
-        self.shots({('glass', '-hdr.png'): {(ax, ay): far}, ('entities', '.png'): {(x, y): far}})
-        self.assertEqual(len(self.gate()), 2)
+        # 🤖 Agent: The same places in another scene, and beside them; and white the pack's screenshot shows alone.
+        self.shots({('glass', '-hdr.png'): {(ax, ay): far}, ('entities', '.png'): {(x, y): far},
+                    ('nether', '.png'): {(5, 5): (255, 0, 0)}})
+        self.assertEqual(len(self.gate()), 3)
 
     def test_the_session_check_asks_only_that_the_pack_loaded(self):
         for name in ('hdr_toggle', 'horizon_hdr'):
