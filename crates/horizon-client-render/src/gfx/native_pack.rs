@@ -631,9 +631,10 @@ impl NativePack {
             device,
             encoder,
             screen,
+            resolved,
         } = output;
         self.post
-            .run_display(device, encoder, screen, self.timing.as_mut());
+            .run_display(device, encoder, screen, resolved, self.timing.as_mut());
     }
 
     /// What the pack does in the renderer's place, fixed while it runs: the renderer keeps it
@@ -656,6 +657,7 @@ impl NativePack {
             ray_entities: self.traces_entities(),
             ray_looks: self.traces_looks(),
             looks: self.looks,
+            post_chain: self.post.chain(),
         }
     }
 

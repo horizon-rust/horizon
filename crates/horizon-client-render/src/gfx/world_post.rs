@@ -21,6 +21,8 @@ struct WorldTarget {
     depth: wgpu::TextureView,
     group: wgpu::BindGroup,
     taa: Option<History>,
+    /// The world anti-aliased at its own size, made on first use (`resolved`).
+    resolved: Option<wgpu::TextureView>,
 }
 
 /// TAA's two history textures at the output size (the world's, times the upscale), written
@@ -611,6 +613,7 @@ impl Post {
                 depth,
                 group,
                 taa,
+                resolved: None,
             }
         }
     }
@@ -628,6 +631,35 @@ impl Post {
             );
             self.sharpness = sharpness;
         }
+    }
+
+    /// A target of the world's size and format for `finish` to draw onto, where something
+    /// after it reads the world at its own size (a native pack without a post chain, #16126).
+    /// Made on first use, and dropped with the world's target.
+    pub(super) fn resolved(&mut self, device: &wgpu::Device) -> Option<wgpu::TextureView> {
+        let format = self.format;
+        let target = self.target.as_mut()?;
+        let size = target.size;
+        let view = target.resolved.get_or_insert_with(|| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Resolved world"),
+                    size: wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        });
+        Some(view.clone())
     }
 
     /// The size of the world's own target, when it has one.

@@ -190,6 +190,9 @@ pub struct Capabilities {
     pub ray_looks: bool,
     /// Its terrain pipelines bind the arenas' quad looks (`looks::wanted`): sections carry them.
     pub looks: bool,
+    /// Its post has passes (`[[post]]`) that draw the picture. Without them the renderer
+    /// anti-aliases the world before the output reads it (`WorldOutput::resolved`).
+    pub post_chain: bool,
 }
 
 /// What the renderer hands the pack's post stage (`ExternalPipeline::run_post`).
@@ -211,6 +214,9 @@ pub struct WorldOutput<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     /// The window's frame, which the output draws.
     pub screen: &'a wgpu::TextureView,
+    /// The world as the renderer resolved it (the player's FXAA), at the world's size and in
+    /// its format, for the output to read in its place; `None`: the world as drawn.
+    pub resolved: Option<&'a wgpu::TextureView>,
 }
 
 /// The renderer's pass timing settings (`ExternalPipeline::set_up_timing`).
