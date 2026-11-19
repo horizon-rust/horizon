@@ -64,7 +64,7 @@ fn stage_input(
     let frame = texture(LINEAR_FRAME, wgpu::TextureUsages::TEXTURE_BINDING);
     let input = texture(INTERMEDIATE, wgpu::TextureUsages::COPY_SRC);
     let frame_view = frame.create_view(&Default::default());
-    let source = include_str!("../hdr_light.wgsl").to_owned() + line_helpers(linear) + SOURCE;
+    let source = super::super::wgsl_prefix::HDR_LIGHT.to_owned() + line_helpers(linear) + SOURCE;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -215,6 +215,7 @@ fn assert_near(got: [f32; 4], want: [f32; 3], what: &str) {
 // (0.4606, 0.2200, 0.1965), the pack's (0.4590, 0.1467, 0.4132).
 #[test]
 fn translucent_draws_blend_in_the_light_the_frame_holds() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = gpu() else {
         eprintln!("linear blend GPU unavailable");
         return;
@@ -238,6 +239,7 @@ fn translucent_draws_blend_in_the_light_the_frame_holds() {
 // the clear colour, gamma (0.8, 0.2, 0.5), to (0.6121, 0.0290, 0.2176).
 #[test]
 fn stages_read_the_same_light_under_either_blend() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some(gpu) = gpu() else {
         eprintln!("linear blend GPU unavailable");
         return;
@@ -270,6 +272,7 @@ fn stages_read_the_same_light_under_either_blend() {
 // 0.5 a mix in light gives; under "gamma" the result is already gamma, 0.5 * 0.8 + 0.5 * 0.2.
 #[test]
 fn a_fading_section_mixes_toward_the_fog_in_gamma() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
         eprintln!("linear blend GPU unavailable");
         return;
@@ -291,7 +294,7 @@ fn a_fading_section_mixes_toward_the_fog_in_gamma() {
 @fragment fn test_faded() -> @location(0) vec4<f32> {
     var o: HorizonMaterialOut;
     // Half visible (`horizon_material_vertex`), past 32 blocks.
-    o.hdr_code = 32768u << 16u;
+    o.fade = 32768u;
     o.spherical = 40.0;
     return horizon_material_faded(o, horizon_terrain_globals.sky_color);
 }
@@ -392,7 +395,7 @@ fn only_a_float_frame_holds_linear_light() {
                 linear_pack,
                 linear_blend,
                 ray_tracing: false,
-                compatibility: false,
+                shaders_pack: false,
             };
             let frame = resolve_frame(
                 &settings,
