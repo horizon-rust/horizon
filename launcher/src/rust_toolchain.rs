@@ -7,6 +7,7 @@
 //! unpacks them into the launcher's data folder. No rustup or player-installed compiler is used.
 //! Windows also gets a pinned C/link toolchain: WinLibs for x64 and LLVM-MinGW for ARM64.
 use crate::backend;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -303,12 +304,56 @@ impl Toolchain {
         }
     }
 
+    /// Links `libLLVM.dylib` into the target's library folder on macOS so that tools like
+    /// `rust-objcopy` (which have an `@rpath` of `@loader_path/../lib`) can resolve it (#16038).
+    pub(crate) fn ensure_tool_links(&self) -> Result<(), String> {
+        if !self.host.target.ends_with("-apple-darwin") {
+            return Ok(());
+        }
+        let dylib = self.dir.join("lib").join("libLLVM.dylib");
+        if !dylib.is_file() {
+            return Ok(());
+        }
+        let target_lib = self
+            .dir
+            .join("lib")
+            .join("rustlib")
+            .join(self.host.target)
+            .join("lib");
+        let link = target_lib.join("libLLVM.dylib");
+        if link.is_file() {
+            return Ok(());
+        }
+        fs::create_dir_all(&target_lib).map_err(|e| format!("{}: {e}", target_lib.display()))?;
+        let _ = fs::remove_file(&link);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(Path::new("../../../libLLVM.dylib"), &link)
+                .map_err(|e| format!("{} → ../../../libLLVM.dylib: {e}", link.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::hard_link(&dylib, &link)
+                .or_else(|_| fs::copy(&dylib, &link).map(|_| ()))
+                .map_err(|e| format!("{} → {}: {e}", link.display(), dylib.display()))?;
+        }
+        Ok(())
+    }
+
     /// `program` (this toolchain's cargo, or a tool built with it) set up to use only this
     /// toolchain: its rustc, its C/link tools where it has them, the launcher's Cargo home, and none of
     /// the player's rustup, compiler-wrapper or compiler-flag settings ([`scrubbed`]). On Windows it
     /// opens no console window: cargo is a console program, and the launcher has none to share, so
     /// each build showed an empty one for as long as it ran (#4770).
     pub fn command(&self, program: &Path) -> Command {
+        self.command_through(program, crate::proxy::for_programs())
+    }
+
+    /// [`Toolchain::command`], its downloads going through `proxy`, the launcher's setting: Cargo
+    /// fetches the crates and horizon-mixins itself and doesn't read the launcher's settings, so the
+    /// Settings page's proxy is handed to it (#16718). Without one it reads `HTTPS_PROXY` from the
+    /// environment, as the launcher does.
+    fn command_through(&self, program: &Path, proxy: Option<String>) -> Command {
         let mut cmd = crate::process::command(program);
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mingw = self.host.c_toolchain.map(|_| self.mingw_bin());
@@ -328,6 +373,15 @@ impl Toolchain {
         if fs::create_dir_all(&tmp).is_ok() {
             cmd.env("TMPDIR", &tmp).env("TMP", &tmp).env("TEMP", &tmp);
         }
+        // MinGW-w64's windres starts gcc through the command processor `ComSpec` names (#16889).
+        if cfg!(windows) {
+            let root = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("windir"));
+            if let Some(shell) =
+                command_processor(std::env::var_os("ComSpec").as_deref(), root.as_deref())
+            {
+                cmd.env("ComSpec", shell);
+            }
+        }
         for name in SCRUBBED {
             cmd.env_remove(name);
         }
@@ -335,6 +389,9 @@ impl Toolchain {
             if name.to_str().is_some_and(scrubbed) {
                 cmd.env_remove(name);
             }
+        }
+        if let Some(proxy) = proxy {
+            cmd.env("CARGO_HTTP_PROXY", proxy);
         }
         // These are the launcher's own settings, so add them after removing the player's Cargo
         // target overrides. The ARM64 target's linker is LLVM-MinGW's Clang driver; Rust and cc
@@ -393,6 +450,19 @@ impl Toolchain {
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
     }
+}
+
+/// Windows' own command processor for a build, when the `ComSpec` it would inherit names no file
+/// (#16889); `None` leaves the build the player's. MinGW-w64's windres runs gcc, its preprocessor,
+/// through MSVCRT's `popen`, which starts the program `ComSpec` names. Without the variable it
+/// looks for `cmd.exe` in `PATH`'s folders; with one that names no file it finds nothing, and the
+/// game's icon step ended the build: "windres: can't popen `gcc -E …': No error".
+fn command_processor(comspec: Option<&OsStr>, system_root: Option<&OsStr>) -> Option<PathBuf> {
+    if comspec.is_some_and(|shell| Path::new(shell).is_file()) {
+        return None;
+    }
+    let shell = Path::new(system_root?).join("System32").join("cmd.exe");
+    shell.is_file().then_some(shell)
 }
 
 /// Whether the player's environment variable `name` stays out of a build: it would pick another
@@ -506,7 +576,11 @@ pub fn installed() -> Option<Toolchain> {
         dir: dir_for(host),
         host,
     };
-    (toolchain.dir.join(COMPLETE).is_file() && toolchain.compiler_available()).then_some(toolchain)
+    if !(toolchain.dir.join(COMPLETE).is_file() && toolchain.compiler_available()) {
+        return None;
+    }
+    let _ = toolchain.ensure_tool_links();
+    Some(toolchain)
 }
 
 // Check the byte after the pinned prefix before the shared writer can commit it.
@@ -635,6 +709,11 @@ pub fn install(progress: impl Fn(f32)) -> Result<Toolchain, String> {
             ));
         }
     }
+    let toolchain = Toolchain {
+        dir: partial.clone(),
+        host,
+    };
+    toolchain.ensure_tool_links()?;
     fs::write(partial.join(COMPLETE), VERSION).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&dir);
     fs::rename(&partial, &dir).map_err(|e| e.to_string())?;
@@ -1274,6 +1353,27 @@ mod tests {
         assert!(get("CARGO_HOME").flatten().unwrap().ends_with("cargo"));
     }
 
+    /// #16718: the Settings page's proxy reaches the build's Cargo, which downloads the crates and
+    /// horizon-mixins itself; without one Cargo is left to the environment's, like the launcher.
+    #[test]
+    fn the_settings_proxy_reaches_cargo() {
+        let toolchain = Toolchain {
+            dir: PathBuf::from("/rust/1.99.1-x"),
+            host: &HOSTS[0],
+        };
+        let proxy = |setting: Option<&str>| {
+            let cmd = toolchain.command_through(&toolchain.cargo(), setting.map(String::from));
+            cmd.get_envs()
+                .find(|(name, _)| *name == "CARGO_HTTP_PROXY")
+                .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(
+            proxy(Some("socks5h://127.0.0.1:7891")),
+            Some(Some("socks5h://127.0.0.1:7891".into()))
+        );
+        assert_eq!(proxy(None), None, "the player's own CARGO_HTTP_PROXY stays");
+    }
+
     /// The tools' scratch dir is the build's own (#5189): MinGW-w64's gcc, as and ld can't
     /// open a non-ASCII %TEMP%, like the one under a Cyrillic user name.
     #[test]
@@ -1299,6 +1399,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #16889: MinGW-w64's windres runs gcc through the command processor `ComSpec` names, so one
+    /// that names no file ended the game's build at its icon. The build then gets Windows' own; a
+    /// `ComSpec` that names a file stays the player's.
+    #[test]
+    fn a_build_gets_windows_command_processor_when_comspec_names_no_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let windows_shell = root.join("System32").join("cmd.exe");
+        fs::create_dir_all(windows_shell.parent().unwrap()).unwrap();
+        fs::write(&windows_shell, b"").unwrap();
+        let other_shell = root.join("tcc.exe");
+        fs::write(&other_shell, b"").unwrap();
+        let chosen = |comspec: Option<&Path>| {
+            command_processor(comspec.map(Path::as_os_str), Some(root.as_os_str()))
+        };
+
+        assert_eq!(chosen(None), Some(windows_shell.clone()));
+        assert_eq!(
+            chosen(Some(&root.join("gone").join("cmd.exe"))),
+            Some(windows_shell.clone())
+        );
+        // The registry's value, read without its variable expanded.
+        assert_eq!(
+            chosen(Some(Path::new("%SystemRoot%\\system32\\cmd.exe"))),
+            Some(windows_shell.clone())
+        );
+        // A folder is no program.
+        assert_eq!(chosen(Some(root)), Some(windows_shell));
+        assert_eq!(chosen(Some(&other_shell)), None);
+
+        // Without Windows' own there is nothing to hand over.
+        assert_eq!(command_processor(None, None), None);
+        assert_eq!(
+            command_processor(None, Some(root.join("gone").as_os_str())),
+            None
+        );
     }
 
     #[test]
@@ -1641,8 +1779,9 @@ mod tests {
                 "--locked",
                 "--profile",
                 "fast",
+                // The game's `horizon-client` bin is in the horizon-game package.
                 "-p",
-                "horizon-client",
+                "horizon-game",
                 "--bin",
                 "horizon-client",
             ])
@@ -1667,5 +1806,65 @@ mod tests {
             WINDOWS_ARM64_MACHINE,
             "managed native-mod game must be ARM64"
         );
+    }
+
+    #[test]
+    fn ensure_tool_links_links_libllvm_for_apple_darwin() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-toolchain-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let host = HOSTS
+            .iter()
+            .find(|h| h.target == "aarch64-apple-darwin")
+            .unwrap();
+        let toolchain = Toolchain {
+            dir: dir.clone(),
+            host,
+        };
+        let lib = dir.join("lib");
+        fs::create_dir_all(&lib).unwrap();
+        let llvm = lib.join("libLLVM.dylib");
+        fs::write(&llvm, b"mock libLLVM").unwrap();
+
+        toolchain.ensure_tool_links().unwrap();
+
+        let target_lib = dir.join("lib/rustlib/aarch64-apple-darwin/lib");
+        let link = target_lib.join("libLLVM.dylib");
+        assert!(
+            link.is_file(),
+            "libLLVM.dylib must be present in target lib"
+        );
+        #[cfg(unix)]
+        {
+            let symlink_target = fs::read_link(&link).unwrap();
+            assert_eq!(symlink_target, Path::new("../../../libLLVM.dylib"));
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_tool_links_noop_for_non_darwin() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-toolchain-non-darwin-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let host = HOSTS
+            .iter()
+            .find(|h| h.target == WINDOWS_X64_TARGET)
+            .unwrap();
+        let toolchain = Toolchain {
+            dir: dir.clone(),
+            host,
+        };
+        let lib = dir.join("lib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("libLLVM.dylib"), b"mock libLLVM").unwrap();
+
+        toolchain.ensure_tool_links().unwrap();
+
+        let target_lib = dir.join("lib/rustlib").join(WINDOWS_X64_TARGET).join("lib");
+        assert!(!target_lib.join("libLLVM.dylib").exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

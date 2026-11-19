@@ -58,8 +58,16 @@ impl Game<'_> {
                 seed,
                 creative,
                 create,
+                existing_only,
             }) => {
-                self.open_world(&folder, name.as_deref(), seed, creative, create.as_deref())?;
+                self.open_world_as(
+                    &folder,
+                    name.as_deref(),
+                    seed,
+                    creative,
+                    create.as_deref(),
+                    existing_only,
+                )?;
             }
             Some(PendingWorldEntry::Server {
                 address,
@@ -599,7 +607,7 @@ impl Game<'_> {
         self.build_screen();
     }
 
-    pub(super) fn join_world_rest(&mut self) -> Result<()> {
+    pub(in crate::game) fn join_world_rest(&mut self) -> Result<()> {
         if self.rest_loader.is_some() {
             let waited = Instant::now();
             log::info!("Horizon: waiting for world resources");

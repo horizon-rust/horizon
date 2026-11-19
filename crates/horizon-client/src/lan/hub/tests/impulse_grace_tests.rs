@@ -36,6 +36,7 @@ fn a_wind_charged_guest_is_not_sent_back_for_moving_wrongly() {
         next_entity: &mut next_entity,
         spawn: [0.5, 64.0, 0.5],
         spawn_angle: [0.0; 2],
+        spawn_dimension: "minecraft:overworld",
         difficulty: 2,
         difficulty_locked: false,
         clock_rate: 1.0,
