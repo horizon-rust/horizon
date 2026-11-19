@@ -968,11 +968,15 @@ enum Stale {
     /// was before the id came back as a wasm mod), where a plain mod now installs. Left in
     /// `horizon-native-mods/`, it would count as a native mod to build that can't be read.
     Retired,
+    /// A `.hmod` archive right where the new file goes that this Horizon can't read as a mod
+    /// (as `zoom` 1.0.0 was, made for the earlier mod system): the new file takes its place.
+    Outdated,
 }
 
-/// Whether `old`'s file is gone or retired. Any other error reading it (a file another program
-/// holds, no permission) is none of these: the install inspects it and refuses.
-fn stale_entry(home: &Path, old: &installed::Entry, native: bool) -> Option<Stale> {
+/// Whether `old`'s file is gone, retired or outdated, where the new file goes to `relative`. Any
+/// other error reading it (a file another program holds, no permission) is none of these: the
+/// install inspects it and refuses.
+fn stale_entry(home: &Path, old: &installed::Entry, native: bool, relative: &str) -> Option<Stale> {
     let path = home.join(&old.file);
     let plain = match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Stale::Missing),
@@ -980,15 +984,22 @@ fn stale_entry(home: &Path, old: &installed::Entry, native: bool) -> Option<Stal
         Ok(meta) => meta.file_type().is_file(),
     };
     // Only a regular file is opened: a pipe could block here, under the instance's lock.
-    let retired = plain
-        && !native
-        && Path::new(&old.file).starts_with(crate::native_mods::INSTALLED)
-        && fs::File::open(&path)
-            .ok()
-            .filter(|f| f.metadata().is_ok_and(|m| m.is_file()))
-            .and_then(|f| zip::ZipArchive::new(f).ok())
-            .is_some_and(|zip| zip.index_for_name("horizon-native.json").is_some());
-    retired.then_some(Stale::Retired)
+    if !plain || native {
+        return None;
+    }
+    let archive = fs::File::open(&path)
+        .ok()
+        .filter(|f| f.metadata().is_ok_and(|m| m.is_file()))
+        .and_then(|f| zip::ZipArchive::new(f).ok())?;
+    if Path::new(&old.file).starts_with(crate::native_mods::INSTALLED) {
+        let retired = archive.index_for_name("horizon-native.json").is_some();
+        return retired.then_some(Stale::Retired);
+    }
+    // An archive that opens and still isn't a mod won't be one on a later try.
+    let outdated = old.kind == Kind::Mod
+        && old.file == relative
+        && horizon_platform::mod_package::Package::read(&path).is_err();
+    outdated.then_some(Stale::Outdated)
 }
 
 /// Removes `old`'s retired native file, only when it is a plain file (never a link) right in
@@ -1053,7 +1064,9 @@ fn install_version_guarded(
     let mut list = installed::Installed::load(home);
     let ours = |e: &installed::Entry| e.source == SourceId::Horizon && e.project == p.id;
     let old = list.entries.iter().find(|e| ours(e)).cloned();
-    let stale = old.as_ref().and_then(|old| stale_entry(home, old, native));
+    let stale = old
+        .as_ref()
+        .and_then(|old| stale_entry(home, old, native, &relative));
     if let Some(old) = &old {
         let mut different = old.kind != project.kind;
         let path = home.join(&old.file);

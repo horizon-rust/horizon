@@ -1180,6 +1180,50 @@ fn a_stale_native_entry_is_replaced_by_the_mod_the_id_became() {
     }
 }
 
+/// An entry from the earlier mod system (as `zoom` 1.0.0 was) names a `.hmod` right where the new
+/// file goes, an archive this Horizon can't read as a mod. Installing the mod replaces it. A
+/// file there that is no archive at all is refused as before and stays.
+#[test]
+fn an_outdated_mod_file_is_replaced_by_the_new_version() {
+    let index = sample();
+    let p = hud(&index);
+    let file = "horizon-mods/coords_hud.hmod";
+
+    let home = scratch("stale-outdated");
+    let old = home.join(file);
+    fs::create_dir_all(old.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(fs::File::create(&old).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("horizon-mod.toml", options).unwrap();
+    let manifest = "id = \"coords_hud\"
+version = \"0.0.1\"
+capabilities = [\"render\"]
+";
+    std::io::Write::write_all(&mut zip, manifest.as_bytes()).unwrap();
+    zip.finish().unwrap();
+    assert!(horizon_platform::mod_package::Package::read(&old).is_err());
+    old_entry(&home, file, "0.0.1");
+
+    let done = install_from(&index, true, &p, &home, &|_, _| {}).unwrap();
+    assert_eq!(done[0].file, file);
+    assert_eq!(installed::Installed::load(&home).entries, done);
+    let package = horizon_platform::mod_package::Package::read(&old).unwrap();
+    assert_eq!(package.manifest.version, done[0].version);
+    assert!(java::is_enabled(&home, "coords_hud"));
+    fs::remove_dir_all(&home).unwrap();
+
+    let home = scratch("stale-not-an-archive");
+    let old = home.join(file);
+    fs::create_dir_all(old.parent().unwrap()).unwrap();
+    fs::write(&old, "not an archive").unwrap();
+    let list = old_entry(&home, file, "0.0.1");
+    let e = install_from(&index, true, &p, &home, &|_, _| {}).unwrap_err();
+    assert!(e.contains("Cannot inspect installed"), "{e}");
+    assert_eq!(fs::read(&old).unwrap(), b"not an archive");
+    assert_eq!(installed::Installed::load(&home).entries, list);
+    fs::remove_dir_all(&home).unwrap();
+}
+
 /// A retired native file the launcher can't read right now (another program holds it, or no
 /// permission) is not taken for gone or retired: the install refuses, as before, and leaves the
 /// file and the list as they were.
