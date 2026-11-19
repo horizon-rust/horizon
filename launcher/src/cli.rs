@@ -1378,7 +1378,8 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                     allow_jar_downloads,
                     steps,
                     registry_consent,
-                )?;
+                )
+                .map_err(native_mods::cli_error)?;
                 let built = std::path::absolute(&built).unwrap_or(built);
                 let path = built.display().to_string();
                 println!(
@@ -1430,7 +1431,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                             ],
                         );
                     }
-                    let error = String::from(error);
+                    let error = native_mods::cli_error(error);
                     if error.starts_with(native_mods::MISMATCH) {
                         trf("{error} Run `cargo horizon-mod update --horizon {commit}` in each mod's folder to pin it to this game, then build again.", &[("error", &error), ("commit", &base)])
                     } else { error }

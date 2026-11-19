@@ -1,5 +1,5 @@
 use super::*;
-use horizon_launcher::native_mods::prepare_first::First;
+use horizon_launcher::native_mods::prepare_first::{self, Next, Waiting};
 
 impl Launcher {
     /// Records why a build failed. A mod's own compile failure reads as plain words with a way
@@ -26,7 +26,6 @@ impl Launcher {
         if self.native_step.is_some() {
             return;
         }
-        let asked = base.clone();
         // Every way to a build asks first while native mods aren't allowed (permission taken
         // back in Storage, say, with a card still open): the question, never a refusal.
         // The card stays under the question: Cancel goes back to it.
@@ -53,34 +52,94 @@ impl Launcher {
             self.native_error = Some(error);
             return;
         };
-        // The mods this build is given: its failure is read against them, even if another
-        // instance is selected by the time it ends.
-        self.native_built_mods = native_status::enabled(&self.mods.home())
+        if let Err(e) = native_mods_to_build(&instance.home) {
+            self.native_log_preflight(&e);
+            self.native_error = Some(e);
+            return;
+        }
+        // Not prepared: the window prepares the base as Prepare & play does, never the command
+        // line's hint (#18659). The build keeps this instance and base while it waits.
+        let waiting = Waiting {
+            instance: instance.id.clone(),
+            plays,
+            needs: backend::prepared_in(&base),
+            base,
+            back_up,
+            started: false,
+        };
+        self.native_go(waiting, None, None);
+    }
+
+    /// A build waiting for a preparation looks again: one just ended (the version it prepared
+    /// and its error as the window shows it), or an install did.
+    pub(super) fn native_look_again(&mut self, ended: Option<&str>, error: Option<&str>) {
+        if let Some(waiting) = self.native_prepare_first.take() {
+            self.native_go(waiting, ended, error);
+        }
+    }
+
+    /// Builds `waiting`, prepares its base first, waits, or drops it ([`prepare_first::next`]).
+    fn native_go(&mut self, mut waiting: Waiting, ended: Option<&str>, error: Option<&str>) {
+        // One preparation runs at a time: once one ended, none of this build's runs.
+        if ended.is_some() {
+            waiting.started = false;
+        }
+        let instance = instances::list()
             .into_iter()
-            .map(|(id, ..)| id)
-            .collect();
-        let folder = match self.native_mods_to_build() {
-            Ok((folder, _)) => folder,
+            .find(|i| i.id == waiting.instance);
+        let now = prepare_first::Now {
+            plays: instance.as_ref().map(|i| self.version_of(i).cloned()),
+            preparing: self.preparing,
+            installing: self.installing.as_ref().map(|(tag, _)| tag.as_str()),
+            ended: ended.map(|tag| (tag, error)),
+        };
+        match prepare_first::next(&waiting, &now, backend::ready) {
+            Next::Build => match instance {
+                Some(instance) => {
+                    self.native_step = None;
+                    self.start_native_build(instance, waiting.base, waiting.back_up);
+                }
+                // `next` builds only an instance it found.
+                None => self.native_step = None,
+            },
+            Next::Prepare => {
+                self.prepare_version(waiting.needs.clone(), backend::MinecraftFrom::Install);
+                waiting.started = true;
+                self.wait_for_prepare(waiting);
+            }
+            Next::Wait => self.wait_for_prepare(waiting),
+            Next::Stop(error) => {
+                self.native_step = None;
+                self.play_after_build = None;
+                self.native_log_preflight(&error);
+                self.native_error = Some(error);
+            }
+        }
+    }
+
+    /// The build card shows Prepare's first words while the build waits for it.
+    fn wait_for_prepare(&mut self, waiting: Waiting) {
+        self.native_prepare_first = Some(waiting);
+        self.native_step = Some(tr("Getting ready…").into());
+        self.native_progress = None;
+    }
+
+    /// Starts building `instance`'s native mods on `base`, on a thread; `Msg::Native` ends it.
+    fn start_native_build(&mut self, instance: instances::Instance, base: String, back_up: bool) {
+        let folder = match native_mods_to_build(&instance.home) {
+            Ok(folder) => folder,
             Err(e) => {
                 self.native_log_preflight(&e);
                 self.native_error = Some(e);
                 return;
             }
         };
-        // Not prepared: the window prepares the base as Prepare & play does, never the command
-        // line's hint (#18659).
-        match native_mods::prepare_first::first(backend::ready(&base), self.preparing) {
-            First::Build => {}
-            First::Prepare(tag) => {
-                self.prepare_version(tag, backend::MinecraftFrom::Install);
-                self.wait_for_prepare(asked, back_up);
-                return;
-            }
-            First::Wait => {
-                self.wait_for_prepare(asked, back_up);
-                return;
-            }
-        }
+        // The mods this build is given: its failure is read against them, even if another
+        // instance is selected by the time it ends.
+        self.native_built_mods = native_status::enabled(&instance.home)
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
         self.native_step = Some(tr("Starting the build").into());
         self.native_progress = None;
         // The first build downloads the compiler: the card says so, with its size.
@@ -111,41 +170,29 @@ impl Launcher {
         });
     }
 
-    /// The build card shows Prepare's first words while the build waits for it.
-    fn wait_for_prepare(&mut self, asked: Option<String>, back_up: bool) {
-        self.native_prepare_first = Some((asked, back_up));
-        self.native_step = Some(tr("Getting ready…").into());
-        self.native_progress = None;
-    }
-
-    /// A preparation ended, with Prepare's `error` as the window shows it: a build waiting for it
-    /// starts again, or stops with that message.
-    pub(super) fn native_after_prepare(&mut self, error: Option<&str>) {
-        let Some((base, back_up)) = self.native_prepare_first.take() else {
-            return;
-        };
-        self.native_step = None;
-        match native_mods::prepare_first::after_prepare(error) {
-            Ok(()) => self.build_native_on(base, back_up),
-            Err(error) => {
-                self.play_after_build = None;
-                self.native_log_preflight(&error);
-                self.native_error = Some(error);
-            }
-        }
-    }
-
-    /// The build card's Stop: the build under way, or one waiting for a preparation (which goes
-    /// on, with its own Cancel on Home).
+    /// The build card's Stop: the build under way, or one waiting for a preparation. A
+    /// preparation this build started stops too, as Home's Cancel stops it; one the player
+    /// started goes on.
     pub(super) fn stop_native_build(&mut self) {
         self.play_after_build = None;
-        if self.native_prepare_first.take().is_some() {
-            self.native_step = None;
-            self.native_done = Some(tr(native_mods::CANCELLED).into());
-        } else {
-            native_mods::cancel();
+        match self.native_prepare_first.take() {
+            Some(waiting) => {
+                if waiting.started {
+                    horizon_launcher::mojang::CANCEL.store(true, Ordering::Relaxed);
+                }
+                self.native_step = None;
+                self.native_done = Some(tr(native_mods::CANCELLED).into());
+            }
+            None => native_mods::cancel(),
         }
     }
+}
+
+/// The native mods folder of the instance at `home`, refused when its mods can't be read.
+fn native_mods_to_build(home: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let folder = native_mods::installed_mods(home)?;
+    native_mods::bundles(&folder)?;
+    Ok(folder)
 }
 
 /// What a failed build says, and the mods that stopped it: a mod's own compile failure, or its

@@ -1671,13 +1671,27 @@ impl std::fmt::Display for Failed {
         match self {
             Self::Mods { error, .. } | Self::Other(error) => f.write_str(error),
             Self::Worlds(stake) => f.write_str(&stake.text),
-            Self::NotPrepared(tag) => f.write_str(&backend::prepare_hint(tag)),
+            // The window's words, which its build log shows; the command line says
+            // [`cli_error`]'s.
+            Self::NotPrepared(tag) => f.write_str(&trf(
+                "{version} is not prepared yet. Build again to prepare it first.",
+                &[("version", tag)],
+            )),
             Self::Nothing => f.write_str(tr("There are no mods to build: the folder has none, or every mod was left out.")),
             Self::NoConsent => f.write_str(tr("Native mods run inside your game with your rights; mixins compile code into the game. Allow native mods in Settings, Storage, or pass --trust-native-code.")),
         }
     }
 }
 impl std::error::Error for Failed {}
+
+/// A failed build as the command line says it: an unprepared base names the command that
+/// prepares it.
+pub fn cli_error(failed: Failed) -> String {
+    match failed {
+        Failed::NotPrepared(tag) => backend::prepare_hint(&tag),
+        failed => failed.into(),
+    }
+}
 impl From<Failed> for String {
     fn from(failed: Failed) -> Self {
         failed.to_string()

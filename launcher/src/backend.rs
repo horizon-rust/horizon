@@ -3081,7 +3081,9 @@ impl From<NotReady> for String {
 /// build) is not prepared. The window prepares it instead (#18659).
 pub fn prepare_hint(tag: &str) -> String {
     format!(
-        "{tag} is not prepared yet. Prepare it first: `horizon-launcher prepare --version {tag}`          uses your own Minecraft {v}, or downloads it from Mojang for the signed-in account          that owns it.",
+        "{tag} is not prepared yet. Prepare it first: `horizon-launcher prepare --version {tag}` \
+         uses your own Minecraft {v}, or downloads it from Mojang for the signed-in account \
+         that owns it.",
         v = game_version(tag)
     )
 }
