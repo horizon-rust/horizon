@@ -142,9 +142,9 @@ impl Zip {
     pub fn open(path: &Path) -> io::Result<Self> {
         Self::open_with(path, false)
     }
-    /// [`Zip::open`], refusing an archive whose END record `normalize_end` would correct. The
-    /// `zip` crate reads it as written, as a mod package's checks do, so this view lists exactly
-    /// the entries they saw; the corrected one would add entries past the record's count.
+    /// The archive as written, without `normalize_end`'s correction: the bytes and the `zip`
+    /// crate a mod package's checks read, so exactly the entries they saw. Refuses an archive the
+    /// corrected view would list more of (an entry past the END record's count).
     pub fn open_exact(path: &Path) -> io::Result<Self> {
         Self::open_with(path, true)
     }
@@ -162,17 +162,31 @@ impl Zip {
                 tail = read_range(&file, tail_at, len)?;
             }
         }
-        if normalize_end(&mut tail) && exact {
-            return Err(invalid(
-                "the archive's END record does not list its directory's entries",
-            ));
-        }
-        Self::new(Reader {
-            file: Some(Arc::new(file)),
+        let written = exact.then(|| tail.clone());
+        let corrected = normalize_end(&mut tail);
+        let file = Arc::new(file);
+        let reader = |tail: Vec<u8>| Reader {
+            file: Some(file.clone()),
             tail: Arc::from(tail),
             tail_at,
             position: 0,
-        })
+        };
+        let Some(written) = written else {
+            return Self::new(reader(tail));
+        };
+        let zip = Self::new(reader(written))?;
+        // The corrected view can also be poorer (a Zip64 record between the directory and the
+        // END record moves the recount's start): only a name it adds tells of a hidden entry.
+        if corrected
+            && let Ok(lenient) = Self::new(reader(tail))
+            && (lenient.entries.keys().any(|n| !zip.entries.contains_key(n))
+                || lenient.folders.keys().any(|n| !zip.folders.contains_key(n)))
+        {
+            return Err(invalid(
+                "the archive's END record does not list all of its directory's entries",
+            ));
+        }
+        Ok(zip)
     }
     pub fn from_bytes(mut data: Vec<u8>) -> io::Result<Self> {
         normalize_end(&mut data);

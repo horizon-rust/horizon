@@ -736,19 +736,29 @@ pub fn source_file(name: &str) -> bool {
                 .any(|prefix| name.starts_with(prefix)))
 }
 
+/// ASCII only, so the case-folded names below are the file system's: no normalisation tells
+/// a composed `é` from `e` and a combining accent, which macOS stores as one.
 pub(crate) fn plain_path(name: &str) -> bool {
-    !name.starts_with('/')
+    name.is_ascii()
+        && !name.starts_with('/')
         && !name.contains(['\\', ':'])
         && !name
             .split('/')
-            .any(|part| part.is_empty() || part == "." || part == ".." || !portable_part(part))
+            .any(|part| part.is_empty() || !portable_part(part))
 }
 
-/// A path part every platform writes as the file it names: not a Windows device name, whatever
-/// its case or extension, and not longer than the 255 bytes file systems take.
+/// A path part every platform writes as the file it names: not ending in a dot or space (Windows
+/// drops them, so `a.` and `a ` are `a`), not a Windows device name whatever its case, extension
+/// or trailing spaces (`COM¹`-`COM³` and `LPT¹`-`LPT³` too), and not longer than the 255 bytes
+/// file systems take.
 pub(crate) fn portable_part(part: &str) -> bool {
-    let stem = part.split('.').next().unwrap_or(part);
-    part.len() <= 255 && !reserved_mod_id(&stem.to_ascii_lowercase())
+    let stem = part.split('.').next().unwrap_or(part).trim_end_matches(' ');
+    let stem = stem.to_ascii_lowercase();
+    let superscript = ["com", "lpt"].iter().any(|device| {
+        stem.strip_prefix(device)
+            .is_some_and(|n| ["¹", "²", "³"].contains(&n))
+    });
+    part.len() <= 255 && !part.ends_with(['.', ' ']) && !reserved_mod_id(&stem) && !superscript
 }
 
 /// A mod as found on disk.
@@ -920,7 +930,7 @@ impl Package {
                 return Err(format!("invalid package path: {name}"));
             }
             // One file where case is ignored (Windows, macOS): staging writes one over the other.
-            if !folded.insert(name.strip_suffix('/').unwrap_or(&name).to_lowercase()) {
+            if !folded.insert(name.strip_suffix('/').unwrap_or(&name).to_ascii_lowercase()) {
                 return Err(format!("duplicate package path, ignoring case: {name}"));
             }
             let first = name.split('/').next().unwrap_or("");
