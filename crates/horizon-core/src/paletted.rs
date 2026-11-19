@@ -243,14 +243,47 @@ pub struct Packed {
     pub data: Option<Vec<u64>>,
 }
 
+/// A container's identity for a reader that remembers what it read: `uid` is unique among every
+/// container ever made (a clone, which is copy-on-write's way of editing a shared one, gets a new
+/// one), `edits` counts the `set` calls of this container since it was made. A reader that kept
+/// `(uid, edits)` and finds the same pair later knows the entries are the ones it read.
+#[derive(Debug)]
+struct Identity {
+    uid: u64,
+    edits: u32,
+}
+impl Default for Identity {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            uid: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            edits: 0,
+        }
+    }
+}
+impl Clone for Identity {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PalettedContainer {
     strategy: Strategy,
     bits: u8,
     palette: Palette,
     words: Vec<u64>,
+    /// Which container this is, and how many writes it has had (see [`Identity`]).
+    identity: Identity,
 }
 impl PalettedContainer {
+    /// `(uid, edits)`: equal to an earlier answer only if this is the same container and none of
+    /// its entries was written since (`edits` wraps after 2^32 writes; a reader that keeps a
+    /// stamp for that long is not one this serves).
+    #[inline]
+    pub fn stamp(&self) -> (u64, u32) {
+        (self.identity.uid, self.identity.edits)
+    }
     /// `new PalettedContainer(initialValue, strategy)`.
     pub fn new(strategy: Strategy, value: u32) -> Self {
         Self {
@@ -258,6 +291,7 @@ impl PalettedContainer {
             bits: 0,
             palette: Palette::Single(value),
             words: Vec::new(),
+            identity: Identity::default(),
         }
     }
     pub fn strategy(&self) -> Strategy {
@@ -398,6 +432,7 @@ impl PalettedContainer {
     }
     /// `getAndSet`: stores `value` and returns the previous one.
     pub fn set(&mut self, i: usize, value: u32) -> u32 {
+        self.identity.edits = self.identity.edits.wrapping_add(1);
         let id = self.id_for(value);
         match &self.palette {
             Palette::Single(old) => *old,
@@ -581,6 +616,7 @@ impl PalettedContainer {
                 strategy,
                 bits,
                 words: pack_words(bits, ids.len(), ids.iter().copied()),
+                identity: Identity::default(),
                 palette: Palette::List(palette),
             },
             Config::Global => {
@@ -589,6 +625,7 @@ impl PalettedContainer {
                     strategy,
                     bits,
                     words: pack_words(bits, ids.len(), ids.iter().map(|&id| palette[id as usize])),
+                    identity: Identity::default(),
                     palette: Palette::Global,
                 }
             }
@@ -628,6 +665,7 @@ impl PalettedContainer {
                     bits,
                     palette: Palette::List(palette),
                     words,
+                    identity: Identity::default(),
                 };
                 container.check_indices()?;
                 Ok(container)
@@ -637,6 +675,7 @@ impl PalettedContainer {
                 bits: storage_bits,
                 palette: Palette::Global,
                 words,
+                identity: Identity::default(),
             }),
         }
     }
@@ -767,6 +806,7 @@ impl PalettedContainer {
                 strategy,
                 bits,
                 words: data.to_vec(),
+                identity: Identity::default(),
                 palette: Palette::List(palette),
             };
             container.check_indices()?;
@@ -1124,6 +1164,7 @@ mod tests {
                 bits,
                 palette: Palette::List((0..len as u32).collect()),
                 words: words.to_vec(),
+                identity: Identity::default(),
             };
             match (container.check_indices(), scan(strategy, bits, len, words)) {
                 (Ok(()), Ok(())) => {}
@@ -1237,6 +1278,7 @@ mod tests {
                     bits,
                     palette: Palette::List(palette),
                     words: data.to_vec(),
+                    identity: Identity::default(),
                 },
                 _ => PalettedContainer::build(strategy, palette, &ids),
             })
@@ -1544,6 +1586,7 @@ mod tests {
             bits,
             palette: Palette::Global,
             words: vec![pattern; BLOCKS.entries().div_ceil(per)],
+            identity: Identity::default(),
         }
     }
     /// Sections saved from a column: one value (a single palette, and a list
