@@ -28,7 +28,8 @@ fn pig_against_player(on_climbable: bool) -> Option<(Vec<[f64; 3]>, Vec3)> {
         player.on_climbable = on_climbable;
         w.player = Some(player);
         let mut events = Vec::new();
-        push_entities(&mut pig, &w, &mut events);
+        let mut level = crate::health::TestLevel::new(0);
+        push_entities(&mut pig, &w, &mut level.level(), &mut events);
         let pushes = events
             .iter()
             .filter_map(|e| match e {
