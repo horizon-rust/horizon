@@ -412,6 +412,7 @@ impl Session {
             if let Some(w) = thread_writer.lock().unwrap().take() {
                 w.shutdown();
             }
+            // Nothing else tells the game the connection ended: wait for room (#18380).
             let _ = send.send_waiting(Event::Disconnected {
                 reason: why.text,
                 key: why.key,
@@ -788,7 +789,7 @@ fn join_friend(
 }
 
 fn status(send: &ingress::Producer<Event>, text: &str) {
-    let _ = send.send_waiting(Event::Status(text.to_owned()));
+    let _ = send.send(Event::Status(text.to_owned()));
 }
 
 /// Shown when an online-mode server asks a client without an account to authenticate.
@@ -1139,11 +1140,14 @@ fn run(
         payloads,
         true,
     )?;
-    let _ = send.send_waiting(Event::Joined {
-        registries: Arc::new(registries),
-        uuid: profile.uuid,
-        name: profile.name,
-    });
+    deliver(
+        send,
+        Event::Joined {
+            registries: Arc::new(registries),
+            uuid: profile.uuid,
+            name: profile.name,
+        },
+    )?;
     receive_play(
         &mut reader,
         shared_writer,
@@ -1190,7 +1194,7 @@ fn receive_play(
                     id,
                 )
                 .unwrap_or("?");
-                let _ = send.send_waiting(Event::DecodeError(format!("{name}: {err}")));
+                let _ = send.send(Event::DecodeError(format!("{name}: {err}")));
                 continue;
             }
         };
@@ -1208,15 +1212,14 @@ fn receive_play(
             play::Clientbound::KeepAlive(k) => reply(play::Serverbound::KeepAlive(k)),
             play::Clientbound::BundleDelimiter(_) => {}
             play::Clientbound::ResourcePackPush(p) => {
-                let _ = send.send_waiting(Event::PackPush(p));
+                let _ = send.send(Event::PackPush(p));
             }
             play::Clientbound::ResourcePackPop(p) => {
-                let _ = send.send_waiting(Event::PackPop(p.id));
+                let _ = send.send(Event::PackPop(p.id));
             }
             play::Clientbound::StartConfiguration(_) => {
                 payloads.begin_configuration();
                 configuring.store(true, Ordering::Release);
-                let _ = send.send_waiting(Event::Reconfiguring);
                 if let Some(w) = shared_writer.lock().unwrap().as_mut() {
                     w.transition_protocol(
                         horizon_protocol::payload_negotiation::Phase::Configuration,
@@ -1225,6 +1228,10 @@ fn receive_play(
                     .map_err(|error| Reason::plain(connection_lost(error, lang)))?;
                     configuring.store(true, Ordering::Relaxed);
                 }
+                // Only after the acknowledgement: a game still answering play packets
+                // while this waits for room would otherwise send configuration ids
+                // the server still reads as play (#18380).
+                deliver(send, Event::Reconfiguring)?;
                 let registries = configure(
                     reader,
                     shared_writer,
@@ -1236,7 +1243,7 @@ fn receive_play(
                     payloads,
                     false,
                 )?;
-                let _ = send.send_waiting(Event::Reconfigured(Arc::new(registries)));
+                deliver(send, Event::Reconfigured(Arc::new(registries)))?;
             }
             // ClientCommonPacketListenerImpl.handleRequestCookie: the stored
             // cookie (or none) goes straight back.
@@ -1251,12 +1258,12 @@ fn receive_play(
                 cookies.lock().unwrap().insert(p.key, p.payload);
             }
             play::Clientbound::ServerLinks(p) => {
-                let _ = send.send_waiting(Event::ServerLinks(p.links));
+                let _ = send.send(Event::ServerLinks(p.links));
             }
             // ClientCommonPacketListenerImpl.handleTransfer: the connection
             // ends and the game connects to the other address.
             play::Clientbound::Transfer(p) => {
-                let _ = send.send_waiting(Event::Transfer {
+                let _ = send.send(Event::Transfer {
                     host: p.host,
                     port: p.port,
                 });
@@ -1294,10 +1301,12 @@ fn receive_play(
     }
 }
 
-/// Hands a packet to the game. While its incoming queue is full this waits, so the
-/// connection stops being read and the server's flow control holds it back: a game
-/// that stalls (a shader pack compiling) while a world's first view streams in no
-/// longer ends the connection (#18380).
+/// Hands the game an event it must not lose (a packet, a registry snapshot). While its
+/// incoming queue is full this waits, so the connection stops being read and the
+/// server's flow control holds it back: a game that stalls (a shader pack compiling)
+/// while a world's first view streams in no longer ends the connection (#18380).
+/// Events main already dropped under pressure keep `send`, so keepalives are still
+/// answered behind them.
 fn deliver(send: &ingress::Producer<Event>, event: Event) -> Result<(), Reason> {
     send.send_waiting(event)
         .map_err(|refused| match refused.reason {
@@ -1512,7 +1521,7 @@ fn configure(
                 }))?
             }
             cfg::Clientbound::UpdateEnabledFeatures(p) => {
-                let _ = send.send_waiting(Event::Features(p.features));
+                let _ = send.send(Event::Features(p.features));
             }
             cfg::Clientbound::RegistryData(mut r) => {
                 fill_known_entries(&mut r, resources.root());
@@ -1520,21 +1529,21 @@ fn configure(
             }
             cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
             cfg::Clientbound::CodeOfConduct(c) => {
-                let _ = send.send_waiting(Event::CodeOfConduct(c.text));
+                let _ = send.send(Event::CodeOfConduct(c.text));
             }
             // The game answers: it may prompt the player first.
             cfg::Clientbound::ResourcePackPush(p) => {
-                let _ = send.send_waiting(Event::PackPush(p));
+                let _ = send.send(Event::PackPush(p));
             }
             cfg::Clientbound::ResourcePackPop(p) => {
-                let _ = send.send_waiting(Event::PackPop(p.id));
+                let _ = send.send(Event::PackPop(p.id));
             }
             // The game shows it; the answer goes back from there.
             cfg::Clientbound::ShowDialog(d) => {
-                let _ = send.send_waiting(Event::ShowDialog(d.dialog));
+                let _ = send.send(Event::ShowDialog(d.dialog));
             }
             cfg::Clientbound::ClearDialog(_) => {
-                let _ = send.send_waiting(Event::ClearDialog);
+                let _ = send.send(Event::ClearDialog);
             }
             cfg::Clientbound::CookieRequest(q) => {
                 let payload = cookies.lock().unwrap().get(&q.key).cloned();
@@ -1547,10 +1556,10 @@ fn configure(
                 cookies.lock().unwrap().insert(p.key, p.payload);
             }
             cfg::Clientbound::ServerLinks(p) => {
-                let _ = send.send_waiting(Event::ServerLinks(p.links));
+                let _ = send.send(Event::ServerLinks(p.links));
             }
             cfg::Clientbound::Transfer(p) => {
-                let _ = send.send_waiting(Event::Transfer {
+                let _ = send.send(Event::Transfer {
                     host: p.host,
                     port: p.port,
                 });
@@ -1611,15 +1620,15 @@ fn receive_brand(payload: &cfg::CustomPayload, send: &ingress::Producer<Event>) 
     if payload.channel == "minecraft:brand"
         && let Ok(brand) = horizon_protocol::buf::Reader::new(&payload.data).string(32767)
     {
-        let _ = send.send_waiting(Event::Brand(brand));
+        let _ = send.send(Event::Brand(brand));
     } else if payload.channel == horizon_protocol::quiet::CHANNEL {
-        let _ = send.send_waiting(Event::QuietCommands);
+        let _ = send.send(Event::QuietCommands);
     } else if payload.channel == horizon_protocol::custom_book::CHANNEL {
-        let _ = send.send_waiting(Event::CustomBooks);
+        let _ = send.send(Event::CustomBooks);
     } else if payload.channel == crate::lod_net::CHANNEL
         && let Some(offer) = crate::lod_net::Offer::decode(&payload.data)
     {
-        let _ = send.send_waiting(Event::FarTerrain(offer));
+        let _ = send.send(Event::FarTerrain(offer));
     }
 }
 
@@ -2816,43 +2825,89 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// #18380: the play loop over a pipe, handing its packets to an incoming queue of
-    /// `budget` bytes. Returns the server's end, the writer and the loop's thread.
-    fn play_into(
-        name: &str,
-        budget: usize,
-    ) -> (
-        ingress::Consumer<Event>,
-        Connection,
-        Arc<Mutex<Option<QueuedWriter>>>,
-        std::thread::JoinHandle<Result<Reason, Reason>>,
-        PathBuf,
-    ) {
-        let (root, data) = empty_item_data(name);
-        let (client, server) = horizon_protocol::connection::Pipe::pair();
-        let (mut reader, writer) = Connection::local(client).split();
-        let writer = Arc::new(Mutex::new(Some(QueuedWriter::new(writer).unwrap())));
-        let (send, events) = ingress::channel(budget, Event::ingress_charge).unwrap();
-        let thread_writer = writer.clone();
-        let thread = std::thread::spawn(move || {
-            receive_play(
-                &mut reader,
-                &thread_writer,
-                &Arc::new(AtomicBool::new(false)),
-                &Language::new(),
-                &send,
-                &Cookies::default(),
-                &crate::lod_net::Inbox::default(),
-                &data,
-                &Arc::new(Mutex::new(None)),
-                &crate::raw_payloads::Transport::empty(),
+    /// #18380: the play loop over a pipe, handing its packets to an incoming queue.
+    struct PlayLoop {
+        events: ingress::Consumer<Event>,
+        /// The server's end, which gives up on a read after [`WAIT`].
+        server: Connection,
+        writer: Arc<Mutex<Option<QueuedWriter>>>,
+        configuring: Arc<AtomicBool>,
+        /// How the loop ended, once it has.
+        ended: std::sync::mpsc::Receiver<Result<Reason, Reason>>,
+        root: PathBuf,
+    }
+
+    /// How long a test waits for anything, so a missed wakeup fails instead of hanging.
+    const WAIT: Duration = Duration::from_secs(5);
+
+    impl PlayLoop {
+        fn start(name: &str, budget: usize) -> Self {
+            let (root, data) = empty_item_data(name);
+            let (client, server) = horizon_protocol::connection::Pipe::pair();
+            let (mut reader, writer) = Connection::local(client).split();
+            let writer = Arc::new(Mutex::new(Some(QueuedWriter::new(writer).unwrap())));
+            let configuring = Arc::new(AtomicBool::new(false));
+            let (send, events) = ingress::channel(budget, Event::ingress_charge).unwrap();
+            let (thread_writer, thread_configuring) = (writer.clone(), configuring.clone());
+            let (done, ended) = channel();
+            std::thread::spawn(move || {
+                let _ = done.send(receive_play(
+                    &mut reader,
+                    &thread_writer,
+                    &thread_configuring,
+                    &Language::new(),
+                    &send,
+                    &Cookies::default(),
+                    &crate::lod_net::Inbox::default(),
+                    &data,
+                    &Arc::new(Mutex::new(None)),
+                    &crate::raw_payloads::Transport::empty(),
+                ));
+            });
+            let server = Connection::local(server);
+            server.reader.set_read_timeout(Some(WAIT)).unwrap();
+            Self {
+                events,
+                server,
+                writer,
+                configuring,
+                ended,
+                root,
+            }
+        }
+        fn send(&mut self, packet: play::Clientbound) {
+            self.server.send(&packet.encode()).unwrap();
+        }
+        fn reply(&mut self) -> play::Serverbound {
+            let (id, body) = self.server.recv().expect("no reply in time");
+            play::Serverbound::decode(id, &body).unwrap()
+        }
+        fn running(&self) -> bool {
+            matches!(
+                self.ended.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
             )
-        });
-        (events, Connection::local(server), writer, thread, root)
+        }
+        /// The reason the loop ended with: `Ok` from the server, `Err` from this side.
+        fn end(self) -> Result<String, String> {
+            let ended = self.ended.recv_timeout(WAIT).expect("the loop never ended");
+            std::fs::remove_dir_all(&self.root).unwrap();
+            ended.map(|reason| reason.text).map_err(|reason| reason.text)
+        }
+        fn shut(self) -> Result<String, String> {
+            if let Some(writer) = self.writer.lock().unwrap().take() {
+                writer.shutdown();
+            }
+            self.end()
+        }
     }
 
     fn ping(id: i32) -> play::Clientbound {
         play::Clientbound::Ping(cfg::Ping { id })
+    }
+
+    fn keepalive(id: i64) -> play::Clientbound {
+        play::Clientbound::KeepAlive(cfg::KeepAlive { id })
     }
 
     /// The bytes one queued ping holds in the incoming queue.
@@ -2865,66 +2920,85 @@ mod tests {
     /// streams in fills its incoming queue. The connection waits for it instead of ending.
     #[test]
     fn a_full_incoming_queue_waits_for_a_slow_game_instead_of_disconnecting() {
-        let (events, mut server, writer, thread, root) =
-            play_into("ingress-stall", 2 * ping_charge());
+        let mut play = PlayLoop::start("ingress-stall", 2 * ping_charge());
         for id in 0..20 {
-            server.send(&ping(id).encode()).unwrap();
+            play.send(ping(id));
         }
-        let timeout = Duration::from_secs(5);
         for id in 0..20 {
-            let (event, credit) = events.recv_timeout_owned(timeout).unwrap().into_parts();
+            let (event, credit) = play.events.recv_timeout_owned(WAIT).unwrap().into_parts();
             assert!(matches!(event, Event::Packet(p) if *p == ping(id)));
             // The game holds each packet's charge for a while, as its backlog does.
             std::thread::sleep(Duration::from_millis(10));
             drop(credit);
         }
-        server
-            .send(&play::Clientbound::KeepAlive(cfg::KeepAlive { id: 9 }).encode())
-            .unwrap();
-        let (id, body) = server.recv().unwrap();
+        play.send(keepalive(9));
         assert_eq!(
-            play::Serverbound::decode(id, &body).unwrap(),
+            play.reply(),
             play::Serverbound::KeepAlive(cfg::KeepAlive { id: 9 })
         );
-        assert!(!thread.is_finished());
-        writer.lock().unwrap().take().unwrap().shutdown();
-        assert!(thread.join().unwrap().is_err());
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(play.running());
+        assert!(play.shut().is_err());
+    }
+
+    /// #18380: what main dropped under pressure (a pack pop) is still dropped, not waited
+    /// for, so keepalives behind it are answered while the game is stalled.
+    #[test]
+    fn a_full_queue_still_answers_keepalives_behind_a_best_effort_event() {
+        let mut play = PlayLoop::start("ingress-best-effort", ping_charge());
+        play.send(ping(1));
+        play.send(play::Clientbound::ResourcePackPop(cfg::ResourcePackPop {
+            id: None,
+        }));
+        play.send(keepalive(9));
+        assert_eq!(
+            play.reply(),
+            play::Serverbound::KeepAlive(cfg::KeepAlive { id: 9 })
+        );
+        assert!(play.running());
+        assert!(play.shut().is_err());
+    }
+
+    /// #18380: a reconfiguration is acknowledged, and the connection switched to
+    /// configuration, before the loop waits to tell a stalled game. Otherwise the game's
+    /// answers to play packets it still holds reach a server that reads them as play.
+    #[test]
+    fn a_reconfiguration_is_acknowledged_before_waiting_for_the_game() {
+        let mut play = PlayLoop::start("ingress-reconfigure", ping_charge());
+        play.send(ping(1));
+        play.send(play::Clientbound::StartConfiguration(Empty));
+        assert_eq!(
+            play.reply(),
+            play::Serverbound::ConfigurationAcknowledged(Empty)
+        );
+        assert!(play.configuring.load(Ordering::Acquire));
+        assert!(play.running());
+        let (event, credit) = play.events.recv_timeout_owned(WAIT).unwrap().into_parts();
+        assert!(matches!(event, Event::Packet(p) if *p == ping(1)));
+        drop(credit);
+        let (event, _credit) = play.events.recv_timeout_owned(WAIT).unwrap().into_parts();
+        assert!(matches!(event, Event::Reconfiguring));
+        assert!(play.shut().is_err());
     }
 
     /// #18380: waiting for room ends when the game drops its end, and a packet that could
     /// never fit is refused with that reason instead of a bare "Disconnected".
     #[test]
     fn a_waiting_connection_ends_on_a_closed_queue_or_a_packet_larger_than_it() {
-        let (events, mut server, _writer, thread, root) =
-            play_into("ingress-closed", ping_charge());
-        server.send(&ping(1).encode()).unwrap();
-        server.send(&ping(2).encode()).unwrap();
+        let mut play = PlayLoop::start("ingress-closed", ping_charge());
+        play.send(ping(1));
+        play.send(ping(2));
         std::thread::sleep(Duration::from_millis(200));
-        assert!(!thread.is_finished(), "the full queue ended the connection");
-        drop(events);
-        assert_eq!(
-            thread
-                .join()
-                .unwrap()
-                .map(|reason| reason.text)
-                .map_err(|reason| reason.text),
-            Err("Disconnected".to_owned())
-        );
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(play.running(), "the full queue ended the connection");
+        drop(std::mem::replace(&mut play.events, event_channel().1));
+        assert_eq!(play.end(), Err("Disconnected".to_owned()));
 
-        let (_events, mut server, _writer, thread, root) =
-            play_into("ingress-oversize", ping_charge() - 1);
-        server.send(&ping(1).encode()).unwrap();
-        let Err(reason) = thread.join().unwrap() else {
-            panic!("a packet larger than the queue was taken");
-        };
-        let reason = reason.text;
+        let mut play = PlayLoop::start("ingress-oversize", ping_charge() - 1);
+        play.send(ping(1));
+        let reason = play.end().unwrap_err();
         assert!(
             reason.starts_with("incoming packet larger than the whole incoming queue"),
             "{reason}"
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

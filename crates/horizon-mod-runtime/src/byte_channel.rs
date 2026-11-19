@@ -616,27 +616,31 @@ mod tests {
         ));
         tx.try_send(1, 4).unwrap();
         let receipt = rx.recv_owned().unwrap();
-        std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| tx.reserve_waiting(4).map(|p| p.publish(2)));
+        // A waiter that publishes `value` once it has room. A missed wakeup fails the
+        // test on the timeout instead of hanging it.
+        let wait = |value| {
+            let (done, result) = std::sync::mpsc::channel();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let _ = done.send(tx.reserve_waiting(4).map(|p| p.publish(value).is_ok()));
+            });
             std::thread::sleep(Duration::from_millis(50));
-            assert!(!waiter.is_finished());
-            drop(receipt);
-            assert!(matches!(waiter.join().unwrap(), Ok(Ok(()))));
-        });
-        std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| tx.reserve_waiting(4).map(|p| p.publish(3)));
-            std::thread::sleep(Duration::from_millis(50));
-            assert!(!waiter.is_finished());
-            assert_eq!(rx.recv(), Ok(2));
-            assert!(matches!(waiter.join().unwrap(), Ok(Ok(()))));
-        });
-        std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| tx.reserve_waiting(4).err());
-            std::thread::sleep(Duration::from_millis(50));
-            assert!(!waiter.is_finished());
-            drop(rx);
-            assert_eq!(waiter.join().unwrap(), Some(ReserveError::Disconnected));
-        });
+            assert!(result.try_recv().is_err(), "it did not wait");
+            result
+        };
+        let woken = Duration::from_secs(5);
+        let waiter = wait(2);
+        drop(receipt);
+        assert_eq!(waiter.recv_timeout(woken), Ok(Ok(true)));
+        let waiter = wait(3);
+        assert_eq!(rx.recv(), Ok(2));
+        assert_eq!(waiter.recv_timeout(woken), Ok(Ok(true)));
+        let waiter = wait(4);
+        drop(rx);
+        assert_eq!(
+            waiter.recv_timeout(woken),
+            Ok(Err(ReserveError::Disconnected))
+        );
     }
 
     #[test]
