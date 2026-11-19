@@ -1053,19 +1053,33 @@ pub fn read_properties(path: &Path) -> Result<Properties, String> {
 }
 
 /// The error for a properties file that doesn't load, naming the line that makes it fail: the first
-/// line the file can't be read up to (a continued line names its last physical line).
+/// line the file can't be read up to. Lines end as the JDK's line reader ends them (`\n`, `\r` or
+/// `\r\n`), and a line continued with a backslash is read with the next one, so the line named is the
+/// last line of the broken entry.
 fn malformed(path: &Path, bytes: &[u8], e: &dyn std::fmt::Display) -> String {
-    let ends = bytes.split_inclusive(|&b| b == b'\n').scan(0, |end, line| {
-        *end += line.len();
-        Some(*end)
-    });
-    match (1..)
-        .zip(ends)
-        .find(|&(_, end)| Properties::load_file(&bytes[..end]).is_err())
-    {
-        Some((line, _)) => format!("{}, line {line}: {e}", path.display()),
-        None => format!("{}: {e}", path.display()),
+    let (mut start, mut line) = (0, 1);
+    while start < bytes.len() {
+        let text_end = bytes[start..]
+            .iter()
+            .position(|&b| b == b'\n' || b == b'\r')
+            .map_or(bytes.len(), |n| start + n);
+        let end = if bytes[text_end..].starts_with(b"\r\n") {
+            text_end + 2
+        } else {
+            (text_end + 1).min(bytes.len())
+        };
+        let slashes = bytes[start..text_end]
+            .iter()
+            .rev()
+            .take_while(|&&b| b == b'\\')
+            .count();
+        let continued = slashes % 2 == 1 && end < bytes.len();
+        if !continued && Properties::load_file(&bytes[..end]).is_err() {
+            return format!("{}, line {line}: {e}", path.display());
+        }
+        (start, line) = (end, line + 1);
     }
+    format!("{}: {e}", path.display())
 }
 
 /// Sets one value in a TOML document, keeping the comment after the old value.
@@ -1573,6 +1587,19 @@ keep = {keep}
             std::fs::read_to_string(dir.join(PROPERTIES)).unwrap(),
             owner
         );
+        // The line is counted as the properties reader counts lines.
+        for (text, line) in [
+            ("motd=ok\rbad=\\uZZZZ\r", 2),
+            ("motd=ok\r\nbad=\\uZZZZ\r\n", 2),
+            ("motd=\\u12\\\n34\nbad=\\uZZZZ\n", 3),
+        ] {
+            std::fs::write(dir.join(PROPERTIES), text).unwrap();
+            let e = Config::default().write_properties(&dir).unwrap_err();
+            assert!(
+                e.to_string().contains(&format!("line {line}:")),
+                "{text:?}: {e}"
+            );
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
