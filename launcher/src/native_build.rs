@@ -1,5 +1,5 @@
 use super::*;
-use horizon_launcher::native_mods::prepare_first::{self, Next, Waiting};
+use horizon_launcher::native_mods::prepare_first::{self, Next, Snapshot, Waiting};
 
 impl Launcher {
     /// Records why a build failed. A mod's own compile failure reads as plain words with a way
@@ -60,11 +60,8 @@ impl Launcher {
         // Not prepared: the window prepares the base as Prepare & play does, never the command
         // line's hint (#18659). The build keeps this instance and base while it waits.
         let waiting = Waiting {
-            instance: instance.id.clone(),
-            plays,
             needs: backend::prepared_in(&base),
-            base,
-            back_up,
+            snapshot: self.native_snapshot(&instance, base, back_up),
             started: false,
         };
         self.native_go(waiting, None, None);
@@ -86,9 +83,12 @@ impl Launcher {
         }
         let instance = instances::list()
             .into_iter()
-            .find(|i| i.id == waiting.instance);
+            .find(|i| i.id == waiting.snapshot.instance);
+        let (base, back_up) = (&waiting.snapshot.base, waiting.snapshot.back_up);
         let now = prepare_first::Now {
-            plays: instance.as_ref().map(|i| self.version_of(i).cloned()),
+            snapshot: instance
+                .as_ref()
+                .map(|i| self.native_snapshot(i, base.clone(), back_up)),
             preparing: self.preparing,
             installing: self.installing.as_ref().map(|(tag, _)| tag.as_str()),
             ended: ended.map(|tag| (tag, error)),
@@ -97,7 +97,8 @@ impl Launcher {
             Next::Build => match instance {
                 Some(instance) => {
                     self.native_step = None;
-                    self.start_native_build(instance, waiting.base, waiting.back_up);
+                    let Snapshot { base, back_up, .. } = waiting.snapshot;
+                    self.start_native_build(instance, base, back_up);
                 }
                 // `next` builds only an instance it found.
                 None => self.native_step = None,
@@ -115,6 +116,18 @@ impl Launcher {
                 self.native_error = Some(error);
             }
         }
+    }
+
+    /// What a build of `instance` on `base` depends on now ([`Snapshot`]).
+    fn native_snapshot(
+        &self,
+        instance: &instances::Instance,
+        base: String,
+        back_up: bool,
+    ) -> Snapshot {
+        let plays = self.version_of(instance).cloned();
+        let consent = self.settings.native_mods_allowed_at.is_some();
+        Snapshot::of(instance, plays, base, back_up, consent)
     }
 
     /// The build card shows Prepare's first words while the build waits for it.
@@ -156,6 +169,7 @@ impl Launcher {
                 &instance,
                 None,
                 back_up,
+                native_mods::Caller::Window,
                 |step| {
                     let _ = tx.send(Msg::NativeProgress(step.shown(), step.progress()));
                 },

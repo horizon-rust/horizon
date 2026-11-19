@@ -1378,8 +1378,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                     allow_jar_downloads,
                     steps,
                     registry_consent,
-                )
-                .map_err(native_mods::cli_error)?;
+                )?;
                 let built = std::path::absolute(&built).unwrap_or(built);
                 let path = built.display().to_string();
                 println!(
@@ -1420,7 +1419,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             };
             let profile = explicit.then_some(target.native_profile);
             let built =
-                native_mods::build(&base, &folder, &target, profile, back_up_worlds, steps, registry_consent).map_err(|error| {
+                native_mods::build(&base, &folder, &target, profile, back_up_worlds, native_mods::Caller::CommandLine, steps, registry_consent).map_err(|error| {
                     if let native_mods::Failed::Worlds(stake) = &error {
                         return trf(
                             "{error}\n{stay}: nothing changed. Or run again with --back-up-worlds to back them up into {backups} and build without the mods named.",
@@ -1431,7 +1430,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                             ],
                         );
                     }
-                    let error = native_mods::cli_error(error);
+                    let error = String::from(error);
                     if error.starts_with(native_mods::MISMATCH) {
                         trf("{error} Run `cargo horizon-mod update --horizon {commit}` in each mod's folder to pin it to this game, then build again.", &[("error", &error), ("commit", &base)])
                     } else { error }

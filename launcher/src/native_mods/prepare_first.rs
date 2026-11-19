@@ -4,17 +4,49 @@
 
 use crate::backend::NotReady;
 use crate::i18n::trf;
+use crate::instances::{Channel, Instance};
 
-/// A window build waiting for its base's preparation, kept as it was started: it builds this
-/// instance on this base, whatever is selected meanwhile.
+/// What a waiting build was started with and depends on. Taken when it starts waiting and
+/// again whenever it looks again: any difference drops it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Waiting {
-    /// The instance's id, and the version it played when the build was pressed.
+pub struct Snapshot {
     pub instance: String,
+    /// The instance's saved pin and channel, raw: a pin moved between two releases that aren't
+    /// installed resolves to the same nothing.
+    pub pin: Option<String>,
+    pub channel: Channel,
+    /// The version it plays, as the window resolves it.
     pub plays: Option<String>,
-    /// The resolved base, and the player's choice to back up worlds.
     pub base: String,
     pub back_up: bool,
+    /// Whether native mods are allowed.
+    pub consent: bool,
+}
+
+impl Snapshot {
+    pub fn of(
+        instance: &Instance,
+        plays: Option<String>,
+        base: String,
+        back_up: bool,
+        consent: bool,
+    ) -> Self {
+        Self {
+            instance: instance.id.clone(),
+            pin: instance.version.clone(),
+            channel: instance.channel,
+            plays,
+            base,
+            back_up,
+            consent,
+        }
+    }
+}
+
+/// A window build waiting for its base's preparation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waiting {
+    pub snapshot: Snapshot,
     /// The version to prepare: the base, or a native base's own base ([`crate::backend::prepared_in`]).
     pub needs: String,
     /// The preparation running now was started by this build (its Stop stops it too).
@@ -23,8 +55,10 @@ pub struct Waiting {
 
 /// What the window is doing when a waiting build looks again.
 pub struct Now<'a> {
-    /// The waiting build's instance as it is now: `None` once removed, else the version it plays.
-    pub plays: Option<Option<String>>,
+    /// [`Snapshot::of`] the build's instance now, with its base and back-up choice; `None` once
+    /// the instance is gone.
+    pub snapshot: Option<Snapshot>,
+    /// A preparation runs. The window runs one at a time, so this build's can't start meanwhile.
     pub preparing: bool,
     /// The version an install is writing, if one runs.
     pub installing: Option<&'a str>,
@@ -45,33 +79,40 @@ pub enum Next {
 }
 
 /// What a window build does next, from when it is pressed until it builds or stops. `ready` is
-/// [`crate::backend::ready`]. Only the preparation of the version it needs can fail it; any other
-/// that ends only makes it look again. A base that must be reinstalled builds, so the build says
-/// so as it always did.
+/// [`crate::backend::ready`]. A ready base builds at once; only an unready one looks at what
+/// runs, and only the preparation of the version it needs can fail it. A base that must be
+/// reinstalled builds, so the build says so as it always did.
 pub fn next(waiting: &Waiting, now: &Now, ready: impl Fn(&str) -> Result<(), NotReady>) -> Next {
-    if now.plays.as_ref() != Some(&waiting.plays) {
-        return Next::Stop(trf(
-            "The build waiting for {version} to be prepared stopped: its instance was removed or now plays another version.",
-            &[("version", &waiting.needs)],
-        ));
+    if now.snapshot.as_ref() != Some(&waiting.snapshot) {
+        return Next::Stop(dropped(&waiting.needs));
+    }
+    match ready(&waiting.snapshot.base) {
+        Ok(()) | Err(NotReady::Reinstall(_)) => return Next::Build,
+        Err(NotReady::Unprepared(_)) => {}
     }
     if let Some((tag, Some(error))) = now.ended {
         if tag == waiting.needs {
             return Next::Stop(error.to_owned());
         }
     }
+    let base = &waiting.snapshot.base;
     // An install's publish replaces the folder a preparation would write into.
     if now.preparing
         || now
             .installing
-            .is_some_and(|t| t == waiting.needs || t == waiting.base)
+            .is_some_and(|t| t == waiting.needs || t == base)
     {
         return Next::Wait;
     }
-    match ready(&waiting.base) {
-        Err(NotReady::Unprepared(_)) => Next::Prepare,
-        Ok(()) | Err(NotReady::Reinstall(_)) => Next::Build,
-    }
+    Next::Prepare
+}
+
+/// What the card says when a waiting build is dropped because what it was started with changed.
+pub fn dropped(needs: &str) -> String {
+    trf(
+        "The build waiting for {version} to be prepared stopped: its instance or the permission for native mods changed meanwhile.",
+        &[("version", needs)],
+    )
 }
 
 #[cfg(test)]
@@ -79,12 +120,21 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    fn waiting() -> Waiting {
-        Waiting {
+    fn snapshot(pin: Option<&str>, plays: Option<&str>, consent: bool) -> Snapshot {
+        Snapshot {
             instance: "a".into(),
-            plays: Some("v1".into()),
+            pin: pin.map(Into::into),
+            channel: Channel::default(),
+            plays: plays.map(Into::into),
             base: "v1".into(),
             back_up: true,
+            consent,
+        }
+    }
+
+    fn waiting() -> Waiting {
+        Waiting {
+            snapshot: snapshot(Some("v1"), Some("v1"), true),
             needs: "v1".into(),
             started: false,
         }
@@ -92,7 +142,7 @@ mod tests {
 
     fn now<'a>() -> Now<'a> {
         Now {
-            plays: Some(Some("v1".into())),
+            snapshot: Some(snapshot(Some("v1"), Some("v1"), true)),
             preparing: false,
             installing: None,
             ended: None,
@@ -125,11 +175,21 @@ mod tests {
             ..now()
         };
         assert_eq!(next(&w, &ended, disk(&prepared)), Next::Build);
-        // Prepared from the start: it builds at once.
-        assert_eq!(next(&w, &now(), disk(&prepared)), Next::Build);
         // A base to reinstall is no preparation: the build says so itself.
         let reinstall = |_: &str| Err(NotReady::Reinstall("reinstall v1".into()));
         assert_eq!(next(&w, &now(), reinstall), Next::Build);
+    }
+
+    #[test]
+    fn a_ready_base_builds_whatever_else_runs() {
+        let prepared = Cell::new(true);
+        let busy = Now {
+            preparing: true,
+            installing: Some("v1"),
+            ended: Some(("v1", Some("an older failure"))),
+            ..now()
+        };
+        assert_eq!(next(&waiting(), &busy, disk(&prepared)), Next::Build);
     }
 
     #[test]
@@ -156,21 +216,48 @@ mod tests {
             ..now()
         };
         assert_eq!(next(&w, &ended, disk(&prepared)), Next::Prepare);
-        prepared.set(true);
-        assert_eq!(next(&w, &ended, disk(&prepared)), Next::Build);
     }
 
     #[test]
-    fn the_build_keeps_its_instance_or_stops() {
+    fn a_changed_instance_or_permission_drops_the_build() {
         let prepared = Cell::new(true);
         let w = waiting();
-        // Another instance selected meanwhile changes nothing: `now` is this build's instance.
-        assert_eq!(next(&w, &now(), disk(&prepared)), Next::Build);
-        // Its instance now plays another version, or is gone: it stops and says so.
-        for plays in [Some(Some("v2".to_string())), Some(None), None] {
-            let changed = Now { plays, ..now() };
-            assert!(matches!(next(&w, &changed, disk(&prepared)), Next::Stop(_)));
+        let changed = [
+            // Removed.
+            None,
+            // Plays another version.
+            Some(snapshot(Some("v2"), Some("v2"), true)),
+            // Native mods no longer allowed.
+            Some(snapshot(Some("v1"), Some("v1"), false)),
+        ];
+        for snapshot in changed {
+            let now = Now { snapshot, ..now() };
+            assert_eq!(next(&w, &now, disk(&prepared)), Next::Stop(dropped("v1")));
         }
+    }
+
+    #[test]
+    fn a_repin_between_two_uninstalled_releases_drops_the_build() {
+        let prepared = Cell::new(true);
+        // Pinned to v8, not installed: the window resolves it to nothing.
+        let w = Waiting {
+            snapshot: snapshot(Some("v8"), None, true),
+            ..waiting()
+        };
+        let same = Now {
+            snapshot: Some(snapshot(Some("v8"), None, true)),
+            ..now()
+        };
+        assert_eq!(next(&w, &same, disk(&prepared)), Next::Build);
+        // Pinned to v9 meanwhile, not installed either: it resolves to nothing too.
+        let repinned = Now {
+            snapshot: Some(snapshot(Some("v9"), None, true)),
+            ..now()
+        };
+        assert_eq!(
+            next(&w, &repinned, disk(&prepared)),
+            Next::Stop(dropped("v1"))
+        );
     }
 
     #[test]
@@ -190,20 +277,19 @@ mod tests {
     }
 
     #[test]
-    fn the_command_line_keeps_its_words_and_the_window_never_shows_them() {
+    fn each_caller_reads_its_own_words() {
         let v = crate::backend::game_version("v0");
+        let failed = || crate::native_mods::Failed::NotPrepared("v0".into());
+        // The command line keeps main's words, byte for byte.
         assert_eq!(
-            crate::backend::prepare_hint("v0"),
+            failed().said(crate::native_mods::Caller::CommandLine),
             format!(
                 "v0 is not prepared yet. Prepare it first: `horizon-launcher prepare --version v0` uses your own Minecraft {v}, or downloads it from Mojang for the signed-in account that owns it."
             )
         );
-        let failed = || crate::native_mods::Failed::NotPrepared("v0".into());
-        assert_eq!(
-            crate::native_mods::cli_error(failed()),
-            crate::backend::prepare_hint("v0")
-        );
-        // The window and its build log read the failure's own words.
-        assert!(!failed().to_string().contains("horizon-launcher"));
+        assert_eq!(String::from(failed()), crate::backend::prepare_hint("v0"));
+        // The window never names a command.
+        let window = failed().said(crate::native_mods::Caller::Window);
+        assert!(!window.contains("horizon-launcher"), "{window}");
     }
 }

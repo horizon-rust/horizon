@@ -182,8 +182,6 @@ impl Launcher {
                     self.installing = None;
                     self.bar = (0., 0.);
                     self.installed = backend::installed();
-                    // A build waiting for this install to end prepares or builds now.
-                    self.native_look_again(None, None);
                     let as_update = self.update_install.take().filter(|t| *t == tag);
                     let for_instance = self.instance_install.take_if(|t| *t == tag).is_some();
                     let stable = self.stable_install.take_if(|r| r.tag == tag);
@@ -245,6 +243,9 @@ impl Launcher {
                     if let Some(next) = self.install_next.take() {
                         self.install_for_instance(next);
                     }
+                    // After the selection and the queued install: a build waiting for this
+                    // install sees both.
+                    self.native_look_again(None, None);
                 }
                 Msg::Removed(tag, result) => {
                     self.removing.retain(|t| *t != tag);
@@ -328,7 +329,7 @@ impl Launcher {
                         // Read against the mods this build was given, not the instance now
                         // selected.
                         let built = std::mem::take(&mut self.native_built_mods);
-                        self.native_failed(String::from(e), &built);
+                        self.native_failed(e.said(native_mods::Caller::Window), &built);
                     }
                     let play_now = wanted.is_some()
                         && built.is_some()
