@@ -27,6 +27,9 @@ pub const PASS_OPAQUE: u32 = 1;
 #[allow(dead_code)]
 pub const PASS_CUTOUT: u32 = 2;
 
+/// Number of per-page pass uniform slots (`PASS_ALL = 0`, `PASS_OPAQUE = 1`, `PASS_CUTOUT = 2`).
+const PASS_SLOTS: u32 = 3;
+
 /// Margin matching `mesher/sides.rs` when testing eye-to-bucket plane orientation.
 const MESHLET_MARGIN: f32 = 1.0 / 16.0;
 
@@ -124,7 +127,7 @@ pub(in crate::gfx) fn shader() -> String {
         + include_str!("../terrain_mesh.wgsl")
 }
 
-/// `@group(2)` bind group layout for `terrain_mesh.wgsl` (`meshlets` storage + `mesh_cull` uniform).
+/// `@group(2)` bind group layout for `terrain_mesh.wgsl` (`meshlets` storage + `mesh_cull` dynamic uniform).
 #[allow(dead_code)]
 pub(in crate::gfx) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     let stages = wgpu::ShaderStages::TASK | wgpu::ShaderStages::MESH;
@@ -146,12 +149,70 @@ pub(in crate::gfx) fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGrou
                 visibility: stages,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                    has_dynamic_offset: true,
+                    min_binding_size: std::num::NonZeroU64::new(
+                        std::mem::size_of::<MeshCullParams>() as u64,
+                    ),
                 },
                 count: None,
             },
         ],
+    })
+}
+
+/// Mesh-stage-compatible `@group(0)` layout (`terrain.wgsl` globals, sprites, lightmap, and emission
+/// thresholds with `SHADER_STAGES::MESH` visibility in addition to vertex/fragment).
+#[allow(dead_code)]
+pub(in crate::gfx) fn group0_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let mut entries = crate::gfx::native_material::terrain_entries();
+    for entry in &mut entries {
+        entry.visibility |= wgpu::ShaderStages::MESH;
+    }
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Terrain mesh group 0"),
+        entries: &entries,
+    })
+}
+
+/// Mesh-stage-compatible `@group(1)` layout for an arena page (`block_slots`, `slot_origins`,
+/// and `arena_page` with `TASK`/`MESH` stage visibilities alongside `VERTEX`).
+#[allow(dead_code)]
+pub(in crate::gfx) fn group1_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let entry = |binding, visibility| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let vtm = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::TASK | wgpu::ShaderStages::MESH;
+    let vm = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::MESH;
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Terrain mesh group 1"),
+        entries: &[
+            entry(0, vtm),
+            entry(1, vtm),
+            entry(crate::gfx::flat::ARENA_BINDING, vm),
+        ],
+    })
+}
+
+/// Builds the 3-group pipeline layout (`@group(0)` terrain globals/samplers, `@group(1)` arena page,
+/// `@group(2)` meshlets + dynamic cull uniform) used by hardware terrain mesh pipelines.
+#[allow(dead_code)]
+pub(in crate::gfx) fn pipeline_layout(
+    device: &wgpu::Device,
+    group0: &wgpu::BindGroupLayout,
+    group1: &wgpu::BindGroupLayout,
+    group2: &wgpu::BindGroupLayout,
+) -> wgpu::PipelineLayout {
+    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Terrain mesh pipeline layout"),
+        bind_group_layouts: &[Some(group0), Some(group1), Some(group2)],
+        ..Default::default()
     })
 }
 
@@ -207,6 +268,365 @@ pub fn meshlet_slices(quad_count: u8) -> u32 {
 #[allow(dead_code)]
 pub fn task_workgroups(meshlet_count: u32) -> u32 {
     meshlet_count.div_ceil(TASK_WORKGROUP_SIZE)
+}
+
+#[derive(Default)]
+struct PageTable {
+    sections: std::collections::BTreeMap<u32, Vec<GpuMeshlet>>,
+    staging: Vec<GpuMeshlet>,
+    dirty: bool,
+}
+
+/// CPU staging table managing rebased [`GpuMeshlet`] descriptors per arena page and
+/// section `(page, solid_base)` (#17243 step 3).
+#[allow(dead_code)]
+#[derive(Default)]
+pub(in crate::gfx) struct MeshletTable {
+    pages: std::collections::BTreeMap<u32, PageTable>,
+}
+
+#[allow(dead_code)]
+impl MeshletTable {
+    /// Creates an empty meshlet staging table.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers or replaces a section's meshlets at `(page, solid_base)`, rebasing each descriptor
+    /// into its GPU representation via [`MeshletDesc::to_gpu`].
+    pub fn insert_section(&mut self, page: u32, solid_base: u32, meshlets: &[MeshletDesc]) {
+        if meshlets.is_empty() {
+            self.remove_section(page, solid_base);
+            return;
+        }
+        let relocated: Vec<GpuMeshlet> = meshlets.iter().map(|m| m.to_gpu(solid_base)).collect();
+        let entry = self.pages.entry(page).or_default();
+        entry.sections.insert(solid_base, relocated);
+        entry.dirty = true;
+    }
+
+    /// Removes the section at `(page, solid_base)` from the table.
+    pub fn remove_section(&mut self, page: u32, solid_base: u32) {
+        let Some(entry) = self.pages.get_mut(&page) else {
+            return;
+        };
+        if entry.sections.remove(&solid_base).is_some() {
+            if entry.sections.is_empty() {
+                self.pages.remove(&page);
+            } else {
+                entry.dirty = true;
+            }
+        }
+    }
+
+    /// Drops all tracked sections across every page.
+    pub fn clear(&mut self) {
+        self.pages.clear();
+    }
+
+    /// Rebuilds the cached [`GpuMeshlet`] slice for `page` only if dirty, returning `(rebuilt, slice)`.
+    pub fn stage_page(&mut self, page: u32) -> (bool, &[GpuMeshlet]) {
+        let Some(entry) = self.pages.get_mut(&page) else {
+            return (false, &[]);
+        };
+        let rebuilt = entry.dirty;
+        if rebuilt {
+            entry.staging.clear();
+            for list in entry.sections.values() {
+                entry.staging.extend_from_slice(list);
+            }
+            entry.dirty = false;
+        }
+        (rebuilt, &entry.staging)
+    }
+
+    /// Returns the cached [`GpuMeshlet`] slice currently staged for `page`.
+    pub fn staged_page(&self, page: u32) -> &[GpuMeshlet] {
+        self.pages
+            .get(&page)
+            .map_or(&[], |entry| entry.staging.as_slice())
+    }
+
+    /// Returns the number of meshlets staged or pending on `page`.
+    pub fn page_count(&self, page: u32) -> u32 {
+        self.pages.get(&page).map_or(0, |entry| {
+            if entry.dirty {
+                entry.sections.values().map(|v| v.len() as u32).sum()
+            } else {
+                entry.staging.len() as u32
+            }
+        })
+    }
+}
+
+struct PageGpu {
+    storage: wgpu::Buffer,
+    storage_capacity: usize,
+    uniform: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Prepared immutable GPU draw handle for a `(page, pass_kind)` pair inside a `RenderPass`.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(in crate::gfx) struct MeshPageDraw<'a> {
+    pub bind_group: &'a wgpu::BindGroup,
+    pub uniform_offset: u32,
+    pub meshlet_count: u32,
+}
+
+/// GPU store managing independent per-page [`GpuMeshlet`] storage buffers and dynamic multi-pass
+/// culling uniform slots (#17243 step 3).
+#[allow(dead_code)]
+pub(in crate::gfx) struct MeshSectionStore {
+    table: MeshletTable,
+    gpu_pages: std::collections::BTreeMap<u32, PageGpu>,
+    uniform_stride: u32,
+    bind_group_layout: wgpu::BindGroupLayout,
+}
+
+#[allow(dead_code)]
+impl MeshSectionStore {
+    /// Registers or replaces a section's meshlets at `(page, solid_base)`.
+    pub fn insert_section(&mut self, page: u32, solid_base: u32, meshlets: &[MeshletDesc]) {
+        self.table.insert_section(page, solid_base, meshlets);
+    }
+
+    /// Removes the section at `(page, solid_base)` from the meshlet store.
+    pub fn remove_section(&mut self, page: u32, solid_base: u32) {
+        self.table.remove_section(page, solid_base);
+    }
+
+    /// Drops all tracked sections and per-page GPU buffers.
+    pub fn clear(&mut self) {
+        self.table.clear();
+        self.gpu_pages.clear();
+    }
+
+    /// Returns the `@group(2)` bind group layout managed by this store.
+    pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.bind_group_layout
+    }
+
+    /// Uploads staged `GpuMeshlet`s for `page` when dirty and writes culling parameters into the
+    /// pass slot `params.counts[1]` without overwriting other passes or pages in the same frame.
+    pub fn prepare_page(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        page: u32,
+        params: &MeshCullParams,
+    ) -> u32 {
+        let pass_slot = params.counts[1];
+        assert!(pass_slot < PASS_SLOTS, "invalid mesh pass kind {pass_slot}");
+
+        let (rebuilt, staged) = self.table.stage_page(page);
+        let count = staged.len() as u32;
+        if count == 0 {
+            return 0;
+        }
+
+        let needs_alloc = self
+            .gpu_pages
+            .get(&page)
+            .is_none_or(|pg| staged.len() > pg.storage_capacity);
+
+        if needs_alloc {
+            let cap = staged.len().next_power_of_two().max(64);
+            let storage = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Terrain meshlet storage"),
+                size: (cap * std::mem::size_of::<GpuMeshlet>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            match self.gpu_pages.entry(page) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Terrain meshlet cull uniform"),
+                        size: u64::from(PASS_SLOTS) * u64::from(self.uniform_stride),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    let bind_group =
+                        create_page_bind_group(device, &self.bind_group_layout, &storage, &uniform);
+                    slot.insert(PageGpu {
+                        storage,
+                        storage_capacity: cap,
+                        uniform,
+                        bind_group,
+                    });
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    let pg = slot.get_mut();
+                    pg.bind_group = create_page_bind_group(
+                        device,
+                        &self.bind_group_layout,
+                        &storage,
+                        &pg.uniform,
+                    );
+                    pg.storage = storage;
+                    pg.storage_capacity = cap;
+                }
+            }
+        }
+
+        let pg = self
+            .gpu_pages
+            .get(&page)
+            .expect("page GPU storage must exist after allocation");
+        if rebuilt || needs_alloc {
+            queue.write_buffer(&pg.storage, 0, bytemuck::cast_slice(staged));
+        }
+
+        let mut updated = *params;
+        updated.counts[0] = count;
+        queue.write_buffer(
+            &pg.uniform,
+            u64::from(pass_slot) * u64::from(self.uniform_stride),
+            bytemuck::bytes_of(&updated),
+        );
+        count
+    }
+
+    /// Returns the prepared immutable draw handle for `(page, pass_kind)`, or `None` when empty.
+    pub fn page_draw(&self, page: u32, pass_kind: u32) -> Option<MeshPageDraw<'_>> {
+        if pass_kind >= PASS_SLOTS {
+            return None;
+        }
+        let meshlet_count = self.table.page_count(page);
+        if meshlet_count == 0 {
+            return None;
+        }
+        let pg = self.gpu_pages.get(&page)?;
+        Some(MeshPageDraw {
+            bind_group: &pg.bind_group,
+            uniform_offset: pass_kind * self.uniform_stride,
+            meshlet_count,
+        })
+    }
+
+    /// Number of staged/pending meshlets on `page`.
+    pub fn page_count(&self, page: u32) -> u32 {
+        self.table.page_count(page)
+    }
+
+    /// Currently staged [`GpuMeshlet`] descriptors on `page`.
+    pub fn staged_page(&self, page: u32) -> &[GpuMeshlet] {
+        self.table.staged_page(page)
+    }
+}
+
+fn create_page_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    storage: &wgpu::Buffer,
+    uniform: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Terrain meshlets"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: storage.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniform,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(std::mem::size_of::<MeshCullParams>() as u64),
+                }),
+            },
+        ],
+    })
+}
+
+/// Allocates a [`MeshSectionStore`] only when `device` was opened with mesh shaders enabled.
+/// On main's off path this allocates zero GPU buffers.
+#[allow(dead_code)]
+pub(in crate::gfx) fn new_store(device: &wgpu::Device) -> Option<MeshSectionStore> {
+    if !on(device) {
+        return None;
+    }
+    let align = device.limits().min_uniform_buffer_offset_alignment.max(1);
+    let uniform_stride = (std::mem::size_of::<MeshCullParams>() as u32).next_multiple_of(align);
+    Some(MeshSectionStore {
+        table: MeshletTable::new(),
+        gpu_pages: std::collections::BTreeMap::new(),
+        uniform_stride,
+        bind_group_layout: bind_group_layout(device),
+    })
+}
+
+/// Builds a hardware task+mesh terrain pipeline pairing `ts_terrain` and `ms_terrain`
+/// with the requested fragment entry point (`fs_opaque` or `fs_solid`) and pipeline `constants`.
+#[allow(dead_code)]
+pub(in crate::gfx) fn create_mesh_terrain_pipeline(
+    device: &wgpu::Device,
+    layout: Option<&wgpu::PipelineLayout>,
+    module: &wgpu::ShaderModule,
+    fragment_entry: &str,
+    color_format: wgpu::TextureFormat,
+    depth_format: Option<wgpu::TextureFormat>,
+    constants: &[(&str, f64)],
+) -> wgpu::RenderPipeline {
+    device.create_mesh_pipeline(&wgpu::MeshPipelineDescriptor {
+        label: Some("Terrain mesh pipeline"),
+        layout,
+        task: Some(wgpu::TaskState {
+            module,
+            entry_point: Some("ts_terrain"),
+            compilation_options: Default::default(),
+        }),
+        mesh: wgpu::MeshState {
+            module,
+            entry_point: Some("ms_terrain"),
+            compilation_options: Default::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment_entry),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants,
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
+}
+
+/// Dispatches hardware mesh tasks for a prepared `(page, pass_kind)` draw handle.
+#[allow(dead_code)]
+pub(in crate::gfx) fn draw_mesh_page<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    pipeline: &'a wgpu::RenderPipeline,
+    draw: MeshPageDraw<'a>,
+) {
+    if draw.meshlet_count > 0 {
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(2, draw.bind_group, &[draw.uniform_offset]);
+        pass.draw_mesh_tasks(task_workgroups(draw.meshlet_count), 1, 1);
+    }
 }
 
 #[cfg(test)]
@@ -465,28 +885,754 @@ mod tests {
         assert_eq!(s1.0, base_vertex + 128);
     }
 
-    #[test]
-    fn shader_module_compiles_on_mesh_shader_adapter() {
+    fn mesh_shader_adapter() -> Option<wgpu::Adapter> {
         let instance = crate::gfx::test_gpu::instance();
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-            return;
-        };
-        if !adapter.features().contains(MESH_SHADER) {
-            return;
-        }
+        pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+            .into_iter()
+            .find(|adapter| adapter.features().contains(MESH_SHADER))
+    }
+
+    fn open_mesh_device(adapter: &wgpu::Adapter, label: &str) -> (wgpu::Device, wgpu::Queue) {
         let desc = wgpu::DeviceDescriptor {
-            label: Some("Mesh shader compile test"),
+            label: Some(label),
             required_features: MESH_SHADER,
             required_limits: adapter.limits(),
             experimental_features: horizon_hdr::experimental_features(),
             ..Default::default()
         };
-        let (device, _queue) = pollster::block_on(adapter.request_device(&desc))
-            .expect("adapter offers EXPERIMENTAL_MESH_SHADER");
-        let _layout = bind_group_layout(&device);
-        let _module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        pollster::block_on(adapter.request_device(&desc))
+            .expect("adapter offers EXPERIMENTAL_MESH_SHADER")
+    }
+
+    #[test]
+    fn shader_module_compiles_on_mesh_shader_adapter() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(adapter) = mesh_shader_adapter() else {
+            return;
+        };
+        let (device, _queue) = open_mesh_device(&adapter, "Mesh shader compile test");
+        let g0 = group0_layout(&device);
+        let g1 = group1_layout(&device);
+        let g2 = bind_group_layout(&device);
+        let _pipe_layout = pipeline_layout(&device, &g0, &g1, &g2);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain mesh shader"),
             source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
+        let _opaque = create_mesh_terrain_pipeline(
+            &device,
+            Some(&_pipe_layout),
+            &module,
+            "fs_opaque",
+            wgpu::TextureFormat::Rgba8Unorm,
+            Some(wgpu::TextureFormat::Depth32Float),
+            &[("HDR_LIGHTING", 0.0)],
+        );
+    }
+
+    #[test]
+    fn without_mesh_shaders_there_is_no_store() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((_adapter, device, _queue)) = crate::gfx::test_gpu::optional_device() else {
+            return;
+        };
+        assert!(!on(&device));
+        assert!(new_store(&device).is_none());
+    }
+
+    #[test]
+    fn meshlet_table_stages_rebased_gpu_meshlets_per_page() {
+        use crate::mesher::packed::PACKED_BASE;
+
+        let mut table = MeshletTable::new();
+        let m0 = MeshletDesc::new(0, 16, 2, 0, 0, [0, 0, 0, 4, 4, 4]);
+        let m1 = MeshletDesc::new(16, 24, 3, MeshletDesc::FLAG_CUTOUT, 10, [4, 4, 4, 8, 8, 8]);
+
+        let base_a = PACKED_BASE + 4 * 100;
+        let base_b = PACKED_BASE + 4 * 400;
+        let base_c = PACKED_BASE + 4 * 200;
+
+        // Insert out of order to verify deterministic BTreeMap `solid_base` ordering within each page.
+        table.insert_section(0, base_b, &[m0]);
+        table.insert_section(0, base_a, &[m0, m1]);
+        table.insert_section(1, base_c, &[m1]);
+
+        let (rebuilt_p0, staged_p0) = table.stage_page(0);
+        assert!(rebuilt_p0);
+        assert_eq!(staged_p0.len(), 3);
+        assert_eq!(staged_p0[0], m0.to_gpu(base_a));
+        assert_eq!(staged_p0[1], m1.to_gpu(base_a));
+        assert_eq!(staged_p0[2], m0.to_gpu(base_b));
+        assert_eq!(table.page_count(0), 3);
+
+        let (rebuilt_p1, staged_p1) = table.stage_page(1);
+        assert!(rebuilt_p1);
+        assert_eq!(staged_p1, &[m1.to_gpu(base_c)]);
+        assert_eq!(table.page_count(1), 1);
+
+        // Alternating between already-staged pages must NEVER trigger redundant rebuilds.
+        let (rebuilt_p0_again, staged_p0_again) = table.stage_page(0);
+        assert!(!rebuilt_p0_again);
+        assert_eq!(staged_p0_again.len(), 3);
+        let (rebuilt_p1_again, _) = table.stage_page(1);
+        assert!(!rebuilt_p1_again);
+
+        // Mutating Page 0 dirties ONLY Page 0; Page 1 stays clean.
+        table.remove_section(0, base_b);
+        assert!(!table.stage_page(1).0);
+        let (rebuilt_p0_after_remove, staged_p0_after_remove) = table.stage_page(0);
+        assert!(rebuilt_p0_after_remove);
+        assert_eq!(
+            staged_p0_after_remove,
+            &[m0.to_gpu(base_a), m1.to_gpu(base_a)]
+        );
+        assert_eq!(table.page_count(0), 2);
+        assert_eq!(table.staged_page(0).len(), 2);
+
+        table.clear();
+        assert_eq!(table.page_count(0), 0);
+        assert_eq!(table.page_count(1), 0);
+        assert!(table.stage_page(0).1.is_empty());
+    }
+
+    #[test]
+    fn end_to_end_section_to_gpu_store_and_task_culling_contract() {
+        use crate::mesher::packed::{FULL, PACKED_BASE, WHITE, layout, packed_vertex};
+        use crate::mesher::{OPAQUE_LAYER, TerrainVertex, meshlet::build_section_meshlets};
+
+        let make_quad = |x: f32, y: f32, z: f32, layer: u16, x_skew: f32| -> [TerrainVertex; 4] {
+            let v = |dx, dy, dz, u, vc| TerrainVertex {
+                pos: [x + dx, y + dy, z + dz],
+                uv: [u, vc],
+                layer,
+                light: 0xF0F0,
+                color: 0xFFFF_FFFF,
+            };
+            [
+                v(x_skew, 1.0, 0.0, 0, 0),
+                v(0.0, 1.0, 1.0, 0, 16 << 10),
+                v(1.0, 1.0, 1.0, 16 << 10, 16 << 10),
+                v(1.0, 1.0, 0.0, 16 << 10, 0),
+            ]
+        };
+
+        // 4 opaque +Y block quads + 2 cutout +Y quads (one grid-aligned, one spilled to FULL).
+        let q0 = make_quad(2.0, 3.0, 4.0, OPAQUE_LAYER, 0.0);
+        let q1 = make_quad(3.0, 3.0, 4.0, OPAQUE_LAYER, 0.0);
+        let q2 = make_quad(4.0, 3.0, 4.0, OPAQUE_LAYER, 0.0);
+        let q3 = make_quad(5.0, 3.0, 4.0, OPAQUE_LAYER, 0.0);
+        let q4 = make_quad(8.0, 5.0, 6.0, 0, 0.0);
+        let q5 = make_quad(9.0, 5.0, 6.0, 0, 0.25);
+
+        let mut solid: Vec<TerrainVertex> =
+            [q0, q1, q2, q3, q4, q5].into_iter().flatten().collect();
+        let mut tints = vec![WHITE; 6];
+        let sides = crate::mesher::sort_tinted(&mut solid, &mut tints);
+        let packed = layout(&solid, &tints);
+        assert!(!packed.is_empty(), "packed layout must be smaller than raw");
+
+        let meshlets = build_section_meshlets(&sides, &solid, &packed);
+        assert_eq!(meshlets.len(), 2);
+
+        let slot_base = 256u32;
+        let solid_base = PACKED_BASE + 4 * slot_base;
+        let mut table = MeshletTable::new();
+        table.insert_section(0, solid_base, &meshlets);
+        let (_, staged) = table.stage_page(0);
+        assert_eq!(staged.len(), 2);
+
+        // Box frustum strictly covering section origin [0..16]^3.
+        let planes = [
+            [1.0, 0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0, 20.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0, 20.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, -1.0, 20.0],
+        ];
+        let origin = [0.0f32, 0.0, 0.0];
+        let eye_above = [0.0f32, 20.0, 0.0];
+        let eye_below = [0.0f32, -5.0, 0.0];
+
+        // Simulate ts_terrain pass + visibility filtering and slice payload generation.
+        let simulate_ts = |pass_kind: u32, eye: [f32; 3]| -> Vec<(u32, u32)> {
+            let mut slices = Vec::new();
+            for gpu in staged {
+                let words: [u32; 4] = bytemuck::cast(*gpu);
+                let vertex_base = words[0];
+                let quad_count = words[1] & 0xff;
+                let bucket = (words[1] >> 8) & 0xff;
+                let flags = (words[1] >> 16) & 0xff;
+                let min_local = [
+                    (words[2] & 0xff) as u8,
+                    ((words[2] >> 8) & 0xff) as u8,
+                    ((words[2] >> 16) & 0xff) as u8,
+                ];
+                let max_local = [
+                    ((words[2] >> 24) & 0xff) as u8,
+                    (words[3] & 0xff) as u8,
+                    ((words[3] >> 8) & 0xff) as u8,
+                ];
+                let desc = MeshletDesc::new(
+                    0,
+                    quad_count as u8,
+                    bucket as u8,
+                    flags as u8,
+                    0,
+                    [
+                        min_local[0],
+                        min_local[1],
+                        min_local[2],
+                        max_local[0],
+                        max_local[1],
+                        max_local[2],
+                    ],
+                );
+
+                let arena_slot = (vertex_base - PACKED_BASE) >> 2;
+                assert!(arena_slot >= slot_base);
+                let is_cutout_pass = (flags & 1) != 0;
+                let pass_match = pass_kind == PASS_ALL
+                    || (pass_kind == PASS_OPAQUE && !is_cutout_pass)
+                    || (pass_kind == PASS_CUTOUT && is_cutout_pass);
+
+                if pass_match
+                    && quad_count > 0
+                    && meshlet_facing(&desc, eye, eye[1])
+                    && meshlet_in_frustum(&desc, origin, &planes)
+                {
+                    let first_count = quad_count.min(32);
+                    slices.push((vertex_base, first_count));
+                    if quad_count > 32 {
+                        slices.push((vertex_base + 32 * 4, quad_count - 32));
+                    }
+                }
+            }
+            slices
+        };
+
+        // Looking from below culls all +Y buckets (bucket 3).
+        assert!(simulate_ts(PASS_ALL, eye_below).is_empty());
+
+        let opaque_slices = simulate_ts(PASS_OPAQUE, eye_above);
+        let cutout_slices = simulate_ts(PASS_CUTOUT, eye_above);
+        assert_eq!(opaque_slices.len(), 1);
+        assert_eq!(opaque_slices[0].1, 4);
+        assert_eq!(cutout_slices.len(), 1);
+        assert_eq!(cutout_slices[0].1, 2);
+
+        // Decode every quad corner from the emitted slice base vertices via packed/spilled layout
+        // and verify bit-for-bit equality against `solid` + pass classification.
+        let verify_slices = |slices: &[(u32, u32)], expect_opaque: bool| {
+            let mut checked_quads = 0u32;
+            for &(base_vertex, quad_count) in slices {
+                for lane in 0..quad_count {
+                    let q_base = base_vertex + lane * 4;
+                    let slot = (((q_base - PACKED_BASE) >> 2) - slot_base) as usize;
+                    let words = packed[slot];
+                    for corner in 0..4 {
+                        let decoded = if words[5] & FULL == 0 {
+                            packed_vertex(&words, corner)
+                        } else {
+                            let spill = slot + words[0] as usize + corner;
+                            bytemuck::cast(packed[spill])
+                        };
+                        let expected = solid[slot * 4 + corner];
+                        assert_eq!(bytemuck::bytes_of(&decoded), bytemuck::bytes_of(&expected));
+                        assert_eq!((decoded.layer & OPAQUE_LAYER) != 0, expect_opaque);
+                    }
+                    checked_quads += 1;
+                }
+            }
+            checked_quads
+        };
+
+        assert_eq!(verify_slices(&opaque_slices, true), 4);
+        assert_eq!(verify_slices(&cutout_slices, false), 2);
+    }
+
+    #[test]
+    fn store_tracks_relocated_meshlets_per_page() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(adapter) = mesh_shader_adapter() else {
+            return;
+        };
+        let (device, queue) = open_mesh_device(&adapter, "Mesh shader store test");
+        let mut store = new_store(&device).expect("mesh shaders are enabled");
+
+        let m0 = MeshletDesc::new(0, 16, 2, 0, 0, [0, 0, 0, 4, 4, 4]);
+        let m1 = MeshletDesc::new(16, 24, 3, 0, 0, [4, 4, 4, 8, 8, 8]);
+        store.insert_section(0, 100, &[m0, m1]);
+        store.insert_section(0, 400, &[m0]);
+        store.insert_section(1, 200, &[m1]);
+
+        let params_for = |pass| MeshCullParams {
+            planes: [[0.0; 4]; 6],
+            eye: [0.0; 4],
+            counts: [0, pass, 0, 0],
+        };
+        assert_eq!(
+            store.prepare_page(&device, &queue, 0, &params_for(PASS_OPAQUE)),
+            3
+        );
+        assert_eq!(
+            store.prepare_page(&device, &queue, 1, &params_for(PASS_OPAQUE)),
+            1
+        );
+        assert_eq!(
+            store.prepare_page(&device, &queue, 0, &params_for(PASS_CUTOUT)),
+            3
+        );
+        assert_eq!(store.page_count(0), 3);
+        assert_eq!(store.staged_page(0)[0], m0.to_gpu(100));
+
+        // Page 0 and Page 1 must return distinct bind groups, and passes on the same page must have
+        // distinct dynamic uniform offsets so all draws coexist inside a single RenderPass.
+        let p0_opaque = store.page_draw(0, PASS_OPAQUE).unwrap();
+        let p0_cutout = store.page_draw(0, PASS_CUTOUT).unwrap();
+        let p1_opaque = store.page_draw(1, PASS_OPAQUE).unwrap();
+        assert_ne!(p0_opaque.uniform_offset, p0_cutout.uniform_offset);
+        assert!(!std::ptr::eq(p0_opaque.bind_group, p1_opaque.bind_group));
+
+        store.remove_section(0, 400);
+        assert_eq!(
+            store.prepare_page(&device, &queue, 0, &params_for(PASS_OPAQUE)),
+            2
+        );
+        assert_eq!(
+            store.prepare_page(&device, &queue, 1, &params_for(PASS_OPAQUE)),
+            1
+        );
+
+        store.clear();
+        assert_eq!(
+            store.prepare_page(&device, &queue, 0, &params_for(PASS_OPAQUE)),
+            0
+        );
+        assert!(store.page_draw(0, PASS_OPAQUE).is_none());
+    }
+
+    #[test]
+    fn hardware_mesh_pipeline_renders_multi_page_opaque_cutout_and_culled_quads() {
+        use crate::mesher::packed::{PACKED_BASE, layout};
+        use crate::mesher::{
+            OPAQUE_LAYER, TerrainVertex, UV_STEPS, meshlet::build_section_meshlets,
+        };
+
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(adapter) = mesh_shader_adapter() else {
+            return;
+        };
+        let info = adapter.get_info();
+        eprintln!(
+            "mesh shader hardware proof adapter: {} ({:?})",
+            info.name, info.backend
+        );
+        let (device, queue) = open_mesh_device(&adapter, "Mesh shader hardware render test");
+
+        let mut store = new_store(&device).expect("mesh shaders are enabled");
+        let g0_layout = group0_layout(&device);
+        let g1_layout = group1_layout(&device);
+        let pipe_layout =
+            pipeline_layout(&device, &g0_layout, &g1_layout, store.bind_group_layout());
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Terrain mesh hardware proof shader"),
+            source: wgpu::ShaderSource::Wgsl(shader().into()),
+        });
+        let color_format = wgpu::TextureFormat::Rgba8Unorm;
+        let depth_format = wgpu::TextureFormat::Depth32Float;
+        let opaque_pipeline = create_mesh_terrain_pipeline(
+            &device,
+            Some(&pipe_layout),
+            &module,
+            "fs_opaque",
+            color_format,
+            Some(depth_format),
+            &[("HDR_LIGHTING", 0.0)],
+        );
+        let cutout_pipeline = create_mesh_terrain_pipeline(
+            &device,
+            Some(&pipe_layout),
+            &module,
+            "fs_solid",
+            color_format,
+            Some(depth_format),
+            &[("HDR_LIGHTING", 0.0)],
+        );
+
+        let upload_buffer =
+            |label: &str, usage: wgpu::BufferUsages, bytes: &[u8]| -> wgpu::Buffer {
+                let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size: bytes.len().max(16) as u64,
+                    usage: usage | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                queue.write_buffer(&buf, 0, bytes);
+                buf
+            };
+
+        // Globals: camera at origin looking -Y with -Z as up (FOV 90 deg, aspect 1.0).
+        let proj = crate::gfx::world_projection(90.0, 1.0, 256.0);
+        let view = glam::Mat4::look_at_rh(glam::Vec3::ZERO, glam::Vec3::NEG_Y, glam::Vec3::NEG_Z);
+        let view_proj = proj * view;
+        let mut globals: crate::gfx::Globals = bytemuck::Zeroable::zeroed();
+        globals.view_proj = view_proj.to_cols_array_2d();
+        globals.fog = [1000.0, 2000.0, 1000.0, 2000.0];
+        globals.filtering = [0.0, 16.0, 0.0, 0.0];
+        globals.world_view = [1.0, 0.0, 0.0, 0.0];
+        let globals_buf = upload_buffer(
+            "Mesh test globals",
+            wgpu::BufferUsages::UNIFORM,
+            bytemuck::bytes_of(&globals),
+        );
+
+        let create_white_tex = |label: &str, layers: u32| -> wgpu::TextureView {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: layers,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            for layer in 0..layers {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: layer,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &[255u8, 255, 255, 255],
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            tex.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(if layers > 1 {
+                    wgpu::TextureViewDimension::D2Array
+                } else {
+                    wgpu::TextureViewDimension::D2
+                }),
+                ..Default::default()
+            })
+        };
+
+        let sprite_view = create_white_tex("Mesh test sprites", 2);
+        let sprite_views: [wgpu::TextureView; 8] = std::array::from_fn(|_| sprite_view.clone());
+        let lightmap_view = create_white_tex("Mesh test lightmap", 1);
+        let emission_view = create_white_tex("Mesh test emission", 1);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+        let group0 = crate::gfx::terrain_group(
+            &device,
+            "Mesh test group0",
+            &g0_layout,
+            &globals_buf,
+            &sprite_views,
+            &sampler,
+            &lightmap_view,
+            &sampler,
+            &emission_view,
+        );
+
+        let top_quad =
+            |x: f32, z: f32, x_skew: f32, layer: u16, color: u32| -> [TerrainVertex; 4] {
+                let v = |dx, dz| TerrainVertex {
+                    pos: [x + dx, 2.0, z + dz],
+                    uv: [0, 0],
+                    layer,
+                    light: 0xF0F0,
+                    color,
+                };
+                [v(x_skew, 0.0), v(0.0, 1.0), v(1.0, 1.0), v(1.0, 0.0)]
+            };
+
+        // Section origin [-4, -4, -4] places y_local=2 at camera-relative y=-2 (FOV 90 -> x/z [2..6] fill NDC [-1..1]).
+        let section_origin = [-4.0f32, -4.0, -4.0, 1.0 / UV_STEPS];
+
+        // Page 0 (slot_base = 0): Opaque RED on left (px 0..16), Cutout BLUE on right (px 48..64, one compact + one spilled FULL).
+        let p0_quads = [
+            top_quad(2.0, 3.0, 0.0, OPAQUE_LAYER, 0xFF00_00FF),
+            top_quad(2.0, 4.0, 0.0, OPAQUE_LAYER, 0xFF00_00FF),
+            top_quad(5.0, 3.0, 0.0, 0, 0xFFFF_0000),
+            top_quad(5.0, 4.0, 0.05, 0, 0xFFFF_0000),
+        ];
+        let mut p0_solid: Vec<TerrainVertex> = p0_quads.into_iter().flatten().collect();
+        let mut p0_tints = vec![0xFF_0000, 0xFF_0000, 0x00_00FF, 0x00_00FF];
+        let p0_sides = crate::mesher::sort_tinted(&mut p0_solid, &mut p0_tints);
+        let p0_packed = layout(&p0_solid, &p0_tints);
+        assert!(!p0_packed.is_empty());
+        let p0_meshlets = build_section_meshlets(&p0_sides, &p0_solid, &p0_packed);
+        store.insert_section(0, PACKED_BASE, &p0_meshlets);
+
+        // Page 1 (slot_base = 256 -> block_slots[1]): Opaque GREEN in bottom-center (px 16..48, py 32..48).
+        let p1_slot_base = 256u32;
+        let p1_quads = [
+            top_quad(3.0, 4.0, 0.0, OPAQUE_LAYER, 0xFF00_FF00),
+            top_quad(4.0, 4.0, 0.0, OPAQUE_LAYER, 0xFF00_FF00),
+        ];
+        let mut p1_solid: Vec<TerrainVertex> = p1_quads.into_iter().flatten().collect();
+        let mut p1_tints = vec![0x00_FF00, 0x00_FF00];
+        let p1_sides = crate::mesher::sort_tinted(&mut p1_solid, &mut p1_tints);
+        let p1_packed = layout(&p1_solid, &p1_tints);
+        assert!(!p1_packed.is_empty());
+        let mut p1_arena = vec![[0u32; 6]; p1_slot_base as usize];
+        p1_arena.extend_from_slice(&p1_packed);
+        let p1_meshlets = build_section_meshlets(&p1_sides, &p1_solid, &p1_packed);
+        store.insert_section(1, PACKED_BASE + 4 * p1_slot_base, &p1_meshlets);
+
+        let build_group1 = |block_slots: &[u32], origins: &[[f32; 4]], arena: &[[u32; 6]]| {
+            let bs = upload_buffer(
+                "block_slots",
+                wgpu::BufferUsages::STORAGE,
+                bytemuck::cast_slice(block_slots),
+            );
+            let so = upload_buffer(
+                "slot_origins",
+                wgpu::BufferUsages::STORAGE,
+                bytemuck::cast_slice(origins),
+            );
+            let ap = upload_buffer(
+                "arena_page",
+                wgpu::BufferUsages::STORAGE,
+                bytemuck::cast_slice(arena),
+            );
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Mesh test group1"),
+                layout: &g1_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: bs.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: so.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: crate::gfx::flat::ARENA_BINDING,
+                        resource: ap.as_entire_binding(),
+                    },
+                ],
+            });
+            (bs, so, ap, bg)
+        };
+        let _p0_bufs = build_group1(&[0, 0], &[section_origin], &p0_packed);
+        let _p1_bufs = build_group1(&[0, 1], &[[0.0; 4], section_origin], &p1_arena);
+
+        let size = 64u32;
+        let color_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Mesh test color"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Mesh test depth"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: depth_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let color_view = color_tex.create_view(&Default::default());
+        let depth_view = depth_tex.create_view(&Default::default());
+        let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh test readback"),
+            size: u64::from(size * size * 4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let box_planes = [
+            [1.0, 0.0, 0.0, 50.0],
+            [-1.0, 0.0, 0.0, 50.0],
+            [0.0, 1.0, 0.0, 50.0],
+            [0.0, -1.0, 0.0, 50.0],
+            [0.0, 0.0, 1.0, 50.0],
+            [0.0, 0.0, -1.0, 50.0],
+        ];
+        let params = |pass: u32, eye: [f32; 4]| MeshCullParams {
+            planes: box_planes,
+            eye,
+            counts: [0, pass, 0, 0],
+        };
+
+        let render_and_readback =
+            |store: &MeshSectionStore,
+             draws: &[(u32, u32, &wgpu::RenderPipeline, &wgpu::BindGroup)]| {
+                let mut encoder = device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Mesh hardware proof pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &color_view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 1.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(0.0),
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        ..Default::default()
+                    });
+                    pass.set_bind_group(0, &group0, &[]);
+                    for &(page, pass_kind, pipe, g1) in draws {
+                        pass.set_bind_group(1, g1, &[]);
+                        let draw = store
+                            .page_draw(page, pass_kind)
+                            .expect("page draw must be prepared");
+                        draw_mesh_page(&mut pass, pipe, draw);
+                    }
+                }
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &color_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &readback_buf,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(size * 4),
+                            rows_per_image: Some(size),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: size,
+                        height: size,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                queue.submit([encoder.finish()]);
+                readback_buf.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let view = readback_buf
+                    .get_mapped_range(..)
+                    .expect("mapped readback buffer");
+                let pixels = view.to_vec();
+                drop(view);
+                readback_buf.unmap();
+                pixels
+            };
+        let px = |pixels: &[u8], x: u32, y: u32| -> [u8; 4] {
+            let i = ((y * size + x) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+
+        // Case 1: Multi-page + multi-pass prepared beforehand & drawn inside ONE RenderPass.
+        let eye_above = [0.0, 0.0, 0.0, 0.0];
+        store.prepare_page(&device, &queue, 0, &params(PASS_OPAQUE, eye_above));
+        store.prepare_page(&device, &queue, 1, &params(PASS_OPAQUE, eye_above));
+        store.prepare_page(&device, &queue, 0, &params(PASS_CUTOUT, eye_above));
+        let combined = render_and_readback(
+            &store,
+            &[
+                (0, PASS_OPAQUE, &opaque_pipeline, &_p0_bufs.3),
+                (1, PASS_OPAQUE, &opaque_pipeline, &_p1_bufs.3),
+                (0, PASS_CUTOUT, &cutout_pipeline, &_p0_bufs.3),
+            ],
+        );
+        let red = px(&combined, 8, 32);
+        let green = px(&combined, 32, 40);
+        let blue_compact = px(&combined, 56, 24);
+        let blue_spilled = px(&combined, 56, 40);
+        let bg = px(&combined, 32, 8);
+        eprintln!(
+            "hardware readback pixels: red={red:?}, green={green:?}, blue_compact={blue_compact:?}, blue_spilled={blue_spilled:?}, bg={bg:?}"
+        );
+        assert!(
+            red[0] > 200 && red[1] < 20 && red[2] < 20,
+            "p0 opaque red: {red:?}"
+        );
+        assert!(
+            green[1] > 200 && green[0] < 20 && green[2] < 20,
+            "p1 opaque green: {green:?}"
+        );
+        assert!(
+            blue_compact[2] > 200 && blue_compact[0] < 20 && blue_compact[1] < 20,
+            "p0 compact cutout blue: {blue_compact:?}"
+        );
+        assert!(
+            blue_spilled[2] > 200 && blue_spilled[0] < 20 && blue_spilled[1] < 20,
+            "p0 spilled FULL cutout blue: {blue_spilled:?}"
+        );
+        assert_eq!(bg, [0, 0, 0, 255]);
+
+        // Case 2: Strict pass isolation (OPAQUE renders red only; CUTOUT renders blue only).
+        let opaque_only =
+            render_and_readback(&store, &[(0, PASS_OPAQUE, &opaque_pipeline, &_p0_bufs.3)]);
+        assert!(px(&opaque_only, 8, 32)[0] > 200);
+        assert_eq!(px(&opaque_only, 56, 24), [0, 0, 0, 255]);
+        assert_eq!(px(&opaque_only, 56, 40), [0, 0, 0, 255]);
+
+        let cutout_only =
+            render_and_readback(&store, &[(0, PASS_CUTOUT, &cutout_pipeline, &_p0_bufs.3)]);
+        assert_eq!(px(&cutout_only, 8, 32), [0, 0, 0, 255]);
+        assert!(px(&cutout_only, 56, 24)[2] > 200);
+        assert!(px(&cutout_only, 56, 40)[2] > 200);
+
+        // Case 3: Task backface culling below +Y quads culls all slices.
+        store.prepare_page(
+            &device,
+            &queue,
+            0,
+            &params(PASS_ALL, [0.0, -10.0, 0.0, -10.0]),
+        );
+        let culled = render_and_readback(&store, &[(0, PASS_ALL, &cutout_pipeline, &_p0_bufs.3)]);
+        let (chunks, remainder) = culled.as_chunks::<4>();
+        assert!(remainder.is_empty());
+        assert!(
+            chunks.iter().all(|&c| c == [0, 0, 0, 255]),
+            "eye below +Y faces must cull all pixels"
+        );
     }
 }
