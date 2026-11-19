@@ -465,6 +465,40 @@ fn a_hyphenated_id_that_another_installed_mod_has_is_refused() {
 }
 
 #[test]
+fn an_install_interrupted_before_publishing_can_be_retried() {
+    let home = home("hyphen-retry");
+    let (fake, _) = hyphenated_mod();
+    // What a failed move into place leaves: the staging copy, with its manifest.
+    let part = home.join("horizon-mods/.a_b.part");
+    fs::create_dir_all(&part).unwrap();
+    fs::write(
+        part.join("horizon-mod.toml"),
+        "id = \"a_b\"
+name = \"a-b\"
+version = \"1.0\"
+api = \"0.2\"
+side = \"both\"
+capabilities = [\"registries\"]
+",
+    )
+    .unwrap();
+    let found = horizon_platform::mod_package::find(&home.join("horizon-mods"));
+    assert_eq!(found, [part.clone()]);
+    assert_eq!(
+        horizon_platform::mod_package::Package::read(&part)
+            .unwrap()
+            .manifest
+            .id,
+        "a_b"
+    );
+    let done = install(&fake, &fake.project("ab").unwrap(), false, &home, NONE).unwrap();
+    assert_eq!(done[0].file, "horizon-mods/a_b");
+    assert!(home.join("horizon-mods/a_b/horizon-mod.toml").is_file());
+    assert!(!part.exists());
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
 fn a_refused_install_installs_none_of_its_dependencies() {
     let home = home("hyphen-clash-deps");
     let (mut fake, jar) = hyphenated_mod();

@@ -63,14 +63,21 @@ fn refused_id(check: &Check) -> bool {
             .ends_with(" is not [a-z0-9_]{1,64}: rename it before carrying over")
 }
 
+/// Where an install of mod `id` is copied before it is moved into place.
+fn staging(home: &Path, id: &str) -> PathBuf {
+    home.join(MODS_DIR).join(format!(".{id}.part"))
+}
+
 /// A package the game finds (`mod_package::find`, in both mod folders: they share
-/// `horizon-mods.txt`) other than `except` whose manifest has mod id `id`.
-fn id_in_use(home: &Path, id: &str, except: &Path) -> Option<PathBuf> {
+/// `horizon-mods.txt`) whose manifest has mod id `id`, other than the install's own `target`
+/// and its staging folder (an interrupted install leaves one, which the retry replaces).
+fn id_in_use(home: &Path, id: &str, target: &Path) -> Option<PathBuf> {
     use horizon_platform::mod_package::{find, mod_list, Package};
+    let part = staging(home, id);
     [mod_list::DIR, mod_list::NATIVE_DIR]
         .iter()
         .flat_map(|dir| find(&home.join(dir)))
-        .filter(|path| path != except)
+        .filter(|path| path != target && *path != part)
         .find(|path| Package::read(path).is_ok_and(|package| package.manifest.id == id))
 }
 
@@ -267,7 +274,7 @@ impl Job<'_> {
         let target = home.join(&relative);
         let old = self.refusal(project, &check)?;
         progress(&format!("Installing {}", project.title), 1.);
-        let part = home.join(MODS_DIR).join(format!(".{}.part", check.mod_id));
+        let part = staging(home, &check.mod_id);
         let _ = fs::remove_dir_all(&part);
         copy_dir(&carry, &part).inspect_err(|_| {
             let _ = fs::remove_dir_all(&part);
