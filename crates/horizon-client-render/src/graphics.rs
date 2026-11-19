@@ -578,6 +578,29 @@ impl HdrMode {
     }
 }
 
+/// What Horizon does with HDR's range above paper white, where no shader pack lights the world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HdrLook {
+    /// Horizon's lift: light sources and the sun shine above paper white; lit surfaces stay at
+    /// it.
+    #[default]
+    Horizon,
+    /// Nothing lifted: HDR output shows the same picture as SDR.
+    Vanilla,
+}
+impl HdrLook {
+    pub const ALL: [Self; 2] = [Self::Horizon, Self::Vanilla];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Horizon => "horizon",
+            Self::Vanilla => "vanilla",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|look| look.name() == value)
+    }
+}
+
 static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// Whether the device can batch translucent quads (`Graphics::translucent_batching`): set when
@@ -902,10 +925,13 @@ pub struct Graphics {
     /// HDR brightness of the HUD and menus, in nits; 0 is Auto: at paper white
     /// ([`Graphics::ui_nits`]). The first-person hand stays at the world's.
     pub hdr_ui_nits: u32,
-    /// HDR Lighting: Horizon's lift of light sources and the sun above paper white; lit surfaces
-    /// stay at it. Off, HDR output shows the same picture as SDR, for shader packs or the vanilla
-    /// look.
-    pub hdr_lighting: bool,
+    /// HDR Color Boost, 0..=100 percent: how far HDR output stretches the picture's BT.709
+    /// colours toward the display's own primaries (`gfx::hdr::gamut`), as wide-gamut displays
+    /// often show SDR. 0, the default, shows the colours exactly. scRGB output on Wayland is left
+    /// unboosted (`EffectiveOutput::compositor_stretches`).
+    pub hdr_color_boost: u32,
+    /// HDR's look with no shader pack running.
+    pub hdr_look: HdrLook,
     /// The graphics driver whose last start ended before HDR output showed a frame (the
     /// marker found, [`HDR_MARKER`]): a window on it stays SDR whatever the mode, until the
     /// mode is changed or the window starts on another driver ([`Graphics::hdr_held`]).
@@ -982,7 +1008,8 @@ impl Default for Graphics {
             hdr_peak: 0,
             hdr_black_level: 0,
             hdr_ui_nits: 0,
-            hdr_lighting: true,
+            hdr_color_boost: 0,
+            hdr_look: HdrLook::Horizon,
             hdr_failed_start: None,
             battery: false,
             shadow_cache: false,
@@ -1056,6 +1083,8 @@ impl Graphics {
         let mut g = Self::default();
         // UI Brightness: `hdrUiNits`, else an older file's share of Paper White.
         let (mut ui_nits, mut ui_share) = (None, None);
+        // The look: `hdrLook`, else an older file's `hdrLighting`, whose off was Vanilla.
+        let (mut look, mut lighting) = (None, None);
         for line in text.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -1147,7 +1176,8 @@ impl Graphics {
                 }
                 "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = HdrMode::parse(value, g.hdr),
-                "hdrLighting" => g.hdr_lighting = flag(g.hdr_lighting),
+                "hdrLook" => look = HdrLook::parse(value),
+                "hdrLighting" => lighting = Some(flag(lighting.unwrap_or(true))),
                 "hdrPaperWhite" => g.hdr_paper_white = nits_setting(number(g.hdr_paper_white)),
                 "hdrUiNits" => ui_nits = value.parse().ok().map(nits_setting),
                 "hdrUiBrightness" => ui_share = value.parse::<u32>().ok(),
@@ -1158,6 +1188,7 @@ impl Graphics {
                     }
                 }
                 "hdrBlackLevel" => g.hdr_black_level = number(g.hdr_black_level).min(100),
+                "hdrColorBoost" => g.hdr_color_boost = number(g.hdr_color_boost).min(100),
                 "hdrFailedStart" => g.hdr_failed_start = Some(value.to_owned()),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
@@ -1183,11 +1214,15 @@ impl Graphics {
             }
             _ => 0,
         });
+        g.hdr_look = look.unwrap_or(match lighting {
+            Some(false) => HdrLook::Vanilla,
+            _ => HdrLook::Horizon,
+        });
         g
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\ngpuCulling:{}\nparallelTick:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrColorBoost:{}\nhdrLook:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\ngpuCulling:{}\nparallelTick:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1237,7 +1272,8 @@ impl Graphics {
             self.hdr_peak,
             self.hdr_black_level,
             self.hdr_ui_nits,
-            bool_text(self.hdr_lighting),
+            self.hdr_color_boost,
+            self.hdr_look.name(),
             bool_text(self.battery),
             bool_text(self.shadow_cache),
             self.api.name(),
@@ -1379,6 +1415,58 @@ mod tests {
         assert_eq!(g.ui_nits(reported), 120);
         g.hdr_ui_nits = 400;
         assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
+
+    /// Color Boost is saved as its percentage, 0 when the file has none, kept within 0..=100.
+    #[test]
+    fn color_boost_round_trips_through_the_file() {
+        for (file, boost) in [
+            ("", 0),
+            ("hdrColorBoost:35\n", 35),
+            ("hdrColorBoost:100\n", 100),
+            ("hdrColorBoost:250\n", 100),
+            ("hdrColorBoost:x\n", 0),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_color_boost, boost, "{file}");
+            let saved = g.serialize();
+            assert!(
+                saved.contains(&format!("\nhdrColorBoost:{boost}\n")),
+                "{file}"
+            );
+            assert_eq!(Graphics::parse(&saved), g, "{file}");
+        }
+    }
+
+    /// HDR Lighting's On and Off became the looks Horizon and Vanilla: an older file keeps its
+    /// choice, and only the new key is written.
+    #[test]
+    fn hdr_look_reads_an_older_files_hdr_lighting() {
+        use HdrLook::{Horizon, Vanilla};
+        for (file, look) in [
+            ("", Horizon),
+            ("hdrLighting:true\n", Horizon),
+            ("hdrLighting:false\n", Vanilla),
+            ("hdrLook:vanilla\n", Vanilla),
+            ("hdrLook:horizon\n", Horizon),
+            // The new key wins wherever the old one stands; a look this build doesn't know
+            // doesn't.
+            ("hdrLook:horizon\nhdrLighting:false\n", Horizon),
+            ("hdrLighting:true\nhdrLook:vanilla\n", Vanilla),
+            ("hdrLighting:false\nhdrLook:filmic\n", Vanilla),
+            ("hdrLook:filmic\n", Horizon),
+            // A value that is neither keeps the one before it, as every switch does.
+            ("hdrLighting:false\nhdrLighting:unknown\n", Vanilla),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_look, look, "{file}");
+            let saved = g.serialize();
+            assert!(
+                saved.contains(&format!("hdrLook:{}\n", look.name())),
+                "{file}"
+            );
+            assert!(!saved.contains("hdrLighting"), "{file}");
+        }
     }
 
     #[test]
@@ -1577,7 +1665,8 @@ mod tests {
             hdr_peak: 1400,
             hdr_black_level: 12,
             hdr_ui_nits: 160,
-            hdr_lighting: false,
+            hdr_color_boost: 35,
+            hdr_look: HdrLook::Vanilla,
             hdr_failed_start: Some(
                 "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57".into(),
             ),
