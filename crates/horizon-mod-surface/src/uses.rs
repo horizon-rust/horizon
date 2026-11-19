@@ -31,8 +31,14 @@
 //! { … }` in a file the second rule could judge that defines `enum Kind` at its top level
 //! under no `#[cfg]`, where nothing else binds `Kind` (no other item, module, extern crate,
 //! generic parameter or `use` anywhere in the file, no API item of the name); `Self::Settings
-//! { … }` in an impl for such an enum; and a name whose only `use` in such a file, not rooted
-//! at `::`, imports such a variant (`use Kind::Settings;`, also `as` another name). The scan
+//! { … }` in an impl for such an enum; and a name whose only `use` in such a file is the single
+//! leaf `use self::Kind::Settings;` (also `as` another name). Any other `use` that names `Kind`
+//! or binds the name (braces, a leading `::`, or a bare `use Kind::Settings;`, which edition
+//! 2015 reads from the crate's root) leaves the API's. There is no exemption in a file with a
+//! macro called through a path (`std::vec!`), nor anywhere in a mod that defines a macro
+//! (`macro_rules!`, whose names reach other files), loads macros with `#[macro_use]`, binds a
+//! name of a standard or API macro or the name `std`, `core` or `alloc`, or writes a non-ASCII
+//! identifier (Rust compares identifiers after normalising them, the scan does not). The scan
 //! does not know which file is a crate's root or where a module's file is, so a path through
 //! `crate::`, `super::` or another module, and an enum defined in another file or inside a
 //! function, still count as the API struct's; so does any literal inside a macro body.
@@ -409,9 +415,10 @@ struct FileFacts<'t> {
     impls: Vec<(usize, Option<usize>)>,
     /// The names some `use` in the file binds.
     imported: BTreeSet<&'t str>,
-    /// Every name written in a `use` that starts at `::` (`use ::dep::X as Y;`), which the
-    /// imports record without the root.
-    rooted_uses: BTreeSet<&'t str>,
+    /// Every name written in a `use` other than a single leaf `use self::A::B;` or
+    /// `use self::A::B as C;`: one with braces, a leading `::` (which the imports record
+    /// without), or another start.
+    odd_uses: BTreeSet<&'t str>,
     /// What the parser reads of the file.
     syntax: Syntax<'t>,
     /// Tokens inside a macro call's delimiters or a `macro_rules!` body, which the parser does
@@ -560,13 +567,25 @@ fn file_facts<'t>(file: &str, text: &'t str) -> Result<FileFacts<'t>, ScanError>
         .filter(|(_, local)| *local != "*")
         .map(|(_, local)| *local)
         .collect();
-    let mut rooted_uses = BTreeSet::new();
+    let mut odd_uses = BTreeSet::new();
     for at in 0..tokens.len() {
-        if ident(&tokens, at) == Some("use") && punct(&tokens, at + 1, b':') {
-            let end = (at..tokens.len())
-                .find(|i| punct(&tokens, *i, b';'))
-                .unwrap_or(tokens.len());
-            rooted_uses.extend((at + 1..end).filter_map(|i| ident(&tokens, i)));
+        if ident(&tokens, at) != Some("use") {
+            continue;
+        }
+        let end = (at..tokens.len())
+            .find(|i| punct(&tokens, *i, b';'))
+            .unwrap_or(tokens.len());
+        let leaf = |i: usize| ident(&tokens, i).is_some_and(|name| name != "self");
+        let colons = |i: usize| punct(&tokens, i, b':') && punct(&tokens, i + 1, b':');
+        let single = ident(&tokens, at + 1) == Some("self")
+            && colons(at + 2)
+            && leaf(at + 4)
+            && colons(at + 5)
+            && leaf(at + 7)
+            && (end == at + 8
+                || (end == at + 10 && ident(&tokens, at + 8) == Some("as") && leaf(at + 9)));
+        if !single {
+            odd_uses.extend((at + 1..end).filter_map(|i| ident(&tokens, i)));
         }
     }
     Ok(FileFacts {
@@ -579,7 +598,7 @@ fn file_facts<'t>(file: &str, text: &'t str) -> Result<FileFacts<'t>, ScanError>
         enclosing,
         impls,
         imported,
-        rooted_uses,
+        odd_uses,
         syntax,
         in_macro,
         imports,
@@ -1422,6 +1441,9 @@ struct Resolver<'a, 's, 't> {
     certain: Vec<bool>,
     /// Per file: whether it holds an expansion the scan cannot follow.
     opaque: Vec<bool>,
+    /// Per file: whether a variant of its own enum may be told from an API struct
+    /// ([`Self::own_enum_in`]).
+    variant_files: Vec<bool>,
     /// Per file: the `type` aliases of an API item, which define no type of the mod's own.
     api_aliases: Vec<BTreeSet<&'t str>>,
     /// The API modules some file imports with a glob, `mod_api::` left out.
@@ -1461,6 +1483,48 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
                     && !file.imports.iter().any(|(_, local)| *local == "*")
             })
             .collect();
+        // Anything that may bring a name into a file from outside it or that the scan cannot
+        // compare turns the variant exemption off for the whole mod: a macro the mod defines
+        // (a `macro_rules!` reaches every file declared after it), `#[macro_use]`, a binding
+        // of a standard or API macro's name or of `std`, `core` or `alloc`, and a non-ASCII
+        // identifier.
+        let known = |name: &str| STD_MACROS.contains(&name) || trusted.api_macros.contains(name);
+        let crate_name = |name: &str| matches!(name, "std" | "core" | "alloc");
+        let variants_off = module.rebound_all
+            || files.iter().any(|file| {
+                !file.macro_rules.is_empty()
+                    || (0..file.tokens.len()).any(|at| {
+                        ident(&file.tokens, at) == Some("macro")
+                            && ident(&file.tokens, at + 1).is_some()
+                    })
+                    || file
+                        .tokens
+                        .iter()
+                        .any(|(token, _)| matches!(token, Token::Ident(name) if !name.is_ascii()))
+                    || file
+                        .imports
+                        .iter()
+                        .any(|(_, local)| known(local) || crate_name(local))
+                    || file
+                        .syntax
+                        .bound
+                        .iter()
+                        .any(|name| known(name) || crate_name(name))
+            });
+        // A macro called through a path (`std::vec!`, `$crate::m!`) may be another than its
+        // name says.
+        let variant_files = files
+            .iter()
+            .zip(&certain)
+            .map(|(file, certain)| {
+                *certain
+                    && !variants_off
+                    && file.macro_calls.iter().all(|path| match &path[..] {
+                        [name] => *name != "$",
+                        _ => false,
+                    })
+            })
+            .collect();
         let mod_globs = files.iter().flat_map(|f| api_globs(f, module)).collect();
         let mut resolver = Resolver {
             index,
@@ -1468,6 +1532,7 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
             files,
             certain,
             opaque,
+            variant_files,
             api_aliases: Vec::new(),
             mod_globs,
             memo: BTreeMap::new(),
@@ -1513,12 +1578,14 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
     }
 
     /// Whether `owner` in file `index` is certainly that file's own top-level enum with
-    /// `variant`: the file is certain, defines the enum at its top level under no `#[cfg]`, and
-    /// binds the name nowhere else (no other item, module, extern crate or generic parameter,
-    /// no `use`, nothing in a macro body), and no API item has the name.
+    /// `variant`: the exemption may apply in the file (`variant_files`), it defines the enum at
+    /// its top level under no `#[cfg]`, and binds the name nowhere else (no other item, module,
+    /// extern crate or generic parameter, no `use` but a single leaf `use self::…`, nothing in a
+    /// macro body), and no API item has the name.
     fn own_enum_in(&self, index: usize, owner: &'t str, variant: &'t str) -> bool {
         let file = &self.files[index];
-        self.certain[index]
+        self.variant_files[index]
+            && !file.odd_uses.contains(owner)
             && file.syntax.top_enums.contains(&(owner, variant))
             && file
                 .syntax
@@ -1547,20 +1614,20 @@ impl<'a, 's, 't> Resolver<'a, 's, 't> {
     }
 
     /// Whether an unqualified `name` in file `index` is a variant of that file's own enum that
-    /// the file imports (`use Kind::Settings;`, or `as` another name): the file is certain,
-    /// its one `use` that binds the name is such a variant ([`Self::own_variant`]) and does not
-    /// start at `::`, and nothing else in it binds or aliases the name.
+    /// the file imports by the single leaf `use self::Kind::Settings;` (or `as` another name):
+    /// that `use` is the only one that names it, the variant is the file's own
+    /// ([`Self::own_enum_in`]), and nothing else in the file binds or aliases the name.
     fn imported_variant(&self, index: usize, name: &'t str) -> bool {
         let file = &self.files[index];
         let mut bindings = file.imports.iter().filter(|(_, local)| *local == name);
-        self.certain[index]
-            && !file.rooted_uses.contains(name)
+        !file.odd_uses.contains(name)
             && !file.syntax.bound.contains(&name)
             && !file.macro_types.contains(name)
             && !file.type_aliases.iter().any(|(alias, _, _)| *alias == name)
             && matches!(
                 (bindings.next(), bindings.next()),
-                (Some((path, _)), None) if self.own_variant(index, path, false)
+                (Some((path, _)), None) if matches!(path[..], ["self", owner, variant]
+                    if self.own_enum_in(index, owner, variant))
             )
     }
 
