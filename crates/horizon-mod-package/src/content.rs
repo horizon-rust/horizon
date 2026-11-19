@@ -36,7 +36,7 @@ pub fn check_bytes(name: &str, bytes: &[u8]) -> Result<(), String> {
 /// Checks a content path: `assets/` or `data/`, then `/`-separated parts of
 /// `[a-z0-9_.-]`, none of them `.` or `..` and none ending in `.` (vanilla's
 /// resource-location characters, so the path means the same on every OS: Windows
-/// drops a trailing dot).
+/// drops a trailing dot). No part is a Windows device name or over 255 bytes either.
 pub fn check_path(name: &str) -> Result<(), String> {
     let bad = || format!("{name:?} is not a plain assets/ or data/ path");
     let mut parts = name.split('/');
@@ -49,7 +49,11 @@ pub fn check_path(name: &str) -> Result<(), String> {
         let chars_ok = part
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
-        if part.is_empty() || part.ends_with('.') || !chars_ok {
+        if part.is_empty()
+            || part.ends_with('.')
+            || !chars_ok
+            || !crate::manifest::portable_part(part)
+        {
             return Err(bad());
         }
     }

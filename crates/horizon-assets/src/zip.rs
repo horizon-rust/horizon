@@ -140,6 +140,15 @@ impl Zip {
     /// Reads the central directory, not the entries: opening a pack of many
     /// gigabytes for its `pack.mcmeta` costs what opening a small one does.
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_with(path, false)
+    }
+    /// [`Zip::open`], refusing an archive whose END record `normalize_end` would correct. The
+    /// `zip` crate reads it as written, as a mod package's checks do, so this view lists exactly
+    /// the entries they saw; the corrected one would add entries past the record's count.
+    pub fn open_exact(path: &Path) -> io::Result<Self> {
+        Self::open_with(path, true)
+    }
+    fn open_with(path: &Path, exact: bool) -> io::Result<Self> {
         let file = fs::File::open(path)?;
         let len = file.metadata()?.len();
         let mut tail_at = len.saturating_sub((END_HEADER + u16::MAX as usize) as u64);
@@ -153,7 +162,11 @@ impl Zip {
                 tail = read_range(&file, tail_at, len)?;
             }
         }
-        normalize_end(&mut tail);
+        if normalize_end(&mut tail) && exact {
+            return Err(invalid(
+                "the archive's END record does not list its directory's entries",
+            ));
+        }
         Self::new(Reader {
             file: Some(Arc::new(file)),
             tail: Arc::from(tail),
@@ -366,9 +379,11 @@ fn find_end(data: &[u8]) -> Option<usize> {
 /// leave every file's local header a stub and the END counts and disk number
 /// at 0 and 0xFFFF: archives Java opens but the crate refuses. Count the real
 /// directory entries and normalize the record so it does not look multi-disk
-/// or empty.
-fn normalize_end(data: &mut [u8]) {
-    let Some(end) = find_end(data) else { return };
+/// or empty. Whether it changed the record.
+fn normalize_end(data: &mut [u8]) -> bool {
+    let Some(end) = find_end(data) else {
+        return false;
+    };
     // The directory's real position and length, as Java derives them; the
     // recorded offset is relative to the archive's start.
     let cenlen = u32_at(data, end + 12) as usize;
@@ -389,11 +404,12 @@ fn normalize_end(data: &mut [u8]) {
         && u16_at(data, end + 8) == count
         && u16_at(data, end + 10) == count
     {
-        return;
+        return false;
     }
     data[end + 4..end + 10].fill(0);
     data[end + 8..end + 10].copy_from_slice(&count.to_le_bytes());
     data[end + 10..end + 12].copy_from_slice(&count.to_le_bytes());
+    true
 }
 
 #[cfg(test)]
@@ -443,6 +459,21 @@ mod tests {
         bytes[end + 8..end + 12].fill(0);
         let zip = opened("end-counts", &bytes).unwrap();
         assert_eq!(zip.read("a/b.txt").unwrap(), b"hello hello hello hello");
+    }
+    #[test]
+    fn an_exact_open_refuses_entries_past_the_end_count() {
+        let path =
+            std::env::temp_dir().join(format!("horizon-zip-{}-exact.zip", std::process::id()));
+        let mut bytes = archive_of(&[("a.txt", b"a", false), ("hidden.txt", b"b", false)]);
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(Zip::open_exact(&path).unwrap().names().count(), 2);
+        // The END record lists one entry; the directory holds two.
+        let end = bytes.len() - END_HEADER;
+        bytes[end + 8..end + 12].copy_from_slice(&[1, 0, 1, 0]);
+        fs::write(&path, &bytes).unwrap();
+        assert!(Zip::open(&path).unwrap().contains("hidden.txt"));
+        assert!(Zip::open_exact(&path).is_err());
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn a_file_is_opened_with_equal_nonzero_disk_numbers() {

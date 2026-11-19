@@ -741,7 +741,14 @@ pub(crate) fn plain_path(name: &str) -> bool {
         && !name.contains(['\\', ':'])
         && !name
             .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
+            .any(|part| part.is_empty() || part == "." || part == ".." || !portable_part(part))
+}
+
+/// A path part every platform writes as the file it names: not a Windows device name, whatever
+/// its case or extension, and not longer than the 255 bytes file systems take.
+pub(crate) fn portable_part(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or(part);
+    part.len() <= 255 && !reserved_mod_id(&stem.to_ascii_lowercase())
 }
 
 /// A mod as found on disk.
@@ -901,6 +908,7 @@ impl Package {
         let mut entries = Vec::new();
         let mut layouts = None;
         let mut uses = false;
+        let mut folded = std::collections::HashSet::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
             let name = entry.name().map_err(|e| e.to_string())?.into_owned();
@@ -910,6 +918,10 @@ impl Package {
             // resource loader does) must see the same names the checks below saw.
             if !plain_path(name.strip_suffix('/').unwrap_or(&name)) {
                 return Err(format!("invalid package path: {name}"));
+            }
+            // One file where case is ignored (Windows, macOS): staging writes one over the other.
+            if !folded.insert(name.strip_suffix('/').unwrap_or(&name).to_lowercase()) {
+                return Err(format!("duplicate package path, ignoring case: {name}"));
             }
             let first = name.split('/').next().unwrap_or("");
             if legacy_path(&name) {
