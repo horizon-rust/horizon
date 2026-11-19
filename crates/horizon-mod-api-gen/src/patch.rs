@@ -1446,22 +1446,28 @@ fn crate_mirror(
     mirror(source, krate, tree, bridges, used, None)
 }
 
-/// The mirror of module `path` and its children in `tree`; of the items of `file` alone when
-/// it is one of several files of the module ([`Variant`]).
+/// The mirror of module `path` and its children in `tree`; of the items of `files` alone when
+/// they are one of several declarations of the module ([`Variant`]).
 fn mirror(
     source: &mut Source,
     path: &str,
     tree: &Tree,
     bridges: bool,
     used: Option<&BTreeSet<String>>,
-    file: Option<&Path>,
+    files: Option<&[PathBuf]>,
 ) -> Result<proc_macro2::TokenStream, String> {
-    let items = match file {
-        Some(file) => {
-            let text = source.read(file)?;
-            syn::parse_file(&text)
-                .map_err(|e| format!("{}: {e}", file.display()))?
-                .items
+    let items = match files {
+        Some(files) => {
+            let mut items = Vec::new();
+            for file in files {
+                let text = source.read(file)?;
+                items.extend(
+                    syn::parse_file(&text)
+                        .map_err(|e| format!("{}: {e}", file.display()))?
+                        .items,
+                );
+            }
+            items
         }
         None => source.module(path)?.items.clone(),
     };
@@ -1550,7 +1556,7 @@ fn mirror(
                 child,
                 bridges,
                 used,
-                variant.file.as_deref(),
+                variant.files.as_deref(),
             )?;
             children.push(quote!(#guard pub mod #ident { #inner }));
         }
@@ -1566,7 +1572,7 @@ fn mirror(
         })
         .collect();
     let copies = tree.copies.iter().filter(|copy| {
-        file.is_none()
+        files.is_none()
             || !matches!(syn::parse2::<Item>((*copy).clone()),
                 Ok(Item::Fn(item)) if !functions.contains(&item.sig.ident.to_string()))
     });
@@ -1810,85 +1816,191 @@ fn prune(
 
 /// One mirror of a module: the `cfg` condition its declaration has, which the mirror carries
 /// so that a mirror of a module the build leaves out (`#[cfg(test)] mod ray_tests`) is left out
-/// with it; and, for a module several files declare under their own conditions (`friends.rs`
-/// and `friends_off.rs`), the file whose items it mirrors. Only one of those files is in a
-/// build, so each gets a mirror of its own.
+/// with it; and, for a module several files declare under conditions of their own
+/// (`friends.rs` and `friends_off.rs`), the files whose items it mirrors: one of those files
+/// with the fragments it `include!`s. Only one of them is in a build, so each gets a mirror.
 struct Variant {
     cfg: Option<proc_macro2::TokenStream>,
-    file: Option<PathBuf>,
+    files: Option<Vec<PathBuf>>,
 }
 
-/// The mirrors module `path` gets ([`Variant`]). A module the game's build script declares has
-/// its condition from its file's `// game-module-cfg:` header.
+/// A `mod` declaration of a module: its condition, its `#[path]`, and its per-target files
+/// (`#[cfg_attr(unix, path = "a/unix.rs")]`) with their conditions.
+struct Declared {
+    cfg: Option<proc_macro2::TokenStream>,
+    path: Option<String>,
+    per_target: Vec<(proc_macro2::TokenStream, String)>,
+}
+
+/// The mirrors module `path` gets ([`Variant`]). Its files are split into one mirror each only
+/// where they are separate declarations, every one with a condition: a separate `mod`, a
+/// `#[path]` or a per-target file, or, for a module the game's build script declares, a
+/// `// game-module-cfg:` header. A fragment a file `include!`s is that file's.
 fn variants(source: &mut Source, path: &str) -> Vec<Variant> {
     let Some((parent, name)) = path.rsplit_once("::") else {
         return vec![Variant {
             cfg: None,
-            file: None,
+            files: None,
         }];
     };
-    // Each `mod` declaration of the name: its condition, and its `#[path]`.
-    let declared: Vec<(Option<proc_macro2::TokenStream>, Option<String>)> = source
+    let path_of = |meta: &syn::Meta| match meta {
+        syn::Meta::NameValue(value) if value.path.is_ident("path") => match &value.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(at),
+                ..
+            }) => Some(at.value()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let declared: Vec<Declared> = source
         .module(parent)
         .map(|module| {
             module
                 .items
                 .iter()
                 .filter_map(|item| match item {
-                    Item::Mod(module) if module.ident == name => Some((
-                        all_cfg(&module.attrs),
-                        module.attrs.iter().find_map(|attr| match &attr.meta {
-                            syn::Meta::NameValue(value) if value.path.is_ident("path") => {
-                                match &value.value {
-                                    syn::Expr::Lit(syn::ExprLit {
-                                        lit: syn::Lit::Str(at),
-                                        ..
-                                    }) => Some(at.value()),
-                                    _ => None,
-                                }
-                            }
-                            _ => None,
-                        }),
-                    )),
+                    Item::Mod(module) if module.ident == name => Some(Declared {
+                        cfg: all_cfg(&module.attrs),
+                        path: module.attrs.iter().find_map(|attr| path_of(&attr.meta)),
+                        per_target: module
+                            .attrs
+                            .iter()
+                            .filter(|attr| attr.path().is_ident("cfg_attr"))
+                            .filter_map(|attr| {
+                                let args =
+                                        attr
+                                            .parse_args_with(
+                                                syn::punctuated::Punctuated::<
+                                                    syn::Meta,
+                                                    syn::Token![,],
+                                                >::parse_terminated,
+                                            )
+                                            .ok()?;
+                                let mut args = args.into_iter();
+                                let condition = args.next()?.into_token_stream();
+                                Some((condition, args.find_map(|meta| path_of(&meta))?))
+                            })
+                            .collect(),
+                    }),
                     _ => None,
                 })
                 .collect()
         })
         .unwrap_or_default();
     let files = source.files.get(path).cloned().unwrap_or_default();
-    if files.len() > 1 {
-        return files
+    let groups = file_groups(source, &files);
+    let roots: Vec<PathBuf> = groups.iter().map(|group| group[0].clone()).collect();
+    // The condition of the declaration of `root`, when it has one of its own.
+    let cfg_of = |source: &mut Source, root: &Path| {
+        if declared.is_empty() {
+            return header_cfg(source, root);
+        }
+        declared.iter().find_map(|declared| {
+            if declared.path.as_ref().is_some_and(|at| root.ends_with(at)) {
+                return declared.cfg.clone();
+            }
+            let (condition, _) = declared
+                .per_target
+                .iter()
+                .find(|(_, at)| root.ends_with(at))?;
+            Some(match &declared.cfg {
+                Some(cfg) => quote!(all(#cfg, #condition)),
+                None => condition.clone(),
+            })
+        })
+    };
+    if groups.len() > 1 {
+        let split: Option<Vec<Variant>> = groups
             .into_iter()
-            .map(|file| {
-                let cfg = match declared
-                    .iter()
-                    .find(|(_, at)| at.as_ref().is_some_and(|at| file.ends_with(at)))
-                {
-                    Some((cfg, _)) => cfg.clone(),
-                    None => header_cfg(source, &file),
-                };
-                Variant {
-                    cfg,
-                    file: Some(file),
-                }
+            .map(|group| {
+                Some(Variant {
+                    cfg: Some(cfg_of(source, &group[0])?),
+                    files: Some(group),
+                })
             })
             .collect();
+        if let Some(split) = split {
+            return split;
+        }
     }
-    let cfg = if declared.is_empty() {
-        files.first().and_then(|file| header_cfg(source, file))
+    // One file with its fragments, or files the declarations do not tell apart: one mirror.
+    let conditions: Option<Vec<proc_macro2::TokenStream>> = if declared.is_empty() {
+        roots.iter().map(|root| header_cfg(source, root)).collect()
     } else {
         // A declaration without a condition is always there.
-        declared
-            .into_iter()
-            .map(|(cfg, _)| cfg)
-            .collect::<Option<Vec<_>>>()
-            .and_then(|conditions| match conditions.as_slice() {
-                [] => None,
-                [one] => Some(one.clone()),
-                any => Some(quote!(any(#(#any),*))),
-            })
+        declared.into_iter().map(|declared| declared.cfg).collect()
     };
-    vec![Variant { cfg, file: None }]
+    let cfg = conditions.and_then(|conditions| match conditions.as_slice() {
+        [] => None,
+        [one] => Some(one.clone()),
+        any => Some(quote!(any(#(#any),*))),
+    });
+    vec![Variant { cfg, files: None }]
+}
+
+/// `files`, the files of one module, by the file the module is compiled from, each with the
+/// fragments it `include!`s, in turn (`native_item_entity_refs.rs` with
+/// `native_item_entity_refs/tick_item_read.rs`).
+fn file_groups(source: &mut Source, files: &[PathBuf]) -> Vec<Vec<PathBuf>> {
+    let normal = |path: &Path| {
+        let mut out = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                component => out.push(component),
+            }
+        }
+        out
+    };
+    let mut includes: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+    for file in files {
+        let Some(dir) = file.parent() else { continue };
+        let Ok(text) = source.read(file) else {
+            continue;
+        };
+        let Ok(parsed) = syn::parse_file(&text) else {
+            continue;
+        };
+        let included = parsed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Macro(mac) if mac.mac.path.is_ident("include") => {
+                    syn::parse2::<syn::LitStr>(mac.mac.tokens.clone()).ok()
+                }
+                _ => None,
+            })
+            .map(|at| normal(&dir.join(at.value())))
+            .filter_map(|at| files.iter().find(|file| normal(file) == at).cloned())
+            .collect();
+        includes.insert(file.clone(), included);
+    }
+    let fragments: BTreeSet<&PathBuf> = includes.values().flatten().collect();
+    let mut groups: Vec<Vec<PathBuf>> = files
+        .iter()
+        .filter(|file| !fragments.contains(file))
+        .map(|root| {
+            let mut group = vec![root.clone()];
+            let mut at = 0;
+            while at < group.len() {
+                for fragment in includes.get(&group[at]).into_iter().flatten() {
+                    if !group.contains(fragment) {
+                        group.push(fragment.clone());
+                    }
+                }
+                at += 1;
+            }
+            group
+        })
+        .collect();
+    if groups.is_empty() && !files.is_empty() {
+        groups.push(files.to_vec());
+    }
+    groups
 }
 
 /// The `cfg` conditions of `attrs`, as one.

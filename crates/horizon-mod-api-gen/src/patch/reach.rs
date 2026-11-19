@@ -600,14 +600,15 @@ mod tests {
 
     /// A support module of `game`: a glob that makes `subtitles` a mirror, which must keep the
     /// rest of `game`'s grouped import of it; an import a disabled `cfg` leaves out, of a module the
-    /// build does not have; and a glob of `friends`, which two files declare under opposite `cfg`s.
+    /// build does not have; a glob of `friends`, which two files declare under opposite `cfg`s;
+    /// and an import of `item_refs`, one file and the fragment it `include!`s.
     const SUPPORT: &str = "pub(crate) mod support {
         #[cfg(any())]
         use crate::game::refs::ray_tests::*;
         use super::subtitles::*;
         use crate::game::friends::*;
         pub fn caption() -> super::Subtitles {
-            let _ = LANE + super::subtitles() + invite(&super::Game);
+            let _ = LANE + super::subtitles() + invite(&super::Game) + super::item_refs::ITEM_LANE;
             super::Subtitles
         }
     }";
@@ -617,6 +618,11 @@ mod tests {
         use super::Game;
         use super::screen::Panel;
         pub fn invite(_: &Game) -> u32 { Panel::SIZE }";
+
+    /// `item_refs`, whose `read` is in the fragment `item_refs/read.rs` it includes.
+    const ITEM_REFS: &str = "include!(\"item_refs/read.rs\");
+        pub(crate) use gameplay::lanes::LANE as ITEM_LANE;
+        pub fn owner() -> u32 { read() }";
 
     /// `friends` without it.
     const FRIENDS_OFF: &str = "// game-module-cfg: not(feature = \"friends\")
@@ -639,10 +645,20 @@ mod tests {
 "
             )
         };
+        let item_refs = dir.join("item_refs.rs");
+        let item_read = dir.join("item_refs").join("read.rs");
+        std::fs::create_dir_all(dir.join("item_refs")).unwrap();
+        std::fs::write(&item_refs, ITEM_REFS).unwrap();
+        std::fs::write(&item_read, "pub fn read() -> u32 { 9 }").unwrap();
         std::fs::write(
             dir.join("game_modules.rs"),
             declare(&friends, "feature = \"friends\"")
-                + &declare(&friends_off, "not(feature = \"friends\")"),
+                + &declare(&friends_off, "not(feature = \"friends\")")
+                + &format!(
+                    "#[path = {:?}] pub mod item_refs;
+",
+                    item_refs.to_string_lossy().replace('\\', "/")
+                ),
         )
         .unwrap();
         let game = dir.join("lib.rs");
@@ -696,6 +712,10 @@ mod tests {
                     "horizon_client::game::friends".to_owned(),
                     vec![friends, friends_off],
                 ),
+                (
+                    "horizon_client::game::item_refs".to_owned(),
+                    vec![item_read, item_refs],
+                ),
             ]),
             parsed: BTreeMap::new(),
             local_macros: BTreeSet::new(),
@@ -743,6 +763,7 @@ mod tests {
             "game::execution_role",
             "game::facade",
             "game::friends",
+            "game::item_refs",
             "game::lanes",
             "game::minecarts",
             "game::rails",
@@ -791,6 +812,20 @@ mod tests {
         assert!(friends[0].contains("screen"));
         assert!(friends[1].starts_with("# [cfg (not (feature = \"friends\"))]"));
         assert!(!friends[1].contains("screen"));
+        // `item_refs` and its fragment are one module: one mirror, with both files' items.
+        let item_refs: Vec<String> = game
+            .1
+            .iter()
+            .filter_map(|item| match item {
+                Item::Mod(module) if module.ident == "item_refs" => {
+                    Some(module.to_token_stream().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(item_refs.len(), 1, "{item_refs:?}");
+        assert!(item_refs[0].starts_with("pub mod item_refs"));
+        assert!(item_refs[0].contains("read") && item_refs[0].contains("owner"));
     }
 
     /// A mirror of a module the build may leave out keeps its `cfg`: an inline module's, and a
