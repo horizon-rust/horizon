@@ -6,11 +6,6 @@
 use super::*;
 use far_changes::Changed;
 
-#[derive(Default)]
-pub(super) struct LodDecoded {
-    chunks: crate::fast_hash::FxHashMap<(i32, i32), (std::time::Instant, LodSurfaces)>,
-    order: std::collections::VecDeque<(i32, i32)>,
-}
 /// Saved chunks kept decoded for far terrain (each tens of kilobytes), and
 /// for how long: edits saved later show after it.
 const LOD_DECODED: usize = 1024;

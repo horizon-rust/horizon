@@ -21,7 +21,15 @@ pub mod block_entity_encode;
 mod block_entity_order;
 pub mod far_changes;
 mod far_lod;
-use far_lod::{LodDecoded, SavedLodSampler};
+use far_lod::SavedLodSampler;
+
+/// Saved chunks kept decoded for far terrain (`far_lod`). It stays here, at the path
+/// `internals.json` lists it under.
+#[derive(Default)]
+struct LodDecoded {
+    chunks: crate::fast_hash::FxHashMap<(i32, i32), (std::time::Instant, LodSurfaces)>,
+    order: std::collections::VecDeque<(i32, i32)>,
+}
 mod far_regions;
 pub mod level_mods;
 mod respawn;
