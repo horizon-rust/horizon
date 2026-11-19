@@ -45,6 +45,9 @@ macro_rules! protocol {
 }
 
 protocol! {
+    /// The transport's version, bumped by hand when it changes in a way no value here shows:
+    /// every mod built before is refused.
+    CORE_VERSION: u32 = 1;
     /// The guest's start-up call: its input is the package list ([`InitInput`]).
     INIT: u32 = 0xFFFF_FF00;
     /// The guest's call to drop the handlers the game let go of: its input is their ids.
@@ -114,6 +117,17 @@ pub type InitInput = Vec<crate::PackageInfo>;
 // no wire: an alias; the type it names has its codec.
 #[doc(hidden)]
 pub type ReleaseInput = Vec<Id>;
+/// `Hooks::subscribed`'s answer as it crosses: each hook's name, priority and whether it
+/// receives cancelled events.
+// hidden: transport plumbing used by generated boundary code.
+// no wire: an alias; the type it names has its codec.
+#[doc(hidden)]
+pub type SubscribedAnswer = Vec<(String, i32, bool)>;
+/// A part's subscriptions (`BlockPart::block_subscribed`, …) as they cross: hook names.
+// hidden: transport plumbing used by generated boundary code.
+// no wire: an alias; the type it names has its codec.
+#[doc(hidden)]
+pub type SubscriptionAnswer = Vec<String>;
 /// [`CALLS`]'s answer: each call's key, hash and whether it is an export.
 // hidden: transport plumbing used by generated boundary code.
 // no wire: an alias; the type it names has its codec.

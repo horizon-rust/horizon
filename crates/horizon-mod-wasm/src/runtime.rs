@@ -993,21 +993,6 @@ impl WasmMod {
         // Every mod of a group shares its memory and std: they must agree exactly.
         let mut first: Option<(String, crate::calls::Table)> = None;
         for (name, instance) in group.members.clone() {
-            // The std member holds the group state; it answers how many words it holds.
-            if instance
-                .get_export(&mut group.store, "horizon_group_state")
-                .is_some()
-            {
-                let words = instance
-                    .get_typed_func::<(), u32>(&mut group.store, "horizon_group_words")
-                    .and_then(|words| words.call(&mut group.store, ()));
-                if !words.is_ok_and(|words| words as usize == mod_api::wire::GROUP_WORDS) {
-                    return Err(Refusal::Runtime(format!(
-                        "{name}: the shared std was built for another group state than this game's {} words: reinstall the game",
-                        mod_api::wire::GROUP_WORDS
-                    )));
-                }
-            }
             // The std member is a library, not a mod.
             if instance
                 .get_func(&mut group.store, "horizon_layout")

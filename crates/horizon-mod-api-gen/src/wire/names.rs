@@ -247,6 +247,28 @@ fn reached(types: &Types<'_>, ty: &Ty, found: &mut Vec<usize>, seen: &mut Vec<us
     }
 }
 
+/// An export's hash: its signature's and its id's, so an id that changes for the same name
+/// (another mask or hash) refuses mods built before.
+fn export_hash(signature: u64, id: u32) -> u64 {
+    fnv(&format!("{signature:016x}:{id:08x}"))
+}
+
+/// What a subscription export's answer crosses as, where the generated code converts its Rust
+/// return (`HookId`s, whose layout grows with every hook) to names (`calls::dispatch`).
+fn answer_crossing(m: &Method) -> Option<&'static str> {
+    if !super::SUBSCRIBED
+        .iter()
+        .any(|(owner, name)| *owner == m.owner && *name == m.name)
+    {
+        return None;
+    }
+    Some(if m.owner == "Hooks" {
+        "crate::wire::SubscribedAnswer"
+    } else {
+        "crate::wire::SubscriptionAnswer"
+    })
+}
+
 /// Every call both sides know, as `(key, signature hash, owned types reached, export)`: the
 /// imports, the methods of held handlers and the exports.
 fn calls(types: &Types<'_>, methods: &[Method]) -> Vec<(String, u64, Vec<usize>, bool)> {
@@ -265,11 +287,18 @@ fn calls(types: &Types<'_>, methods: &[Method]) -> Vec<(String, u64, Vec<usize>,
         .chain(own)
         .map(|(m, held, export)| {
             let mut found = Vec::new();
-            for ty in m.params.iter().map(|(_, ty)| ty).chain([&m.ret]) {
+            let ret = answer_crossing(m).is_none().then_some(&m.ret);
+            for ty in m.params.iter().map(|(_, ty)| ty).chain(ret) {
                 reached(types, ty, &mut found, &mut Vec::new());
             }
             found.sort_by(|a, b| types.defs[*a].rust.cmp(&types.defs[*b].rust));
-            (key(m, held), signature(types, m), found, export)
+            let signature = signature(types, m);
+            let signature = if export {
+                export_hash(signature, export_id(m.owner, &m.name))
+            } else {
+                signature
+            };
+            (key(m, held), signature, found, export)
         })
         .collect()
 }
@@ -299,14 +328,22 @@ pub(super) fn layouts(types: &Types<'_>, methods: &[Method]) -> String {
         .unwrap();
     }
     code.push_str("];\nlet m = crate::wire::layout_mix;\nvec![\n");
+    let crossing: std::collections::HashMap<String, &str> = methods
+        .iter()
+        .filter_map(|m| Some((key(m, false), answer_crossing(m)?)))
+        .collect();
     for (key, signature, found, export) in &calls {
         let reached: String = found
             .iter()
             .map(|def| format!("d[{}],", slot(*def)))
             .collect();
+        let answer = match crossing.get(key).filter(|_| *export) {
+            Some(ty) => format!("<{ty} as crate::wire::Wire>::layout(&mut vec![]),"),
+            None => String::new(),
+        };
         writeln!(
             code,
-            "({key:?},[{reached}].into_iter().fold({signature:#x},m),{export}),"
+            "({key:?},[{reached}{answer}].into_iter().fold({signature:#x},m),{export}),"
         )
         .unwrap();
     }
@@ -391,6 +428,38 @@ mod tests {
 
     /// `entity_start_riding(entity, vehicle)` with its two arguments swapped is another call:
     /// a mod built against one order must not link against the other.
+    /// An export's hash covers its id: an id changed for the same name and signature (another
+    /// mask) refuses mods built before.
+    #[test]
+    fn an_exports_hash_covers_its_id() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let types = Types::new(crate::index::Index::new(&root, &[])).unwrap();
+        let started = method("Hooks", "server_started", i32());
+        let (_, hash, _, export) = calls(&types, std::slice::from_ref(&started))
+            .into_iter()
+            .find(|(key, ..)| key == "Hooks::server_started")
+            .unwrap();
+        let id = export_id("Hooks", "server_started");
+        assert!(export);
+        assert_eq!(hash, export_hash(signature(&types, &started), id));
+        assert_ne!(hash, export_hash(signature(&types, &started), id ^ 1));
+    }
+
+    /// A subscription export is hashed by the names it sends, not by `HookId`'s layout, which
+    /// a hook added to the game changes.
+    #[test]
+    fn subscriptions_hash_what_they_send() {
+        let code = layouts(
+            &Types::new(crate::index::Index::new(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+                &[],
+            ))
+            .unwrap(),
+            &[method("Hooks", "subscribed", i32())],
+        );
+        assert!(code.contains("crate::wire::SubscribedAnswer as crate::wire::Wire"));
+    }
+
     #[test]
     fn swapped_arguments_of_one_type_change_the_call() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

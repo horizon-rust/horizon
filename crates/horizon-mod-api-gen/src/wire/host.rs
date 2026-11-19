@@ -1121,7 +1121,7 @@ fn host_and_coverage(root: &std::path::Path) -> Result<(String, String), String>
     for (variant, name) in &surface.hooks {
         writeln!(code, "{:?} => Some(mod_api::HookId::{}),", name, variant).unwrap();
     }
-    code.push_str("_ => None } } pub fn subscriptions_of(owner: &str, names: Vec<String>) -> &'static [Option<mod_api::HookId>] { names.into_iter().filter_map(|name| { let id = hook_id(&name); if id.is_none() { log::warn!(\"wasm {owner}: unknown hook {name}\"); } id.map(Some) }).collect::<Vec<_>>().leak() }\n");
+    code.push_str("_ => None } } pub fn subscriptions_of(owner: &str, names: mod_api::wire::SubscriptionAnswer) -> &'static [Option<mod_api::HookId>] { names.into_iter().filter_map(|name| { let id = hook_id(&name); if id.is_none() { log::warn!(\"wasm {owner}: unknown hook {name}\"); } id.map(Some) }).collect::<Vec<_>>().leak() }\n");
     for path in surface.types.index.read.take() {
         crate::rerun_if_changed(&path.display());
     }

@@ -799,7 +799,7 @@ fn load_with_cache(
                 let _timer = load_times::timer(load_times::Phase::Subscribe);
                 let mut checked = Vec::new();
                 for mut module in mods {
-                    let subscriptions: Vec<(String, i32, bool)> = module
+                    let subscriptions: mod_api::wire::SubscribedAnswer = module
                         .call(
                             CallClass::Load,
                             boundary::Frame::default(),
