@@ -1,5 +1,9 @@
 //! One dependency plan shared by source staging and immutable prebuilt SDK builds.
-use super::{api::Project, crates::Wanted, registry_lock::RegistryLock};
+use super::{
+    api::Project,
+    crates::Wanted,
+    registry_lock::{ModEdges, RegistryLock},
+};
 use std::path::Path;
 
 pub(super) struct Plan {
@@ -70,7 +74,10 @@ impl Plan {
         self.allowed.allow_game_patch_edges(&self.game, &names);
     }
 
-    pub fn check_mods(&self, resolved: &RegistryLock) -> Result<(), String> {
+    /// Each mod's closure is pinned by the game or its own lock; the edges each adds to
+    /// game-locked packages come only from its own lock, for packages it reaches.
+    pub fn check(&self, resolved: &RegistryLock) -> Result<(), String> {
+        let mut extra = ModEdges::new();
         for (id, root, pins) in &self.owned {
             let mut skip_local: std::collections::BTreeSet<String> = self
                 .roots
@@ -87,8 +94,10 @@ impl Plan {
             let mut owned_pins = self.game.clone();
             owned_pins.extend(pins)?;
             resolved.check_mod(id, root, &skip_local, &owned_pins)?;
+            resolved.mod_edges(id, root, &skip_local, pins, &self.game, &mut extra)?;
         }
-        Ok(())
+        self.allowed
+            .check_partial_resolution_with(resolved, &self.game, &extra)
     }
 
     pub fn explain_resolution(&self, error: String) -> String {
@@ -146,8 +155,7 @@ impl Plan {
         super::run(index, "Checking the pinned registry index", |_| {})
             .map_err(|error| self.explain_resolution(error))?;
         let pins = RegistryLock::parse(&super::read_lock(directory)?)?;
-        self.check_mods(&pins)?;
-        self.allowed.check_partial_resolution(&pins, &self.game)?;
+        self.check(&pins)?;
         let mut fetch = cargo("fetch");
         fetch.arg("--locked");
         super::run(fetch, "Downloading the mods' pinned crates", |_| {})
@@ -168,6 +176,167 @@ pub(super) fn apply_patches(directory: &Path, patches: &toml::Table) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lock records `(name, version, checksum digit, edges)`; `' '` makes a local package.
+    fn lock(packages: &[(&str, &str, char, &str)]) -> RegistryLock {
+        let mut text = String::from("version=4\n");
+        for (name, version, checksum, edges) in packages {
+            text.push_str(&format!(
+                "[[package]]\nname='{name}'\nversion='{version}'\ndependencies=[{edges}]\n"
+            ));
+            if *checksum != ' ' {
+                text.push_str(&format!(
+                    "source='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='{}'\n",
+                    checksum.to_string().repeat(64)
+                ));
+            }
+        }
+        RegistryLock::parse(&text).unwrap()
+    }
+
+    /// A plan for staged mods whose root crate is named after the mod.
+    fn plan(game: &RegistryLock, mods: &[(&str, RegistryLock)]) -> Plan {
+        let mut all = RegistryLock::default();
+        for (_, pins) in mods {
+            all.extend(pins).unwrap();
+        }
+        let mut allowed = game.clone();
+        allowed.extend(&all).unwrap();
+        Plan {
+            game: game.clone(),
+            mods: all,
+            allowed,
+            owned: mods
+                .iter()
+                .map(|(id, pins)| (id.to_string(), id.to_string(), pins.clone()))
+                .collect(),
+            roots: mods.iter().map(|(id, _)| id.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_mod_may_enable_features_of_a_crate_the_game_also_locks() {
+        // The game locks `parent` with one optional dependency; the mod's own lock records
+        // `parent` with another, which its features turn on.
+        let game = lock(&[
+            ("parent", "1.0.0", 'a', "'game-only'"),
+            ("game-only", "1.0.0", 'b', ""),
+            ("elsewhere", "1.0.0", 'c', ""),
+        ]);
+        let pins = lock(&[
+            ("parent", "1.0.0", 'a', "'mod-only'"),
+            ("mod-only", "1.0.0", 'f', ""),
+        ]);
+        let with_lock = plan(&game, &[("mod_a", pins)]);
+        let resolved = |parent: &str, extra: &[(&str, &str, char, &str)]| {
+            let mut packages = vec![
+                ("mod_a", "0.0.0", ' ', "'parent'"),
+                ("parent", "1.0.0", 'a', parent),
+                ("mod-only", "1.0.0", 'f', ""),
+            ];
+            packages.extend_from_slice(extra);
+            lock(&packages)
+        };
+        with_lock.check(&resolved("'mod-only'", &[])).unwrap();
+        let both = resolved(
+            "'game-only', 'mod-only'",
+            &[("game-only", "1.0.0", 'b', "")],
+        );
+        with_lock.check(&both).unwrap();
+        // Without the mod's lock recording the edge, the same graph is refused.
+        let without = plan(
+            &game,
+            &[(
+                "mod_a",
+                lock(&[("parent", "1.0.0", 'a', ""), ("mod-only", "1.0.0", 'f', "")]),
+            )],
+        );
+        let error = without.check(&resolved("'mod-only'", &[])).unwrap_err();
+        assert!(error.contains("parent"), "{error}");
+        // An edge no lock records, even to a package the game pins.
+        let error = with_lock
+            .check(&resolved(
+                "'mod-only', 'elsewhere'",
+                &[("elsewhere", "1.0.0", 'c', "")],
+            ))
+            .unwrap_err();
+        assert!(error.contains("parent"), "{error}");
+        // The game's package at another version, or with another checksum.
+        for (version, checksum) in [("1.0.1", 'a'), ("1.0.0", '9')] {
+            let moved = lock(&[
+                ("mod_a", "0.0.0", ' ', "'parent'"),
+                ("parent", version, checksum, ""),
+            ]);
+            let error = with_lock.check(&moved).unwrap_err();
+            assert!(error.contains("parent"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_mod_lock_cannot_move_a_dependency_the_game_resolved() {
+        let game = lock(&[
+            ("parent", "1.0.0", 'a', "'child'"),
+            ("child", "1.0.0", 'b', ""),
+        ]);
+        let pins = lock(&[
+            ("parent", "1.0.0", 'a', "'child'"),
+            ("child", "1.1.0", 'c', ""),
+        ]);
+        let resolved = lock(&[
+            ("mod_a", "0.0.0", ' ', "'parent'"),
+            ("parent", "1.0.0", 'a', "'child'"),
+            ("child", "1.1.0", 'c', ""),
+        ]);
+        let error = plan(&game, &[("mod_a", pins)])
+            .check(&resolved)
+            .unwrap_err();
+        assert!(error.contains("parent"), "{error}");
+    }
+
+    #[test]
+    fn a_mod_lock_cannot_add_an_edge_onto_an_sdk_patched_crate() {
+        let game = lock(&[("parent", "1.0.0", 'a', ""), ("naga", "30.0.1", ' ', "")]);
+        let pins = lock(&[
+            ("parent", "1.0.0", 'a', "'naga'"),
+            ("naga", "30.0.1", ' ', ""),
+        ]);
+        let resolved = lock(&[
+            ("mod_a", "0.0.0", ' ', "'parent'"),
+            ("parent", "1.0.0", 'a', "'naga'"),
+            ("naga", "30.0.1", ' ', ""),
+        ]);
+        let error = plan(&game, &[("mod_a", pins)])
+            .check(&resolved)
+            .unwrap_err();
+        assert!(error.contains("parent"), "{error}");
+    }
+
+    #[test]
+    fn one_mods_lock_cannot_authorise_an_edge_for_another_mod() {
+        let game = lock(&[("parent", "1.0.0", 'a', ""), ("child", "1.0.0", 'b', "")]);
+        let mods = [
+            ("mod_a", lock(&[("parent", "1.0.0", 'a', "")])),
+            (
+                "mod_b",
+                lock(&[
+                    ("parent", "1.0.0", 'a', "'child'"),
+                    ("child", "1.0.0", 'b', ""),
+                ]),
+            ),
+        ];
+        let resolved = |b: &str| {
+            lock(&[
+                ("mod_a", "0.0.0", ' ', "'parent'"),
+                ("mod_b", "0.0.0", ' ', b),
+                ("parent", "1.0.0", 'a', "'child'"),
+                ("child", "1.0.0", 'b', ""),
+            ])
+        };
+        // mod_b's record of `parent` counts only when mod_b's own crate reaches `parent`.
+        let error = plan(&game, &mods).check(&resolved("")).unwrap_err();
+        assert!(error.contains("parent"), "{error}");
+        plan(&game, &mods).check(&resolved("'parent'")).unwrap();
+    }
     #[test]
     fn sdk_partial_graph_accepts_inactive_edges_but_refuses_new_registry_edges() {
         let original = format!("version=4\n[[package]]\nname='game'\nversion='1.0.0'\ndependencies=['log']\n[[package]]\nname='log'\nversion='0.4.0'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='{}'\n", "a".repeat(64));
@@ -421,22 +590,26 @@ mod tests {
             .contains("bumpalo"));
         // A mod whose own lock records that feature compiles its own bumpalo with it.
         let added = RegistryLock::parse(&added).unwrap();
-        let mut with_mod = plan.allowed.clone();
-        with_mod.extend(&added).unwrap();
+        let mut with_mod = Plan::read(&game, &[], &[]).unwrap();
+        with_mod.allowed.extend(&added).unwrap();
         with_mod
-            .check_partial_resolution(&added, &plan.game)
-            .unwrap();
+            .owned
+            .push(("example".into(), "fixture".into(), added.clone()));
+        with_mod.check(&added).unwrap();
         let moved = game.replace(
             "name = \"bumpalo\"\nversion = \"1.0.0\"",
             "name = \"bumpalo\"\nversion = \"1.0.1\"",
         );
         assert_ne!(moved, game);
-        for allowed in [&plan.allowed, &with_mod] {
-            assert!(allowed
-                .check_partial_resolution(&RegistryLock::parse(&moved).unwrap(), &plan.game)
-                .unwrap_err()
-                .contains("bumpalo"));
-        }
+        assert!(plan
+            .allowed
+            .check_partial_resolution(&RegistryLock::parse(&moved).unwrap(), &plan.game)
+            .unwrap_err()
+            .contains("bumpalo"));
+        assert!(with_mod
+            .check(&RegistryLock::parse(&moved).unwrap())
+            .unwrap_err()
+            .contains("bumpalo"));
     }
 
     #[test]

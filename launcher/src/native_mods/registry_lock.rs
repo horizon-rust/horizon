@@ -24,6 +24,9 @@ struct Reference {
     source: Option<String>,
 }
 
+/// Edges that mods' own locks add to game-locked packages, by package.
+pub(super) type ModEdges = BTreeMap<Identity, std::collections::BTreeSet<Identity>>;
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct RegistryLock {
     pub packages: BTreeMap<Identity, Record>,
@@ -169,18 +172,15 @@ impl RegistryLock {
         Ok(parsed)
     }
 
-    /// A pin both locks hold keeps the edges each one recorded: a mod's own feature selection
-    /// adds edges to a package the game or another mod also locks.
     pub fn extend(&mut self, other: &Self) -> Result<(), String> {
         for (identity, record) in &other.packages {
-            if let Some(previous) = self.packages.get_mut(identity) {
+            if let Some(previous) = self.packages.get(identity) {
                 if previous.checksum != record.checksum {
                     return Err(format!(
                         "Cargo.lock: conflicting pins for {} {}",
                         identity.name, identity.version
                     ));
                 }
-                previous.edges.extend(record.edges.iter().cloned());
             } else {
                 self.packages.insert(identity.clone(), record.clone());
             }
@@ -227,24 +227,37 @@ impl RegistryLock {
     /// qualifiers before comparing edges. Adding a second version qualifies existing edges.
     #[cfg(test)]
     pub fn check_resolution(&self, resolved: &Self, game: &Self) -> Result<(), String> {
-        self.check_resolved(resolved, game, true)
+        self.check_resolved(resolved, game, &ModEdges::new(), true)
     }
 
     /// A mod-only workspace may omit game packages and their inactive optional edges.
+    #[cfg(test)]
     pub fn check_partial_resolution(&self, resolved: &Self, game: &Self) -> Result<(), String> {
-        self.check_resolved(resolved, game, false)
+        self.check_resolved(resolved, game, &ModEdges::new(), false)
+    }
+
+    /// As [`Self::check_partial_resolution`], letting game-locked packages carry the edges
+    /// that [`Self::mod_edges`] authorised.
+    pub fn check_partial_resolution_with(
+        &self,
+        resolved: &Self,
+        game: &Self,
+        extra: &ModEdges,
+    ) -> Result<(), String> {
+        self.check_resolved(resolved, game, extra, false)
     }
 
     fn check_resolved(
         &self,
         resolved: &Self,
         game: &Self,
+        extra: &ModEdges,
         require_game: bool,
     ) -> Result<(), String> {
         // Cargo compiles every package in this workspace from source: the prebuilt game's
         // copies are reached only through the SDK's externs and are never relinked. So a
-        // game-locked package may drop edges or gain the edges a mod's own lock recorded for
-        // it, but never an edge no lock records, and no identity may change.
+        // game-locked package may drop edges or gain the ones `mod_edges` authorised, but
+        // never another edge, and no identity may change.
         for (id, record) in resolved.packages.iter().chain(resolved.local.iter()) {
             let owners: Vec<_> = self
                 .packages
@@ -258,10 +271,10 @@ impl RegistryLock {
             if !owners.iter().any(|(old, pin)| {
                 *old == id
                     && if let Some(owner) = game.packages.get(id).or_else(|| game.local.get(id)) {
-                        record
-                            .edges
-                            .iter()
-                            .all(|edge| owner.edges.contains(edge) || pin.edges.contains(edge))
+                        record.edges.iter().all(|edge| {
+                            owner.edges.contains(edge)
+                                || extra.get(id).is_some_and(|edges| edges.contains(edge))
+                        })
                     } else {
                         pin.edges == record.edges
                     }
@@ -339,13 +352,14 @@ impl RegistryLock {
         Ok(())
     }
 
-    pub fn check_mod(
+    /// Every identity reachable from a mod's root crate, other mods' roots and `skip_local`
+    /// packages excluded.
+    fn closure(
         &self,
         mod_id: &str,
         root: &str,
         skip_local: &std::collections::BTreeSet<String>,
-        pins: &Self,
-    ) -> Result<(), String> {
+    ) -> Result<std::collections::BTreeSet<Identity>, String> {
         let root = self
             .local
             .keys()
@@ -362,6 +376,25 @@ impl RegistryLock {
                 .get(&id)
                 .or_else(|| self.local.get(&id))
                 .expect("resolved edge identity");
+            pending.extend(
+                record
+                    .edges
+                    .iter()
+                    .filter(|dep| !dep.source.is_empty() || !skip_local.contains(&dep.name))
+                    .cloned(),
+            );
+        }
+        Ok(seen)
+    }
+
+    pub fn check_mod(
+        &self,
+        mod_id: &str,
+        root: &str,
+        skip_local: &std::collections::BTreeSet<String>,
+        pins: &Self,
+    ) -> Result<(), String> {
+        for id in self.closure(mod_id, root, skip_local)? {
             if !id.source.is_empty() && !pins.packages.contains_key(&id) {
                 let versions = pins
                     .packages
@@ -375,13 +408,31 @@ impl RegistryLock {
                     id.name, id.version, versions
                 ));
             }
-            pending.extend(
-                record
-                    .edges
-                    .iter()
-                    .filter(|dep| !dep.source.is_empty() || !skip_local.contains(&dep.name))
-                    .cloned(),
-            );
+        }
+        Ok(())
+    }
+
+    /// The edges one mod's own lock adds to crates.io packages the game also locks, for the
+    /// packages its resolved crate actually reaches. Only edges to dependency names the game's
+    /// record lacks, and only to crates.io packages: a mod's features may add a dependency,
+    /// never move one the game resolved or reach an SDK-patched crate.
+    pub fn mod_edges(
+        &self,
+        mod_id: &str,
+        root: &str,
+        skip_local: &std::collections::BTreeSet<String>,
+        pins: &Self,
+        game: &Self,
+        into: &mut ModEdges,
+    ) -> Result<(), String> {
+        for id in self.closure(mod_id, root, skip_local)? {
+            let (Some(owner), Some(pin)) = (game.packages.get(&id), pins.packages.get(&id)) else {
+                continue;
+            };
+            let added = pin.edges.iter().filter(|edge| {
+                !edge.source.is_empty() && owner.edges.iter().all(|old| old.name != edge.name)
+            });
+            into.entry(id).or_default().extend(added.cloned());
         }
         Ok(())
     }
@@ -497,100 +548,6 @@ mod tests {
             .unwrap();
         let error = allowed.check_resolution(&resolved, &old).unwrap_err();
         for detail in ["game", "itoa", "1.0.15", "0.4.8"] {
-            assert!(error.contains(detail), "{error}");
-        }
-    }
-
-    /// `[[package]]` records for crates.io packages: `(name, version, checksum digit, edges)`.
-    fn registry(packages: &[(&str, &str, char, &str)]) -> RegistryLock {
-        let mut text = String::from(
-            "version=4
-",
-        );
-        for (name, version, checksum, edges) in packages {
-            text.push_str(&format!(
-                "[[package]]
-name='{name}'
-version='{version}'
-source='{CRATES_IO}'
-checksum='{}'
-dependencies=[{edges}]
-",
-                checksum.to_string().repeat(64)
-            ));
-        }
-        RegistryLock::parse(&text).unwrap()
-    }
-
-    #[test]
-    fn a_mod_may_enable_features_of_a_crate_the_game_also_locks() {
-        // The game locks `parent` with one optional dependency; the mod's own lock records
-        // `parent` with another, which its features turn on.
-        let game = registry(&[
-            ("parent", "1.0.0", 'a', "'game-only'"),
-            ("game-only", "1.0.0", 'b', ""),
-            ("elsewhere", "1.0.0", 'c', ""),
-            ("shared", "1.0.0", 'd', ""),
-            ("shared", "2.0.0", 'e', ""),
-        ]);
-        let pins = registry(&[
-            ("parent", "1.0.0", 'a', "'mod-only', 'shared 1.0.0'"),
-            ("mod-only", "1.0.0", 'f', ""),
-            ("shared", "1.0.0", 'd', ""),
-        ]);
-        let mut allowed = game.clone();
-        allowed.extend(&pins).unwrap();
-        // The mod-only workspace resolves the mod's own selection, and both together.
-        allowed.check_partial_resolution(&pins, &game).unwrap();
-        let both = registry(&[
-            (
-                "parent",
-                "1.0.0",
-                'a',
-                "'game-only', 'mod-only', 'shared 1.0.0'",
-            ),
-            ("game-only", "1.0.0", 'b', ""),
-            ("mod-only", "1.0.0", 'f', ""),
-            ("shared", "1.0.0", 'd', ""),
-        ]);
-        allowed.check_partial_resolution(&both, &game).unwrap();
-        // Without the mod's lock recording those edges, the same graph is refused.
-        let error = game.check_partial_resolution(&pins, &game).unwrap_err();
-        assert!(error.contains("parent"), "{error}");
-        for (refused, detail) in [
-            // An edge no lock records, even to a pinned package.
-            (
-                registry(&[
-                    ("parent", "1.0.0", 'a', "'mod-only', 'elsewhere'"),
-                    ("mod-only", "1.0.0", 'f', ""),
-                    ("elsewhere", "1.0.0", 'c', ""),
-                ]),
-                "parent",
-            ),
-            // A recorded edge moving to another locked version.
-            (
-                registry(&[
-                    ("parent", "1.0.0", 'a', "'shared 2.0.0'"),
-                    ("shared", "2.0.0", 'e', ""),
-                ]),
-                "parent",
-            ),
-            // A package no lock pins.
-            (
-                registry(&[
-                    ("parent", "1.0.0", 'a', "'mod-only'"),
-                    ("mod-only", "1.0.0", 'f', "'unpinned'"),
-                    ("unpinned", "1.0.0", '0', ""),
-                ]),
-                "unpinned",
-            ),
-            // The game's package at another version, or with another checksum.
-            (registry(&[("parent", "1.0.1", 'a', "")]), "parent"),
-            (registry(&[("parent", "1.0.0", '9', "")]), "parent"),
-        ] {
-            let error = allowed
-                .check_partial_resolution(&refused, &game)
-                .unwrap_err();
             assert!(error.contains(detail), "{error}");
         }
     }
