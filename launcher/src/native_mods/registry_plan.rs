@@ -224,6 +224,7 @@ mod tests {
             ("elsewhere", "1.0.0", 'c', ""),
         ]);
         let pins = lock(&[
+            ("mod_a", "0.0.0", ' ', "'parent'"),
             ("parent", "1.0.0", 'a', "'mod-only'"),
             ("mod-only", "1.0.0", 'f', ""),
         ]);
@@ -248,7 +249,11 @@ mod tests {
             &game,
             &[(
                 "mod_a",
-                lock(&[("parent", "1.0.0", 'a', ""), ("mod-only", "1.0.0", 'f', "")]),
+                lock(&[
+                    ("mod_a", "0.0.0", ' ', "'parent'"),
+                    ("parent", "1.0.0", 'a', ""),
+                    ("mod-only", "1.0.0", 'f', ""),
+                ]),
             )],
         );
         let error = without.check(&resolved("'mod-only'", &[])).unwrap_err();
@@ -279,6 +284,7 @@ mod tests {
             ("child", "1.0.0", 'b', ""),
         ]);
         let pins = lock(&[
+            ("mod_a", "0.0.0", ' ', "'parent'"),
             ("parent", "1.0.0", 'a', "'child'"),
             ("child", "1.1.0", 'c', ""),
         ]);
@@ -297,6 +303,7 @@ mod tests {
     fn a_mod_lock_cannot_add_an_edge_onto_an_sdk_patched_crate() {
         let game = lock(&[("parent", "1.0.0", 'a', ""), ("naga", "30.0.1", ' ', "")]);
         let pins = lock(&[
+            ("mod_a", "0.0.0", ' ', "'parent'"),
             ("parent", "1.0.0", 'a', "'naga'"),
             ("naga", "30.0.1", ' ', ""),
         ]);
@@ -315,10 +322,17 @@ mod tests {
     fn one_mods_lock_cannot_authorise_an_edge_for_another_mod() {
         let game = lock(&[("parent", "1.0.0", 'a', ""), ("child", "1.0.0", 'b', "")]);
         let mods = [
-            ("mod_a", lock(&[("parent", "1.0.0", 'a', "")])),
+            (
+                "mod_a",
+                lock(&[
+                    ("mod_a", "0.0.0", ' ', "'parent'"),
+                    ("parent", "1.0.0", 'a', ""),
+                ]),
+            ),
             (
                 "mod_b",
                 lock(&[
+                    ("mod_b", "0.0.0", ' ', "'parent'"),
                     ("parent", "1.0.0", 'a', "'child'"),
                     ("child", "1.0.0", 'b', ""),
                 ]),
@@ -336,6 +350,46 @@ mod tests {
         let error = plan(&game, &mods).check(&resolved("")).unwrap_err();
         assert!(error.contains("parent"), "{error}");
         plan(&game, &mods).check(&resolved("'parent'")).unwrap();
+    }
+
+    /// Both mods reach `parent` through `gate` in the shared workspace, but only mod_a turns on
+    /// `gate`'s dependency on it, and mod_a's lock leaves out `parent -> child`. mod_b's lock
+    /// lists that edge on a `parent` record nothing in its own lock leads to.
+    #[test]
+    fn an_orphan_record_in_one_mods_lock_authorises_nothing() {
+        let game = lock(&[
+            ("gate", "1.0.0", 'a', "'parent'"),
+            ("parent", "1.0.0", 'b', ""),
+            ("child", "1.0.0", 'c', ""),
+        ]);
+        let mods = [
+            (
+                "mod_a",
+                lock(&[
+                    ("mod_a", "0.0.0", ' ', "'gate'"),
+                    ("gate", "1.0.0", 'a', "'parent'"),
+                    ("parent", "1.0.0", 'b', ""),
+                ]),
+            ),
+            (
+                "mod_b",
+                lock(&[
+                    ("mod_b", "0.0.0", ' ', "'gate'"),
+                    ("gate", "1.0.0", 'a', ""),
+                    ("parent", "1.0.0", 'b', "'child'"),
+                    ("child", "1.0.0", 'c', ""),
+                ]),
+            ),
+        ];
+        let resolved = lock(&[
+            ("mod_a", "0.0.0", ' ', "'gate'"),
+            ("mod_b", "0.0.0", ' ', "'gate'"),
+            ("gate", "1.0.0", 'a', "'parent'"),
+            ("parent", "1.0.0", 'b', "'child'"),
+            ("child", "1.0.0", 'c', ""),
+        ]);
+        let error = plan(&game, &mods).check(&resolved).unwrap_err();
+        assert!(error.contains("parent"), "{error}");
     }
     #[test]
     fn sdk_partial_graph_accepts_inactive_edges_but_refuses_new_registry_edges() {

@@ -413,9 +413,11 @@ impl RegistryLock {
     }
 
     /// The edges one mod's own lock adds to crates.io packages the game also locks, for the
-    /// packages its resolved crate actually reaches. Only edges to dependency names the game's
-    /// record lacks, and only to crates.io packages: a mod's features may add a dependency,
-    /// never move one the game resolved or reach an SDK-patched crate.
+    /// packages its crate reaches both in the staged resolution and in its own lock. Only edges
+    /// to dependency names the game's record lacks, and only to crates.io packages: a mod's
+    /// features may add a dependency, never move one the game resolved or reach an SDK-patched
+    /// crate. A lock Cargo wrote for the mod's single-member workspace reaches every record from
+    /// the root, so an orphan record (one no path in the lock leads to) authorises nothing.
     pub fn mod_edges(
         &self,
         mod_id: &str,
@@ -425,7 +427,12 @@ impl RegistryLock {
         game: &Self,
         into: &mut ModEdges,
     ) -> Result<(), String> {
+        // A lock without the mod's root records no path to anything: it adds no edges.
+        let own = pins.closure(mod_id, root, skip_local).unwrap_or_default();
         for id in self.closure(mod_id, root, skip_local)? {
+            if !own.contains(&id) {
+                continue;
+            }
             let (Some(owner), Some(pin)) = (game.packages.get(&id), pins.packages.get(&id)) else {
                 continue;
             };
