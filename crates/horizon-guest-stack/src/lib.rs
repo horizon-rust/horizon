@@ -200,7 +200,7 @@ fn main_thread_room() -> Option<usize> {
         .ok()?;
     // Mapped file names need not be UTF-8: parse the bytes.
     let maps = std::fs::read("/proc/self/maps").ok()?;
-    let mut below = 0;
+    let mut below: usize = 0;
     for line in maps
         .split(|&byte| byte == b'\n')
         .filter(|line| !line.is_empty())
