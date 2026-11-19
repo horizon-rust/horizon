@@ -98,14 +98,23 @@ impl CanyonCarver {
         if end > 4096 {
             return Err(CarverError::IterationLimit);
         }
-        let mut width = Vec::with_capacity(context.height as usize);
+        let height = context.height as usize;
+        let mut width_stack = [0f32; 384];
+        let mut width_heap = Vec::new();
+        let width: &mut [f32] = if height <= width_stack.len() {
+            &mut width_stack[..height]
+        } else {
+            width_heap.resize(height, 0.0);
+            &mut width_heap[..]
+        };
         let mut factor = 1f32;
-        for index in 0..context.height {
+        for (index, slot) in width.iter_mut().enumerate() {
             if index == 0 || local.next_int_bound(self.shape.width_smoothness)? == 0 {
                 factor = 1. + local.next_float() * local.next_float();
             }
-            width.push(factor * factor);
+            *slot = factor * factor;
         }
+        let width: &[f32] = &*width;
         let (mut yaw_change, mut pitch_change) = (0f32, 0f32);
         let mut budget = 1 << 24;
         for step in 0..end {

@@ -86,10 +86,27 @@ impl ClimateSampler {
         quart_minimum: [i32; 3],
         extents: [i32; 3],
     ) -> Result<ClimateVolume, SampleError> {
+        let mut storage: [Vec<f32>; 6] = Default::default();
+        self.sample_volume_with_buffers(context, quart_minimum, extents, &mut storage)
+    }
+    /// [`Self::sample_volume`] reusing caller-owned field buffers (`ClimateVolume::recycle`).
+    pub(crate) fn sample_volume_with_buffers(
+        &self,
+        context: &mut SamplerContext,
+        quart_minimum: [i32; 3],
+        extents: [i32; 3],
+        storage: &mut [Vec<f32>; 6],
+    ) -> Result<ClimateVolume, SampleError> {
         let volume = DensityVolume::new(extents, quart_minimum.map(|v| v.wrapping_shl(2)), [4; 3])?;
-        let mut fields = std::array::from_fn(|_| vec![0.; volume.size()]);
+        let size = volume.size();
+        let mut fields = std::mem::take(storage);
         for (sampler, field) in self.samplers.iter().zip(&mut fields) {
-            sampler.sample_volume(context, field, volume)?;
+            field.resize(size, 0.0);
+            field.fill(0.0);
+            if let Err(error) = sampler.sample_volume(context, field, volume) {
+                *storage = fields;
+                return Err(error);
+            }
         }
         Ok(ClimateVolume {
             quart_minimum,
@@ -105,8 +122,13 @@ pub struct ClimateVolume {
     fields: [Vec<f32>; 6],
 }
 impl ClimateVolume {
+    /// Return the six field buffers to `storage` for reuse by the next volume.
+    pub(crate) fn recycle(self, storage: &mut [Vec<f32>; 6]) {
+        *storage = self.fields;
+    }
     /// Coordinates must be inside the prepared quart volume. The bounded Rust
     /// API rejects invalid coordinates instead of Java's unchecked buffer alias.
+    #[inline]
     pub fn target(&self, quart: [i32; 3]) -> Option<TargetPoint> {
         let relative =
             std::array::from_fn(|i| quart[i].wrapping_sub(self.quart_minimum[i]) as usize);

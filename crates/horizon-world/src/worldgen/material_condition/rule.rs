@@ -624,14 +624,37 @@ where
         Ok(true)
     }
 }
+/// Cached biome-folded rule tree and its lazily populated `SurfaceVariants`,
+/// keyed by the trimmed possible-biome bitset of a chunk's 3x3 region.
+struct CachedVariantSet<R: RandomSource> {
+    possible_ids: Box<[u64]>,
+    rules: Vec<CompiledRule<R>>,
+    variants: SurfaceVariants,
+}
+
+const VARIANT_CACHE_LIMIT: usize = 16;
+
+fn trim_words(words: &[u64]) -> &[u64] {
+    let mut len = words.len();
+    while len > 0 && words[len - 1] == 0 {
+        len -= 1;
+    }
+    &words[..len]
+}
+
 /// A world's surface rule compiled once for every chunk of a generator
 /// worker: the rule before any chunk's possible biomes fold it, the noises it
 /// bound, and the densities (ore veins) it binds to each chunk's volume, in
 /// the order it bound them.
 pub struct CompiledSurfaceRule<R: RandomSource> {
+    generation: super::WorldGenerationContext,
     rule: CompiledRule<R>,
-    noises: Vec<((String, bool), Arc<dyn Noise>)>,
+    noises: Vec<((Arc<str>, bool), Arc<dyn Noise>)>,
     densities: Vec<DensityBinding>,
+    /// Monotonic revision watermark across chunks reusing cached variant trees,
+    /// ensuring cached `Compiled` condition nodes never match a prior chunk's revision.
+    next_revision: i64,
+    cached: Vec<CachedVariantSet<R>>,
 }
 /// A density a rule binds: its root, whether it is sampled over the volume,
 /// and the rows it is read at.
@@ -665,6 +688,108 @@ impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S>
 where
     R::Positional: Clone,
 {
+    fn build_surface_variants(&self, index: usize) -> SurfaceVariants {
+        let rule = &self.rules[index];
+        let (mut starts, mut surface) = (Vec::new(), false);
+        rule.inputs(&mut starts, &mut surface);
+        starts.sort_unstable();
+        starts.dedup();
+        let sides = if surface { 2 } else { 1 };
+        SurfaceVariants {
+            base: index,
+            rules: vec![None; (starts.len() + 1) * sides],
+            fills: Vec::new(),
+            starts,
+            surface,
+        }
+    }
+
+    fn compile_shared_entry(
+        &mut self,
+        rule: &MaterialRule,
+    ) -> Result<CompiledSurfaceRule<R>, DecodeError> {
+        let possible = self.context.possible_biomes.take();
+        let prev_fold = self.context.fold_possible;
+        self.context.fold_possible = false;
+        let compiled =
+            CompiledRule::compile(rule.clone(), &self.root, &mut self.context, 0, &mut 0);
+        self.context.fold_possible = prev_fold;
+        self.context.possible_biomes = possible;
+        let compiled = compiled?;
+        let noises = self
+            .context
+            .noises
+            .iter()
+            .map(|cached| {
+                (
+                    (Arc::clone(&cached.name), cached.is_3d),
+                    Arc::clone(&cached.sampler),
+                )
+            })
+            .collect();
+        let mut densities = Vec::new();
+        density_bindings(rule, &mut densities);
+        Ok(CompiledSurfaceRule {
+            generation: self.context.generation,
+            rule: compiled,
+            noises,
+            densities,
+            next_revision: 0,
+            cached: Vec::new(),
+        })
+    }
+
+    fn bind_shared_resources(
+        &mut self,
+        cached: &CompiledSurfaceRule<R>,
+    ) -> Result<(), DecodeError> {
+        for ((name, is_3d), sampler) in &cached.noises {
+            self.context.noises.push(CachedNoise {
+                name: Arc::clone(name),
+                sampler: Arc::clone(sampler),
+                is_3d: *is_3d,
+                revision: if *is_3d {
+                    self.context.block_revision
+                } else {
+                    self.context.column_revision
+                }
+                .wrapping_sub(1),
+                value: 0.0,
+            });
+        }
+        self.context.noises_indexed = false;
+        for (sampler, eager, rows) in &cached.densities {
+            self.context
+                .surface
+                .bind_density_rows(Arc::clone(sampler), *eager, *rows)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve possible biomes into a trimmed bitset when the surface numbers
+    /// biomes (directly from `possible_biome_ids`, or via `biome_index`).
+    /// Returns `Err(())` if the surface does not number its biomes.
+    fn resolve_possible_ids(&self) -> Result<Option<Vec<u64>>, ()> {
+        if let Some(ids) = self.context.surface.possible_biome_ids() {
+            return Ok(Some(trim_words(ids).to_vec()));
+        }
+        let Some(names) = &self.context.possible_biomes else {
+            return Ok(None);
+        };
+        let mut ids = Vec::new();
+        for name in names {
+            let Some(Some(id)) = self.context.surface.biome_index(name) else {
+                return Err(());
+            };
+            let word = id as usize / 64;
+            if ids.len() <= word {
+                ids.resize(word + 1, 0);
+            }
+            ids[word] |= 1 << (id % 64);
+        }
+        Ok(Some(ids))
+    }
+
     /// `add_rule`, compiling `rule` only the first time `shared` is used:
     /// later workers take the compiled rule and its noises, bind its densities
     /// to their own volume in the same order, and fold it with their own
@@ -680,79 +805,112 @@ where
         if !fresh || self.rules.len() >= 8192 {
             return self.add_rule(rule.clone());
         }
-        let mut ids = Vec::new();
-        if let Some(names) = &self.context.possible_biomes {
-            for name in names {
-                let Some(Some(id)) = self.context.surface.biome_index(name) else {
-                    return self.add_rule(rule.clone());
-                };
-                let word = id as usize / 64;
-                if ids.len() <= word {
-                    ids.resize(word + 1, 0);
-                }
-                ids[word] |= 1 << (id % 64);
-            }
-        }
-        match shared {
-            Some(shared) => {
-                for (key, sampler) in &shared.noises {
-                    let is_3d = key.1;
-                    let index = self.context.noises.len();
-                    self.context.noises.push(CachedNoise {
-                        sampler: Arc::clone(sampler),
-                        is_3d,
-                        revision: if is_3d {
-                            self.context.block_revision
-                        } else {
-                            self.context.column_revision
-                        }
-                        .wrapping_sub(1),
-                        value: 0.0,
-                    });
-                    self.context.noise_indices.insert(key.clone(), index);
-                }
-                for (sampler, eager, rows) in &shared.densities {
-                    self.context
-                        .surface
-                        .bind_density_rows(Arc::clone(sampler), *eager, *rows)?;
-                }
-            }
-            None => {
-                let possible = self.context.possible_biomes.take();
-                let compiled =
-                    CompiledRule::compile(rule.clone(), &self.root, &mut self.context, 0, &mut 0);
-                self.context.possible_biomes = possible;
-                let compiled = compiled?;
-                let mut noises: Vec<_> = self
-                    .context
-                    .noise_indices
-                    .iter()
-                    .map(|(key, &index)| (index, key.clone()))
-                    .collect();
-                noises.sort_unstable_by_key(|(index, _)| *index);
-                let noises = noises
-                    .into_iter()
-                    .map(|(index, key)| (key, Arc::clone(&self.context.noises[index].sampler)))
-                    .collect();
-                let mut densities = Vec::new();
-                density_bindings(rule, &mut densities);
-                *shared = Some(CompiledSurfaceRule {
-                    rule: compiled,
-                    noises,
-                    densities,
-                });
-            }
+        let Ok(ids) = self.resolve_possible_ids() else {
+            return self.add_rule(rule.clone());
+        };
+        if let Some(cached) = shared.as_ref()
+            && cached.generation == self.context.generation
+        {
+            self.bind_shared_resources(cached)?;
+        } else {
+            *shared = Some(self.compile_shared_entry(rule)?);
         }
         let shared = shared.as_ref().expect("compiled above");
-        let possible = self
-            .context
-            .possible_biomes
-            .as_ref()
-            .map(|names| PossibleBiomes { names, ids });
+        let possible = ids.as_deref().map(|ids| PossibleBiomes {
+            names: self.context.possible_biomes.as_ref(),
+            ids,
+        });
         let folded = shared.rule.fold_biomes(possible.as_ref());
         let index = self.rules.len();
         self.rules.push(folded);
         Ok(index)
+    }
+
+    /// Prepare a chunk's folded surface rule and cached `SurfaceVariants`,
+    /// reusing a previously folded + band-specialized tree when a chunk's 3x3
+    /// neighborhood has the same possible-biome bitset. Must be paired with
+    /// [`Self::finish_shared_surface`].
+    pub(crate) fn prepare_shared_surface(
+        &mut self,
+        rule: &MaterialRule,
+        shared: &mut Option<CompiledSurfaceRule<R>>,
+    ) -> Result<(SurfaceVariants, Option<Box<[u64]>>), DecodeError> {
+        let fresh = self.rules.is_empty() && self.context.noises.is_empty();
+        if !fresh || self.rules.len() >= 8192 {
+            let id = self.add_rule(rule.clone())?;
+            let variants = self.build_surface_variants(id);
+            return Ok((variants, None));
+        }
+        let Ok(Some(ids)) = self.resolve_possible_ids() else {
+            let id = self.add_shared_rule(rule, shared)?;
+            let variants = self.build_surface_variants(id);
+            return Ok((variants, None));
+        };
+        if shared
+            .as_ref()
+            .is_none_or(|cached| cached.generation != self.context.generation)
+        {
+            *shared = Some(self.compile_shared_entry(rule)?);
+        } else {
+            let cached = shared.as_mut().expect("checked above");
+            if cached.next_revision > i64::MAX - (1 << 30) {
+                cached.cached.clear();
+                cached.next_revision = 0;
+            }
+            let base = cached.next_revision;
+            self.context.column_revision = base;
+            self.context.block_revision = base;
+            self.context.secondary_revision = base.wrapping_sub(1);
+            self.context.minimum_revision = base.wrapping_sub(1);
+            self.bind_shared_resources(cached)?;
+        }
+        let cached = shared.as_mut().expect("compiled above");
+        let trimmed = trim_words(&ids);
+        if let Some(pos) = cached
+            .cached
+            .iter()
+            .position(|entry| entry.possible_ids.as_ref() == trimmed)
+        {
+            let entry = cached.cached.swap_remove(pos);
+            self.rules = entry.rules;
+            return Ok((entry.variants, Some(entry.possible_ids)));
+        }
+        let possible = PossibleBiomes {
+            names: self.context.possible_biomes.as_ref(),
+            ids: trimmed,
+        };
+        let folded = cached.rule.fold_biomes(Some(&possible));
+        self.rules.push(folded);
+        let variants = self.build_surface_variants(0);
+        Ok((variants, Some(trimmed.into())))
+    }
+
+    /// Return the chunk's folded rule + specialized `SurfaceVariants` to `shared`
+    /// and advance the revision watermark past all revisions used by this chunk.
+    pub(crate) fn finish_shared_surface(
+        &mut self,
+        shared: &mut Option<CompiledSurfaceRule<R>>,
+        variants: SurfaceVariants,
+        cached_slot: Option<Box<[u64]>>,
+    ) {
+        let Some(cached) = shared.as_mut() else {
+            return;
+        };
+        let used_max = self
+            .context
+            .column_revision
+            .max(self.context.block_revision);
+        cached.next_revision = cached.next_revision.max(used_max.wrapping_add(2));
+        if let Some(possible_ids) = cached_slot {
+            if cached.cached.len() >= VARIANT_CACHE_LIMIT {
+                cached.cached.remove(0);
+            }
+            cached.cached.push(CachedVariantSet {
+                possible_ids,
+                rules: std::mem::take(&mut self.rules),
+                variants,
+            });
+        }
     }
 }
 impl<R: RandomSource, T: MaterialSurfaceQueries> MaterialConditions<R, MaterialDensitySources<T>> {

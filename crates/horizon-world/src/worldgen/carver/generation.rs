@@ -162,6 +162,9 @@ pub fn generate_carving_mask<'a, E>(
         .wrapping_sub(1)
         .wrapping_sub(if upgrading { 0 } else { 7 });
     let mut mask = CarvingMask::new(min, max).map_err(MaskGenerationError::Mask)?;
+    // Each carver index `0..8` uses the same `(x_mul, z_mul, seed)` across all
+    // 289 origin chunks in the 17x17 neighborhood.
+    let mut cached_seeds: [Option<(i64, i64, i64)>; 8] = [None; 8];
     for dx in -8..=8 {
         for dz in -8..=8 {
             let origin = ChunkPos::new(target.x.wrapping_add(dx), target.z.wrapping_add(dz));
@@ -170,8 +173,20 @@ pub fn generate_carving_mask<'a, E>(
                 return Err(MaskGenerationError::TooManyCarvers);
             }
             for (index, carver) in selected.iter().enumerate() {
-                let mut random =
-                    large_feature_random(world_seed.wrapping_add(index as i64), origin);
+                let mut random = if index < cached_seeds.len() {
+                    let (mx, mz, seed) = *cached_seeds[index].get_or_insert_with(|| {
+                        let seed = world_seed.wrapping_add(index as i64);
+                        let mut rng = LegacyRandom::new(seed);
+                        (rng.next_long(), rng.next_long(), seed)
+                    });
+                    LegacyRandom::new(
+                        i64::from(origin.x).wrapping_mul(mx)
+                            ^ i64::from(origin.z).wrapping_mul(mz)
+                            ^ seed,
+                    )
+                } else {
+                    large_feature_random(world_seed.wrapping_add(index as i64), origin)
+                };
                 if carver.is_start_chunk(&mut random) {
                     carver
                         .carve(context, &mut random, target, origin, &mut mask)

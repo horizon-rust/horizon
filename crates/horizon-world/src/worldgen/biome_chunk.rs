@@ -50,6 +50,11 @@ impl<T: Clone> BiomeChunk<T> {
                 .collect(),
         })
     }
+    /// The chunk coordinates of this biome chunk.
+    #[inline]
+    pub fn position(&self) -> ChunkPos {
+        self.position
+    }
     pub fn section(&self, index: usize) -> Option<&[T; 64]> {
         self.sections.get(index)
     }
