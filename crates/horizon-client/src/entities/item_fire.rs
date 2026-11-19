@@ -1,38 +1,10 @@
-//! A dropped item's fire: `Entity.baseTick`'s burn and the part of
-//! `Entity.applyEffectsFromBlocks` that puts it out — water (`WaterFluid.entityInside`)
-//! and rain — with the hiss `playEntityOnFireExtinguishedSound` plays.
-use super::{Fluid, ItemEntity};
-use crate::items::{ItemStack, Items};
+//! The part of `Entity.applyEffectsFromBlocks` that puts a dropped item out —
+//! water (`WaterFluid.entityInside`) and rain — with the hiss
+//! `playEntityOnFireExtinguishedSound` plays. The burn itself (`Entity.baseTick`)
+//! is [`super::ItemEntity::burning_tick`]'s, which runs before the block effects.
+use super::ItemEntity;
 
 impl ItemEntity {
-    /// `Entity.baseTick`'s fire ticks: a fire-immune stack never burns, else
-    /// every 20th tick of fire hurts it and the countdown runs down.
-    ///
-    /// Returns the stacks a lethal burn left (`ItemStack.onDestroyed`) and
-    /// whether it is on fire still: the `wasOnFire` that
-    /// `Entity.applyEffectsFromBlocks` snapshots before the block effects.
-    pub fn base_tick_fire(
-        &mut self,
-        fluid: Fluid,
-        fire_immune: bool,
-        items: &Items,
-    ) -> (Vec<ItemStack>, bool) {
-        let mut spilled = Vec::new();
-        if fire_immune {
-            self.fire_ticks = 0;
-        }
-        if self.fire_ticks > 0 {
-            if self.fire_ticks % 20 == 0
-                && fluid != Fluid::Lava
-                && !items.resists_fire(&self.stack, "minecraft:on_fire")
-            {
-                spilled.extend(self.hurt(1).unwrap_or_default());
-            }
-            self.fire_ticks -= 1;
-        }
-        (spilled, self.fire_ticks > 0)
-    }
-
     /// `Entity.applyEffectsFromBlocks`: water (`WaterFluid.entityInside`) and
     /// rain clear a burning item's fire, after the block contacts that may have
     /// ignited it. Returns whether the hiss plays:
