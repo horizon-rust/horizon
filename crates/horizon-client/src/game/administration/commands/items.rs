@@ -1225,10 +1225,10 @@ impl Game<'_> {
             _ => stack,
         }
     }
-    /// `ItemStack.getMaxStackSize`: the max_stack_size component, else the
-    /// item's.
+    /// `ItemStack.getMaxStackSize`: the max_stack_size component (a removed
+    /// one being vanilla's default of 1), else the item's.
     pub(in crate::game) fn stack_max_size(&self, s: &ItemStack) -> u32 {
-        self.stack_max_size_of(&s.item, s.data())
+        s.max_stack_size(self.items())
     }
     /// `ItemStack.getMaxStackSize` for an item and the components on it,
     /// without a stack to read them from (`ItemInput.createItemStack(1)`,
@@ -1238,10 +1238,14 @@ impl Game<'_> {
         item: &str,
         data: Option<&horizon_client::item_data::StackData>,
     ) -> u32 {
-        if let Some(Tag::Int(n)) = data.and_then(|d| d.other("minecraft:max_stack_size")) {
-            return (*n).clamp(1, 99) as u32;
-        }
-        self.items().get(item).map_or(64, |i| i.max_stack)
+        // The prototype stack the limit and the split read their size from.
+        let prototype = ItemStack {
+            item: item.into(),
+            count: 1,
+            damage: 0,
+            extra: data.cloned().map(Box::new),
+        };
+        self.stack_max_size(&prototype)
     }
     /// `ResourceOrIdArgument.getLootModifier`: an inline modifier (SNBT) or
     /// a registered one.
