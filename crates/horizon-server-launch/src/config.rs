@@ -821,20 +821,36 @@ impl Config {
     }
 
     /// Writes this configuration into `server.properties`, keeping the keys it doesn't set. Returns what it
-    /// wrote, for [`sync_back`]. A file that exists but can't be read or parsed is left as it is and is an
-    /// error: writing over it would lose the owner's other keys. (The game refuses an unparsable file too.)
+    /// wrote, for [`sync_back`]. A file (or link) that exists but can't be read or parsed is left as it is
+    /// and is an error: writing over it would lose the owner's other keys. (The game refuses an unparsable
+    /// file too.)
     pub fn write_properties(&self, dir: &Path) -> std::io::Result<Vec<(String, String)>> {
         let path = dir.join(PROPERTIES);
         let mut properties = match std::fs::read(&path) {
-            Ok(bytes) => Properties::load_file(&bytes).map_err(|e| {
-                let why = format!("{} (left as it is)", malformed(&path, &bytes, &e));
-                std::io::Error::new(std::io::ErrorKind::InvalidData, why)
+            Ok(bytes) => load_properties(&path, &bytes).map_err(|why| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{why} (left as it is)"),
+                )
             })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Properties::default(),
+            // Only a file that isn't there at all: a link to a volume that is away reads as missing too,
+            // and the rename would replace the link.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && std::fs::symlink_metadata(&path)
+                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Properties::default()
+            }
             Err(e) => {
+                let why = if e.kind() == std::io::ErrorKind::NotFound {
+                    "it links to a file that isn't there".to_owned()
+                } else {
+                    e.to_string()
+                };
                 return Err(std::io::Error::new(
                     e.kind(),
-                    format!("{}: {e} (left as it is)", path.display()),
+                    format!("{}: {why} (left as it is)", path.display()),
                 ));
             }
         };
@@ -1049,37 +1065,14 @@ pub fn update_all(dir: &Path, changes: &[(String, String, toml::Value)]) -> Resu
 
 pub fn read_properties(path: &Path) -> Result<Properties, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    Properties::load_file(&bytes).map_err(|e| malformed(path, &bytes, &e))
+    load_properties(path, &bytes)
 }
 
-/// The error for a properties file that doesn't load, naming the line that makes it fail: the first
-/// line the file can't be read up to. Lines end as the JDK's line reader ends them (`\n`, `\r` or
-/// `\r\n`), and a line continued with a backslash is read with the next one, so the line named is the
-/// last line of the broken entry.
-fn malformed(path: &Path, bytes: &[u8], e: &dyn std::fmt::Display) -> String {
-    let (mut start, mut line) = (0, 1);
-    while start < bytes.len() {
-        let text_end = bytes[start..]
-            .iter()
-            .position(|&b| b == b'\n' || b == b'\r')
-            .map_or(bytes.len(), |n| start + n);
-        let end = if bytes[text_end..].starts_with(b"\r\n") {
-            text_end + 2
-        } else {
-            (text_end + 1).min(bytes.len())
-        };
-        let slashes = bytes[start..text_end]
-            .iter()
-            .rev()
-            .take_while(|&&b| b == b'\\')
-            .count();
-        let continued = slashes % 2 == 1 && end < bytes.len();
-        if !continued && Properties::load_file(&bytes[..end]).is_err() {
-            return format!("{}, line {line}: {e}", path.display());
-        }
-        (start, line) = (end, line + 1);
-    }
-    format!("{}: {e}", path.display())
+/// The properties file at `path`, read as `bytes`; when they don't load, an error naming the file and the
+/// line of the entry that breaks it.
+fn load_properties(path: &Path, bytes: &[u8]) -> Result<Properties, String> {
+    Properties::load_file_locating(bytes)
+        .map_err(|(e, line)| format!("{}, line {line}: {e}", path.display()))
 }
 
 /// Sets one value in a TOML document, keeping the comment after the old value.
@@ -1625,6 +1618,25 @@ keep = {keep}
         }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), owner);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A server.properties linked to a volume that isn't mounted reads as missing, but it is the owner's
+    /// file: the link is kept, not replaced by a file of server.toml's keys.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_properties_link_to_a_missing_file_is_left_as_it_is() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-config-dangling-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PROPERTIES);
+        let target = dir.join("away").join(PROPERTIES);
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let e = Config::default().write_properties(&dir).unwrap_err();
+        assert!(e.to_string().contains(PROPERTIES), "{e}");
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
