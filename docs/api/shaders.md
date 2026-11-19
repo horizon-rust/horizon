@@ -250,7 +250,9 @@ linear light: decode a constant written for display values with a 2.2 power, com
 `frame.luminance`, and stop returning `input.color.a` from post passes (their alpha is ignored). The example pack,
 `crates/horizon-shader-api/packs/golden_hour`, was moved this way. `packs/traced_shadows` and
 `packs/traced_water` are the smallest packs that trace rays, from a post pass and from the material stage
-([the guide](../shaders.md#ray-tracing)).
+([the guide](../shaders.md#ray-tracing)). `packs/horizon_hdr` is Horizon's own HDR look as a pack, from the look file
+the renderer's own shaders start with: it reads the light-source fields and `frame.full_lightmap` (changelog,
+2026-11-19), and its README lists what a pack can't draw of the look yet.
 
 A 0.2 pack from before 2026-11-16 moves to the terrain's own inputs so: where it drew vanilla's colour with
 `input.tint` or `hit.tint`, it reads `shaded_tint` (the old value, the shade and ambient occlusion in it), or lights
@@ -303,6 +305,11 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
   a pack whose files name it, at the end of `Frame`. The vertex, the sprite and the lightmap already hold them: they
   cost no vertex data, no look storage and no reload. A pack that names none of them sees the same prelude and entry
   points as before, and its picture is unchanged.
+- 2026-11-18: API 0.2 (terrain ray-hit fix): a terrain hit's `tint`, `shade` and `ao` match
+  `MaterialInput` when a usable look record is available. Reading any of them queues fresh meshes for
+  loaded sections and costs eight bytes per face in CPU memory for loaded sections and in video
+  memory within the ray scene's reach. Without a usable record, `tint` uses the baked vertex
+  colour, with `shade` and `ao` both 1. `shaded_tint` and `emission` come from the vertex.
 - 2026-11-18: API 0.2 (preview), a fix toward the reference: a terrain hit's `RayHit.emission` is its block's light
   level over 15, as `MaterialInput.emission` (one candle 3/15, a lantern 1), no longer its brightness class (7/15,
   14/15 or 1); an entity hit's stays 0. `MaterialInput.emission` comes with the vertex, as `shaded_tint` does: of
