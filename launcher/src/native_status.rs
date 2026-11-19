@@ -286,6 +286,12 @@ pub fn legacy_format(path: &Path) -> bool {
     horizon_platform::mod_package::index::native::legacy_format(path)
 }
 
+/// Whether the browser-tracked `file` (relative to the game folder `home`) is a native mod that
+/// asks for a build: a native `.hmod` not in the format from before the SDK. Reads the archive.
+pub fn tracked_asks_for_build(home: &Path, file: &str) -> bool {
+    is_native_file(file) && !legacy_format(&home.join(file))
+}
+
 /// What the Mods page says of a native mod in the format from before the `.hmod` SDK.
 pub fn legacy_note() -> &'static str {
     crate::i18n::tr(

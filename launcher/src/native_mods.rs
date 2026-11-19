@@ -3468,6 +3468,8 @@ mod tests {
 
     #[test]
     fn installed_mods_are_the_checked_files_of_those_turned_on() {
+        // `installed_mods` empties the one staging folder: the other tests using it wait.
+        let _guard = scratch_state();
         let d = dir("installed-src");
         write_native(&d, "veinminer", A, B);
         let home = dir("installed-home");

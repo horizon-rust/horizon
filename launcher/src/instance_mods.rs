@@ -46,6 +46,12 @@ pub(super) struct ModRow {
 }
 
 impl ModRow {
+    /// Whether it is a native mod in the format from before the SDK, which asks for no build:
+    /// its note says so ([`native_status::legacy_note`], set as the list is read).
+    pub(super) fn legacy(&self) -> bool {
+        self.error.as_deref() == Some(native_status::legacy_note())
+    }
+
     /// Its mod id when it is a native mod: one that builds, needs the native permission and has
     /// a build log. A hand-copied `.hmod` in `horizon-mods/` is not one.
     pub(super) fn native_id(&self) -> Option<&str> {
@@ -584,9 +590,10 @@ impl Launcher {
                     .iter()
                     .filter_map(|r| r.native.as_ref()),
             ) || self.instance_mods.list.iter().any(|r| {
-                r.entry
-                    .as_ref()
-                    .is_some_and(|e| native_status::is_native_file(&e.file))
+                !r.legacy()
+                    && r.entry
+                        .as_ref()
+                        .is_some_and(|e| native_status::is_native_file(&e.file))
             }));
         let build = native.then(|| self.native_build(cx)).flatten();
         let card = plate::cut(
