@@ -30,11 +30,6 @@ impl SavedFar {
     }
 }
 
-#[derive(Default)]
-pub(super) struct LodDecoded {
-    chunks: crate::fast_hash::FxHashMap<(i32, i32), (std::time::Instant, SavedFar)>,
-    order: std::collections::VecDeque<(i32, i32)>,
-}
 /// Saved chunks kept read for far terrain (each up to tens of kilobytes),
 /// and for how long: edits saved later show after it.
 const LOD_DECODED: usize = 1024;
