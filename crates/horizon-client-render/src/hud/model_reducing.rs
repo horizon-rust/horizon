@@ -69,7 +69,7 @@ impl HudAtlas {
     /// Last resort for a pack that exceeds the shared atlas: halve model
     /// textures until they fit, retaining their logical GUI sizes. Never
     /// shrink run-time slots (empty pixels), or below the vanilla 16 texels.
-    pub(super) fn layout_reducing_models(
+    pub(crate) fn layout_reducing_models(
         images: &mut [PackedImage],
         gui_sizes: &mut HashMap<String, (u32, u32)>,
         models: &HashSet<String>,
