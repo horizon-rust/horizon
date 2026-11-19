@@ -104,7 +104,7 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
             ));
         }
     }
-    let listed: Vec<(u32, String, u64, String)> = module
+    let listed: mod_points::Subscriptions = module
         .call(
             CallClass::Load,
             Frame::default(),

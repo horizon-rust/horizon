@@ -758,7 +758,7 @@ fn calls_of(
     let ptr = (answer >> 32) as usize;
     let len = answer as u32;
     let data = memory.data(&*store);
-    if len == u32::MAX {
+    if len == mod_api::wire::REFUSED {
         let reason: String = Reader::new(data.get(ptr..).unwrap_or_default()).take()?;
         return Err(wasmtime::Error::msg(reason));
     }
@@ -993,6 +993,21 @@ impl WasmMod {
         // Every mod of a group shares its memory and std: they must agree exactly.
         let mut first: Option<(String, crate::calls::Table)> = None;
         for (name, instance) in group.members.clone() {
+            // The std member holds the group state; it answers how many words it holds.
+            if instance
+                .get_export(&mut group.store, "horizon_group_state")
+                .is_some()
+            {
+                let words = instance
+                    .get_typed_func::<(), u32>(&mut group.store, "horizon_group_words")
+                    .and_then(|words| words.call(&mut group.store, ()));
+                if !words.is_ok_and(|words| words as usize == mod_api::wire::GROUP_WORDS) {
+                    return Err(Refusal::Runtime(format!(
+                        "{name}: the shared std was built for another group state than this game's {} words: reinstall the game",
+                        mod_api::wire::GROUP_WORDS
+                    )));
+                }
+            }
             // The std member is a library, not a mod.
             if instance
                 .get_func(&mut group.store, "horizon_layout")
@@ -1021,10 +1036,10 @@ impl WasmMod {
                     .map_err(load)?
                     .call(&mut group.store, ())
                     .map_err(load)?;
-                if built != mod_points::POINT_LAYOUT {
+                if built != mod_points::points_layout() {
                     return Err(Refusal::PointLayout {
                         built,
-                        game: mod_points::POINT_LAYOUT,
+                        game: mod_points::points_layout(),
                     });
                 }
             }
@@ -1416,7 +1431,7 @@ impl WasmMod {
         };
         let ptr = (result >> 32) as usize;
         let len = result as u32;
-        if len == u32::MAX {
+        if len == mod_api::wire::REFUSED {
             let bytes = memory.data(&*store).get(ptr..).ok_or_else(|| {
                 CallError::Refused(wasmtime::Error::msg("error reply outside memory"))
             })?;

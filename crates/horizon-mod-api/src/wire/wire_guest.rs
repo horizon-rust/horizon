@@ -222,7 +222,7 @@ const WORD_EVICT: usize = crate::wire::GROUP_WORD_EVICT;
 pub const EVICTORS: usize = GROUP_WORDS - WORD_EVICT;
 
 /// What the mods of one group may hold at once in caches the host asked them to keep, in bytes.
-pub const GROUP_BUDGET_BYTES: usize = 256 << 20;
+pub const GROUP_BUDGET_BYTES: usize = crate::wire::GROUP_BUDGET_BYTES;
 
 #[cfg(target_arch = "wasm32")]
 unsafe extern "C" {
@@ -397,7 +397,12 @@ fn with_handlers<R>(f: impl FnOnce(&Handlers) -> R) -> R {
 
 /// One exact static reply ID decoded by this instance, or the reserved no-ID marker.
 pub fn static_ack() -> u32 {
-    RUNTIME.with(|rt| rt.borrow().strings.last.unwrap_or(u32::MAX))
+    RUNTIME.with(|rt| {
+        rt.borrow()
+            .strings
+            .last
+            .unwrap_or(crate::wire::NO_STATIC_ID)
+    })
 }
 
 /// Model a fresh wasm instance in a native transport fixture.
@@ -436,9 +441,11 @@ impl Reply {
         let tag: u8 = reader.take()?;
         let id: u32 = reader.take()?;
         let value = match tag {
-            0 => Value::Known(id),
-            1 => Value::Definition(id, text(&mut reader)?),
-            2 if id == u32::MAX => Value::Uncached(text(&mut reader)?),
+            crate::wire::STATIC_KNOWN => Value::Known(id),
+            crate::wire::STATIC_DEFINITION => Value::Definition(id, text(&mut reader)?),
+            crate::wire::STATIC_UNCACHED if id == crate::wire::NO_STATIC_ID => {
+                Value::Uncached(text(&mut reader)?)
+            }
             tag => return Err(WireError::Tag(u32::from(tag))),
         };
         let tail = reader.take()?;
@@ -726,7 +733,7 @@ pub fn resource_scope() -> crate::wire::ResourceScope {
 }
 
 /// Runs export `id` on the input the game wrote and returns where its reply is: the pointer in
-/// the high half, the length in the low. A refused call answers `u32::MAX` as the length and
+/// the high half, the length in the low. A refused call answers `REFUSED` as the length and
 /// its reason, as a string, at the pointer.
 pub fn run(id: u32) -> (*const u8, u32) {
     static HOOK: std::sync::Once = std::sync::Once::new();
@@ -765,11 +772,11 @@ pub fn run(id: u32) -> (*const u8, u32) {
     let mut reader = Reader::new(&input);
     let result = match id {
         crate::wire::INIT => reader
-            .take::<Vec<crate::PackageInfo>>()
+            .take::<crate::wire::InitInput>()
             .map(crate::install_guest_packages),
-        crate::wire::RELEASE => reader.take::<Vec<Id>>().map(release),
+        crate::wire::RELEASE => reader.take::<crate::wire::ReleaseInput>().map(release),
         crate::wire::CALLS => {
-            let calls: Vec<(String, u64, bool)> = crate::call_layouts()
+            let calls: crate::wire::CallsAnswer = crate::call_layouts()
                 .into_iter()
                 .map(|(name, layout, export)| (name.to_owned(), layout, export))
                 .collect();
@@ -788,7 +795,7 @@ pub fn run(id: u32) -> (*const u8, u32) {
         Err(error) => {
             reply.clear();
             reply.put_str(&error.to_string());
-            u32::MAX
+            crate::wire::REFUSED
         }
     };
     let pointer = reply.bytes().as_ptr();

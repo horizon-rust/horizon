@@ -32,7 +32,7 @@ pub fn register(listener: &SlotListener) -> Result<(), crate::RegisterError> {
 /// The places this guest listens at, in registration order: each with its own place id, the
 /// place's name and identity (`point_identity`), which the game checks by name, and the
 /// listener's inject id.
-pub fn subscriptions() -> Vec<(u32, String, u64, String)> {
+pub fn subscriptions() -> crate::Subscriptions {
     LISTENERS.with(|slots| {
         slots
             .borrow()
@@ -69,5 +69,5 @@ pub(crate) fn fire(
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn horizon_layout_ext() -> u64 {
-    crate::POINT_LAYOUT
+    crate::points_layout()
 }

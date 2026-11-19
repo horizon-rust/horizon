@@ -522,7 +522,7 @@ pub(super) fn generate(
         r#"
 impl Cx {
     fn check_static_ack(&self, ack: u32) -> Result<(), ServeError> {
-        if ack != u32::MAX && ack as usize >= self.static_strings.len() {
+        if ack != mod_api::wire::NO_STATIC_ID && ack as usize >= self.static_strings.len() {
             return Err(WireError::Invalid("static string acknowledgement outside table").into());
         }
         Ok(())
@@ -535,8 +535,8 @@ impl Cx {
             if self.static_strings.len() >= mod_api::wire::MAX_STATIC_STRINGS {
                 // Admission is an optimization: a full group table cannot impose a
                 // stricter limit than the existing per-member static string storage.
-                out.put(&2u8);
-                out.put(&u32::MAX);
+                out.put(&mod_api::wire::STATIC_UNCACHED);
+                out.put(&mod_api::wire::NO_STATIC_ID);
                 out.put(text);
                 return Ok(());
             }
@@ -545,7 +545,7 @@ impl Cx {
             id
         };
         let definition = id != ack;
-        out.put(&u8::from(definition));
+        out.put(&if definition { mod_api::wire::STATIC_DEFINITION } else { mod_api::wire::STATIC_KNOWN });
         out.put(&id);
         if definition { out.put(text); }
         Ok(())

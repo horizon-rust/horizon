@@ -246,12 +246,26 @@ fn a_changed_transport_value_refuses_the_mod() {
     })
 }
 
-/// The std member the build tool writes holds exactly the group state the transport reads.
+/// A shared std holding another number of group-state words than the game's is refused.
 #[test]
-fn the_build_tools_std_holds_the_transports_group_state() {
-    let tool = include_str!("../../../cargo-horizon-mod/src/wasm.rs");
-    assert!(tool.contains(&format!(
-        "[core::sync::atomic::AtomicUsize; {}]",
-        mod_api::wire::GROUP_WORDS
-    )));
+fn a_std_with_another_group_state_is_refused() {
+    crate::test_stack::on_guest_stack(|| {
+        let std = |words: usize| {
+            wat::parse_str(format!(
+                r#"(module
+              (@custom "dylink.0" "\01\04\00\00\00\00")
+              (import "env" "memory" (memory 1))
+              (global (export "horizon_group_state") i32 (i32.const 0))
+              (func (export "horizon_group_words") (result i32) i32.const {words}))"#
+            ))
+            .unwrap()
+        };
+        let mod_ = member(&[], &[], "unreachable");
+        let words = mod_api::wire::GROUP_WORDS;
+        assert!(load(&[("libstd.so", &std(words)), ("test", &mod_)]).is_ok());
+        let refusal = load(&[("libstd.so", &std(words + 1)), ("test", &mod_)])
+            .err()
+            .unwrap();
+        assert!(matches!(&refusal, Refusal::Runtime(why) if why.contains("group state")));
+    })
 }

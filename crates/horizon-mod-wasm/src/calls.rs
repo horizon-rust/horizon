@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 
 /// A table of calls, as a mod answers `CALLS`: each call's key, its hash, and whether it is one
 /// of the mod's exports.
-pub(crate) type Table = Vec<(String, u64, bool)>;
+pub(crate) type Table = mod_api::wire::CallsAnswer;
 
 static GAME: std::sync::LazyLock<HashMap<&'static str, (u64, bool)>> =
     std::sync::LazyLock::new(|| {

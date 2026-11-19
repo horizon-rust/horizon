@@ -659,14 +659,14 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
     guest.push_str(&calls::dispatch(&surface.types, &surface.methods, &prepared).0);
     let abis = prepared::describe(&surface.methods, &prepared)?;
     let (codecs, codec_sources) = codecs(root)?;
-    // The transport's own payloads: no call's signature names them.
+    // The transport's own payloads, by the aliases both sides use: no call's signature names
+    // them. `HOST_RELEASE` takes one `Id`; `HOST_LOG` and a refusal's reason are a `String`.
     let control = [
-        "Vec<crate::PackageInfo>",
-        "Vec<crate::wire::Id>",
+        "crate::wire::InitInput",
+        "crate::wire::ReleaseInput",
         "crate::wire::Id",
         "String",
-        "Vec<(String, u64, bool)>",
-        "Vec<(String, i32, bool)>",
+        "crate::wire::CallsAnswer",
     ]
     .iter()
     .map(|ty| format!("hash = crate::wire::layout_mix(hash, <{ty} as crate::wire::Wire>::layout(&mut vec![]));"))
@@ -674,7 +674,7 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
     let _ = writeln!(
         wire,
         "/// What every mod of a group and the game must agree on exactly; each call is checked on\n/// its own (`call_layouts`).\n#[doc(hidden)]\npub fn wire_core_layout() -> u64 {{ wire_core_layout_with(crate::wire::PROTOCOL) }}\n/// [`wire_core_layout`] with `protocol` for the transport's values.\n#[doc(hidden)]\npub fn wire_core_layout_with(protocol: &[(&str, u64)]) -> u64 {{ let mut hash = {:#x}; {control} for &(name, value) in protocol {{ hash = crate::wire::layout_mix(crate::wire::layout_mix(hash, crate::wire::layout_name(name)), value); }} hash }}\nconst _: () = assert!(crate::wire::PREPARE == {:#x} && crate::wire::RELEASE_PREPARED == {:#x}, \"the generator's prepared ids are the transport's\");",
-        core(codecs),
+        core(codecs, FILE_ROOTS),
         prepared::PREPARE,
         prepared::RELEASE,
     );
@@ -868,7 +868,7 @@ fn public_path(index: &Index<'_>, path: &str) -> bool {
 /// The seed of the core hash: the transport's rules no call's signature carries, and the
 /// hand-written codecs (`codecs`), whose bytes no declared layout describes. The calls
 /// themselves are checked one by one (`names`), so an added call leaves it as it was.
-fn core(codecs: u64) -> u64 {
+fn core(codecs: u64, file_roots: &[(u8, &str, &str)]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     let mut feed = |text: &str| {
         for byte in text.bytes() {
@@ -886,10 +886,10 @@ fn core(codecs: u64) -> u64 {
     );
     // The reserved ids and the group state's words are mixed in at run time from the
     // constants the transport uses (`crate::wire::PROTOCOL`), not described here.
+    // Behaviour, not a value: what a member's allocator does with the group's budget.
     feed("members allocate through an evicting global allocator");
-    feed("static replies: bounded acknowledged ids or uncached text");
-    feed("ConfigFiles imports: u8 root selector, 0 config, 1 data, 2 world; other values refused");
-    feed("Hooks::subscribed: Vec<(hook name, i32 priority, bool receive_cancelled)>");
+    // The selector table the generated guest proxy and host dispatch are both written from.
+    feed(&format!("file roots {file_roots:?}"));
     feed(&format!("hand-written codecs {codecs:#x}"));
     hash
 }
@@ -966,6 +966,24 @@ fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
             }
         }
     }
+    /// The `serde` shape of every item in a file holding a `#[wire(via = String)]` type: its
+    /// wire bytes are JSON written by `serde` (`MeshDefinition`), which no layout describes.
+    fn json(list: &[Item], texts: &mut Vec<String>) {
+        for item in list.iter().filter(|item| !test_only(attrs(item))) {
+            let serde = attrs(item).iter().any(|attr| {
+                attr.path().is_ident("derive")
+                    && ["Serialize", "Deserialize"].iter().any(|derive| {
+                        quote::ToTokens::to_token_stream(attr)
+                            .to_string()
+                            .contains(derive)
+                    })
+                    || attr.path().is_ident("serde")
+            });
+            if serde {
+                texts.push(strip_docs(quote::ToTokens::to_token_stream(item)).to_string());
+            }
+        }
+    }
     fn items(list: &[Item], texts: &mut Vec<String>) {
         for item in list {
             match item {
@@ -1033,7 +1051,8 @@ fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
             .map_err(|e| format!("{key}: {e}"))?
             .replace("\r\n", "\n");
         let codec_module = key.starts_with("crates/horizon-mod-vocab/src/wire/");
-        if !codec_module && !text.contains("Wire for") {
+        let via_json = text.contains("wire(via = String)");
+        if !codec_module && !via_json && !text.contains("Wire for") {
             continue;
         }
         let file = syn::parse_file(&text).map_err(|e| format!("{key}: {e}"))?;
@@ -1043,15 +1062,60 @@ fn codecs(root: &Path) -> Result<(u64, Vec<std::path::PathBuf>), String> {
         } else {
             items(&file.items, &mut texts);
         }
+        if via_json {
+            json(&file.items, &mut texts);
+        }
         for text in &texts {
             for byte in text.bytes().chain([0]) {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
             }
         }
     }
+    // The network NBT that `AttachmentBatch` embeds as bytes: its tag ids and the limits both
+    // sides read and write it with. The rest of the codec is vanilla's format.
+    let nbt = root.join(NBT);
+    let text = std::fs::read_to_string(&nbt)
+        .map_err(|e| format!("{NBT}: {e}"))?
+        .replace("\r\n", "\n");
+    let file = syn::parse_file(&text).map_err(|e| format!("{NBT}: {e}"))?;
+    let mut found = 0;
+    for item in &file.items {
+        let Item::Impl(block) = item else { continue };
+        let target = quote::ToTokens::to_token_stream(&block.self_ty).to_string();
+        let texts: Vec<String> = match &block.trait_ {
+            Some((_, path, _)) if target == "Limits" && path.is_ident("Default") => {
+                vec![quote::ToTokens::to_token_stream(block).to_string()]
+            }
+            None if target == "Tag" => block
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    syn::ImplItem::Fn(method) if method.sig.ident == "id" => {
+                        Some(strip_docs(quote::ToTokens::to_token_stream(method)).to_string())
+                    }
+                    _ => None,
+                })
+                .collect(),
+            _ => continue,
+        };
+        for text in texts {
+            found += 1;
+            for byte in text.bytes().chain([0]) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    if found != 2 {
+        return Err(format!("{NBT}: no `Tag::id` or `Limits::default` to hash"));
+    }
     // The directories, so a codec in a new file reruns the build script too.
-    Ok((hash, dirs.to_vec()))
+    let mut sources = dirs.to_vec();
+    sources.push(nbt);
+    Ok((hash, sources))
 }
+
+/// Where the network NBT codec lives (`codecs`).
+const NBT: &str = "crates/horizon-core/src/nbt.rs";
 
 #[cfg(test)]
 mod tests {
@@ -1063,6 +1127,8 @@ mod tests {
         let wire = root.join("crates/horizon-mod-vocab/src/wire");
         std::fs::create_dir_all(&wire).unwrap();
         std::fs::create_dir_all(root.join("crates/horizon-mod-api/src")).unwrap();
+        std::fs::create_dir_all(root.join("crates/horizon-core/src")).unwrap();
+        std::fs::write(root.join(super::NBT), NBT).unwrap();
         let hash = |tag_tree: &str| {
             std::fs::write(wire.join("tag_tree.rs"), tag_tree).unwrap();
             super::codecs(&root).unwrap().0
@@ -1071,7 +1137,39 @@ mod tests {
         let before = hash(helper);
         assert_ne!(before, hash(&helper.replace("10", "11")));
         assert_eq!(before, hash(&helper.replace('\n', "\r\n")));
+        // The embedded network NBT's tag ids and limits.
+        let nbt = |text: &str| {
+            std::fs::write(root.join(super::NBT), text).unwrap();
+            hash(helper)
+        };
+        assert_eq!(before, nbt(&NBT.replace("fn get", "fn find")));
+        assert_ne!(before, nbt(&NBT.replace("=> 3", "=> 13")));
+        assert_ne!(before, nbt(&NBT.replace("512", "511")));
+        std::fs::write(root.join(super::NBT), NBT).unwrap();
+        // The JSON shape of a type crossing as a string: its serde items, not the file's code.
+        let models = root.join("crates/horizon-mod-vocab/src/models.rs");
+        let json = |text: &str| {
+            std::fs::write(&models, text).unwrap();
+            hash(helper)
+        };
+        let shape = "#[derive(serde::Serialize, mod_api::Wire)]\n#[wire(via = String)]\npub struct Mesh { parts: Vec<Part> }\n#[derive(serde::Deserialize)]\nstruct Part { size: f32 }\nfn helper() {}\n";
+        let with_shape = json(shape);
+        assert_eq!(with_shape, json(&shape.replace("fn helper", "fn other")));
+        assert_ne!(with_shape, json(&shape.replace("size", "width")));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    const NBT: &str = "impl Tag {\n    pub fn id(&self) -> u8 { match self { Self::End => 0, Self::Int(_) => 3 } }\n    pub fn get(&self) {}\n}\nimpl Default for Limits {\n    fn default() -> Self { Self { max_depth: 512 } }\n}\n";
+
+    /// The core hash covers the file roots' selectors: swapping two refuses mods built before.
+    #[test]
+    fn swapped_file_roots_change_the_core_hash() {
+        let mut roots = super::FILE_ROOTS.to_vec();
+        let before = super::core(0, &roots);
+        let (config, data) = (roots[0].0, roots[1].0);
+        roots[0].0 = data;
+        roots[1].0 = config;
+        assert_ne!(before, super::core(0, &roots));
     }
 
     /// The generated impls depend on the hand-written `Wire` impls the generator skips, so an

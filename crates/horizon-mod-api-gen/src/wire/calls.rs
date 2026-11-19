@@ -655,7 +655,7 @@ pub(super) fn snapshot(types: &Types<'_>, ty: &Ty, place: &str) -> Option<String
         }
         Ty::Ref(t, _) => snapshot(types, t, &format!("*({place})"))?,
         Ty::Option(t) => format!(
-            "match &({place}) {{ Some(x) => {{ w.put(&1u8); {} }}, None => w.put(&0u8) }}",
+            "match &({place}) {{ Some(x) => {{ w.put(&crate::wire::OPTION_SOME); {} }}, None => w.put(&crate::wire::OPTION_NONE) }}",
             snapshot(types, t, "*x")?
         ),
         Ty::Array(t, _) => format!("for x in &({place}) {{ {} }}", snapshot(types, t, "*x")?),
