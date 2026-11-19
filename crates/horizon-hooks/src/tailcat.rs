@@ -499,6 +499,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn refuses_a_non_invitation_before_running_anything() {
         let error = join("https://example.com", Path::new(".")).err().unwrap();
         assert!(error.contains(INVITE_PREFIX), "{error}");

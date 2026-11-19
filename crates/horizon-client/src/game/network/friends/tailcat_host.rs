@@ -180,7 +180,13 @@ impl Game<'_> {
             Some(s) => s.tailcat = Some(share),
             None => {
                 self.friends = Some(super::Sharing {
-                    friends: None,
+                    host: None,
+                    opened_lan: false,
+                    code: None,
+                    wrong: 0,
+                    notice: None,
+                    copied: None,
+                    paths: (0, 0),
                     tailcat: Some(share),
                 });
             }
@@ -237,7 +243,7 @@ impl Game<'_> {
         };
         let opened_lan = share.opened_lan;
         drop(share);
-        if !self.friends.as_ref().is_some_and(|s| s.friends.is_some()) {
+        if !self.friends.as_ref().is_some_and(|s| s.host.is_some()) {
             self.friends = None;
         }
         if opened_lan {

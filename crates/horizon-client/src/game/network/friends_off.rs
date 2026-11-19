@@ -41,8 +41,6 @@ impl Game<'_> {
         Err("this build has no Tailcat (the `friends` feature)".into())
     }
 
-    pub(super) fn tailcat_stop(&mut self) {}
-
     pub(super) fn tailcat_control(&mut self, _words: &[&str]) -> Result<Option<serde_json::Value>> {
         Ok(None)
     }
