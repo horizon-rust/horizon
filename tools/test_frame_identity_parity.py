@@ -868,17 +868,20 @@ def look_gates(shots, sessions):
                 height = len(a) // width
                 apart = hud_boxes(width, height) + tuple(
                     (x0 * width, y0 * height, x1 * width, y1 * height) for x0, y0, x1, y1 in LOOK_APART.get(scene, ()))
-                steps = [max(abs(x - y) for x, y in zip(p, q)) for i, (p, q) in enumerate(zip(a, b))
-                         if not (kind == '.png' and 255 in p)
-                         and not any(x0 <= i % width < x1 and y0 <= i // width < y1 for x0, y0, x1, y1 in apart)]
+                held = [(i, max(abs(x - y) for x, y in zip(p, q))) for i, (p, q) in enumerate(zip(a, b))
+                        if not (kind == '.png' and 255 in p)
+                        and not any(x0 <= i % width < x1 and y0 <= i // width < y1 for x0, y0, x1, y1 in apart)]
+                steps = [s for _, s in held]
                 largest = max(steps, default=0)
                 print(f'  {packed}.{scene}{kind} against {plain}: {sum(1 for s in steps if s)} of {len(steps)} '
                       f'pixels held differ, largest step {largest}', flush=True)
+                over = [i for i, s in held if s > most]
                 if not steps:
                     problems.append(f'{packed}.{scene}{kind}: no pixel is held')
-                elif largest > most:
-                    problems.append(f'{packed}.{scene}{kind}: {sum(1 for s in steps if s > most)} pixels differ '
-                                    f'from {plain} by more than {most}, largest step {largest}')
+                elif over:
+                    problems.append(f'{packed}.{scene}{kind}: {len(over)} pixels differ from {plain} by more than '
+                                    f'{most}, largest step {largest}, first at {over[0] % width},{over[0] // width}: '
+                                    f'{a[over[0]]} against {b[over[0]]} ({width}x{height})')
     return problems
 
 

@@ -480,8 +480,10 @@ class LookGateTests(unittest.TestCase):
         self.shots({('glass', '.png'): {(1, 0): (100, 102, 100)},
                     ('nether', '-hdr.png'): {(2, 0): (400, 400, 403), (3, 0): (397, 400, 400)}})
         self.assertEqual(self.gate(), [
-            'horizon_hdr.glass.png: 1 pixels differ from float_hdr by more than 1, largest step 2',
-            'horizon_hdr.nether-hdr.png: 2 pixels differ from float_hdr by more than 2, largest step 3'])
+            'horizon_hdr.glass.png: 1 pixels differ from float_hdr by more than 1, largest step 2, first at 1,0: '
+            '(100, 100, 100) against (100, 102, 100) (240x64)',
+            'horizon_hdr.nether-hdr.png: 2 pixels differ from float_hdr by more than 2, largest step 3, first at 2,0: '
+            '(400, 400, 400) against (400, 400, 403) (240x64)'])
 
     def test_what_the_pack_does_not_reach_is_not_held(self):
         (_, y, x, _), (hx, _, _, hy) = identity.hud_boxes(self.WIDTH, self.HEIGHT)
