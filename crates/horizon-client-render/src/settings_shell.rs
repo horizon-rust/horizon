@@ -340,10 +340,9 @@ pub(crate) fn search_field(
     }
 }
 
-/// The plate, with the open page's name (or the search's) over its list.
+/// The open page's name (or the search's) and rule, over its already-painted plate.
 pub(crate) fn plate(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, heading: &str) {
     let [px, py, pw, _] = cols.plate;
-    style::sheet(batch, atlas, cols.plate);
     let heading = Text::literal(style::fit(atlas, heading, pw - 24.0));
     batch.text_styled(atlas, &heading, px + 12.0, py + 10.0, style::WHITE, true);
     style::heading_rule(batch, atlas, [px + 8.0, py + 24.0, pw - 16.0, 1.0]);
@@ -470,6 +469,8 @@ pub(crate) struct RowView<'a> {
     /// A key binding, drawn as a button rather than a value between arrows: whether it waits for
     /// its key.
     pub(crate) key: Option<bool>,
+    /// A short note beside the control, in the warning colour.
+    pub(crate) tag: Option<&'a str>,
 }
 
 /// A setting's row at `y`, its name on the left and its control on the right.
@@ -485,6 +486,7 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
         focused,
         held,
         key,
+        tag,
     } = view;
     let rect = cols.row(y);
     let (tx, tw) = cols.track();
@@ -539,6 +541,9 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
     } else {
         let value = value.unwrap_or_default();
         let vw = atlas.font.width(value);
+        // A warning tag takes its room from the name, before the control.
+        let tag = tag.filter(|_| live);
+        let tag_w = tag.map_or(0.0, |tag| atlas.font.width(tag) + 6.0);
         // Where the control starts, and the value's text for a slider at rest.
         let start = match (switch, slider) {
             (Some(_), _) => right - style::CONTROL_H,
@@ -577,8 +582,19 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
                 );
             }
         }
-        // The name, cut short before the control where a translation runs long.
-        let shown = Text::literal(style::fit(atlas, name, start - 6.0 - left));
+        if let Some(tag) = tag {
+            let tx = start - 6.0 - atlas.font.width(tag);
+            batch.text_styled(
+                atlas,
+                &Text::literal(tag.to_owned()),
+                tx,
+                ty,
+                style::warn(),
+                true,
+            );
+        }
+        // The name, cut short before the control and its tag where a translation runs long.
+        let shown = Text::literal(style::fit(atlas, name, start - 6.0 - tag_w - left));
         batch.text_styled(atlas, &shown, left, ty, color, true);
     }
     if focused {
@@ -924,19 +940,34 @@ pub(crate) fn dock_note(
     atlas: &HudAtlas,
     cols: &Columns,
     text: String,
+    warning: Option<&str>,
     color: u32,
 ) {
     let [x, y, w, _] = cols.dock;
+    // A warning is its own first line, in the warning colour, so a long description cannot
+    // push it out of the strip.
+    let used = warning.is_some() as usize;
+    if let Some(warning) = warning {
+        let warning = style::fit(atlas, warning, w - 24.0);
+        batch.text_styled(
+            atlas,
+            &Text::literal(warning),
+            x + 12.0,
+            y + 20.0,
+            style::warn(),
+            true,
+        );
+    }
+    let room = cols.note_lines.saturating_sub(used);
     let lines = atlas.font.split(&Text::literal(text), w - 24.0);
-    let cut = lines.len() > cols.note_lines;
-    for (i, line) in lines.iter().take(cols.note_lines).enumerate() {
-        let marked =
-            (cut && i + 1 == cols.note_lines).then(|| Text::literal(cut_off(&line.plain())));
+    let cut = lines.len() > room;
+    for (i, line) in lines.iter().take(room).enumerate() {
+        let marked = (cut && i + 1 == room).then(|| Text::literal(cut_off(&line.plain())));
         batch.text_styled(
             atlas,
             marked.as_ref().unwrap_or(line),
             x + 12.0,
-            y + 20.0 + i as f32 * NOTE_LINE_H,
+            y + 20.0 + (used + i) as f32 * NOTE_LINE_H,
             color,
             true,
         );
@@ -1207,6 +1238,12 @@ pub(crate) struct Row<R> {
     pub(crate) why: Option<String>,
     /// What it costs, beside its name in the strip.
     pub(crate) cost: Option<style::Cost>,
+    /// A note shown above its description in the strip, in the warning colour, so a choice
+    /// that draws less than it promises says why before the description runs out of lines.
+    pub(crate) warning: Option<String>,
+    /// A short tag beside its control, in the warning colour (for example why it needs a
+    /// restart).
+    pub(crate) tag: Option<String>,
 }
 impl<R> Row<R> {
     pub(crate) fn new(id: R, name: String, value: Value) -> Self {
@@ -1219,6 +1256,8 @@ impl<R> Row<R> {
             live: true,
             why: None,
             cost: None,
+            warning: None,
+            tag: None,
         }
     }
     pub(crate) fn about(mut self, about: String) -> Self {
@@ -1290,6 +1329,8 @@ pub(crate) struct Sheet<P, R> {
     pub(crate) name: String,
     /// What the page holds, in the strip while no row is pointed at.
     pub(crate) about: String,
+    /// A note above the page's description in the strip, in the warning colour.
+    pub(crate) warning: Option<String>,
     pub(crate) groups: Vec<Group<R>>,
     /// In the page list. A page out of it opens from a row that links to it (`Screen::link`),
     /// and the list lights the page that link was followed from.
@@ -1305,6 +1346,7 @@ impl<P, R> Sheet<P, R> {
             id,
             name,
             about,
+            warning: None,
             groups,
             listed: true,
             heading: None,
@@ -1457,7 +1499,18 @@ pub(crate) trait Hosted {
     /// it, as the arrow keys do, rather than press it.
     fn clicks_step(&mut self, on: bool);
     /// `waiting`: the binding the host waits on.
-    fn draw(
+    fn discard_draw(&mut self);
+    fn draw_background(
+        &mut self,
+        s: &Settings,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        in_world: bool,
+        waiting: Option<Capture>,
+    );
+    fn draw_contents(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32));
+    #[cfg(test)]
+    fn draw_test_frame(
         &mut self,
         s: &Settings,
         batch: &mut HudBatch,
@@ -1465,7 +1518,13 @@ pub(crate) trait Hosted {
         cursor: (f32, f32),
         in_world: bool,
         waiting: Option<Capture>,
-    );
+        phases: &mut dyn FnMut(crate::screen_draw::RenderPhase, &mut HudBatch),
+    ) {
+        self.draw_background(s, batch, atlas, in_world, waiting);
+        phases(crate::screen_draw::RenderPhase::Background, batch);
+        self.draw_contents(batch, atlas, cursor);
+        phases(crate::screen_draw::RenderPhase::Foreground, batch);
+    }
     /// A press (or a drag with `drag`) at `at`.
     fn click(
         &mut self,
@@ -1539,6 +1598,8 @@ struct PageOf<P> {
     name: String,
     /// What it holds.
     about: String,
+    /// A note shown above `about` in the warning colour.
+    warning: Option<String>,
     listed: bool,
     heading: Option<String>,
 }
@@ -1588,6 +1649,8 @@ pub(crate) struct Shell<S: Screen> {
     waiting: Option<Capture>,
     /// The rows as last built, and what for.
     built: Option<(Built<S::Page, S::Row>, Rc<View<S::Page, S::Row>>)>,
+    /// This frame's prepared view, consumed before the foreground hook.
+    frame_draw: Option<Rc<View<S::Page, S::Row>>>,
     /// The settings as the screen found them, for Undo (`Screen::undoes`), and whether it
     /// changed them since.
     before: Option<Box<Settings>>,
@@ -1623,6 +1686,7 @@ impl<S: Screen + Default> Default for Shell<S> {
             picked: None,
             waiting: None,
             built: None,
+            frame_draw: None,
             before: None,
             changed: false,
             focus_next: None,
@@ -1771,6 +1835,7 @@ impl<S: Screen> Shell<S> {
                 id: sheet.id,
                 name: sheet.name,
                 about: sheet.about,
+                warning: sheet.warning,
                 listed: sheet.listed,
                 heading: sheet.heading,
             });
@@ -2180,7 +2245,11 @@ impl<S: Screen> Shell<S> {
             .map(|text| if waits { format!("> {text} <") } else { text });
         let label = row.label(value.as_deref());
         let focused = self.shows_focus(Target::Row(row.id));
-        let hint = self.strip_text(row);
+        // The narrator hears the warning as part of the row's hint, as the strip shows it.
+        let hint = match row.warning.as_deref() {
+            Some(warning) => format!("{warning} {}", self.strip_text(row)),
+            None => self.strip_text(row),
+        };
         if let Value::Read(value) = &row.value {
             let view = (label.as_str(), row.name.as_str(), value.as_str());
             read_row(batch, atlas, cols, y, view, (hover, focused));
@@ -2222,6 +2291,7 @@ impl<S: Screen> Shell<S> {
             focused,
             held: self.dragging == Some(row.id),
             key: row.binding().map(|_| waits),
+            tag: row.tag.as_deref(),
         };
         self::row(batch, atlas, cols, y, &view);
         if row.live && matches!(row.value, Value::Choice(_)) {
@@ -2243,17 +2313,24 @@ impl<S: Screen> Shell<S> {
         let [x, y, w, _] = cols.dock;
         let left = x + DOCK_INSET;
         let top = y + DOCK_NAME_Y;
-        style::sheet(batch, atlas, cols.dock);
         let row = described.map(|i| &view.rows[i]);
         let why = row.and_then(|row| row.why.as_deref().filter(|_| !row.live));
         let said = row.map(|row| self.strip_text(row));
-        let (name, about) = match (row, &said) {
-            (Some(row), Some(said)) => (row.name.as_str(), why.unwrap_or(said)),
+        let (name, about, warning) = match (row, &said) {
+            (Some(row), Some(said)) => (
+                row.name.as_str(),
+                why.unwrap_or(said),
+                row.warning.as_deref(),
+            ),
             _ => {
                 let Some(page) = view.pages.iter().find(|p| Some(p.id) == current) else {
                     return;
                 };
-                (page.name.as_str(), page.about.as_str())
+                (
+                    page.name.as_str(),
+                    page.about.as_str(),
+                    page.warning.as_deref(),
+                )
             }
         };
         match row.and_then(|row| row.cost) {
@@ -2273,28 +2350,36 @@ impl<S: Screen> Shell<S> {
             }
         }
         // Labelled for the widget tree: what the strip says is what a test or an agent reads.
-        crate::widgets::record(about, cols.dock, false);
+        // The warning is part of it, even though it is drawn on a line of its own.
+        let recorded = match warning {
+            Some(warning) => format!("{warning} {about}"),
+            None => about.to_owned(),
+        };
+        crate::widgets::record(&recorded, cols.dock, false);
         let color = if why.is_some() {
             style::muted()
         } else {
             style::GREY
         };
-        dock_note(batch, atlas, cols, about.to_owned(), color);
+        dock_note(batch, atlas, cols, about.to_owned(), warning, color);
     }
 }
 impl<S: Screen + Default> Hosted for Shell<S> {
     fn open(&mut self) {
         *self = Self::default();
     }
-    fn draw(
+    fn discard_draw(&mut self) {
+        self.frame_draw = None;
+    }
+    fn draw_background(
         &mut self,
         s: &Settings,
         batch: &mut HudBatch,
         atlas: &HudAtlas,
-        cursor: (f32, f32),
         in_world: bool,
         waiting: Option<Capture>,
     ) {
+        self.frame_draw = None;
         self.waiting = waiting;
         self.keep(s);
         let size = (batch.width, batch.height);
@@ -2321,6 +2406,16 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         }
         let cols = view.cols;
         backdrop(batch, atlas, in_world);
+        style::sheet(batch, atlas, cols.plate);
+        style::sheet(batch, atlas, cols.dock);
+        self.frame_draw = Some(view);
+    }
+    fn draw_contents(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32)) {
+        let view = self
+            .frame_draw
+            .take()
+            .expect("shell background before contents");
+        let cols = view.cols;
         let current = self.current(&view);
         self::mark(batch, atlas, &cols, &lang::get(self.screen.title()));
         let pages = self.page_list(&view, Some(atlas));
