@@ -1182,20 +1182,7 @@ impl Game<'_> {
     /// run. The native server tick hook brackets it (`ServerTickStart` before
     /// the first level, `ServerTickEnd` after the last).
     pub(super) fn tick_server(&mut self, paused: bool) -> Result<()> {
-        let ticked = self.with_residency_tick(|game| game.tick_server_body(paused));
-        // A mod's density function failed in one of the levels: the tick fails with it, and the
-        // server stops as it does for any failed tick (saving what is already final).
-        if let Some(failure) = self.mod_density_failure() {
-            return Err(failure.into());
-        }
-        ticked
-    }
-    /// The failure of a mod's density function in any of the world's levels, naming the type
-    /// and its mod (`ChunkGenerator::fatal`).
-    pub(super) fn mod_density_failure(&self) -> Option<String> {
-        std::iter::once(&self.streaming)
-            .chain(self.levels.parked_streamings())
-            .find_map(horizon_client::streaming::Streaming::fatal)
+        self.with_residency_tick(|game| game.tick_server_body(paused))
     }
 
     fn tick_server_body(&mut self, paused: bool) -> Result<()> {

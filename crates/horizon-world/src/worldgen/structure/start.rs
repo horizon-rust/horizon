@@ -954,11 +954,6 @@ impl NoiseColumnTarget for NoiseColumn {
 
 /// Biome and height queries for one structure generation attempt.
 pub trait StartContext: JigsawContext {
-    /// One of the world's mod density functions failed: what is built from samples now is not
-    /// kept (the session ends).
-    fn mod_failed(&self) -> bool {
-        false
-    }
     /// A chunk an older version generated: its structure starts are the ones
     /// it saved, which are in its blocks, not the ones this generator would
     /// make there.

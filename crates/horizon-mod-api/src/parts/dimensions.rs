@@ -185,6 +185,7 @@ impl DimensionsRegistrar for PartRegistrar {
         }
         self.density_function_types.push(DensityFunctionTypeInfo {
             id: id.into(),
+            mod_id: self.mod_id,
             density_type,
         });
     }

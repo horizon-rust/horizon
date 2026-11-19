@@ -1,4 +1,5 @@
 //! Native density function adapter: the mods' `DensityFunctionType`s as the engine's.
+use horizon_client::crash::{ModCall, ModGuard, enter_native_mod};
 use horizon_world::worldgen::mod_density_functions::{
     ModDensityFunction, ModDensityFunctionType, ModDensityFunctionTypes,
     install_mod_density_function_types,
@@ -6,42 +7,57 @@ use horizon_world::worldgen::mod_density_functions::{
 use mod_api::{DensityFunction, DensityFunctionType};
 use std::sync::Arc;
 
-/// A mod's type. Every call into the mod's code is contained: a panic comes back as an error,
-/// which the engine reports with the type's id, instead of ending the game from a worldgen worker.
-struct TypeAdapter(Arc<dyn DensityFunctionType>);
+/// Who a call into a type's code belongs to: a panic in it is not caught (a density function must
+/// not panic) and takes the game's crash path, whose report names the mod, the method and the
+/// type. Entering is a thread-local mark, with no allocation, so it is fine per call.
+#[derive(Clone, Copy)]
+struct Owner {
+    mod_id: &'static str,
+    id: &'static str,
+}
+impl Owner {
+    fn enter(self, hook: &'static str) -> ModGuard {
+        enter_native_mod(ModCall {
+            id: self.mod_id,
+            hook,
+            part: Some(self.id),
+        })
+    }
+}
+
+struct TypeAdapter {
+    owner: Owner,
+    density_type: Arc<dyn DensityFunctionType>,
+}
 impl ModDensityFunctionType for TypeAdapter {
     fn decode(&self, json: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
-        let decoded = horizon_client::crash::contain(|| {
-            let function = self.0.decode(json)?;
-            // Asked once, here, so that the engine never calls them again.
-            let range = function.range();
-            let varies_with_y = function.varies_with_y();
-            Ok::<_, String>(FunctionAdapter {
-                function,
-                range,
-                varies_with_y,
-            })
-        });
-        let adapter = decoded.map_err(|panic| format!("decoding panicked: {panic}"))??;
-        Ok(Arc::new(adapter))
+        let function = {
+            let _call = self.owner.enter("decode");
+            self.density_type.decode(json)?
+        };
+        Ok(Arc::new(FunctionAdapter {
+            owner: self.owner,
+            function,
+        }))
     }
 }
 
 struct FunctionAdapter {
+    owner: Owner,
     function: Arc<dyn DensityFunction>,
-    range: [f32; 2],
-    varies_with_y: bool,
 }
 impl ModDensityFunction for FunctionAdapter {
     fn range(&self) -> [f32; 2] {
-        self.range
+        let _call = self.owner.enter("range");
+        self.function.range()
     }
     fn varies_with_y(&self) -> bool {
-        self.varies_with_y
+        let _call = self.owner.enter("varies_with_y");
+        self.function.varies_with_y()
     }
-    fn sample(&self, position: [i32; 3], seed: i64) -> Result<f32, String> {
-        horizon_client::crash::contain(|| self.function.sample(position, seed))
-            .map_err(|panic| format!("sample panicked: {panic}"))
+    fn sample(&self, position: [i32; 3], seed: i64) -> f32 {
+        let _call = self.owner.enter("sample");
+        self.function.sample(position, seed)
     }
     fn fill(
         &self,
@@ -50,19 +66,23 @@ impl ModDensityFunction for FunctionAdapter {
         count: [usize; 3],
         seed: i64,
         out: &mut [f32],
-    ) -> Result<(), String> {
-        horizon_client::crash::contain(|| self.function.fill(origin, step, count, seed, out))
-            .map_err(|panic| format!("fill panicked: {panic}"))
+    ) {
+        let _call = self.owner.enter("fill");
+        self.function.fill(origin, step, count, seed, out);
     }
 }
 
 fn installed_density_function_types() -> ModDensityFunctionTypes {
     mod_api::__private::density_function_type_declarations()
         .into_iter()
-        .map(|(id, density_type)| {
+        .map(|(id, mod_id, density_type)| {
+            let adapter = TypeAdapter {
+                owner: Owner { mod_id, id },
+                density_type,
+            };
             (
-                id,
-                Arc::new(TypeAdapter(density_type)) as Arc<dyn ModDensityFunctionType>,
+                id.to_owned(),
+                Arc::new(adapter) as Arc<dyn ModDensityFunctionType>,
             )
         })
         .collect()
@@ -80,6 +100,18 @@ mod tests {
     use super::*;
     use crate::game::api_values::install_parts;
     use mod_api::{Hooks, ModEntry, Registrar, RegistrationContext};
+
+    /// The platform's crash instrumentation, installed before the adapter marks a mod call: a
+    /// mark through `mod_api` first would seal it off for every test in this process.
+    fn platform() {
+        drop(mod_platform::content::crash::enter_native_mod(
+            mod_api::content::crash::ModCall {
+                id: "test",
+                hook: "setup",
+                part: None,
+            },
+        ));
+    }
 
     /// `{"type": "test:tilt", "slope": s}`: s times x plus the seed, only the default `fill`.
     struct Tilt;
@@ -107,6 +139,7 @@ mod tests {
     /// keeps what the mod said; the default `fill` walks y fastest, then x, then z.
     #[test]
     fn a_registered_type_reaches_the_engine_and_decodes_its_fields() {
+        platform();
         struct Registers;
         #[mod_api::__subscriptions]
         impl Hooks for Registers {
@@ -121,83 +154,84 @@ mod tests {
             .unwrap();
         assert_eq!(tilt.range(), [-1e6, 1e6]);
         assert!(!tilt.varies_with_y());
-        assert_eq!(tilt.sample([3, 70, -4], 5), Ok(11.0));
+        assert_eq!(tilt.sample([3, 70, -4], 5), 11.0);
         let mut out = [0.0; 4];
-        tilt.fill([-1, 0, 0], [4, 8, 1], [2, 2, 1], 0, &mut out)
-            .unwrap();
+        tilt.fill([-1, 0, 0], [4, 8, 1], [2, 2, 1], 0, &mut out);
         assert_eq!(out, [-2.0, -2.0, 6.0, 6.0]);
         let refused = types["test:tilt"].decode(r#"{"type":"test:tilt"}"#);
         assert_eq!(refused.err().as_deref(), Some("no slope"));
     }
 
-    /// `{"type": "test:breaks", "in": "decode" | "range" | "fill"}`: panics there.
+    /// `{"type": "breaker:plates"}`: its `sample` and `fill` panic, saying which mod call the
+    /// thread was inside.
     struct Breaks;
     struct Broken;
     impl DensityFunctionType for Breaks {
-        fn decode(&self, json: &str) -> Result<Arc<dyn DensityFunction>, String> {
-            let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-            match value["in"].as_str() {
-                Some("decode") => panic!("bad plates"),
-                Some("range") => Ok(Arc::new(BrokenRange)),
-                _ => Ok(Arc::new(Broken)),
-            }
+        fn decode(&self, _: &str) -> Result<Arc<dyn DensityFunction>, String> {
+            Ok(Arc::new(Broken))
         }
+    }
+    fn inside() -> String {
+        let call = mod_api::content::crash::current_native_call().expect("inside a mod call");
+        format!(
+            "{} {} {}",
+            call.id,
+            call.hook,
+            call.part.unwrap_or_default()
+        )
     }
     impl DensityFunction for Broken {
         fn range(&self) -> [f32; 2] {
             [0.0, 1.0]
         }
         fn sample(&self, _: [i32; 3], _: i64) -> f32 {
-            panic!("bad sample")
+            panic!("{}", inside())
         }
         fn fill(&self, _: [i32; 3], _: [i32; 3], _: [usize; 3], _: i64, _: &mut [f32]) {
-            panic!("bad fill")
-        }
-    }
-    struct BrokenRange;
-    impl DensityFunction for BrokenRange {
-        fn range(&self) -> [f32; 2] {
-            panic!("bad range")
-        }
-        fn sample(&self, _: [i32; 3], _: i64) -> f32 {
-            0.0
+            panic!("{}", inside())
         }
     }
 
-    /// A panic in the mod's code comes back as an error with its message, on this thread: the
-    /// decoder's turns into a load error naming the type, `fill`'s into a failed chunk.
+    /// A panic in the mod's `sample` or `fill` is not caught: it leaves the adapter as a panic, for
+    /// the game's crash path, while the thread is marked as inside that mod's call of that type,
+    /// which the crash report names. The mark ends with the call.
     #[test]
-    fn a_panicking_mod_function_is_an_error_not_a_crash() {
-        let breaks = TypeAdapter(Arc::new(Breaks));
-        let decoded = breaks.decode(r#"{"in":"decode"}"#);
-        let error = decoded.err().expect("decode refused");
-        assert!(
-            error.starts_with("decoding panicked:") && error.contains("bad plates"),
-            "{error}"
+    fn a_panic_in_a_mod_function_propagates_naming_the_mod_and_type() {
+        platform();
+        let breaks = TypeAdapter {
+            owner: Owner {
+                mod_id: "breaker",
+                id: "breaker:plates",
+            },
+            density_type: Arc::new(Breaks),
+        };
+        let broken = breaks.decode("{}").unwrap();
+        let message = |payload: Box<dyn std::any::Any + Send>| {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let sampled =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| broken.sample([0, 0, 0], 0)));
+        assert_eq!(
+            message(sampled.expect_err("sample panics")),
+            "breaker sample breaker:plates"
         );
-        let error = breaks
-            .decode(r#"{"in":"range"}"#)
-            .err()
-            .expect("range refused");
-        assert!(error.contains("bad range"), "{error}");
-        let broken = breaks.decode(r#"{"in":"fill"}"#).unwrap();
-        let error = broken.sample([0, 0, 0], 0).unwrap_err();
-        assert!(
-            error.starts_with("sample panicked:") && error.contains("bad sample"),
-            "{error}"
+        let filled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            broken.fill([0; 3], [1; 3], [1; 3], 0, &mut [0.0])
+        }));
+        assert_eq!(
+            message(filled.expect_err("fill panics")),
+            "breaker fill breaker:plates"
         );
-        let error = broken
-            .fill([0; 3], [1; 3], [1; 3], 0, &mut [0.0])
-            .unwrap_err();
-        assert!(
-            error.starts_with("fill panicked:") && error.contains("bad fill"),
-            "{error}"
-        );
+        assert!(mod_api::content::crash::current_native_call().is_none());
     }
 
     /// Each type a mod may not register is refused at startup, naming the mod.
     #[test]
     fn invalid_density_function_types_refuse_registration() {
+        platform();
         struct Invalid;
         #[mod_api::__subscriptions]
         impl Hooks for Invalid {

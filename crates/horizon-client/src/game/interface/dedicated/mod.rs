@@ -1616,9 +1616,6 @@ impl Game<'_> {
             if self.level.spawn.is_none() {
                 let [x, y, z] = loop {
                     self.update_world();
-                    if let Some(failure) = self.mod_density_failure() {
-                        return Err(failure.into());
-                    }
                     if let Some(pos) = self.find_world_spawn()? {
                         break pos;
                     }
@@ -1639,9 +1636,6 @@ impl Game<'_> {
         }
         while self.player.is_none() {
             self.update_world();
-            if let Some(failure) = self.mod_density_failure() {
-                return Err(failure.into());
-            }
             self.spawn_player()?;
             if Instant::now() > deadline {
                 return Err("the spawn area did not load".into());

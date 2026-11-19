@@ -1,7 +1,7 @@
 //! Bounded decoding of density registries into the immutable core graph.
 //! Named registry holders and raw numeric tokens preserve compilation behavior.
 use super::mod_density_functions::{
-    ModDensity, ModDensityFailure, ModDensityFunctionTypes, mod_density_function_types,
+    ModDensity, ModDensityFunctionTypes, mod_density_function_types,
 };
 use super::*;
 use horizon_core::{
@@ -57,10 +57,9 @@ fn axis(raw: &RawValue) -> Result<Axis, DecodeError> {
     }
 }
 
-/// The mod density function types a registry's JSON may name, and the registry's record of
-/// their first failure, which every mod node it decodes shares.
-#[derive(Clone)]
-struct ModTypes(&'static ModDensityFunctionTypes, Arc<ModDensityFailure>);
+/// The mod density function types a registry's JSON may name.
+#[derive(Clone, Copy)]
+struct ModTypes(&'static ModDensityFunctionTypes);
 impl std::fmt::Debug for ModTypes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_set().entries(self.0.keys()).finish()
@@ -94,7 +93,7 @@ impl DensityRegistry {
         types: &'static ModDensityFunctionTypes,
     ) -> Result<Self, DecodeError> {
         let mut loader = Loader {
-            types: ModTypes(types, Arc::default()),
+            types: ModTypes(types),
             graph: DensityGraph::new(),
             noises: BTreeMap::new(),
             definitions: BTreeMap::new(),
@@ -128,11 +127,6 @@ impl DensityRegistry {
             types: loader.types,
         })
     }
-    /// The first failure of a mod density function this registry decoded: what samples it
-    /// reads this to end the world's session.
-    pub fn mod_failure(&self) -> Arc<ModDensityFailure> {
-        self.types.1.clone()
-    }
     pub fn graph(&self) -> &DensityGraph {
         &self.graph
     }
@@ -153,7 +147,7 @@ impl DensityRegistry {
     /// intact. Roots are not registered as additional named density entries.
     pub fn decode_functions(&mut self, json: &[&str]) -> Result<Vec<FunctionId>, DecodeError> {
         let mut loader = Loader {
-            types: self.types.clone(),
+            types: self.types,
             graph: self.graph.clone(),
             noises: self.noises.clone(),
             definitions: BTreeMap::new(),
@@ -516,7 +510,6 @@ impl Loader {
         let node = ModDensity {
             id: kind.to_owned(),
             function,
-            failure: self.types.1.clone(),
         };
         Ok(self.graph.bind_seeded(Arc::new(node), range, axes)?)
     }
@@ -657,17 +650,10 @@ mod tests {
             fn varies_with_y(&self) -> bool {
                 true
             }
-            fn sample(&self, [_, y, _]: [i32; 3], seed: i64) -> Result<f32, String> {
-                Ok(self.0 * y as f32 + seed as f32)
+            fn sample(&self, [_, y, _]: [i32; 3], seed: i64) -> f32 {
+                self.0 * y as f32 + seed as f32
             }
-            fn fill(
-                &self,
-                _: [i32; 3],
-                _: [i32; 3],
-                _: [usize; 3],
-                _: i64,
-                _: &mut [f32],
-            ) -> Result<(), String> {
+            fn fill(&self, _: [i32; 3], _: [i32; 3], _: [usize; 3], _: i64, _: &mut [f32]) {
                 unreachable!("these tests sample points")
             }
         }
@@ -685,19 +671,10 @@ mod tests {
             fn varies_with_y(&self) -> bool {
                 false
             }
-            fn sample(&self, _: [i32; 3], _: i64) -> Result<f32, String> {
-                Ok(self.0[0])
+            fn sample(&self, _: [i32; 3], _: i64) -> f32 {
+                self.0[0]
             }
-            fn fill(
-                &self,
-                _: [i32; 3],
-                _: [i32; 3],
-                _: [usize; 3],
-                _: i64,
-                _: &mut [f32],
-            ) -> Result<(), String> {
-                Ok(())
-            }
+            fn fill(&self, _: [i32; 3], _: [i32; 3], _: [usize; 3], _: i64, _: &mut [f32]) {}
         }
 
         fn types() -> &'static ModDensityFunctionTypes {
@@ -796,9 +773,9 @@ mod tests {
             fn varies_with_y(&self) -> bool {
                 self.varies
             }
-            fn sample(&self, position: [i32; 3], seed: i64) -> Result<f32, String> {
+            fn sample(&self, position: [i32; 3], seed: i64) -> f32 {
                 POINTS.fetch_add(1, Ordering::Relaxed);
-                Ok(self.value(position, seed))
+                self.value(position, seed)
             }
             fn fill(
                 &self,
@@ -807,7 +784,7 @@ mod tests {
                 count: [usize; 3],
                 seed: i64,
                 out: &mut [f32],
-            ) -> Result<(), String> {
+            ) {
                 VOLUMES.fetch_add(1, Ordering::Relaxed);
                 assert_eq!(out.len(), count.iter().product::<usize>());
                 let mut index = 0;
@@ -821,7 +798,6 @@ mod tests {
                         }
                     }
                 }
-                Ok(())
             }
         }
 

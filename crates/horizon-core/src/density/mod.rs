@@ -57,8 +57,6 @@ pub enum SampleError {
     RecursiveCache,
     SurfaceRequiresSingleLayer,
     SurfaceSearchOverflow,
-    /// A sampler outside the engine (a mod's density function) failed; it logs why.
-    External,
 }
 impl From<DensityError> for SampleError {
     fn from(value: DensityError) -> Self {
@@ -83,7 +81,6 @@ impl std::fmt::Display for SampleError {
             Self::ZeroGradientPeriod => {
                 f.write_str("repeating gradient has a zero coordinate period")
             }
-            Self::External => f.write_str("a mod's density function failed"),
         }
     }
 }

@@ -8,8 +8,6 @@ pub(super) struct DecodedNoiseSettings {
     pub(super) aquifer: Option<[Arc<dyn DensitySampler>; 6]>,
     pub(super) rule: MaterialRule,
     pub(super) spawn_target: Vec<SpawnTargetPoint>,
-    /// What every mod density function these settings decoded records its failure in.
-    pub(super) mod_failure: Arc<crate::worldgen::mod_density_functions::ModDensityFailure>,
 }
 
 /// The 32-bit heights of a noise-settings definition, inside its level's build height.
@@ -81,7 +79,6 @@ impl GeneratorData {
                 .unwrap_or(false),
         };
         let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)?;
-        let mod_failure = densities.mod_failure();
         let router =
             NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)?;
         // NoiseGeneratorSettings.debugFunctions: a registered density or an
@@ -158,7 +155,6 @@ impl GeneratorData {
             aquifer,
             rule,
             spawn_target,
-            mod_failure,
         })
     }
 }

@@ -101,16 +101,6 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     /// next to each other in a run. Results do not change.
     fn all_idle(&self) {}
     fn proto(&self, worker: &mut Self::Worker, x: i32, z: i32) -> Proto;
-    /// Whether generating `proto` failed because a mod's density function failed (`fatal`): it
-    /// is neither decorated, finished nor saved, and the streamer starts no more work.
-    fn proto_failed(&self, _proto: &Proto) -> bool {
-        false
-    }
-    /// The failure that ends the world's session: a mod's density function failed, naming the
-    /// type and its mod. The server stops at the end of the tick (`Streaming::fatal`).
-    fn fatal(&self) -> Option<String> {
-        None
-    }
     fn decorates(&self) -> bool {
         false
     }
@@ -328,11 +318,6 @@ pub enum Done {
     Generated(Chunk),
     /// A proto chunk, and whether it was decorated (loaded so from the save).
     Proto(i32, i32, Proto, bool),
-    /// A column whose generation failed (`ChunkGenerator::proto_failed`).
-    ProtoFailed(i32, i32),
-    /// A decoration that didn't run: a final chunk's proto chunk failed to generate again. The
-    /// region comes back as it went out, with the region indices of its final chunks.
-    DecorateFailed(i32, i32, Box<[Proto; 9]>, Vec<usize>),
     /// A decorated region, the region indices of its final chunks and what
     /// decoration wrote into them.
     Decorated(i32, i32, Box<[Proto; 9]>, Vec<usize>, FinalWrites),
@@ -551,11 +536,6 @@ pub struct Streaming {
     proto_bytes: Arc<dyn Fn(&Proto) -> ([usize; 6], [usize; 16]) + Send + Sync>,
     /// `ChunkGenerator::cache_census`.
     caches: Arc<dyn Fn() -> Vec<(&'static str, usize, Option<usize>)> + Send + Sync>,
-    /// `ChunkGenerator::fatal`.
-    generator_fatal: Arc<dyn Fn() -> Option<String> + Send + Sync>,
-    /// A chunk failed to generate, or the generator reports a fatal failure: no more
-    /// generation, decoration or finishing is started, as the world's session is ending.
-    halted: bool,
     /// This streamer's place in the shared pool (`horizon_threads::jobs`);
     /// dropping it waits for its running jobs.
     jobs: Registration,
@@ -1061,25 +1041,17 @@ impl<G: ChunkGenerator> Jobs<G> {
                 }
                 None => {
                     let proto = generator.proto(&mut *worker, x, z);
-                    if generator.proto_failed(&proto) {
-                        Done::ProtoFailed(x, z)
-                    } else {
-                        let decorated = generator.is_decorated(&proto);
-                        Done::Proto(x, z, proto, decorated)
-                    }
+                    let decorated = generator.is_decorated(&proto);
+                    Done::Proto(x, z, proto, decorated)
                 }
             },
-            Job::Decorate(x, z, mut region, finals) => 'decorate: {
+            Job::Decorate(x, z, mut region, finals) => {
                 // The final chunks' proto chunks, made here: a
                 // generated proto chunk holding their blocks.
                 for (i, snapshot) in &finals {
                     if let Some(proto) = generator.proto_beside_final(&mut *worker, snapshot) {
                         region[*i] = proto;
                     }
-                }
-                if region.iter().any(|proto| generator.proto_failed(proto)) {
-                    let finals = finals.into_iter().map(|(i, _)| i).collect();
-                    break 'decorate Done::DecorateFailed(x, z, region, finals);
                 }
                 generator.decorate(&mut *worker, &mut region);
                 let mut writes = FinalWrites::default();
@@ -1210,17 +1182,11 @@ impl Streaming {
             let generator = generator.clone();
             Arc::new(move || generator.cache_census())
         };
-        let generator_fatal = {
-            let generator = generator.clone();
-            Arc::new(move || generator.fatal())
-        };
         Self {
             shared,
             non_air_sections,
             proto_bytes,
             caches,
-            generator_fatal,
-            halted: false,
             jobs,
             workers,
             order: 0,
@@ -1502,32 +1468,6 @@ impl Streaming {
                 world.block_entities.insert(pos, entity);
             }
         }
-    }
-    /// A decoration that didn't run (`Done::DecorateFailed`): its proto chunks go back as they
-    /// were, no chunk is marked decorated, and the streamer halts.
-    fn receive_decorate_failed(&mut self, x: i32, z: i32, region: [Proto; 9], finals: Vec<usize>) {
-        self.decorating -= 1;
-        for i in &finals {
-            self.decorating_finals
-                .remove(&(x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1));
-        }
-        for (i, proto) in region.into_iter().enumerate() {
-            if finals.contains(&i) {
-                continue;
-            }
-            let key = (x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1);
-            self.light_views.remove(&key);
-            self.protos.insert(key, Some(proto));
-        }
-        self.halted = true;
-    }
-    /// The failure that ends the world's session (`ChunkGenerator::fatal`), or that a chunk's
-    /// generation failed when the generator doesn't say why.
-    pub fn fatal(&self) -> Option<String> {
-        (self.generator_fatal)().or_else(|| {
-            self.halted
-                .then(|| "a chunk's generation failed".to_owned())
-        })
     }
     /// Saved proto chunks come back; those now out of range are dropped by
     /// the next `update`.
@@ -1838,9 +1778,6 @@ impl Streaming {
                 paused: true,
             });
         }
-        if !self.halted && (self.generator_fatal)().is_some() {
-            self.halted = true;
-        }
         ExtraCover::refresh(&mut self.cover, &self.extra);
         ForcedCover::refresh(&mut self.forced_cover, &self.forced);
         self.cover_current = true;
@@ -1895,15 +1832,8 @@ impl Streaming {
                         }
                     }
                 }
-                Done::ProtoFailed(x, z) => {
-                    self.generating.remove(&(x, z));
-                    self.halted = true;
-                }
                 Done::Decorated(x, z, region, finals, writes) => {
                     self.receive_decorated(x, z, *region, finals, writes, world)
-                }
-                Done::DecorateFailed(x, z, region, finals) => {
-                    self.receive_decorate_failed(x, z, *region, finals)
                 }
                 Done::Generated(chunk) => {
                     if let Some(chunk) = self.receive_generated(chunk, world) {
@@ -2085,13 +2015,8 @@ impl Streaming {
         self.decorated.retain(|k| {
             protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
         });
-        // Finalize chunks whose neighbourhood is decorated. Once halted (the session is ending)
-        // nothing more is finished.
-        let finalize_candidates: Vec<(i32, i32)> = if self.halted {
-            Vec::new()
-        } else {
-            self.protos.keys().copied().collect()
-        };
+        // Finalize chunks whose neighbourhood is decorated.
+        let finalize_candidates: Vec<(i32, i32)> = self.protos.keys().copied().collect();
         for (x, z) in finalize_candidates {
             if world.chunks.contains_key(&(x, z))
                 || self.finishing.contains(&(x, z))
@@ -2147,7 +2072,7 @@ impl Streaming {
                     || generating.contains(&(x, z))
             });
         }
-        if self.decorates && !self.halted && self.decorating < workers * 2 {
+        if self.decorates && self.decorating < workers * 2 {
             let wants = |s: &Self, x: i32, z: i32| {
                 !s.decorated.contains(&(x, z))
                     && !world.chunks.contains_key(&(x, z))
@@ -2393,9 +2318,6 @@ impl Streaming {
         (uploads, removed)
     }
     fn schedule_generation(&mut self, world: &World, workers: usize) {
-        if self.halted {
-            return;
-        }
         let input = GenerationInputs {
             ranges: Ranges {
                 center: self.center,
@@ -2617,9 +2539,6 @@ impl Streaming {
                 Some(Done::Decorated(x, z, region, finals, writes)) => {
                     self.receive_decorated(x, z, *region, finals, writes, world)
                 }
-                Some(Done::DecorateFailed(x, z, region, finals)) => {
-                    self.receive_decorate_failed(x, z, *region, finals)
-                }
                 Some(Done::Generated(chunk)) => {
                     if let Some(chunk) = self.receive_generated(chunk, world) {
                         return SaveStep::Full(chunk);
@@ -2680,9 +2599,6 @@ impl Streaming {
                 Done::Decorated(x, z, region, finals, writes) => {
                     self.receive_decorated(x, z, *region, finals, writes, world)
                 }
-                Done::DecorateFailed(x, z, region, finals) => {
-                    self.receive_decorate_failed(x, z, *region, finals)
-                }
                 Done::Generated(chunk) => {
                     if let Some(chunk) = self.receive_generated(chunk, world) {
                         return SaveStep::Full(chunk);
@@ -2738,10 +2654,6 @@ impl Streaming {
         let changed = self.set_forced(x, z, forced);
         if forced && changed {
             while !world.chunks.contains_key(&(x, z)) {
-                // The session is ending (`fatal`): the column won't come.
-                if self.halted || (self.generator_fatal)().is_some() {
-                    break;
-                }
                 assert!(!self.paused, "forced chunk load before streaming started");
                 assert!(
                     !self

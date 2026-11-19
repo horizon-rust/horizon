@@ -376,9 +376,6 @@ struct Pipeline<R: RandomSource> {
     manual_structures: std::sync::OnceLock<Option<super::generator_structures::StructureState>>,
     /// The noise settings' `spawn_target` points.
     spawn_target: Vec<SpawnTargetPoint>,
-    /// The first failure of a mod density function in these noise settings: from then on what
-    /// this pipeline answers from samples is an error or nothing (`mod_failed`).
-    mod_failure: Arc<super::mod_density_functions::ModDensityFailure>,
     /// The chunks an older version generated, which new chunks blend with.
     old_world: std::sync::OnceLock<Arc<dyn super::blending::OldWorld>>,
     /// The noise settings' `debug_functions`: label and sampler.
@@ -473,7 +470,6 @@ where
             aquifer,
             rule,
             spawn_target,
-            mod_failure,
         } = data.decode_noise_settings(settings_json, seed, level)?;
         let preliminary = router.get(RouterField::ChunkSurfaceLevel).clone();
         let mut source_json = generator["biome_source"].to_string();
@@ -572,7 +568,6 @@ where
             structures: None,
             manual_structures: std::sync::OnceLock::new(),
             spawn_target,
-            mod_failure,
             old_world: std::sync::OnceLock::new(),
             debug_density,
             spawn_position: std::sync::OnceLock::new(),
@@ -626,8 +621,6 @@ where
             find_spawn_position(&self.spawn_target, &mut SamplerContext::cached())
                 .map_err(|e| GeneratorError::Stage("spawn search", e.to_string()))?
         };
-        // Nothing derived from a failed mod density function is kept.
-        mod_failed(self.mod_failure.get())?;
         Ok(*self.spawn_position.get_or_init(|| position))
     }
     /// Manual placement reads the registry without enabling the automatic
@@ -1396,11 +1389,6 @@ where
             return *h;
         }
         let h = self.pipeline.base_height(x, z, kind);
-        // A height from a failed mod density function isn't kept: what asked fails at its end
-        // (`mod_failed`).
-        if self.pipeline.mod_failure.get().is_some() {
-            return h;
-        }
         if self.worker.heights.len() > 65536 {
             self.worker.heights.clear();
         }
@@ -1442,9 +1430,6 @@ impl<R: RandomSource + 'static> super::structure::start::StartContext for Struct
 where
     R::Positional: Clone + Send + Sync,
 {
-    fn mod_failed(&self) -> bool {
-        self.pipeline.mod_failure.get().is_some()
-    }
     fn is_old_chunk(&self, chunk: ChunkPos) -> bool {
         self.pipeline
             .old_world
@@ -1847,8 +1832,6 @@ pub type SavedStructureStarts =
     dyn Fn(ChunkPos) -> Option<horizon_core::nbt::Compound> + Send + Sync;
 
 trait SeededPipeline: Send + Sync {
-    /// The first failure of a mod density function of these noise settings (`ModDensityFailure`).
-    fn mod_density_failure(&self) -> Option<&str>;
     fn set_saved_starts(&self, source: Arc<SavedStructureStarts>);
     fn generate(
         &self,
@@ -1955,9 +1938,6 @@ impl<R: RandomSource + 'static> SeededPipeline for Pipeline<R>
 where
     R::Positional: Clone + Send + Sync,
 {
-    fn mod_density_failure(&self) -> Option<&str> {
-        self.mod_failure.get()
-    }
     fn generate(
         &self,
         worker: &mut WorkerState,
@@ -2212,11 +2192,6 @@ where
             for &y in &ys {
                 let quart = [x >> 2, y >> 2, z >> 2];
                 let Ok(name) = resolver.sample(&mut worker.carver_context, quart) else {
-                    // A failed mod density function ends the search: every sample after it
-                    // fails too.
-                    if self.mod_failure.get().is_some() {
-                        return None;
-                    }
                     continue;
                 };
                 if candidates.contains(name) {
@@ -2929,14 +2904,7 @@ impl OverworldGenerator {
     }
     /// NoiseSpawnFinder.findSpawnPosition: the column `origin` is the chunk of.
     pub fn spawn_position(&self) -> Result<[i32; 2], GeneratorError> {
-        let position = self.pipeline.spawn_position();
-        mod_failed(self.pipeline.mod_density_failure())?;
-        position
-    }
-    /// The first failure of one of this generator's mod density functions: the world's session
-    /// ends with it (nothing this generator answers from samples after it is kept).
-    pub fn mod_density_failure(&self) -> Option<&str> {
-        self.pipeline.mod_density_failure()
+        self.pipeline.spawn_position()
     }
     /// A new `WorldGenRegion` random centred on the chunk: what its generation
     /// steps draw from (`level.getRandom()`).
@@ -2978,18 +2946,6 @@ impl OverworldGenerator {
     }
 }
 
-/// `Err` naming the mod and the type when one of the world's mod density functions failed:
-/// whatever was sampled since may be wrong, so it is answered and kept nowhere.
-fn mod_failed(failure: Option<&str>) -> Result<(), GeneratorError> {
-    match failure {
-        Some(failure) => Err(GeneratorError::Stage(
-            "world generation",
-            failure.to_owned(),
-        )),
-        None => Ok(()),
-    }
-}
-
 /// A surface-only noise column for far terrain. Heights are exclusive top faces.
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceSample {
@@ -3012,21 +2968,11 @@ impl GeneratorWorker {
     pub fn generate_proto(&mut self, pos: ChunkPos) -> Result<ProtoChunk, GeneratorError> {
         let result = self.pipeline.generate(&mut self.state, pos);
         self.state.timings.chunks += 1;
-        mod_failed(self.pipeline.mod_density_failure())?;
         result
-    }
-    /// The first failure of one of the world's mod density functions (`ModDensityFailure`).
-    pub fn mod_density_failure(&self) -> Option<&str> {
-        self.pipeline.mod_density_failure()
-    }
-    /// `value`, unless a mod density function failed: then nothing.
-    fn unless_failed<T>(&self, value: Option<T>) -> Option<T> {
-        value.filter(|_| self.pipeline.mod_density_failure().is_none())
     }
     /// Noise/aquifer surface and its material rule, without chunks, structures or features.
     pub fn surface_sample(&mut self, x: i32, z: i32) -> Option<SurfaceSample> {
-        let sample = self.pipeline.surface_sample(&mut self.state, x, z, None);
-        self.unless_failed(sample)
+        self.pipeline.surface_sample(&mut self.state, x, z, None)
     }
     /// Noise/aquifer material runs, excluding air; bounds are half-open.
     /// Features and carvers still require generated chunks.
@@ -3039,10 +2985,7 @@ impl GeneratorWorker {
         let surface = self
             .pipeline
             .surface_sample(&mut self.state, x, z, Some(&mut spans));
-        match self.pipeline.mod_density_failure() {
-            Some(_) => (None, Vec::new()),
-            None => (surface, spans),
-        }
+        (surface, spans)
     }
     /// `/locate structure`: the nearest start of one of `names`.
     pub fn locate(
@@ -3063,10 +3006,8 @@ impl GeneratorWorker {
         radius: i32,
         skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])> {
-        let found = self
-            .pipeline
-            .locate(&mut self.state, names, from, radius, skip);
-        self.unless_failed(found)
+        self.pipeline
+            .locate(&mut self.state, names, from, radius, skip)
     }
     /// Direct far sampling: work scales with rendered vertical resolution,
     /// without allocating chunks, carving masks or propagated aquifers.
@@ -3081,18 +3022,11 @@ impl GeneratorWorker {
         side: usize,
         approximate: bool,
     ) -> Result<Vec<LodColumn>, GeneratorError> {
-        let grid = self
-            .pipeline
-            .lod_grid(&mut self.state, x, z, width, side, approximate);
-        mod_failed(self.pipeline.mod_density_failure())?;
-        grid
+        self.pipeline
+            .lod_grid(&mut self.state, x, z, width, side, approximate)
     }
     pub fn noise_biomes(&mut self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {
-        let biomes = self.pipeline.noise_biomes(&mut self.state, quarts);
-        match self.pipeline.mod_density_failure() {
-            Some(_) => vec![None; quarts.len()],
-            None => biomes,
-        }
+        self.pipeline.noise_biomes(&mut self.state, quarts)
     }
     /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: the `Density` line of
     /// the noise settings' `debug_functions` at the feet (none without them).
@@ -3102,28 +3036,24 @@ impl GeneratorWorker {
     /// `BiomeSource.findClosestBiome3d`: the first sampled position whose
     /// noise biome passes `allowed`, spiralling out from the origin.
     pub fn find_closest_biome(&mut self, search: &BiomeSearch<'_>) -> Option<(String, [i32; 3])> {
-        let found = self.pipeline.find_closest_biome(&mut self.state, search);
-        self.unless_failed(found)
+        self.pipeline.find_closest_biome(&mut self.state, search)
     }
     /// `JigsawPlacement.addPieces` for `/place jigsaw`, drawing from the
     /// generation context's random (level seed and the position's chunk).
     pub fn jigsaw_pieces(&mut self, query: &JigsawQuery<'_>) -> Option<JigsawPieces> {
-        let pieces = self.pipeline.jigsaw_pieces(&mut self.state, query);
-        self.unless_failed(pieces)
+        self.pipeline.jigsaw_pieces(&mut self.state, query)
     }
     /// ConcentricRingsStructurePlacement chunks of a structure set (such as
     /// `minecraft:strongholds`), searched for now if nothing needed them yet.
     pub fn ring_positions(&mut self, set: &str) -> Option<Vec<ChunkPos>> {
-        let positions = self.pipeline.ring_positions(&mut self.state, set);
-        self.unless_failed(positions)
+        self.pipeline.ring_positions(&mut self.state, set)
     }
     /// STRUCTURE_STARTS: the structure starts owned by a chunk (cached).
     pub fn structure_starts(
         &mut self,
         pos: ChunkPos,
     ) -> Vec<Arc<super::structure::start::StructureStart>> {
-        let starts = self.pipeline.structure_starts(&mut self.state, pos);
-        self.unless_failed(Some(starts)).unwrap_or_default()
+        self.pipeline.structure_starts(&mut self.state, pos)
     }
     /// `Structure.generate` for `/place structure`: the start `structure`
     /// builds in `chunk`, whatever its placement set says about that chunk.
@@ -3132,10 +3062,8 @@ impl GeneratorWorker {
         structure: &str,
         chunk: ChunkPos,
     ) -> Option<Arc<super::structure::start::StructureStart>> {
-        let start = self
-            .pipeline
-            .structure_start(&mut self.state, structure, chunk);
-        self.unless_failed(start)
+        self.pipeline
+            .structure_start(&mut self.state, structure, chunk)
     }
     /// Puts a saved start of `structure` (its pieces as a save lists them, in
     /// JSON) in `chunk`, in place of the one generation builds there, until

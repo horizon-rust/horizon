@@ -89,9 +89,6 @@ pub struct VanillaTerrain {
     flat: bool,
     /// A mod's chunk generator with vanilla stages: its terrain is no noise to draw far away.
     mod_terrain: bool,
-    /// The failure of a mod's density function in far decoration's own generator (`lod.rs`),
-    /// which ends the session as one in `generator` does (`fatal`).
-    far_failure: std::sync::OnceLock<String>,
 }
 /// The far ring of a mod's terrain: none, as for the mod's terrain alone.
 struct NoFarGround;
@@ -431,7 +428,6 @@ impl VanillaTerrain {
             dimension: dimension.to_owned(),
             last_proto: std::sync::atomic::AtomicU64::new(0),
             created: std::time::Instant::now(),
-            far_failure: std::sync::OnceLock::new(),
             flat: false,
             mod_terrain: false,
         })
@@ -1003,19 +999,6 @@ impl ChunkGenerator for VanillaTerrain {
                 Box::new(VanillaProto::Failed(x, z))
             }
         }
-    }
-    /// Only a failure of a mod's density function: any other failed generation keeps its empty
-    /// column (`finish`), as before mods could add density functions.
-    fn proto_failed(&self, proto: &Proto) -> bool {
-        matches!(
-            proto.downcast_ref::<VanillaProto>(),
-            Some(VanillaProto::Failed(..))
-        ) && self.generator.mod_density_failure().is_some()
-    }
-    fn fatal(&self) -> Option<String> {
-        (self.generator.mod_density_failure())
-            .or_else(|| self.far_failure.get().map(String::as_str))
-            .map(str::to_owned)
     }
     fn decorates(&self) -> bool {
         true

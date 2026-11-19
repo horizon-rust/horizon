@@ -21,7 +21,9 @@ pub trait DensityFunctionType: Send + Sync + 'static {
 
 /// One decoded density function node. Its values must be a pure function of the world seed and
 /// the block position: the same seed and position give the same value on every thread, every
-/// run and every machine, or chunks, far terrain and structures disagree.
+/// run and every machine, or chunks, far terrain and structures disagree. It must not panic: a
+/// panic crashes the game like one in any native worldgen hook, with a crash report naming the
+/// mod and the type.
 pub trait DensityFunction: Send + Sync + 'static {
     /// `[min, max]`, finite, `min <= max`: every value [`sample`](Self::sample) and
     /// [`fill`](Self::fill) give lies in it. Read once, when the node decodes; vanilla's interval
@@ -67,16 +69,19 @@ pub trait DensityFunction: Send + Sync + 'static {
 /// A registered density function type.
 pub(crate) struct DensityFunctionTypeInfo {
     pub(crate) id: Box<str>,
+    /// The `[mod] id` of the mod that registered it, for a crash report to name.
+    pub(crate) mod_id: &'static str,
     pub(crate) density_type: Arc<dyn DensityFunctionType>,
 }
 
-/// Registered density function types for the hidden game integration boundary: each id and its
-/// type.
+/// Registered density function types for the hidden game integration boundary: each id, the
+/// `[mod] id` of the mod that registered it, and its type.
 // hidden: the game's startup adapter reads the registered types; mods declare them through the registrar.
 #[doc(hidden)]
-pub fn density_function_type_declarations() -> Vec<(String, Arc<dyn DensityFunctionType>)> {
+pub fn density_function_type_declarations()
+-> Vec<(&'static str, &'static str, Arc<dyn DensityFunctionType>)> {
     crate::parts::installed_density_function_type_list()
         .iter()
-        .map(|info| (info.id.to_string(), info.density_type.clone()))
+        .map(|info| (&*info.id, info.mod_id, info.density_type.clone()))
         .collect()
 }
