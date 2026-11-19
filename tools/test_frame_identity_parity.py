@@ -924,11 +924,13 @@ def hud_boxes(width, height):
     """Where the crosshair and the hotbar are, x0, y0, x1, y1, at the GUI scale Auto picks for the shot's size (the
     window's, scaled by the desktop's)."""
     scale = max(1, min(width // 320, height // 240))
-    # 🤖 Agent: The HUD centres in GUI pixels, the window's size divided by the scale and rounded up: at an odd GUI
-    # width (854 wide at 2 is 427) the hotbar and its selected slot start a pixel left of the shot's middle.
-    x, y = (-(-size // scale) // 2 * scale for size in (width, height))
+    x, y = width // 2, height // 2
+    # 🤖 Agent: The hotbar centres in GUI pixels, the window's width divided by the scale and rounded up: at an odd GUI
+    # width (854 wide at 2 is 427) it and its selected slot start a pixel left of the shot's middle. The crosshair's
+    # box covers its sprite either way and stays where it was, so that no more of the world is left out.
+    bar = -(-width // scale) // 2 * scale
     return ((x - 9 * scale, y - 9 * scale, x + 9 * scale, y + 9 * scale),
-            (x - 92 * scale, height - 24 * scale, x + 92 * scale, height))
+            (bar - 92 * scale, height - 24 * scale, bar + 92 * scale, height))
 
 
 def shows(sdr, paper, cap=float('inf')):
