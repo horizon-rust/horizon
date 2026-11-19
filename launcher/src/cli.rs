@@ -1470,6 +1470,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             } else {
                 backend::MinecraftFrom::Install
             };
+            let tag = backend::prepared_in(&tag);
             let (preparer, minecraft) =
                 backend::preparer(&tag, &minecraft, from, &|line| eprintln!("{line}"))?;
             backend::sounds(&tag, &minecraft, &|line| println!("{line}"));

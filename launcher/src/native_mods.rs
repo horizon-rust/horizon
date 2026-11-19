@@ -432,8 +432,23 @@ pub const INSTALLED: &str = horizon_platform::mod_package::mod_list::NATIVE_DIR;
 
 /// The native mods turned on in the game folder `home`, unpacked into a folder [`build`] takes.
 /// Each flat `.hmod` passes the registry's shared package boundary; no code is run. Each one in
-/// the format from before the SDK is left out, with a warning in the build log.
+/// the format from before the SDK is left out ([`warn_legacy`] says so in the build's log).
 pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
+    stage_installed(home, installed_incoming())?.ok_or_else(|| {
+        format!(
+            "No native mod is turned on in {}: install one from the Mods page first.",
+            home.join(INSTALLED).display()
+        )
+    })
+}
+
+fn installed_incoming() -> PathBuf {
+    root().join("installed.incoming")
+}
+
+/// Warns in the build log of each native mod in `home` in the format from before the SDK, which
+/// [`stage_installed`] left out of the build.
+fn warn_legacy(home: &Path) {
     for path in installed_files(home) {
         if crate::native_status::legacy_format(&path) {
             log_warning(&crate::i18n::trf(
@@ -442,12 +457,6 @@ pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
             ));
         }
     }
-    stage_installed(home, root().join("installed.incoming"))?.ok_or_else(|| {
-        format!(
-            "No native mod is turned on in {}: install one from the Mods page first.",
-            home.join(INSTALLED).display()
-        )
-    })
 }
 
 fn installed_files(home: &Path) -> Vec<PathBuf> {
@@ -2409,6 +2418,10 @@ pub fn build(
         return Err(Failed::Other(error));
     }
     logged(|cache| {
+        // After `logged` empties the log: the player reads it to learn why a mod is missing.
+        if folder == installed_incoming() {
+            warn_legacy(&instance.home);
+        }
         let lease = cache.map_err(|error| Failed::Other(error.into()))?;
         let profile = select_build_profile(instance.native_profile, profile, || {
             planning::classify(folder, Some(base), lease)
@@ -3407,7 +3420,6 @@ mod tests {
         }
         zip.finish().unwrap();
         crate::browser::java::set_enabled(&home, "veinminer", true).unwrap();
-        clear_log().unwrap();
 
         let out = installed_mods(&home).unwrap();
         let ids: Vec<_> = bundles(&out)
@@ -3421,9 +3433,11 @@ mod tests {
             .map(|m| m.0)
             .collect();
         assert_eq!(enabled, ["veinminer"], "the old file asks for no build");
+        clear_log().unwrap();
+        warn_legacy(&home);
         let log = fs::read_to_string(log_path()).unwrap();
         assert!(
-            log.contains("warning: ") && log.contains("fps_counter.hmod"),
+            log.starts_with("warning: ") && log.contains("fps_counter.hmod"),
             "{log}"
         );
         assert_eq!(fs::read(&legacy).unwrap(), bytes, "left as it was");

@@ -191,6 +191,8 @@ impl Launcher {
             let log = |line| {
                 let _ = tx.send(Msg::Line(Job::Prepare, line));
             };
+            // A native build reads its base's files: those are the ones prepared.
+            let tag = backend::prepared_in(&tag);
             let result = backend::preparer(&tag, &minecraft, from, &log)
                 .inspect(|(_, minecraft)| backend::sounds(&tag, minecraft, &log))
                 .map(|(p, _)| {

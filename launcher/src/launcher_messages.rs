@@ -531,7 +531,7 @@ impl Launcher {
 /// prepared: the game can't start, and the button alone would only offer the same step again.
 fn not_prepared_after(tag: &str) -> String {
     crate::i18n::trf(
-        "The preparation of {version} ended, but its files are still not ready, so the game can't start. Open the log for its last lines, or prepare it again from Versions.",
+        "The preparation of {version} ended, but its files are still not ready, so the game can't start.",
         &[("version", tag)],
     )
 }
