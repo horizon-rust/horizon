@@ -3,9 +3,9 @@
 use super::*;
 use crate::game::Hit;
 use horizon_client::mobs::Species;
+use horizon_core::nbt::Tag;
 use horizon_core::random::{EntityRandom, LegacyRandom, RandomSource};
 use horizon_world::food::Difficulty;
-use horizon_world::nbt::Tag;
 
 fn game() -> Option<Game<'static>> {
     std::env::var_os("HORIZON_TEST_RESOURCES")?;
@@ -20,7 +20,7 @@ fn spawn(game: &mut Game<'_>, kind: &str) -> u32 {
     game.spawn_mob_spawned(
         kind,
         [4.5, 100.0, 4.5],
-        crate::game::creatures::SpawnYaw::Created,
+        SpawnSite::Plain,
     )
     .unwrap()
 }
@@ -67,11 +67,12 @@ fn a_block_egg_spawns_on_the_block_surface() {
         Some(Tag::compound([("audit", Tag::Int(9))])),
     );
     *game.held_mut() = Some(stack.clone());
-    game.tick_hit = Some(Some(Hit {
+    game.tick_hit.set(Some(Some(Hit {
         pos: [4, 100, 4],
         face: [0, 1, 0],
         point: [4.5, 100.5, 4.5],
-    }));
+        inside: false,
+    })));
     assert!(game.use_spawn_egg(&stack).unwrap());
     let pig = game
         .mobs
@@ -88,11 +89,12 @@ fn a_block_egg_spawns_on_the_block_surface() {
     // box, so it lands on the slab's surface as well.
     let dragon = ItemStack::new("minecraft:ender_dragon_spawn_egg", 1);
     *game.held_mut() = Some(dragon.clone());
-    game.tick_hit = Some(Some(Hit {
+    game.tick_hit.set(Some(Some(Hit {
         pos: [4, 100, 4],
         face: [0, 1, 0],
         point: [4.5, 100.5, 4.5],
-    }));
+        inside: false,
+    })));
     assert!(game.use_spawn_egg(&dragon).unwrap());
     assert_eq!(game.dragon.as_ref().unwrap().position.y, 100.5);
 }
