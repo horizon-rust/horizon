@@ -433,7 +433,7 @@ capabilities = [\"registries\"]
     .unwrap();
     zip.finish().unwrap();
     let found = horizon_platform::mod_package::find(&home.join("horizon-mods"));
-    assert_eq!(found, [path.clone()]);
+    assert_eq!(found, std::slice::from_ref(&path));
     let package = horizon_platform::mod_package::Package::read(&path).unwrap();
     assert_eq!(package.manifest.id, "a_b");
     fs::write(
@@ -483,7 +483,7 @@ capabilities = [\"registries\"]
     )
     .unwrap();
     let found = horizon_platform::mod_package::find(&home.join("horizon-mods"));
-    assert_eq!(found, [part.clone()]);
+    assert_eq!(found, std::slice::from_ref(&part));
     assert_eq!(
         horizon_platform::mod_package::Package::read(&part)
             .unwrap()
