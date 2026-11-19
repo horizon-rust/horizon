@@ -6,9 +6,10 @@
 //!   the argument and answer types and, for a type that borrows, the shape the generator
 //!   writes for it. A missing or changed import fails linking, naming the method.
 //! - An export's id is a hash of its name, the same in every build.
-//! - [`layouts`] is the table both sides compute at run time: each call's signature hash
-//!   mixed with the `Wire` layout of every owned type it reaches, which the generator can't
-//!   see. The game compares the mod's table with its own when the mod loads.
+//! - [`layouts`] is the table both sides compute at run time: each call's signature hash and
+//!   the load-phase access the game checks before serving it ([`access_checks`]), mixed with
+//!   the `Wire` layout of every owned type it reaches, which the generator can't see. The game
+//!   compares the mod's table with its own when the mod loads.
 use super::ty::{BorrowedShape, Ty, Types};
 use super::{Method, exports};
 use std::fmt::Write as _;
@@ -147,6 +148,63 @@ pub(super) fn signature(types: &Types<'_>, m: &Method) -> u64 {
     fnv(&text)
 }
 
+/// The accessor that hands `m`'s trait over (`REACHED`): the generated host checks its access
+/// before `m`'s own.
+pub(super) fn frame_accessor_of<'a>(m: &Method, dropped: &'a [Method]) -> Option<&'a Method> {
+    super::REACHED
+        .iter()
+        .find(|(owner, _, _)| *owner == m.owner)
+        .filter(|_| m.owner != "ConfigFiles")
+        .and_then(|_| {
+            dropped.iter().find(|candidate| {
+                super::frame_accessor(candidate)
+                    && matches!(&candidate.ret, Ty::Dyn(name, _) if name == m.owner)
+            })
+        })
+}
+
+/// The access the generated host checks before serving file root `source::accessor`.
+pub(super) fn root_access<'a>(
+    source: &str,
+    accessor: &str,
+    methods: &'a [Method],
+    dropped: &'a [Method],
+) -> &'a str {
+    dropped
+        .iter()
+        .chain(methods)
+        .find(|method| method.owner == source && method.name == accessor)
+        .and_then(|method| method.access.as_deref())
+        .unwrap_or("WorldOnly")
+}
+
+/// Every load-phase access check the generated host makes before serving `m`, in order: each
+/// file root's for `ConfigFiles`, the accessor's that hands its trait over, then its own. A
+/// mod built before one changed would call into a phase that now refuses it.
+pub(super) fn access_checks(m: &Method, methods: &[Method], dropped: &[Method]) -> String {
+    let mut text = String::new();
+    if m.owner == "ConfigFiles" {
+        for (root, source, accessor) in super::FILE_ROOTS {
+            let level = root_access(source, accessor, methods, dropped);
+            write!(text, "root {root}:{level};").unwrap();
+        }
+    }
+    for checked in frame_accessor_of(m, dropped).into_iter().chain([m]) {
+        write!(text, "{}:{:?};", checked.name, checked.access).unwrap();
+    }
+    text
+}
+
+/// `m`'s [`signature`] with its [`access_checks`]: its hash in [`layouts`] before the layouts of
+/// the types it reaches.
+fn checked_signature(types: &Types<'_>, m: &Method, methods: &[Method], dropped: &[Method]) -> u64 {
+    fnv(&format!(
+        "{:016x}:{}",
+        signature(types, m),
+        access_checks(m, methods, dropped)
+    ))
+}
+
 /// The call's key in [`layouts`] and in its import name: `owner::name`, with `held-` before a
 /// method the mod calls on a handler another mod gave the game.
 pub(super) fn key(m: &Method, held: bool) -> String {
@@ -271,7 +329,11 @@ fn answer_crossing(m: &Method) -> Option<&'static str> {
 
 /// Every call both sides know, as `(key, signature hash, owned types reached, export)`: the
 /// imports, the methods of held handlers and the exports.
-fn calls(types: &Types<'_>, methods: &[Method]) -> Vec<(String, u64, Vec<usize>, bool)> {
+fn calls(
+    types: &Types<'_>,
+    methods: &[Method],
+    dropped: &[Method],
+) -> Vec<(String, u64, Vec<usize>, bool)> {
     let imports = super::calls::imports(methods)
         .into_iter()
         .map(|m| (m, false, false));
@@ -292,7 +354,7 @@ fn calls(types: &Types<'_>, methods: &[Method]) -> Vec<(String, u64, Vec<usize>,
                 reached(types, ty, &mut found, &mut Vec::new());
             }
             found.sort_by(|a, b| types.defs[*a].rust.cmp(&types.defs[*b].rust));
-            let signature = signature(types, m);
+            let signature = checked_signature(types, m, methods, dropped);
             let signature = if export {
                 export_hash(signature, export_id(m.owner, &m.name))
             } else {
@@ -306,8 +368,8 @@ fn calls(types: &Types<'_>, methods: &[Method]) -> Vec<(String, u64, Vec<usize>,
 /// `call_layouts()`, for the crate that defines `Wire`: each call's key and its whole hash, the
 /// signature hash mixed with the run-time layout of each owned type it reaches in name order.
 /// Each type's layout is computed once.
-pub(super) fn layouts(types: &Types<'_>, methods: &[Method]) -> String {
-    let calls = calls(types, methods);
+pub(super) fn layouts(types: &Types<'_>, methods: &[Method], dropped: &[Method]) -> String {
+    let calls = calls(types, methods, dropped);
     let mut used: Vec<usize> = calls
         .iter()
         .flat_map(|(_, _, d, _)| d.iter().copied())
@@ -435,14 +497,15 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let types = Types::new(crate::index::Index::new(&root, &[])).unwrap();
         let started = method("Hooks", "server_started", i32());
-        let (_, hash, _, export) = calls(&types, std::slice::from_ref(&started))
+        let (_, hash, _, export) = calls(&types, std::slice::from_ref(&started), &[])
             .into_iter()
             .find(|(key, ..)| key == "Hooks::server_started")
             .unwrap();
         let id = export_id("Hooks", "server_started");
         assert!(export);
-        assert_eq!(hash, export_hash(signature(&types, &started), id));
-        assert_ne!(hash, export_hash(signature(&types, &started), id ^ 1));
+        let signature = checked_signature(&types, &started, &[], &[]);
+        assert_eq!(hash, export_hash(signature, id));
+        assert_ne!(hash, export_hash(signature, id ^ 1));
     }
 
     /// A subscription export is hashed by the names it sends, not by `HookId`'s layout, which
@@ -456,8 +519,55 @@ mod tests {
             ))
             .unwrap(),
             &[method("Hooks", "subscribed", i32())],
+            &[],
         );
         assert!(code.contains("crate::wire::SubscribedAnswer as crate::wire::Wire"));
+    }
+
+    /// The access the game checks before serving a call is part of that call's hash, and of no
+    /// other's: a mod importing a call whose access changed is refused, and the rest load. Its
+    /// import name stays the same, so the refusal names the call. An accessor that hands a
+    /// trait over counts for every method of that trait.
+    #[test]
+    fn a_calls_access_is_part_of_its_hash() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let types = Types::new(crate::index::Index::new(&root, &[])).unwrap();
+        let build = |own: &str, accessor: &str| {
+            let mut value = method("Host", "data_map_value", i32());
+            value.access = Some(own.to_owned());
+            let mut levels = method("ServerHost", "levels", i32());
+            levels.params.clear();
+            levels.ret = Ty::Dyn("Levels".to_owned(), false);
+            levels.access = Some(accessor.to_owned());
+            let methods = vec![
+                value,
+                method("Host", "other", i32()),
+                method("Levels", "level_time", i32()),
+            ];
+            (methods, vec![levels])
+        };
+        let hashes = |(methods, dropped): (Vec<Method>, Vec<Method>)| {
+            let table: std::collections::HashMap<String, u64> = calls(&types, &methods, &dropped)
+                .into_iter()
+                .map(|(key, hash, ..)| (key, hash))
+                .collect();
+            let names: Vec<String> = methods
+                .iter()
+                .map(|m| import_name(&types, m, false))
+                .collect();
+            (
+                ["Host::data_map_value", "Host::other", "Levels::level_time"].map(|key| table[key]),
+                names,
+            )
+        };
+        let (before, names) = hashes(build("PublishedResources", "WorldOnly"));
+        let (own, own_names) = hashes(build("WorldOnly", "WorldOnly"));
+        assert_ne!(before[0], own[0]);
+        assert_eq!(before[1..], own[1..]);
+        assert_eq!(names, own_names);
+        let (reached, _) = hashes(build("PublishedResources", "PublishedResources"));
+        assert_eq!(before[..2], reached[..2]);
+        assert_ne!(before[2], reached[2]);
     }
 
     #[test]

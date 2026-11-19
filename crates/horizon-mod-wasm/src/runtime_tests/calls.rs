@@ -141,6 +141,28 @@ fn a_call_reaching_a_type_whose_layout_changed_is_refused_naming_it() {
     })
 }
 
+/// A mod built when `data_map_value` had another access level answers another hash for it (the
+/// generator's `a_calls_access_is_part_of_its_hash`): it is refused, naming the call, before it
+/// could call into a phase that now refuses it. A mod that doesn't import that call loads.
+#[test]
+fn a_call_whose_access_changed_is_refused_and_other_mods_load() {
+    crate::test_stack::on_guest_stack(|| {
+        let name = import(("Backend", "data_map_value"));
+        let (key, layout, export) = entry(crate::calls::key(name));
+        let built_before = member(&[name], &[(key, layout ^ 1, export)], "unreachable");
+        assert_eq!(
+            load(&[("test", &built_before)]).err().unwrap(),
+            Refusal::Call {
+                call: "Backend::data_map_value".into(),
+                changed: true
+            }
+        );
+        let other = import(NEXT_LONG);
+        let unaffected = member(&[other], &[entry(crate::calls::key(other))], "unreachable");
+        assert!(load(&[("test", &unaffected)]).is_ok());
+    })
+}
+
 #[test]
 fn an_export_whose_hash_changed_is_refused_before_it_is_called() {
     crate::test_stack::on_guest_stack(|| {

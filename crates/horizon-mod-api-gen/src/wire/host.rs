@@ -61,13 +61,8 @@ fn frame(surface: &mut super::Surface<'_>) -> Result<String, String> {
         if *owner == "ConfigFiles" {
             let mut roots = String::new();
             for (root, source, accessor) in super::FILE_ROOTS {
-                let access = surface
-                    .dropped
-                    .iter()
-                    .chain(surface.methods.iter())
-                    .find(|method| method.owner == *source && method.name == *accessor)
-                    .and_then(|method| method.access.as_deref())
-                    .unwrap_or("WorldOnly");
+                let access =
+                    super::names::root_access(source, accessor, &surface.methods, &surface.dropped);
                 let source = snake(source);
                 writeln!(roots, "{root} => {{ if !mod_api::__private::access_allowed({accessor:?}, mod_api::__private::LoadAccess::{access}) {{ return Err(ServeError::Phase {{ operation: {accessor:?}, phase: mod_api::__private::current_phase() }}); }} Ok(self.{source}()?.{accessor}()) }},").unwrap();
             }
@@ -662,16 +657,7 @@ impl Cx {
                 if m.receiver == Some(true) { "_mut" } else { "" }
             )
         };
-        let accessor = super::REACHED
-            .iter()
-            .find(|(owner, _, _)| *owner == m.owner)
-            .filter(|_| m.owner != "ConfigFiles")
-            .and_then(|_| {
-                surface.dropped.iter().find(|candidate| {
-                    super::frame_accessor(candidate)
-                        && matches!(&candidate.ret, Ty::Dyn(name, _) if name == m.owner)
-                })
-            });
+        let accessor = super::names::frame_accessor_of(m, &surface.dropped);
         let mut access = String::new();
         for checked in accessor.into_iter().chain(std::iter::once(m)) {
             if let Some(level) = &checked.access {

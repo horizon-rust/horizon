@@ -678,7 +678,11 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
         prepared::PREPARE,
         prepared::RELEASE,
     );
-    wire.push_str(&names::layouts(&surface.types, &surface.methods));
+    wire.push_str(&names::layouts(
+        &surface.types,
+        &surface.methods,
+        &surface.dropped,
+    ));
     writeln!(
         wire,
         "#[doc(hidden)] pub fn prepared_abi_layout() -> u64 {{ {} }}",
