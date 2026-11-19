@@ -775,7 +775,7 @@ A pack that wants smooth edges draws them itself, in a post pass: a spatial filt
 frame to the next, so a still camera gives it the same picture twice and there is no sub-pixel detail to gather.
 
 A pack without `[[post]]` whose frame holds gamma light (not `blend = "linear"` on the float frame) gets the
-player's FXAA or TAA: with `fxaa` or `taa` on, Horizon anti-aliases the world at the world's size, in the frame's
+player's FXAA or TAA: with `fxaa` or `taa` on, Horizon anti-aliases the world, FXAA at its size, in the frame's
 encoding, before the pack's `[tonemap]` (or Horizon's curve) reads it. TAA jitters the world's projection by
 `frame.jitter`, and its history starts over when the pack is loaded or rebuilt and when the display's values
 change. Where the pack has no `[tonemap]`, or one that never reads `previous`, TAA upscaling applies too: the world
