@@ -397,7 +397,7 @@ impl Post {
     }
 
     /// The scaled world's depth where it was drawn at `size`, the window's: what post effects
-    /// read when the world drew there (4x MSAA, or a pack reading the world, at 100% scale).
+    /// read when 4x MSAA drew the world there.
     pub(super) fn depth_at(&self, size: [u32; 2]) -> Option<&wgpu::TextureView> {
         (self.target.as_ref())
             .filter(|t| t.size == size)

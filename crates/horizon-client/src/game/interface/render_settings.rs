@@ -55,7 +55,13 @@ impl Game<'_> {
     /// changes"): when HDR or the pick (unless refused) call for another frame than the
     /// renderer's, it is made again before this frame draws.
     pub(super) fn follow_frame(&mut self) {
-        if self.options.paced_by_split || self.options.split_guest {
+        let split = self.options.paced_by_split || self.options.split_guest;
+        // Split-screen's renderer isn't made again here, so the Anti-aliasing button offers
+        // 4x MSAA there only where the renderer already has its pipelines.
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_msaa_rebuildable(!split);
+        }
+        if split {
             return;
         }
         // 4x MSAA's pipelines come with a renderer made while it is on: switched on in one made

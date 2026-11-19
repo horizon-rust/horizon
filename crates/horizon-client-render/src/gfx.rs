@@ -6151,7 +6151,7 @@ impl Renderer {
     /// This renderer's output as applied, with what its destination offers and reports.
     pub fn output(&self) -> output::EffectiveOutput {
         output::EffectiveOutput {
-            msaa: self.msaa_supported(),
+            msaa: self.msaa_offered(),
             ..self.output_with_rays()
         }
     }
@@ -10889,6 +10889,7 @@ impl Renderer {
                 crosshair,
                 first_crosshair: debug_depth + debug_top,
                 world_depth: false,
+                msaa_depth: false,
                 real: false,
                 hand_drawn: !pack_draws_hand,
                 hand_view_proj,
@@ -10968,6 +10969,7 @@ impl Renderer {
             crosshair,
             first_crosshair: debug_depth + debug_top,
             world_depth: scaled.is_none(),
+            msaa_depth: !fg && self.msaa_samples() > 1,
             real: true,
             hand_drawn: !pack_draws_hand,
             hand_view_proj,
@@ -11311,14 +11313,13 @@ impl Renderer {
                 crate::spectator_shaders::chains(),
                 target_texture.format(),
             );
-            // The world's depth: the window's, or the scaled pass's own where it drew at the
-            // window's size (4x MSAA at 100% scale); a smaller one doesn't fit the frame, and a
-            // made frame's world isn't the depth's.
+            // The world's depth: the window's, or 4x MSAA's resolved one where it drew at the
+            // window's size (100% scale); a smaller one doesn't fit the frame.
             let window = [self.config.width, self.config.height];
             let depth = if overlay.world_depth {
                 Some(&self.depth)
             } else {
-                self.world_post.depth_at(window).filter(|_| overlay.real)
+                (self.world_post.depth_at(window)).filter(|_| overlay.msaa_depth)
             };
             post.apply(
                 &self.device,
@@ -11650,6 +11651,10 @@ struct Overlay {
     first_crosshair: u32,
     /// The world drew into `depth` (post effects may read it), not a scaled target's.
     world_depth: bool,
+    /// 4x MSAA drew the world, resolved into the scaled target at the window's size, without
+    /// frame generation: post effects read that target's depth. A frame-generation pair keeps
+    /// none, as its made frame has no depth of its own and an effect would flicker.
+    msaa_depth: bool,
     /// The real frame, not frame generation's made one: the world icon grabs it.
     real: bool,
     /// The game drew the first-person hand, in its own pass or at the end of the world's

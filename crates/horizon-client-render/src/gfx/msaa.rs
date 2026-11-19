@@ -47,6 +47,8 @@ pub(super) struct Msaa {
     requested: bool,
     /// The setting came on without the pipelines: the renderer is to be made again.
     rebuild: bool,
+    /// The game makes the renderer again when `rebuild` asks (not split-screen's).
+    rebuildable: bool,
     /// The last frame's terrain drew multisampled.
     active: bool,
     passes: Option<Passes>,
@@ -70,6 +72,7 @@ impl Msaa {
             supported,
             requested,
             rebuild: false,
+            rebuildable: true,
             active: false,
             passes: (requested && supported).then(|| Passes::new(kept, device, format, linear)),
         }
@@ -78,6 +81,11 @@ impl Msaa {
     /// The terrain's four-sample pipelines are wanted: this renderer was made with it on.
     pub(super) fn built(&self) -> bool {
         self.passes.is_some()
+    }
+
+    /// The adapter draws it, and its pipelines are here or a renderer made again brings them.
+    fn offered(&self) -> bool {
+        self.supported && (self.passes.is_some() || self.rebuildable)
     }
 
     /// It is on and can draw, unless something in the frame keeps terrain single-sampled.
@@ -169,9 +177,17 @@ impl Renderer {
         self.msaa.requested
     }
 
-    /// Whether this adapter can draw 4x MSAA on this frame (the Anti-aliasing button offers it).
-    pub(super) fn msaa_supported(&self) -> bool {
-        self.msaa.supported
+    /// Whether the Anti-aliasing button offers 4x MSAA: the adapter draws it, and this renderer
+    /// has its pipelines or will be made again for them.
+    pub(super) fn msaa_offered(&self) -> bool {
+        self.msaa.offered()
+    }
+
+    /// Whether the game makes this renderer again for 4x MSAA's pipelines when it comes on
+    /// (`take_msaa_rebuild`). Split-screen doesn't, so there it is offered only where the
+    /// renderer was made with it on.
+    pub fn set_msaa_rebuildable(&mut self, rebuildable: bool) {
+        self.msaa.rebuildable = rebuildable;
     }
 }
 

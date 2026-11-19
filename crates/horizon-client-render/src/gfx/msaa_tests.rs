@@ -9,6 +9,7 @@ fn switching_on_asks_for_its_pipelines_once() {
         supported,
         requested,
         rebuild: false,
+        rebuildable: true,
         active: false,
         passes: None,
     };
@@ -38,6 +39,26 @@ fn switching_on_asks_for_its_pipelines_once() {
     drawing.active = true;
     drawing.set(false);
     assert!(!drawing.active && drawing.passes().is_none());
+}
+
+/// The button offers it where a renderer made again would bring its pipelines; split-screen's
+/// isn't made again, so a renderer there made without them doesn't offer it.
+#[test]
+fn split_screen_offers_it_only_with_its_pipelines() {
+    let msaa = |supported, rebuildable| Msaa {
+        supported,
+        requested: false,
+        rebuild: false,
+        rebuildable,
+        active: false,
+        passes: None,
+    };
+    assert!(msaa(true, true).offered());
+    assert!(!msaa(true, false).offered(), "split-screen, no pipelines");
+    assert!(
+        !msaa(false, true).offered(),
+        "an adapter that can't draw it"
+    );
 }
 
 /// Real raster coverage through terrain.wgsl's `cutout_coverage` and the seed and resolve
