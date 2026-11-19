@@ -1,7 +1,7 @@
 //! Bounded decoding of density registries into the immutable core graph.
 //! Named registry holders and raw numeric tokens preserve compilation behavior.
 use super::mod_density_functions::{
-    ModDensity, ModDensityFunctionTypes, mod_density_function_types,
+    MAX_REASONABLE, ModDensity, ModDensityFunctionTypes, mod_density_function_types,
 };
 use super::*;
 use horizon_core::{
@@ -42,7 +42,7 @@ fn float(raw: &RawValue) -> Result<f32, DecodeError> {
 }
 fn noise_value(raw: &RawValue) -> Result<f32, DecodeError> {
     let value = float(raw)?;
-    if (-1e6..=1e6).contains(&value) {
+    if (-MAX_REASONABLE..=MAX_REASONABLE).contains(&value) {
         Ok(value)
     } else {
         Err(DecodeError::Field("density value"))
@@ -505,10 +505,17 @@ impl Loader {
                     "range [{min}, {max}] is not two finite values, the least first"
                 ))
             })?;
+        if min < -MAX_REASONABLE || max > MAX_REASONABLE {
+            return Err(refused(format!(
+                "range [{min}, {max}] goes beyond ±{MAX_REASONABLE}, the most a density value may be"
+            )));
+        }
         // The axis mask the compiler slices on: X=1, Y=2, Z=4.
         let axes = if function.varies_with_y() { 7 } else { 5 };
         let node = ModDensity {
             id: kind.to_owned(),
+            owner: density_type.owner().to_owned(),
+            range: [min, max],
             function,
         };
         Ok(self.graph.bind_seeded(Arc::new(node), range, axes)?)
@@ -636,6 +643,9 @@ mod tests {
         struct Ramp;
         struct Ramped(f32);
         impl ModDensityFunctionType for Ramp {
+            fn owner(&self) -> &str {
+                "test"
+            }
             fn decode(&self, json: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
                 let value: serde_json::Value =
                     serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -660,6 +670,9 @@ mod tests {
         /// A type whose functions declare `range`.
         struct Ranged([f32; 2]);
         impl ModDensityFunctionType for Ranged {
+            fn owner(&self) -> &str {
+                "test"
+            }
             fn decode(&self, _: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
                 Ok(Arc::new(Ranged(self.0)))
             }
@@ -677,8 +690,53 @@ mod tests {
             fn fill(&self, _: [i32; 3], _: [i32; 3], _: [usize; 3], _: i64, _: &mut [f32]) {}
         }
 
+        /// In [-10, 10], 1 everywhere, except where x > 0: there `fill` leaves slot 0 alone
+        /// (`None`) or writes the value into it, and `sample` returns that value (NaN for `None`).
+        struct Misbehaves(Option<f32>);
+        impl ModDensityFunctionType for Misbehaves {
+            fn owner(&self) -> &str {
+                "test"
+            }
+            fn decode(&self, _: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
+                Ok(Arc::new(Misbehaves(self.0)))
+            }
+        }
+        impl ModDensityFunction for Misbehaves {
+            fn range(&self) -> [f32; 2] {
+                [-10.0, 10.0]
+            }
+            fn varies_with_y(&self) -> bool {
+                true
+            }
+            fn sample(&self, [x, _, _]: [i32; 3], _: i64) -> f32 {
+                if x > 0 {
+                    self.0.unwrap_or(f32::NAN)
+                } else {
+                    1.0
+                }
+            }
+            fn fill(&self, origin: [i32; 3], _: [i32; 3], _: [usize; 3], _: i64, out: &mut [f32]) {
+                for (slot, value) in out.iter_mut().enumerate() {
+                    match (slot, origin[0] > 0, self.0) {
+                        (0, true, None) => {}
+                        (0, true, Some(bad)) => *value = bad,
+                        _ => *value = 1.0,
+                    }
+                }
+            }
+        }
+
         fn types() -> &'static ModDensityFunctionTypes {
             Box::leak(Box::new(ModDensityFunctionTypes::from([
+                ("test:skips".to_owned(), Arc::new(Misbehaves(None)) as _),
+                (
+                    "test:wild".to_owned(),
+                    Arc::new(Misbehaves(Some(20.0))) as _,
+                ),
+                (
+                    "test:huge".to_owned(),
+                    Arc::new(Ranged([0.0, 4_294_967_296.0])) as _,
+                ),
                 ("test:ramp".to_owned(), Arc::new(Ramp) as _),
                 (
                     "test:inverted".to_owned(),
@@ -720,6 +778,76 @@ mod tests {
             assert!(DensityCompiler::new(graph).compile_raw(root).is_err());
         }
 
+        /// The message of the panic `f` raises.
+        fn panic_message(f: impl FnOnce()) -> String {
+            let payload =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).expect_err("panics");
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        /// A slot `fill` leaves unwritten panics, naming the mod, the type and the slot, though
+        /// the same scratch held the first volume's values under `add`; so does a NaN or
+        /// out-of-range value from `fill` or `sample`. None is used, cached or turned into an
+        /// error.
+        #[test]
+        fn unwritten_nan_and_out_of_range_values_panic_naming_the_mod_and_type() {
+            let densities = BTreeMap::from([
+                (
+                    "minecraft:skips".into(),
+                    r#"{"type":"add","left":{"type":"test:skips"},"right":{"type":"y_clamped_gradient","from_y":0,"to_y":64,"from_value":0,"to_value":1}}"#.into(),
+                ),
+                ("minecraft:wild".into(), r#"{"type":"test:wild"}"#.into()),
+            ]);
+            let registry =
+                DensityRegistry::from_json_with_types(&BTreeMap::new(), &densities, types())
+                    .unwrap();
+            let skips = registry.value("minecraft:skips").unwrap();
+            let wild = registry.value("minecraft:wild").unwrap();
+            let compiler = DensityCompiler::new_seeded(registry.into_graph(), 4, false);
+            let sampler = compiler.get_sampler(skips).unwrap();
+            let mut context = SamplerContext::default();
+            let mut values = vec![0.0; 12];
+            let volume = |x| {
+                horizon_core::noise::DensityVolume::new([2, 3, 2], [x, 0, 0], [4, 16, 4]).unwrap()
+            };
+            sampler
+                .sample_volume(&mut context, &mut values, volume(-8))
+                .unwrap();
+            assert!(values.iter().all(|value| (1.0..=2.0).contains(value)));
+            let message = panic_message(|| {
+                let _ = sampler.sample_volume(&mut context, &mut values, volume(8));
+            });
+            assert_eq!(
+                message,
+                "native mod test density type test:skips left slot 0 unwritten or wrote NaN"
+            );
+            let message = panic_message(|| {
+                let _ = sampler.sample_value(&mut SamplerContext::default(), [5, 0, 0]);
+            });
+            assert_eq!(
+                message,
+                "native mod test density type test:skips returned NaN at [5, 0, 0]"
+            );
+            let wild = compiler.get_sampler(wild).unwrap();
+            let message = panic_message(|| {
+                let _ = wild.sample_volume(&mut SamplerContext::default(), &mut values, volume(8));
+            });
+            assert_eq!(
+                message,
+                "native mod test density type test:wild wrote 20 at slot 0, outside its declared                  range [-10, 10]"
+            );
+            let message = panic_message(|| {
+                let _ = wild.sample_value(&mut SamplerContext::default(), [5, 0, 0]);
+            });
+            assert_eq!(
+                message,
+                "native mod test density type test:wild returned 20 at [5, 0, 0], outside its                  declared range [-10, 10]"
+            );
+        }
+
         /// A type nobody registered is still refused by name, a mod decoder's refusal names the
         /// type and its message, and a range that isn't two finite ordered values is refused.
         #[test]
@@ -738,6 +866,12 @@ mod tests {
             );
             assert!(
                 error(r#"{"type":"test:endless"}"#).contains("density type test:endless: range")
+            );
+            // Beyond vanilla's reasonable bound, `find_top_surface`'s cell steps would overflow.
+            assert!(
+                error(r#"{"type":"test:huge"}"#).contains("goes beyond ±1000000"),
+                "{}",
+                error(r#"{"type":"test:huge"}"#)
             );
             // The installed table never holds this module's types.
             let densities = BTreeMap::from([(
@@ -760,6 +894,9 @@ mod tests {
             }
         }
         impl ModDensityFunctionType for Counted {
+            fn owner(&self) -> &str {
+                "test"
+            }
             fn decode(&self, _: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
                 Ok(Arc::new(Counted {
                     varies: self.varies,

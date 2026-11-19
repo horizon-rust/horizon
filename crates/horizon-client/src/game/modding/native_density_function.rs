@@ -30,6 +30,9 @@ struct TypeAdapter {
     density_type: Arc<dyn DensityFunctionType>,
 }
 impl ModDensityFunctionType for TypeAdapter {
+    fn owner(&self) -> &str {
+        self.owner.mod_id
+    }
     fn decode(&self, json: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
         let function = {
             let _call = self.owner.enter("decode");

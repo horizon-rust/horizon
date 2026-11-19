@@ -39,6 +39,9 @@ struct RampFunction {
     volumes: &'static AtomicUsize,
 }
 impl ModDensityFunctionType for RampType {
+    fn owner(&self) -> &str {
+        "worldgen_test"
+    }
     fn decode(&self, json: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
         let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let base = value["base"].as_f64().ok_or("a ramp needs its base")?;
@@ -87,6 +90,9 @@ impl ModDensityFunction for RampFunction {
 /// `{"value": v}` everywhere, never depending on y.
 struct Flat;
 impl ModDensityFunctionType for Flat {
+    fn owner(&self) -> &str {
+        "worldgen_test"
+    }
     fn decode(&self, json: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
         let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
         Ok(Arc::new(FlatValue(
@@ -113,6 +119,9 @@ impl ModDensityFunction for FlatValue {
 /// A function whose code panics, as a broken mod's would.
 struct Panics;
 impl ModDensityFunctionType for Panics {
+    fn owner(&self) -> &str {
+        "worldgen_test"
+    }
     fn decode(&self, _: &str) -> Result<Arc<dyn ModDensityFunction>, String> {
         Ok(Arc::new(Panics))
     }

@@ -22,11 +22,13 @@ pub trait DensityFunctionType: Send + Sync + 'static {
 /// One decoded density function node. Its values must be a pure function of the world seed and
 /// the block position: the same seed and position give the same value on every thread, every
 /// run and every machine, or chunks, far terrain and structures disagree. It must not panic: a
-/// panic crashes the game like one in any native worldgen hook, with a crash report naming the
-/// mod and the type.
+/// panic is not caught and goes to whatever asked for the value, as one in any native worldgen
+/// hook does (on the worldgen workers, a crash report naming the mod and the type, then exit). A
+/// NaN or a value outside [`range`](Self::range) panics the same way.
 pub trait DensityFunction: Send + Sync + 'static {
-    /// `[min, max]`, finite, `min <= max`: every value [`sample`](Self::sample) and
-    /// [`fill`](Self::fill) give lies in it. Read once, when the node decodes; vanilla's interval
+    /// `[min, max]`, finite, `min <= max`, within ±1,000,000 (vanilla's bound on density values;
+    /// beyond it the density JSON fails to load): every value [`sample`](Self::sample) and
+    /// [`fill`](Self::fill) give lies in it, or the game panics naming the type. Read once, when the node decodes; vanilla's interval
     /// arithmetic (spline ranges, range choices, aquifer and vein bounds) works from it, so a
     /// wrong range gives wrong terrain.
     fn range(&self) -> [f32; 2];
@@ -35,14 +37,17 @@ pub trait DensityFunction: Send + Sync + 'static {
     fn varies_with_y(&self) -> bool {
         true
     }
-    /// The value at block position `[x, y, z]` of a world with `seed`. Asked only where the
-    /// reader samples single points (spawn finding, `/locate biome`); chunk fill, far terrain
-    /// and structure heights ask [`fill`](Self::fill).
+    /// The value at block position `[x, y, z]` of a world with `seed`. Asked where the reader
+    /// samples single points: spawn finding and `/locate biome`, and inside the volume readers
+    /// too (aquifers, `find_top_surface`, `interpolated` off the cell lattice). Chunk fill, far
+    /// terrain and structure heights otherwise ask [`fill`](Self::fill). NaN is rejected.
     fn sample(&self, position: [i32; 3], seed: i64) -> f32;
     /// The values of `count[0] × count[1] × count[2]` positions: `origin + i * step` along x, y
     /// and z. `out` holds exactly that many, y fastest, then x, then z (the game's own buffer
     /// order, no copy). The default asks [`sample`](Self::sample) for each; override it to reuse
-    /// work across a column or a volume. It must give what `sample` gives at each position.
+    /// work across a column or a volume. It must give what `sample` gives at each position and
+    /// must write every slot: `out` may hold other values when called, and a slot left unwritten
+    /// or NaN is rejected.
     fn fill(
         &self,
         origin: [i32; 3],

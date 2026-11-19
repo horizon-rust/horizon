@@ -329,17 +329,23 @@ veins.
 The function must be pure in the seed and the position: the same seed and block position give the
 same value on every thread, run and machine. It runs on the worldgen worker threads, with no
 `Host`, so it is `Send + Sync` and keeps no mutable state. `range` bounds every value it gives
-(vanilla's interval arithmetic works from it), and `varies_with_y` returning `false` has it asked at
-y = 0 once per column. Chunk fill, far terrain and structure heights ask `fill` for whole volumes,
-`y` fastest, then `x`, then `z`; its default asks `sample` for each position, so override it to
-share work across a column. Single-point readers, spawn finding and `/locate biome`, ask
-`sample`. Under `find_top_surface`, and off the cell lattice under `interpolated`, the function is
-still asked a point at a time (#18372). `range` and `varies_with_y` are asked once, when the
-density JSON loads.
+(vanilla's interval arithmetic works from it): two finite values, the least first, within
+±1,000,000 (vanilla's bound on density values), or the density JSON fails to load, naming the
+type. `varies_with_y` returning `false` has it asked at y = 0 once per column. `range` and
+`varies_with_y` are asked once, when the density JSON loads.
 
-A density function type must not panic. A panic crashes the game like a panic in any native
-worldgen hook: a crash report naming your mod and the type, and an emergency save on single
-player. This may be softened later.
+Chunk fill, far terrain and structure heights ask `fill` for whole volumes, `y` fastest, then `x`,
+then `z`; its default asks `sample` for each position, so override it to share work across a
+column. `fill` must write every slot of `out`. Single-point readers, spawn finding and `/locate
+biome`, ask `sample`, and so do parts of the volume readers: aquifers, `find_top_surface`, and
+`interpolated` off the cell lattice ask a point at a time (#18372).
+
+A density function type must not panic. A panic is not caught: it goes to whatever asked for the
+value, as a panic in any native worldgen hook does. On the worldgen worker threads that is a crash
+report naming your mod and the type, an emergency save on single player, and exit. The far terrain
+server's own worker instead refuses that tile. A NaN, a value outside `range`, or a slot `fill`
+leaves unwritten panics the same way, naming your mod, the type and the slot or position. This may
+be softened later.
 
 A type in another mod's namespace, an empty name, a name an id can't hold and an id registered
 twice stop the game at startup with a message naming the mod. Density JSON naming a type nobody
