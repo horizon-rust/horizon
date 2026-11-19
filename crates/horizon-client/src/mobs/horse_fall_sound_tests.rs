@@ -14,7 +14,7 @@ use crate::mobs::{MobTypes, equine, world::with_test_world};
 fn ridden_horse(types: &MobTypes, client_side: bool) -> Mob {
     let kind = std::sync::Arc::new(types.types["minecraft:horse"].clone());
     let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
-    m.extra.saddled = true;
+    m.extra.set_saddled(true);
     m.extra.client_side = client_side;
     m.rider = Some(equine::Rider::default());
     m
@@ -23,17 +23,18 @@ fn ridden_horse(types: &MobTypes, client_side: bool) -> Mob {
 /// The events a twenty-block fall hands out: `AbstractHorse.causeFallDamage`
 /// thuds (`entity.horse.land`, 0.4, 1.0), hurts the horse and hands the fall
 /// to its rider.
-fn landing(types: &MobTypes, client_side: bool) -> Vec<MobEvent> {
+fn landing(w: &MobWorld<'_>, types: &MobTypes, client_side: bool) -> Vec<MobEvent> {
     let mut m = ridden_horse(types, client_side);
+    let mut level = crate::health::TestLevel::new(0);
     let mut events = Vec::new();
-    m.cause_fall_damage_from(20.0, 1.0, &mut events);
+    m.cause_fall_damage_from(w.loop_context, &mut level.level(), 20.0, 1.0, &mut events);
     events
 }
 
 #[test]
 fn a_clients_own_horse_leaves_its_landing_sound_to_the_server() {
-    let ran = with_test_world(&[], |_w, types| {
-        let client = landing(types, true);
+    let ran = with_test_world(&[], |w, types| {
+        let client = landing(w, types, true);
         assert!(
             !client
                 .iter()
@@ -49,7 +50,7 @@ fn a_clients_own_horse_leaves_its_landing_sound_to_the_server() {
                 .any(|e| matches!(e, MobEvent::FallToPassengers { .. })),
             "the rider's fall still reaches their client: {client:?}"
         );
-        let server = landing(types, false);
+        let server = landing(w, types, false);
         assert!(
             server.iter().any(|e| matches!(
                 e,
