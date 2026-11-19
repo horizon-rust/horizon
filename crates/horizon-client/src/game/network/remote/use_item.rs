@@ -40,7 +40,7 @@ impl Game<'_> {
         }
         // Item.use: Equippable.swapWithEquipmentSlot runs on this client too, so
         // the armor slot and the hand change at once (the server confirms).
-        if info.equip_slot.is_some()
+        if crate::game::armor_stands::hand_equip_slot(&held, self.items()).is_some()
             && let Some(ends) = self.with_hand(hand, |g| g.equip_use(&held))
         {
             return ends;
