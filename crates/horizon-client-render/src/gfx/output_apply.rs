@@ -263,19 +263,52 @@ impl Present for Applying<'_> {
     }
 
     fn present_sdr(&mut self) {
-        let r = &mut *self.renderer;
-        r.hdr = None;
-        r.mark_hdr_start(false, self.marker);
-        if let Some(surface) = &r.surface {
-            r.frame_gen.stop_to_configure();
-            r.queue.wait();
-            r.surface_unconfigured =
-                Renderer::configure(&r.device, surface, &r.config, None, &r.device_lost).is_err();
-        }
+        self.renderer.present_sdr();
     }
 }
 
+/// Whether a swapchain that did not configure for HDR output's `presented` encoding goes SDR in
+/// the same frame: the surface, read again, offers no HDR (the window is now on a display
+/// without it). Offered the other encoding, the next frame's output moves to that one and
+/// keeps HDR output's tuning (`Hdr::retargeted`). An SDR swapchain that fails tries nothing more.
+fn sdr_at_once(presented: Option<hdr::Output>, offered: Option<Option<hdr::Output>>) -> bool {
+    presented.is_some() && offered == Some(None)
+}
+
 impl Renderer {
+    fn present_sdr(&mut self) {
+        self.hdr = None;
+        self.drop_hdr_marker();
+        if let Some(surface) = &self.surface {
+            self.frame_gen.stop_to_configure();
+            self.queue.wait();
+            self.surface_unconfigured =
+                Self::configure(&self.device, surface, &self.config, None, &self.device_lost)
+                    .is_err();
+        }
+    }
+
+    /// After the window surface did not configure: what it offers now, where HDR output
+    /// presents an encoding the surface may no longer offer. The output resolves again at the
+    /// next frame rather than at the next display poll, up to `DISPLAY_POLL` of skipped frames
+    /// later (#18536); with no HDR offered, SDR is configured already.
+    pub(super) fn surface_refused(&mut self) {
+        let presented = self.hdr.as_ref().map(|hdr| hdr.output);
+        if presented.is_none() {
+            return;
+        }
+        let offered = offer(self.surface.as_deref(), &self.adapter);
+        if offered.is_none_or(|offered| offered == presented) {
+            return;
+        }
+        self.output_caps.hdr = offered.flatten();
+        self.display_fresh = true;
+        if sdr_at_once(presented, offered) {
+            log::info!("Horizon renderer: the window surface offers no HDR now; SDR");
+            self.present_sdr();
+        }
+    }
+
     /// HDR output presenting `encoding` for `output`, made apart from the one presented: from
     /// it where there is one, keeping the player's tuning (`Hdr::retargeted`). An error is
     /// the device's, caught here rather than left for the next frame.
@@ -735,6 +768,26 @@ mod tests {
         rejected = None;
         commit(&mut swapchain, &pq, next, caps, &mut rejected);
         assert_eq!(swapchain.asked.len(), 4);
+    }
+
+    /// The window on a display without HDR: HDR10 no longer configures and the surface, read
+    /// again, offers no HDR, so SDR is configured in the same frame. Offered scRGB instead, the
+    /// next frame moves to it; an SDR swapchain that fails, an encoding still offered or no
+    /// surface change nothing.
+    #[test]
+    fn hdr_that_no_longer_configures_goes_sdr_in_the_same_frame() {
+        assert!(sdr_at_once(Some(Pq), Some(None)));
+        for (presented, offered) in [
+            (Some(Pq), Some(Some(ScRgb))),
+            (Some(ScRgb), Some(Some(ScRgb))),
+            (None, Some(None)),
+            (Some(Pq), None),
+        ] {
+            assert!(
+                !sdr_at_once(presented, offered),
+                "{presented:?} {offered:?}"
+            );
+        }
     }
 
     /// A window in Auto presenting HDR10 at 400/1000 nits on the layered frame, followed on
