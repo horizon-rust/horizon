@@ -18,6 +18,7 @@ pub mod process_memory;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod sampler;
+pub mod sizing;
 pub mod stack_dump;
 /// Alt+Space and a bare Alt never open the window's system menu, as in GLFW.
 #[cfg(target_os = "windows")]
@@ -163,12 +164,27 @@ pub fn default_workers() -> usize {
     workers_for(worker_count(), performance_cores)
 }
 
+/// The cores this process has for its pools: [`worker_count`]'s share, narrowed to
+/// the performance cores where the machine tells them apart (its efficiency cores
+/// don't carry a worker, see [`default_workers`]).
+pub(crate) fn usable_cores() -> usize {
+    usable_cores_for(worker_count(), performance_cores)
+}
+
+/// [`usable_cores`] for `cores` cores, of which `performance` (asked only here, the
+/// sysctl) are performance cores where the machine tells them apart (`None` elsewhere).
+fn usable_cores_for(cores: usize, performance: impl FnOnce() -> Option<usize>) -> usize {
+    let fast = performance().filter(|&n| n > 0).unwrap_or(cores);
+    cores.min(fast)
+}
+
 /// [`default_workers`] for `cores` cores, of which `performance` (asked only here, the
 /// sysctl) are performance cores where the machine tells them apart (`None` elsewhere):
 /// one less than the smaller count, at least 1.
 fn workers_for(cores: usize, performance: impl FnOnce() -> Option<usize>) -> usize {
-    let fast = performance().filter(|&n| n > 0).unwrap_or(cores);
-    cores.min(fast).saturating_sub(1).max(1)
+    usable_cores_for(cores, performance)
+        .saturating_sub(1)
+        .max(1)
 }
 
 /// The machine's performance cores:
@@ -635,11 +651,52 @@ pub fn allocator_commit() -> (usize, usize) {
     (info[5], info[6])
 }
 
+/// Bumped by [`release_everywhere`]: each pool thread compares it with the
+/// value it saw last ([`release_asked`]).
+/// The names of the threads that called [`release_free_memory`], for tests.
+#[cfg(test)]
+static RELEASED_BY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+static RELEASE_ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How often a pool thread with nothing to do looks at [`release_asked`].
+pub const RELEASE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ask every pool thread to give back the memory its heap holds free, and
+/// give back this thread's now. mimalloc returns a page that one thread freed
+/// into another's heap only when the owning thread collects: the chunks a
+/// server unloads were mostly made on the workers, encoded on the chunk
+/// encoders and read on the network threads, which then sleep. Each of them
+/// calls [`release_free_memory`] within [`RELEASE_POLL`].
+pub fn release_everywhere() {
+    RELEASE_ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    release_free_memory();
+}
+
+/// [`RELEASE_ASKED`] for a pool thread to start from: a release asked before
+/// it started is not its own.
+pub fn release_seen() -> u64 {
+    RELEASE_ASKED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// For a pool thread between jobs: whether [`release_everywhere`] was asked
+/// since `seen`, which it updates. The thread then calls
+/// [`release_free_memory`].
+pub fn release_asked(seen: &mut u64) -> bool {
+    let now = release_seen();
+    std::mem::replace(seen, now) != now
+}
+
 /// Give back to the OS the memory the allocator holds free, after something
 /// large was dropped: mimalloc's free pages, then the system heap's, which
 /// native libraries still use: glibc keeps freed pages in the arena of the
 /// thread that allocated them, and macOS in its zones until memory runs short.
 pub fn release_free_memory() {
+    #[cfg(test)]
+    RELEASED_BY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(std::thread::current().name().unwrap_or_default().to_owned());
     // SAFETY: frees only pages no allocation uses (this thread's heap, shared arenas).
     unsafe {
         libmimalloc_sys::mi_collect(true);

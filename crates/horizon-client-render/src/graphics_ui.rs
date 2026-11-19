@@ -115,6 +115,7 @@ pub enum H {
     HdrPeak,
     HdrPaperWhite,
     HdrUiBrightness,
+    HdrColorBoost,
     HdrLook,
     BatteryMode,
     ShadowCache,
@@ -386,7 +387,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::Antialiasing,
                             Medium,
-                            "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
+                            "FXAA: softer. TAA: may trail. 4x MSAA: terrain and foliage, more GPU memory.",
                         ),
                         h(
                             H::Upscaling,
@@ -633,6 +634,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "How bright the HUD and menus are. Auto: at paper white.",
                         ),
                         h(
+                            H::HdrColorBoost,
+                            None,
+                            "0%: exact colours. More: stretched to your display's range, as SDR often is.",
+                        ),
+                        h(
                             H::HdrLook,
                             None,
                             "Horizon: light sources and the sun shine past white. Vanilla: just as SDR.",
@@ -829,6 +835,7 @@ impl H {
                 n => (1.0 + crate::graphics::peak_step_of(n as f32)) / PEAK_POSITIONS as f32,
             }),
             H::HdrBlackLevel => Some(g.hdr_black_level as f32 / 100.0),
+            H::HdrColorBoost => Some(g.hdr_color_boost as f32 / 100.0),
             _ => None,
         }
     }
@@ -844,6 +851,8 @@ impl H {
             H::HdrPaperWhite | H::HdrUiBrightness => Some(crate::graphics::NITS_STEPS),
             H::HdrPeak => Some(PEAK_POSITIONS),
             H::HdrBlackLevel => Some(100),
+            // 0..100% by 5.
+            H::HdrColorBoost => Some(20),
             _ => None,
         }
     }
@@ -944,10 +953,11 @@ impl H {
             H::TargetFps => labelled("Target FPS", g.target_fps),
             H::Antialiasing => labelled(
                 "Anti-aliasing",
-                match (g.fxaa, g.taa) {
-                    (_, true) => "TAA",
-                    (true, false) => "FXAA",
-                    (false, false) => "Off",
+                match (g.msaa4x && out.msaa, g.fxaa, g.taa) {
+                    (true, _, _) => "4x MSAA",
+                    (_, _, true) => "TAA",
+                    (_, true, false) => "FXAA",
+                    (_, false, false) => "Off",
                 },
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
@@ -972,6 +982,7 @@ impl H {
                 "Black Level",
                 lang::tr("%s nits", &[&format!("{:.2}", g.black_level_nits())]),
             ),
+            H::HdrColorBoost => labelled_percent("Color Boost", g.hdr_color_boost),
             // Under a shader pack the look is the pack's: its name, greyed (`Item::blocked`).
             H::HdrLook => Text::option_name_value(
                 Text::literal(lang::get_or("horizon.hdr.look", "Look")),
@@ -1029,6 +1040,7 @@ impl H {
                 }
             }
             H::HdrBlackLevel => g.hdr_black_level = (v * 100.0).round() as u32,
+            H::HdrColorBoost => g.hdr_color_boost = (v * 20.0).round() as u32 * 5,
             _ => {}
         }
     }
@@ -1084,11 +1096,18 @@ impl H {
             H::DynamicResolution => g.dynamic_resolution = !g.dynamic_resolution,
             H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
-            // Off, FXAA, TAA.
+            // Off, FXAA, TAA, and 4x MSAA where the renderer can draw it.
             H::Antialiasing => {
-                let i = if g.taa { 2 } else { usize::from(g.fxaa) };
-                let i = (i + if back { 2 } else { 1 }) % 3;
-                (g.fxaa, g.taa) = (i == 1, i == 2);
+                let modes = if out.msaa { 4 } else { 3 };
+                let i = if g.msaa4x {
+                    3
+                } else if g.taa {
+                    2
+                } else {
+                    usize::from(g.fxaa)
+                };
+                let i = (i + if back { modes - 1 } else { 1 }) % modes;
+                (g.fxaa, g.taa, g.msaa4x) = (i == 1, i == 2, i == 3);
                 if !g.taa {
                     g.upscaling = Upscaling::Native;
                 }
@@ -1098,6 +1117,7 @@ impl H {
                 g.upscaling = step(&Upscaling::ALL, g.upscaling, back);
                 if g.upscaling != Upscaling::Native {
                     (g.fxaa, g.taa) = (false, true);
+                    g.msaa4x = false;
                 }
             }
             H::ScreenshotQuality => {
@@ -1170,6 +1190,7 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrColorBoost
                 | H::HdrLook,
             ) if !out.hdr_frame_supported => Some("Your GPU or graphics API doesn't support it."),
             Item::Horizon(
@@ -1178,6 +1199,7 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrColorBoost
                 | H::HdrLook,
             ) if !out.hdr_offered() => Some("Your display or system doesn't offer HDR output."),
             Item::Horizon(
@@ -1186,6 +1208,7 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrColorBoost
                 | H::HdrLook,
             ) if !out.requests_hdr(s.horizon.hdr) => Some(if out.held {
                 HDR_HELD
@@ -1195,6 +1218,9 @@ impl Item {
             // HDR output without the HUD's layer: a `shaders/` pack's frame (`FrameRequest`).
             Item::Horizon(H::HdrUiBrightness) if out.hdr_on() && !out.frame.hud_layer => {
                 Some("The shader pack's picture is shown at Paper White.")
+            }
+            Item::Horizon(H::HdrColorBoost) if out.compositor_stretches() => {
+                Some("In scRGB, your desktop's own color setting applies.")
             }
             Item::Horizon(H::HdrLook) if out.pack_lights => {
                 Some(if out.hdr_on() && !out.frame.hud_layer {
@@ -1503,6 +1529,7 @@ impl Screen for GraphicsScreen {
             id: page,
             name: lang::get(page.name()),
             about: lang::get(page.about()),
+            warning: None,
             groups: groups
                 .into_iter()
                 .map(|(name, settings)| Group {
@@ -2333,27 +2360,34 @@ mod tests {
     }
 
     #[test]
-    fn antialiasing_cycles_off_fxaa_taa() {
+    fn antialiasing_cycles_spatial_temporal_and_multisampled_modes() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::Antialiasing);
-        for label in ["FXAA", "TAA", "Off"] {
-            item.cycle(&mut s, false, [854, 480], &NONE);
+        let msaa = EffectiveOutput { msaa: true, ..NONE };
+        for label in ["FXAA", "TAA", "4x MSAA", "Off"] {
+            item.cycle(&mut s, false, [854, 480], &msaa);
             assert_eq!(
-                item.label(&s, &NONE).plain(),
+                item.label(&s, &msaa).plain(),
                 format!("Anti-aliasing: {label}")
             );
         }
-        item.cycle(&mut s, true, [854, 480], &NONE);
-        assert_eq!((s.horizon.fxaa, s.horizon.taa), (false, true));
+        item.cycle(&mut s, true, [854, 480], &msaa);
+        assert_eq!(
+            (s.horizon.fxaa, s.horizon.taa, s.horizon.msaa4x),
+            (false, false, true)
+        );
 
         // Upscaling needs TAA: a ratio turns it on, leaving TAA goes back to Native.
         s.horizon.taa = false;
+        s.horizon.msaa4x = false;
         let upscaling = Item::Horizon(H::Upscaling);
         upscaling.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(upscaling.label(&s, &NONE).plain(), "Upscaling: Quality");
         assert!(s.horizon.taa);
+        // A renderer that can't draw 4x MSAA goes from TAA to Off.
         item.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.upscaling, Upscaling::Native);
+        assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: Off");
 
         // The Upscaling row is only on the screen while TAA is on.
         assert!(!shown(upscaling, &s));
@@ -2804,6 +2838,7 @@ mod tests {
             H::HdrPeak,
             H::HdrBlackLevel,
             H::HdrUiBrightness,
+            H::HdrColorBoost,
         ];
         for h in options {
             let item = Item::Horizon(h);

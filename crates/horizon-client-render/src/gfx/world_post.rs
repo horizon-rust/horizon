@@ -21,6 +21,9 @@ struct WorldTarget {
     depth: wgpu::TextureView,
     group: wgpu::BindGroup,
     taa: Option<History>,
+    /// The world anti-aliased at its own size, made on first use (`resolved`); `Some(None)`
+    /// where there was no video memory for it, until the target is made again.
+    resolved: Option<Option<wgpu::TextureView>>,
 }
 
 /// TAA's two history textures at the output size (the world's, times the upscale), written
@@ -375,9 +378,14 @@ impl Post {
         self.taa_resources.is_some()
     }
 
-    /// The world's rendered size and the size it is shown at (TAA's history).
-    fn sizes(&self, window: [u32; 2]) -> ([u32; 2], [u32; 2]) {
-        let upscale = if self.taa_on { self.upscale } else { 1.0 };
+    /// The world's rendered size and the size it is shown at (TAA's history), smaller by the
+    /// upscaling ratio `pack` renders it for (`prepare`).
+    fn sizes(&self, window: [u32; 2], pack: bool) -> ([u32; 2], [u32; 2]) {
+        let upscale = if pack || self.taa_on {
+            self.upscale
+        } else {
+            1.0
+        };
         self.sizes_with_upscale(window, upscale)
     }
 
@@ -385,10 +393,18 @@ impl Post {
         sizes(window, self.scale, upscale)
     }
 
-    /// The size the world draws at under a shader pack, which always has a target (`prepare`'s
-    /// `always`) and no TAA, so no upscaling: what the pack's frames get, before its first.
+    /// The size a native (API 0.2) pack's world draws at: it always has a target (`prepare`'s
+    /// `always`) and TAA is off under it, so it gets TAA's sizes, not a `shaders/` pack's.
     pub(super) fn pack_render_size(&self, window: [u32; 2]) -> [u32; 2] {
         sizes(window, self.scale, 1.0).0
+    }
+
+    /// The scaled world's depth where it was drawn at `size`, the window's: what post effects
+    /// read when 4x MSAA drew the world there.
+    pub(super) fn depth_at(&self, size: [u32; 2]) -> Option<&wgpu::TextureView> {
+        (self.target.as_ref())
+            .filter(|t| t.size == size)
+            .map(|t| &t.depth)
     }
 
     /// The next TAA frame's input size, even before its first jitter or resize.
@@ -406,7 +422,7 @@ impl Post {
             return Mat4::IDENTITY;
         }
         self.taa_frame = self.taa_frame.wrapping_add(1);
-        let (size, _) = self.sizes(window);
+        let (size, _) = self.sizes(window, false);
         // Halton (2, 3) over 8 frames per output pixel (FSR's count), in rendered
         // pixels around the centre.
         let phases = (8.0 * self.upscale * self.upscale).ceil() as u32;
@@ -442,11 +458,17 @@ impl Post {
     /// The world's colour and depth targets this frame, or `None` to draw
     /// it straight to the screen.
     /// `always`: a target even at scale 1 without anti-aliasing (a shader pack reads it).
+    /// `pack`: a `shaders/` pack reads the world, so it renders at the Upscaling ratio's share
+    /// of the window — the pack's own copy of it stretches the smaller picture back, and TAA,
+    /// which would divide for the same reason, never runs under a pack. Frame generation and a
+    /// native (API 0.2) pack also read the world but stretch nothing themselves: `false` keeps
+    /// them, and a frame without a pack, at TAA's sizes.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         window: [u32; 2],
         always: bool,
+        pack: bool,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
         if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
             self.target = None;
@@ -455,7 +477,7 @@ impl Post {
         // The old target goes first: a slider drag would otherwise hold the old and the new
         // targets together, and the sum is what runs a small GPU out of memory.
         loop {
-            let (size, output) = self.sizes(window);
+            let (size, output) = self.sizes(window, pack);
             let history_size = self.taa_on.then_some(output);
             if self
                 .target
@@ -592,6 +614,7 @@ impl Post {
                 depth,
                 group,
                 taa,
+                resolved: None,
             }
         }
     }
@@ -609,6 +632,48 @@ impl Post {
             );
             self.sharpness = sharpness;
         }
+    }
+
+    /// A target of the world's size and format for `finish` to draw onto, where something
+    /// after it reads the world at its own size (a native pack without a post chain, #16126).
+    /// Made on first use, and dropped with the world's target. None where there is no video
+    /// memory for it: the pack then reads the world without FXAA.
+    pub(super) fn resolved(&mut self, device: &wgpu::Device) -> Option<wgpu::TextureView> {
+        let format = self.format;
+        let target = self.target.as_mut()?;
+        let size = target.size;
+        let view = target.resolved.get_or_insert_with(|| {
+            // As the world's own target: an error raised is fatal, so catch running out of
+            // memory, and the failed texture's view failing validation.
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let view = device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Resolved world"),
+                    size: wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default());
+            let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+            if let Some(error) = error {
+                log::warn!(
+                    "Horizon renderer: no video memory for the shader pack's FXAA at {size:?}; drawing it without ({error})"
+                );
+                return None;
+            }
+            Some(view)
+        });
+        view.clone()
     }
 
     /// The size of the world's own target, when it has one.
@@ -807,9 +872,9 @@ mod tests {
         assert!((then.truncate() / then.w - expected.truncate() / expected.w).length() < 1e-9);
     }
 
-    /// Kept resources are made before a pack's first frame at the size it draws at: no TAA
-    /// under a pack, so none of TAA's upscaling that ran before it, and the scale applied with
-    /// or without a target yet.
+    /// A native (API 0.2) pack's kept resources are made before its first frame at the size
+    /// it draws at: no TAA under a pack, so none of TAA's upscaling that ran before it, and
+    /// the scale applied with or without a target yet.
     #[test]
     fn a_pack_draws_at_the_scaled_window_without_taa_s_upscaling() {
         for (window, scale, upscale, before, pack) in [
@@ -821,6 +886,24 @@ mod tests {
             assert_eq!(sizes(window, scale, upscale).0, before);
             assert_eq!(sizes(window, scale, 1.0).0, pack);
         }
+    }
+
+    /// A `shaders/` pack's own copy of the world stretches the smaller picture back to the
+    /// window, so the world renders at the Upscaling ratio's share of it: 1280×720 at
+    /// Performance's 2 is 640×360 (#16757). Without the pack the sizes stay what they were.
+    #[test]
+    fn a_shaders_pack_s_world_renders_at_the_upscaling_ratio() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, _)) = test_device() else {
+            eprintln!("Upscaling pack GPU skipped: no test device");
+            return;
+        };
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        post.upscale = 2.0;
+        let _ = post.prepare(&device, [1280, 720], true, true);
+        assert_eq!(post.size(), Some([640, 360]));
+        let _ = post.prepare(&device, [1280, 720], true, false);
+        assert_eq!(post.size(), Some([1280, 720]));
     }
 
     #[test]
@@ -856,10 +939,10 @@ mod tests {
             post.taa_on = false;
             assert_eq!(post.taa_render_size(window), expected);
             post.taa_on = true;
-            assert_eq!(post.sizes(window).0, expected);
-            // A pack's frame: TAA off, so what the pack's kept resources are made for.
+            assert_eq!(post.sizes(window, false).0, expected);
+            // A native pack's frame: TAA off, so what its kept resources are made for.
             post.taa_on = false;
-            assert_eq!(post.pack_render_size(window), post.sizes(window).0);
+            assert_eq!(post.pack_render_size(window), post.sizes(window, false).0);
         }
     }
 

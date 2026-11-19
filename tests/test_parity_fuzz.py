@@ -32,6 +32,33 @@ class DispenserSyncTests(unittest.TestCase):
         self.assertEqual(sum(op['op'] == 'sync_randoms' for op in fuzz.render(quiet, 0)), 1)
 
 
+class KnownTests(unittest.TestCase):
+    def test_known_signatures_are_listed_under_their_issue_and_only_new_ones_are_new(self):
+        old = fuzz.KNOWN
+        try:
+            fuzz.KNOWN = [(r'persist\|trident\|live\|damage', 14823),
+                          (r'persist\|pig\|reloaded\|Fire', 99999)]
+            groups = {'persist|trident|live|damage': [('a', {})],
+                      'persist|pig|live|Air': [('b', {})]}
+            known, new, not_observed = fuzz.classify(groups)
+            self.assertEqual(known, {14823: ['persist|trident|live|damage']})
+            self.assertEqual(new, {'persist|pig|live|Air': [('b', {})]})
+            self.assertEqual(not_observed, [(99999, r'persist\|pig\|reloaded\|Fire')])
+        finally:
+            fuzz.KNOWN = old
+
+    def test_two_patterns_for_one_issue_are_each_tracked(self):
+        old = fuzz.KNOWN
+        try:
+            fuzz.KNOWN = [(r'one', 123), (r'two', 123)]
+            known, new, not_observed = fuzz.classify({'one': [('a', {})]})
+            self.assertEqual(known, {123: ['one']})
+            self.assertEqual(new, {})
+            self.assertEqual(not_observed, [(123, 'two')])
+        finally:
+            fuzz.KNOWN = old
+
+
 class SnbtDiffTests(unittest.TestCase):
     def test_a_difference_names_its_field_and_key_order_is_not_one(self):
         vanilla = record('Pig has the following entity data: {Motion: [0.0d, 0.1d, 0.0d], Tags: ["a b"], '
@@ -111,6 +138,11 @@ class FamilyTests(unittest.TestCase):
 
 
 class ReloadWitnessTests(unittest.TestCase):
+    def test_a_reload_gives_the_oracle_time_to_unload_the_chunk(self):
+        scenario = {'family': 'persist', 'seed': 1, 'steps': [{'k': 'reload'}, {'k': 'tick', 'n': 4}]}
+        ticks = [op for op in fuzz.render(scenario, 0) if op.get('op') == 'tick']
+        self.assertEqual([op.get('allow_chunk_io') for op in ticks], [True, None])  # only the reload's wait
+
     def test_a_reload_witnesses_the_chunk_and_every_entity_summoned_before_it(self):
         scenario = {'family': 'persist', 'seed': 1, 'steps': [
             {'k': 'summon', 'type': 'pig', 'at': [1.5, 0, 1.5], 'n': 0, 'nbt': {}},
@@ -129,11 +161,27 @@ class ReloadWitnessTests(unittest.TestCase):
         self.assertEqual(fuzz.witness('persist', entity, gone, gone), (None, None))
         self.assertEqual(fuzz.witness('persist', entity, kept, kept)[0],
                          'vanilla kept the entity loaded: [[True, 1]]')
-        self.assertEqual(fuzz.witness('persist', entity, gone, kept)[1][0], 'persist|chunk|<unload>')
+        self.assertEqual(fuzz.witness('persist', entity, gone, kept)[1][0], 'persist|entity|<unload>')
         chunk_op = {'cmd': chunk, 'guard': 'chunk'}
         chunk_stayed = {'cmd': chunk, 'results': [[False, 0]]}  # `/execute unless loaded` failed
         self.assertEqual(fuzz.witness('persist', chunk_op, chunk_stayed, chunk_stayed)[0],
                          'vanilla kept the chunk loaded: [[False, 0]]')
+
+    def test_each_guard_names_its_signature_so_divergences_do_not_merge(self):
+        # An entity guard and a chunk guard diverge the same way, but must not be grouped as one bug.
+        entity = {'cmd': '/execute if entity 00000000-0000-0000-0000-000000000001', 'guard': 'entity'}
+        chunk = {'cmd': '/execute unless loaded 4096 300 4096', 'guard': 'chunk'}
+        gone, kept = {'results': [[False, 0]]}, {'results': [[True, 1]]}
+        entity_invalid, entity_failure = fuzz.witness('spawn', entity, gone, kept)
+        chunk_invalid, chunk_failure = fuzz.witness('spawn', chunk, gone, kept)
+        self.assertIsNone(entity_invalid)  # [[False, 0]] is the valid reload for an entity guard
+        self.assertEqual(entity_failure[0], 'spawn|entity|<unload>')
+        self.assertEqual(chunk_failure[0], 'spawn|chunk|<unload>')  # chunk behavior is unchanged
+        self.assertNotEqual(entity_failure[0], chunk_failure[0])
+        self.assertEqual(fuzz.signatures({'invalid': None, 'failures': [entity_failure]}),
+                         ['spawn|entity|<unload>'])
+        self.assertEqual(fuzz.signatures({'invalid': None, 'failures': [chunk_failure]}),
+                         ['spawn|chunk|<unload>'])
 
 
 if __name__ == '__main__':
