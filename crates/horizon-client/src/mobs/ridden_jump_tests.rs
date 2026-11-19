@@ -28,7 +28,7 @@ fn build(world: &mut crate::world::World, registry: &horizon_world::registry::Bl
 fn mounted(types: &crate::mobs::MobTypes, kind: &str, at: Vec3, amount: f32) -> Mob {
     let mut m = Mob::new(1, Arc::new(types.types[kind].clone()), at, 0.0);
     m.on_ground = true;
-    m.extra.saddled = true;
+    m.extra.set_saddled(true);
     m.rider = Some(Rider {
         forward: 1.0,
         jump: amount,
@@ -59,11 +59,13 @@ fn a_ridden_jump_reads_the_blocks_under_it_and_jump_boost() {
             let mut m = mounted(types, "minecraft:horse", at, 0.5);
             m.attrs.jump_strength = 0.7;
             if let Some(amplifier) = boost {
-                m.extra
-                    .effects
-                    .push(("minecraft:jump_boost", 200, amplifier));
+                m.extra.effects.push(crate::mobs::StoredEffect::new(
+                    "minecraft:jump_boost",
+                    200,
+                    amplifier,
+                ));
             }
-            ridden_step(&mut m, Some(w));
+            ridden_step(&mut m, w.loop_context, Some(w));
             m
         };
         let on_stone = horse(stone, None);
@@ -104,11 +106,13 @@ fn a_ridden_jump_reads_the_blocks_under_it_and_jump_boost() {
             m.attrs.speed = 0.1;
             m.attrs.jump_strength = 0.42;
             if let Some(amplifier) = boost {
-                m.extra
-                    .effects
-                    .push(("minecraft:jump_boost", 200, amplifier));
+                m.extra.effects.push(crate::mobs::StoredEffect::new(
+                    "minecraft:jump_boost",
+                    200,
+                    amplifier,
+                ));
             }
-            ridden_step(&mut m, Some(w));
+            ridden_step(&mut m, w.loop_context, Some(w));
             m
         };
         let dash = f64::from(22.2222_f32) * 0.1;
@@ -154,7 +158,7 @@ fn a_ridden_jump_reads_the_blocks_under_it_and_jump_boost() {
                 jump: 1.0,
                 ..Default::default()
             });
-            ridden_step(&mut m, Some(w));
+            ridden_step(&mut m, w.loop_context, Some(w));
             m
         };
         let dash = f64::from(0.5_f32) * 0.1;
@@ -180,7 +184,7 @@ fn a_ridden_jump_reads_the_blocks_under_it_and_jump_boost() {
 #[test]
 fn a_loaded_horses_jump_strength_reaches_its_launch() {
     let ran = with_built_test_world(&[], build, |w, types| {
-        let tag = horizon_world::nbt::parse_snbt(
+        let tag = horizon_core::nbt::parse_snbt(
             r#"{id:"minecraft:horse",Pos:[0.5d,1d,0.5d],attributes:[{id:"minecraft:jump_strength",base:0.5d,modifiers:[{id:"t:add",amount:0.4d,operation:"add_value"}]}]}"#,
         )
         .unwrap()
@@ -197,19 +201,19 @@ fn a_loaded_horses_jump_strength_reaches_its_launch() {
             m.attrs.jump_strength
         );
         m.on_ground = true;
-        m.extra.saddled = true;
+        m.extra.set_saddled(true);
         m.rider = Some(Rider {
             forward: 1.0,
             jump: 1.0,
             ..Default::default()
         });
-        ridden_step(&mut m, Some(w));
+        ridden_step(&mut m, w.loop_context, Some(w));
         assert!(
             (m.velocity.y - 0.9).abs() < 1.0e-6,
             "the launch: {}",
             m.velocity.y
         );
-        let zero = horizon_world::nbt::parse_snbt(
+        let zero = horizon_core::nbt::parse_snbt(
             r#"{id:"minecraft:horse",Pos:[0.5d,1d,0.5d],attributes:[{id:"minecraft:jump_strength",base:0d}]}"#,
         )
         .unwrap()
@@ -220,7 +224,7 @@ fn a_loaded_horses_jump_strength_reaches_its_launch() {
             jump: 1.0,
             ..Default::default()
         });
-        ridden_step(&mut m, Some(w));
+        ridden_step(&mut m, w.loop_context, Some(w));
         assert_eq!(m.velocity.y, 0.0, "a saved zero base stays zero");
     });
     let _ = ran;
