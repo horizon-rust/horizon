@@ -206,11 +206,12 @@ fn poll_display(
     let Some(read) = watch.poll(*reading, now, read) else {
         return over;
     };
+    let offered = offer();
     if let Some(reader) = &mut watch.reader {
-        // The read just finished: `Instant::now()`, or `now` where a test's clock runs ahead.
-        reader.read_fresh(now.max(Instant::now()));
+        // Once the offer is read too: a read the thread starts before then may see the old one.
+        reader.read_fresh(Instant::now());
     }
-    observe(reading, caps, read, offer()) || over
+    observe(reading, caps, read, offered) || over
 }
 
 /// What a [`DisplayReader`] hands over at each read: the display's report, the surface's
@@ -747,7 +748,8 @@ mod tests {
             )
         }
         let (mut caps, mut reading) = window(Some(Pq), Some(true));
-        let start = Instant::now();
+        // Frames on a clock that ends before now: a fresh read finishes at the real time.
+        let start = Instant::now() - Duration::from_secs(10);
         let at = |ms| start + Duration::from_millis(ms);
         let (hand, handed) = mpsc::channel();
         let mut watch = DisplayWatch {
@@ -770,7 +772,8 @@ mod tests {
         assert_eq!((reading, caps.hdr), (same, Some(ScRgb)));
         assert!(!poll(&mut watch, &mut reading, &mut caps, at(5020)));
         // Auto's grace from 5100 ends at 5600, the last read before it: read at once, and an
-        // older reading the thread handed over meanwhile is dropped.
+        // older reading the thread handed over meanwhile is dropped. So is one the thread
+        // started while that read asked for the offer.
         let lost = DisplayReading {
             hdr: Some(false),
             ..same
@@ -782,7 +785,11 @@ mod tests {
             same
         };
         let since = Some(at(5100));
-        let offered = || Some(Some(ScRgb));
+        let (during, offered_after) = (hand.clone(), Some(Some(ScRgb)));
+        let offered = move || {
+            during.send((lost, Some(None), Instant::now())).unwrap();
+            offered_after
+        };
         let ended = poll_display(
             Some(&mut watch),
             &mut reading,
@@ -800,7 +807,7 @@ mod tests {
         assert!(!poll(&mut watch, &mut reading, &mut caps, at(5620)));
         assert_eq!((reading, caps.hdr), (same, Some(ScRgb)));
         // One it started after: taken.
-        hand.send((lost, Some(None), at(5630))).unwrap();
+        hand.send((lost, Some(None), Instant::now())).unwrap();
         assert!(poll(&mut watch, &mut reading, &mut caps, at(5640)));
         assert_eq!((reading, caps.hdr), (lost, None));
     }
