@@ -2056,6 +2056,40 @@ issues = \"http://example.org/issues\"
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// Entry names a platform writes as another file, or as none: native staging puts them on
+    /// disk, and one would overwrite another or go to a device.
+    #[test]
+    fn platform_special_entry_names_are_refused() {
+        use std::io::Write;
+        let read = |names: &[&str]| {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file(MANIFEST, options).unwrap();
+            zip.write_all(EXAMPLE.as_bytes()).unwrap();
+            for name in names {
+                if name.ends_with('/') {
+                    zip.add_directory(*name, options).unwrap();
+                } else {
+                    zip.start_file(*name, options).unwrap();
+                    zip.write_all(b"text").unwrap();
+                }
+            }
+            Package::read_zip(&mut zip::ZipArchive::new(zip.finish().unwrap()).unwrap())
+        };
+        assert!(read(&["README", "README.md", "NOTICE"]).is_ok());
+        let long = "a".repeat(256);
+        for (names, expected) in [
+            (&["README", "readme"][..], "ignoring case"),
+            (&["NOTICE", "notice/"][..], "ignoring case"),
+            (&["NUL.txt"][..], "invalid package path"),
+            (&["docs/com9"][..], "invalid package path"),
+            (&[long.as_str()][..], "invalid package path"),
+        ] {
+            let error = read(names).err().unwrap_or_default();
+            assert!(error.contains(expected), "{names:?}: {error}");
+        }
+    }
+
     #[test]
     #[ignore = "daily"]
     fn project_folder_loads_without_packaging_git_hooks() {

@@ -3703,7 +3703,20 @@ capabilities = ["registries"]
     fn paths_are_plain() {
         assert!(check_path("assets/ruby/textures/block/ruby_block.png").is_ok());
         assert!(check_path("data/ruby/loot_table/blocks/a.json").is_ok());
+        for near in ["console.json", "com0.json", "lpt10.json", "nul_block.json"] {
+            assert!(
+                check_path(&format!("data/ruby/recipe/{near}")).is_ok(),
+                "{near}"
+            );
+        }
+        // 255 bytes is the longest file name the common file systems take.
+        assert!(check_path(&format!("data/ruby/{}.json", "a".repeat(250))).is_ok());
+        assert!(check_path(&format!("data/ruby/{}.json", "a".repeat(251))).is_err());
         for bad in [
+            "data/ruby/recipe/nul.json",
+            "data/ruby/recipe/com1.json",
+            "assets/ruby/aux/a.png",
+            "data/ruby/recipe/lpt9.tar.json",
             "assets/ruby",
             "assets/../x/y",
             "assets/ruby//a",
