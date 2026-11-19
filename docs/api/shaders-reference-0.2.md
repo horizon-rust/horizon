@@ -778,8 +778,12 @@ A pack without `[[post]]` whose frame holds gamma light (not `blend = "linear"` 
 player's FXAA or TAA: with `fxaa` or `taa` on, Horizon anti-aliases the world at the world's size, in the frame's
 encoding, before the pack's `[tonemap]` (or Horizon's curve) reads it. TAA jitters the world's projection by
 `frame.jitter`, and its history starts over when the pack is loaded or rebuilt and when the display's values
-change. TAA upscaling and its sharpening stay off, and `resolutionScale` still reaches the window through the tone
-curve's read. Under any other pack TAA is off.
+change. Where the pack has no `[tonemap]`, or one that never reads `previous`, TAA upscaling applies too: the world
+draws at the `upscaling` ratio's share of the scaled window, and TAA rebuilds it at the scaled window's size, then
+sharpens it there, in the frame's encoding, before the decode and the tone curve. `frame.resolution` stays the size
+the world draws at, and `previous` is then the size TAA rebuilt it at, larger than `frame.resolution`. A `[tonemap]`
+that reads `previous` gets TAA at the world's size, its upscaling and sharpening off. Either way
+`resolutionScale` still reaches the window through the tone curve's read. Under any other pack TAA is off.
 
 A pack must never write an infinite value into the world's frame: TAA's history would carry it.
 
