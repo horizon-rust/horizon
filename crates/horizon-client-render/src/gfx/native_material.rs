@@ -532,6 +532,7 @@ fn horizon_displace_lit(c0: HorizonDisplaceCorner, c1: HorizonDisplaceCorner,
 ];
 
 /// `text` with the marks of `lit_tint` (`LIT_MARKS`) filled in where `lit`, removed where not.
+/// Only Horizon's own text: a pack's source is left as written.
 pub(super) fn lit_marks(text: &str, lit: bool) -> String {
     let mut out = text.to_owned();
     for (mark, wgsl) in LIT_MARKS {
@@ -563,15 +564,15 @@ fn shader_source(
     let shaded = |text: &str| {
         let text = horizon_shader_api::stages::shaded_entries(text, shaded);
         let text = horizon_shader_api::stages::lit_entries(&text, lit.then_some(LIT_TINT));
-        horizon_shader_api::stages::light_source_entries(&text, light.then_some(LIGHT_SOURCE))
+        let text =
+            horizon_shader_api::stages::light_source_entries(&text, light.then_some(LIGHT_SOURCE));
+        lit_marks(&text, lit)
     };
     // The LabPBR maps in the frame's group, read by the prelude's `block_normal_map` and its
     // kin, and by a tracing stage's `hit_normal_map`.
     let pbr = horizon_shader_api::stages::PBR_MAPS_TERRAIN;
-    let text = format!(
-        "{source}
-// Horizon's terrain (terrain.wgsl)
-{}{}{}{}{}{}{}{pbr}{}{}",
+    format!(
+        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{}{}{}{pbr}{}{}",
         vanilla_terrain(),
         super::native_post::line_helpers(linear),
         if vertex {
@@ -585,12 +586,11 @@ fn shader_source(
         shaded(ENTRIES),
         super::displace::RELIEF,
         if displaced {
-            super::displace::GRID.to_owned() + DISPLACED_ENTRIES
+            lit_marks(&(super::displace::GRID.to_owned() + DISPLACED_ENTRIES), lit)
         } else {
             String::new()
         }
-    );
-    lit_marks(&text, lit)
+    )
 }
 
 /// What a material's terrain shader is built with (`shader_source`): the vertex stage in its
@@ -1292,6 +1292,13 @@ mod tests {
             .iter()
             .filter(|e| e.name.starts_with("horizon_material_fs"));
         assert_eq!(fragments.count(), 3);
+    }
+
+    /// A pack's own text that happens to hold a `lit_tint` mark's spelling keeps it.
+    #[test]
+    fn a_pack_s_own_text_keeps_a_lit_mark_s_spelling() {
+        let text = test_shader("/* @lit_out@ */\n");
+        assert!(text.starts_with("/* @lit_out@ */\n"), "{text}");
     }
 
     /// `MaterialInput.lit_tint`'s varying is the terrain's 15th, the last the weakest GPUs have

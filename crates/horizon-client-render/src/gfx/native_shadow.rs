@@ -502,7 +502,9 @@ fn shader_source(
                 "{material}{}{table}{}{}{GRID_ENTRIES}",
                 horizon_shader_api::stages::PBR_STUB,
                 super::displace::RELIEF,
-                super::displace::GRID,
+                // The grid's lit colour is the material's (`lit_tint`); the shadow map has no
+                // use for it.
+                super::native_material::lit_marks(super::displace::GRID, false),
             ),
             if vertex.is_some() {
                 super::native_material::DISPLACE_PACK
@@ -523,7 +525,7 @@ fn shader_source(
             super::native_material::DISPLACE_VANILLA,
         ),
     };
-    let text = format!(
+    format!(
         "{head}// Horizon's terrain (terrain.wgsl)\n{}{solid}{}{displace}{}{ENTRIES}",
         prefixed(
             &(super::wgsl_prefix::HDR_LIGHT.to_owned()
@@ -532,9 +534,7 @@ fn shader_source(
         ),
         super::native_post::line_helpers(false),
         super::native_material::section_corner(),
-    );
-    // The grid's lit colour is the material's (`lit_tint`); the shadow map has no use for it.
-    super::native_material::lit_marks(&text, false)
+    )
 }
 
 impl NativeShadow {
