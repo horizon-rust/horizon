@@ -4,11 +4,10 @@
 //! its home swims back into it. And its stroll: `randomStrollGoal.trigger()`
 //! from the attack goal's stop and from a hurt, and the LOOK flag it keeps.
 use super::*;
-use crate::mobs::goals::Cx;
+use crate::mobs::goals::{Cx, JUMP, MOVE};
 use crate::mobs::guardian::{elder_server_ai_step, register};
 use crate::mobs::world::{with_built_test_world, with_test_world};
 use horizon_core::geometry::Vec3;
-use horizon_core::random::LegacyRandom;
 use std::sync::Arc;
 
 /// The damage events in an outbox (a hurt also leaves its sound there).
@@ -29,6 +28,7 @@ fn spikes(events: &[MobEvent]) -> Vec<&MobEvent> {
 /// blow it refuses draws the spikes too. Thorns, magic and a projectile's
 /// arrow (a direct entity that is not living) are exempt.
 #[test]
+#[ignore = "daily"]
 fn a_still_guardian_spikes_whoever_hits_it() {
     let by_mob = |kind| Damage {
         kind,
@@ -63,7 +63,8 @@ fn a_still_guardian_spikes_whoever_hits_it() {
             // DATA_ID_MOVING, which `GuardianMoveControl` sets while it swims.
             m.extra.flag2 = moving;
             m.invulnerable_flag = invulnerable;
-            let landed = m.damage(2.0, source);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let landed = m.damage(&mut test_level.level(), 2.0, source);
             out.push((case, landed, std::mem::take(&mut m.outbox)));
         }
     });
@@ -156,11 +157,11 @@ fn goal_tick(
     goals: &mut crate::mobs::goals::GoalSelector,
     m: &mut Mob,
     w: &MobWorld,
-    lr: &mut horizon_core::random::LevelRandom,
+    level: &mut crate::health::DamageLevel<'_>,
     events: &mut Vec<MobEvent>,
 ) {
     m.ai.seen_cache.clear();
-    goals.tick(m, &mut Cx { w, lr, events });
+    goals.tick(m, &mut Cx { w, level, events });
 }
 
 /// `GuardianAttackGoal.stop`'s and `Guardian.hurtServer`'s
@@ -178,7 +179,7 @@ fn a_guardian_strolls_at_once_when_its_beam_ends_or_it_is_hurt() {
             Vec3::new(12.5, 62.0, 0.5),
             0.0,
         );
-        let others = [squid.seen(None)];
+        let others = [squid.seen(None, &crate::items::Items::empty())];
         let mut world = w.clone();
         world.others = &others;
         let kind = Arc::new(types.types["minecraft:guardian"].clone());
@@ -193,12 +194,12 @@ fn a_guardian_strolls_at_once_when_its_beam_ends_or_it_is_hurt() {
             register(&mut m);
             m.fluids.in_water = true;
             m.ai.target = Some(Who::Mob(100));
-            let mut lr = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(seed));
+            let mut test_level = crate::health::TestLevel::new(seed);
             let mut events = Vec::new();
             // The beam charges for ten ticks, then fires.
             let mut beamed = false;
             for _ in 0..40 {
-                crate::mobs::ai::tick(&mut m, &world, &mut lr, &mut events);
+                crate::mobs::ai::tick(&mut m, &world, &mut test_level.level(), &mut events);
                 if m.extra.flag {
                     beamed = true;
                     break;
@@ -209,7 +210,7 @@ fn a_guardian_strolls_at_once_when_its_beam_ends_or_it_is_hurt() {
             m.previous = m.position;
             let mut strolled = false;
             for _ in 0..4 {
-                crate::mobs::ai::tick(&mut m, &world, &mut lr, &mut events);
+                crate::mobs::ai::tick(&mut m, &world, &mut test_level.level(), &mut events);
                 strolled |= m.ai.goals.is_running("RandomStroll");
             }
             let target = m.ai.nav.target_pos;
@@ -223,10 +224,14 @@ fn a_guardian_strolls_at_once_when_its_beam_ends_or_it_is_hurt() {
             );
             register(&mut hurt);
             hurt.fluids.in_water = true;
-            hurt.damage(1.0, Damage::player([5.5, 62.0, 0.5]));
+            hurt.damage(
+                &mut test_level.level(),
+                1.0,
+                Damage::player([5.5, 62.0, 0.5]),
+            );
             let mut after_hurt = false;
             for _ in 0..4 {
-                crate::mobs::ai::tick(&mut hurt, &world, &mut lr, &mut events);
+                crate::mobs::ai::tick(&mut hurt, &world, &mut test_level.level(), &mut events);
                 after_hurt |= hurt.ai.goals.is_running("RandomStroll");
             }
             out.push((seed, beamed, strolled, target, after_hurt));
@@ -272,17 +277,29 @@ fn a_strolling_guardian_keeps_its_head_with_its_body() {
             );
             register(&mut m);
             m.fluids.in_water = true;
-            let mut lr = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(seed));
+            let mut test_level = crate::health::TestLevel::new(seed);
             let mut events = Vec::new();
             let mut goals = std::mem::take(&mut m.ai.goals);
             // The stroll's first draw is 1 in 40: take a seed where it strolls at once.
-            goal_tick(&mut goals, &mut m, &world, &mut lr, &mut events);
+            goal_tick(
+                &mut goals,
+                &mut m,
+                &world,
+                &mut test_level.level(),
+                &mut events,
+            );
             if !goals.is_running("RandomStroll") {
                 continue;
             }
             let mut turned = 0.0_f32;
             for _ in 0..300 {
-                goal_tick(&mut goals, &mut m, &world, &mut lr, &mut events);
+                goal_tick(
+                    &mut goals,
+                    &mut m,
+                    &world,
+                    &mut test_level.level(),
+                    &mut events,
+                );
                 m.look_control_tick();
                 // How far the head left the body it is carried by, in degrees.
                 let off = (m.head_yaw - m.body_yaw + 180.0).rem_euclid(360.0) - 180.0;
@@ -316,19 +333,19 @@ fn displaced_elders(xs: &[f64]) -> Option<Vec<(bool, Option<[i32; 3]>)>> {
             let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 62.0, 0.5), 0.0);
             register(&mut m);
             m.fluids.in_water = true;
-            let mut lr = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(0));
+            let mut test_level = crate::health::TestLevel::new(0);
             let mut events = Vec::new();
             elder_server_ai_step(
                 &mut m,
                 &mut Cx {
                     w,
-                    lr: &mut lr,
+                    level: &mut test_level.level(),
                     events: &mut events,
                 },
             );
             m.position = Vec3::new(x, 62.0, 0.5);
             m.previous = m.position;
-            crate::mobs::ai::tick(&mut m, w, &mut lr, &mut events);
+            crate::mobs::ai::tick(&mut m, w, &mut test_level.level(), &mut events);
             out.push((
                 m.ai.goals.is_running("MoveTowardsRestriction"),
                 m.ai.nav.target_pos,
@@ -345,6 +362,7 @@ fn displaced_elders(xs: &[f64]) -> Option<Vec<(bool, Option<[i32; 3]>)>> {
 /// outside its 16-block home the goal starts and picks a spot toward it;
 /// inside it the goal does not run at all.
 #[test]
+#[ignore = "daily"]
 fn a_displaced_elder_guardian_swims_back_toward_its_home() {
     let Some(out) = displaced_elders(&[60.5, 5.5]) else {
         return;
@@ -367,4 +385,70 @@ fn a_displaced_elder_guardian_swims_back_toward_its_home() {
         !out[1].0,
         "inside its home the guardian has no goal to go home"
     );
+}
+
+/// Whether a `me` guardian at (0.5, 62, 0.5) turns its look to a `other` one
+/// ten blocks east within 1000 goal ticks, with only its LOOK goals free to
+/// run (so only a look-at goal can aim it): the eye position it aimed at.
+fn looks_at_guardian(types: &super::MobTypes, w: &MobWorld<'_>, me: &str, other: &str) -> bool {
+    let mut m = Mob::new(
+        1,
+        Arc::new(types.types[me].clone()),
+        Vec3::new(0.5, 62.0, 0.5),
+        0.0,
+    );
+    register(&mut m);
+    let seen = [Mob::new(
+        2,
+        Arc::new(types.types[other].clone()),
+        Vec3::new(10.5, 62.0, 0.5),
+        0.0,
+    )
+    .seen(None, &crate::items::Items::empty())];
+    let world = MobWorld {
+        others: &seen,
+        ..w.clone()
+    };
+    let eye = [seen[0].position.x, seen[0].eye_y, seen[0].position.z];
+    m.ai.goals.disabled = MOVE | JUMP;
+    let (mut test_level, mut events) = (crate::health::TestLevel::new(0), Vec::new());
+    let mut goals = std::mem::take(&mut m.ai.goals);
+    let mut looked = false;
+    for _ in 0..1000 {
+        let mut cx = Cx {
+            w: &world,
+            level: &mut test_level.level(),
+            events: &mut events,
+        };
+        goals.tick(&mut m, &mut cx);
+        if goals.is_running("LookAtPlayer") && m.ai.look.wanted == eye {
+            looked = true;
+            break;
+        }
+    }
+    m.ai.goals = goals;
+    looked
+}
+
+/// `Guardian.registerGoals`' `addGoal(8, new LookAtPlayerGoal(this,
+/// Guardian.class, 12.0F, 0.01F))`: a guardian looks at another guardian ten
+/// blocks away, and `Guardian.class` takes the elder guardians, which inherit
+/// the goal.
+#[test]
+fn a_guardian_looks_at_another_guardian_elder_included() {
+    let mut out = Vec::new();
+    let ran = with_test_world(&[], |w, types| {
+        for (me, other) in [
+            ("minecraft:guardian", "minecraft:elder_guardian"),
+            ("minecraft:elder_guardian", "minecraft:guardian"),
+        ] {
+            out.push((me, other, looks_at_guardian(types, w, me, other)));
+        }
+    });
+    if !ran {
+        return;
+    }
+    for (me, other, looked) in out {
+        assert!(looked, "a {me} never looked at the {other} 10 blocks off");
+    }
 }

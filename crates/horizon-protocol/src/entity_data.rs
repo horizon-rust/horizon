@@ -4,11 +4,11 @@
 //! them are kept.
 use crate::{
     Result,
-    adapter::ids,
+    adapter::{ids, pinned_ids::particle_type},
     buf::{Codec, Reader, Writer},
     item::{Slot, Stack, Template},
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -182,6 +182,37 @@ pub enum PositionSource {
     Entity { id: i32, y_offset: f32 },
 }
 impl Particle {
+    /// A native mod's particle travels as `MOD_PARTICLE_ID` (-1) plus its name.
+    /// Vanilla reads the id with `IdMap.byIdOrThrow`, which throws on -1 and
+    /// drops the connection, so such a particle may only go to Horizon clients.
+    pub fn horizon_only(&self) -> bool {
+        matches!(self.data, Some(ParticleData::Mod(_)))
+    }
+    /// A pinned particle as a client through 1.21.8 knows it: `effect`, `instant_effect`, `dragon_breath` and
+    /// `flash` have no options there (1.21.9 added them), so they carry none.
+    pub fn without_plain_options(&mut self) {
+        if self.has_options_from_1_21_9()
+            && matches!(
+                self.data,
+                Some(
+                    ParticleData::Scalar(_) | ParticleData::ColorPower(..) | ParticleData::Color(_)
+                )
+            )
+        {
+            self.data = None;
+        }
+    }
+    /// `dragon_breath`, `effect`, `instant_effect` and `flash`: the particles that gained options in 1.21.9
+    /// (`PowerParticleOption`, `SpellParticleOption`, and the colour of `flash`).
+    fn has_options_from_1_21_9(&self) -> bool {
+        matches!(
+            self.id,
+            particle_type::DRAGON_BREATH
+                | particle_type::EFFECT
+                | particle_type::INSTANT_EFFECT
+                | particle_type::FLASH
+        )
+    }
     pub fn read(r: &mut Reader) -> Result<Particle> {
         let id = r.varint()?;
         let id = if matches!(
@@ -219,6 +250,10 @@ impl Particle {
         // `minecraft:particle_type` registry order as of 26.3.
         let data = match id {
             1 | 2 | 36 | 121 | 125 => Some(ParticleData::State(ids::block_state(r.varint()?))),
+            // 1.21.8 and older send `flash` without its colour: white, as the pinned version defaults it.
+            particle_type::FLASH if ids::quirks().simple_spell_particles => {
+                Some(ParticleData::Color(-1))
+            }
             28 | 46 | 52 => Some(ParticleData::Color(r.i32()?)),
             21 => {
                 let color = if ids::quirks().components_before_1_21_2 {
@@ -247,7 +282,7 @@ impl Particle {
                     },
                 ))
             }
-            23 | 56 => {
+            particle_type::EFFECT | particle_type::INSTANT_EFFECT => {
                 if ids::quirks().simple_spell_particles {
                     Some(ParticleData::ColorPower(-1, 1.0))
                 } else {
@@ -255,8 +290,10 @@ impl Particle {
                     Some(ParticleData::ColorPower(color, r.f32()?))
                 }
             }
-            15 if ids::quirks().simple_spell_particles => Some(ParticleData::Scalar(1.0)),
-            15 | 48 => Some(ParticleData::Scalar(r.f32()?)),
+            particle_type::DRAGON_BREATH if ids::quirks().simple_spell_particles => {
+                Some(ParticleData::Scalar(1.0))
+            }
+            particle_type::DRAGON_BREATH | 48 => Some(ParticleData::Scalar(r.f32()?)),
             115 => Some(ParticleData::Delay(r.varint()?)),
             59 => {
                 let at = [r.f64()?, r.f64()?, r.f64()?];
@@ -308,6 +345,10 @@ impl Particle {
     pub fn write(&self, w: &mut Writer) {
         w.varint(self.id);
         let Some(data) = &self.data else { return };
+        // A client through 1.21.8 has no options on these (`read` fills in defaults when it reads them back).
+        if self.has_options_from_1_21_9() && ids::quirks_written().simple_spell_particles {
+            return;
+        }
         // Written for a client before 1.21.2: dust colors are three floats (the reverse of `legacy_rgb`).
         let legacy = matches!(ids::active(), Some((ids, ids::Way::Down)) if ids.quirks.components_before_1_21_2);
         match data {
@@ -599,6 +640,163 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
 /// ItemEntity.DATA_ITEM (after the eight Entity data entries).
 pub const ITEM_ENTITY_ITEM: u8 = 8;
 
+// Generated retained-allocation traversals; regenerate with protocol-retained-gen.
+impl crate::retained::OwnedHeap for Value {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Byte(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Int(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Long(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Float(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::String(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Text(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptText(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Item(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Bool(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Floats(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Pos(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptPos(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptUuid(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Id(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Ids(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Particle(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Particles(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Profile(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for Profile {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            name,
+            uuid,
+            properties,
+            body,
+            cape,
+            elytra,
+            slim,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(name))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(uuid))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(properties))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(body))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(cape))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(elytra))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(slim))
+    }
+}
+impl crate::retained::OwnedHeap for Particle {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self { id, data } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(id))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(data))
+    }
+}
+impl crate::retained::OwnedHeap for ParticleData {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::State(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Color(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::ColorScale(field_0, field_1) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1)),
+            Self::ColorScale2(field_0, field_1, field_2) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_2)),
+            Self::ColorPower(field_0, field_1) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1)),
+            Self::Scalar(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Delay(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Trail(field_0, field_1, field_2) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_2)),
+            Self::Item(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Geyser(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::GeyserBase(field_0, field_1) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1)),
+            Self::Vibration { source, ticks } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(source))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(ticks)),
+            Self::Mod(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for PositionSource {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Block(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Entity { id, y_offset } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(id))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(y_offset)),
+        }
+    }
+}
+impl crate::retained::OwnedHeap for EntityData {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+// End generated retained traversals.
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,6 +1047,7 @@ mod tests {
                 (15, ParticleData::Scalar(1.0)),
                 (23, ParticleData::ColorPower(-1, 1.0)),
                 (56, ParticleData::ColorPower(-1, 1.0)),
+                (52, ParticleData::Color(-1)),
             ] {
                 let mut w = Writer::new();
                 w.varint(ids.particle_type.down(pinned).unwrap());
@@ -861,6 +1060,40 @@ mod tests {
                 assert_eq!(particle.data, Some(expected));
                 assert_eq!(r.u8().unwrap(), 99);
             }
+        }
+    }
+
+    /// `read` fills in defaults for these four when an older layout has no options, so `write` must leave them out
+    /// again for such a client (an explosion's particle is read and written back in the client's layout).
+    #[test]
+    fn a_particle_without_options_in_an_older_layout_is_written_without_them() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        let ids = ServerVersion::V1_21_8.ids().unwrap();
+        for (id, data) in [
+            (particle_type::DRAGON_BREATH, ParticleData::Scalar(1.0)),
+            (particle_type::EFFECT, ParticleData::ColorPower(-1, 1.0)),
+            (
+                particle_type::INSTANT_EFFECT,
+                ParticleData::ColorPower(-1, 1.0),
+            ),
+            (particle_type::FLASH, ParticleData::Color(-1)),
+        ] {
+            let particle = Particle {
+                id,
+                data: Some(data),
+            };
+            let mut older = Writer::new();
+            {
+                let _down = ids::renumbering(ids, Way::Down);
+                particle.write(&mut older);
+            }
+            let mut plain = Writer::new();
+            Particle { id, data: None }.write(&mut plain);
+            assert_eq!(older.data, plain.data, "pinned {id}");
+            // Without an older layout the options stay.
+            let mut pinned = Writer::new();
+            particle.write(&mut pinned);
+            assert!(pinned.data.len() > plain.data.len(), "pinned {id}");
         }
     }
 

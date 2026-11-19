@@ -25,7 +25,7 @@ pub struct Stroll {
     pub look: bool,
     /// `RandomStrollGoal.forceTrigger`: the next `canUse` skips the interval's
     /// draw (see `Goal::trigger`).
-    force: bool,
+    pub force: bool,
     wanted: [f64; 3],
     /// A subclass's `getPosition` in place of the default pick
     /// (`GolemRandomStrollInVillageGoal`, `MoveBackToVillageGoal`).
@@ -175,7 +175,12 @@ impl Goal for Stroll {
                         q[1].floor() as i32,
                         q[2].floor() as i32,
                     );
-                    if cx.w.data.state(s).flags & crate::mobs::data::WATER != 0 || count >= 10 {
+                    if cx
+                        .w
+                        .data
+                        .pathfindable(s, crate::mobs::data::PathComputationType::Water)
+                        || count >= 10
+                    {
                         break;
                     }
                     count += 1;

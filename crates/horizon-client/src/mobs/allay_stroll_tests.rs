@@ -6,7 +6,7 @@
 use super::*;
 use crate::mobs::EntityRandom;
 use crate::mobs::goals::Cx;
-use crate::mobs::world::{level_random, with_test_world};
+use crate::mobs::world::with_test_world;
 use horizon_core::geometry::Vec3;
 use horizon_core::random::LegacyRandom;
 use std::sync::Arc;
@@ -29,12 +29,12 @@ fn an_allay_wanders_up_to_ten_blocks_away() {
                 EntityRandom::own(LegacyRandom::new(seed)),
             );
             register(&mut m);
-            let mut lr = level_random(seed);
+            let mut test_level = crate::health::TestLevel::new(seed);
             let mut events = Vec::new();
             let mut goals = std::mem::take(&mut m.ai.goals);
             let mut cx = Cx {
                 w,
-                lr: &mut lr,
+                level: &mut test_level.level(),
                 events: &mut events,
             };
             // The stroll's first draw is 1 in 60: give each allay 300 goal ticks.
