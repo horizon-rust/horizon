@@ -543,6 +543,7 @@ impl Game<'_> {
         self.armor_stand_assets.apply_resources(armor_stand_assets);
         self.random_tick_sections.clear();
         self.portals.sections.clear();
+        self.forget_stand_rests();
         self.options.resources = root.clone();
         self.falling_vertices.get_mut().clear();
         self.pack = pack;
