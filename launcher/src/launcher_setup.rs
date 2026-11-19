@@ -116,6 +116,7 @@ impl Launcher {
             self_update: horizon_launcher::update_handoff::take_failure()
                 .map_or(SelfUpdate::Idle, |e| SelfUpdate::Stuck(Some(e))),
             self_update_hidden: false,
+            min_restart_tried: horizon_launcher::min_launcher::take_restarted(),
             update_install: None,
             instance_install: None,
             install_next: None,
@@ -563,17 +564,30 @@ impl Launcher {
     }
 
     /// A launcher older than links.json's `min_launcher` installs its downloaded update and restarts
-    /// as soon as it is ready, unless a game it started runs (`min_launcher`).
+    /// as soon as it is ready, once per start, unless a game it started runs or a version installs
+    /// (`min_launcher`).
     pub(crate) fn follow_min_launcher(&mut self, cx: &mut App) {
-        let busy = self.client.is_some() || self.starting_client.is_some() || self.preparing;
-        if horizon_launcher::min_launcher::installs_now(
-            backend::VERSION,
-            self.links.min_launcher.as_deref(),
-            backend::self_update_allowed(),
-            matches!(self.self_update, SelfUpdate::Ready(_)),
-            busy,
-        ) {
-            self.apply_launcher_update(cx);
+        use horizon_launcher::min_launcher::{self, Activity, Now};
+        let now = Now {
+            self_update_allowed: backend::self_update_allowed(),
+            package_managed: backend::package_managed_launcher(),
+            ready: matches!(self.self_update, SelfUpdate::Ready(_)),
+            activity: Activity {
+                game: self.client.is_some() || self.starting_client.is_some(),
+                preparing: self.preparing,
+                installing: self.installing.is_some() || !self.removing.is_empty(),
+            },
+            tried: self.min_restart_tried,
+        };
+        if !min_launcher::installs_now(backend::VERSION, self.links.min_launcher.as_deref(), now) {
+            return;
+        }
+        self.min_restart_tried = true;
+        min_launcher::mark_restart();
+        self.apply_launcher_update(cx);
+        // The handoff failed and says why: the next start may try again.
+        if matches!(self.self_update, SelfUpdate::Failed(_)) {
+            min_launcher::unmark_restart();
         }
     }
 
