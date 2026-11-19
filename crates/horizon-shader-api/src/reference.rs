@@ -566,7 +566,7 @@ pub fn markdown() -> String {
             A pack without `[[post]]` whose frame holds gamma light (not `blend = \"linear\"` on the float frame) gets the\n\
             player's FXAA or TAA: with `fxaa` or `taa` on, Horizon anti-aliases the world at the world's size, in the frame's\n\
             encoding, before the pack's `[tonemap]` (or Horizon's curve) reads it. TAA jitters the world's projection by\n\
-            `frame.jitter`, and its history starts over when the pack is loaded, rebuilt or reset and when the display's values\n\
+            `frame.jitter`, and its history starts over when the pack is loaded or rebuilt and when the display's values\n\
             change. TAA upscaling and its sharpening stay off, and `resolutionScale` still reaches the window through the tone\n\
             curve's read. Under any other pack TAA is off.\n\n\
             A pack must never write an infinite value into the world's frame: TAA's history would carry it.\n\n\

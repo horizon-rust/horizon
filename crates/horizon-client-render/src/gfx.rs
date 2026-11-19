@@ -6413,11 +6413,6 @@ impl Renderer {
         if let Some(pipeline) = &mut self.external {
             pipeline.reset_history();
         }
-        // The player's TAA under a running native pack too, its jitter from the sequence's
-        // start; a pipeline without capabilities runs as no pack, and keeps it.
-        if self.executor.is_some() {
-            self.world_post.restart_history();
-        }
         if let Some((_, Some(post))) = &mut self.pack_post {
             post.reset_history(&self.device);
         }
