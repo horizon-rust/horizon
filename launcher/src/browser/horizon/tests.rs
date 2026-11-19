@@ -1221,8 +1221,8 @@ fn backups(home: &Path) -> Vec<PathBuf> {
 
 /// An entry from the earlier mod system (as `zoom` 1.0.0 was) names a `.hmod` right where the new
 /// file goes, an archive this Horizon can't read as a mod. Installing the mod replaces it, and
-/// the file the entry's checksum names leaves nothing behind. A file there that is no archive
-/// at all is refused as before and stays.
+/// the old file is kept beside it, though the entry's checksum names it. A file there that is
+/// no archive at all is refused as before and stays.
 #[test]
 fn an_outdated_mod_file_is_replaced_by_the_new_version() {
     let index = sample();
@@ -1230,7 +1230,7 @@ fn an_outdated_mod_file_is_replaced_by_the_new_version() {
 
     let home = scratch("stale-outdated");
     let old = home.join(HUD);
-    outdated(&old, "horizon-mod.toml", EARLIER);
+    let before = outdated(&old, "horizon-mod.toml", EARLIER);
     old_entry_checked(&home);
 
     let done = install_from(&index, true, &p, &home, &|_, _| {}).unwrap();
@@ -1239,7 +1239,9 @@ fn an_outdated_mod_file_is_replaced_by_the_new_version() {
     let package = horizon_platform::mod_package::Package::read(&old).unwrap();
     assert_eq!(package.manifest.version, done[0].version);
     assert!(java::is_enabled(&home, "coords_hud"));
-    assert_eq!(backups(&home), Vec::<PathBuf>::new());
+    let kept = backups(&home);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(fs::read(&kept[0]).unwrap(), before);
     fs::remove_dir_all(&home).unwrap();
 
     let home = scratch("stale-not-an-archive");

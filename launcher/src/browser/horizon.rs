@@ -1033,14 +1033,6 @@ fn remove_retired<'a>(
     })
 }
 
-/// An outdated file moved aside for the new one.
-struct Displaced {
-    /// Where it is now: beside where it was, under a name the game doesn't load.
-    backup: PathBuf,
-    /// It is the file the entry's checksum names, so the launcher put it there.
-    ours: bool,
-}
-
 /// A name beside `file` that nothing has yet, made as an empty file so no later call gets it:
 /// `<name>.replaced-<secs>`, then `-1`, `-2`… The game loads only `.hmod` files and mod folders
 /// (`mod_package::find`), so it never reads one.
@@ -1069,12 +1061,10 @@ fn reserve_backup(file: &Path, secs: u64) -> Result<PathBuf, String> {
 /// Moves `old`'s outdated file at `target` aside, so the new one never overwrites it. Refused
 /// when the instance's mod folder leads somewhere else (a link or junction) or the path is no
 /// longer a plain file. Whatever file is there at the move is the one kept, even if it changed
-/// since it was inspected. `None` when it is gone by now.
-fn displace(
-    home: &Path,
-    old: &installed::Entry,
-    target: &Path,
-) -> Result<Option<Displaced>, String> {
+/// since it was inspected: where it is now, beside where it was, under a name the game doesn't
+/// load. It stays there for the player: nothing here says it is of no use (an older launcher
+/// may not read a newer mod). `None` when it is gone by now.
+fn displace(home: &Path, old: &installed::Entry, target: &Path) -> Result<Option<PathBuf>, String> {
     let folder = target.parent().and_then(|dir| fs::canonicalize(dir).ok());
     let inside = fs::canonicalize(home)
         .ok()
@@ -1112,22 +1102,17 @@ fn displace(
             _ => Err(format!("{}: {e}", target.display())),
         };
     }
-    // Hashed where it now lies: this is the very file that was moved.
-    let ours = index::sha256_file(&backup).is_ok_and(|hash| {
-        old.checksum
-            .eq_ignore_ascii_case(&format!("SHA-256:{hash}"))
-    });
-    Ok(Some(Displaced { backup, ours }))
+    Ok(Some(backup))
 }
 
 /// `error`, once the displaced file is back at `target`, over the new one if that is there. A
 /// failure to do that says where the file is.
-fn put_back(error: String, displaced: &Displaced, target: &Path) -> String {
-    match fs::rename(&displaced.backup, target) {
+fn put_back(error: String, backup: &Path, target: &Path) -> String {
+    match fs::rename(backup, target) {
         Ok(()) => error,
         Err(e) => format!(
             "{error}; your previous file is kept as {}: {e}",
-            displaced.backup.display()
+            backup.display()
         ),
     }
 }
@@ -1287,17 +1272,13 @@ fn install_version_guarded(
         (None, Some(_)) => taken_back(e, &target),
         (None, None) => e,
     })?;
-    match displaced {
-        Some(d) if d.ours => {
-            let _ = fs::remove_file(&d.backup);
-        }
-        Some(d) => eprintln!(
+    if let Some(backup) = displaced {
+        eprintln!(
             "{}: kept your previous {} as {}",
             p.name,
             entry.file,
-            d.backup.display()
-        ),
-        None => {}
+            backup.display()
+        );
     }
     Ok(entry)
 }
