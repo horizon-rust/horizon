@@ -652,10 +652,19 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
 /// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
-    Ok(crate::github::json_optional(&format!(
-        "https://api.github.com/repos/{REPO}/releases?per_page=100"
-    ))?
-    .unwrap_or_else(|| serde_json::json!([])))
+    Ok(crate::github::json_optional(&release_list_url())?.unwrap_or_else(|| serde_json::json!([])))
+}
+
+fn release_list_url() -> String {
+    format!("https://api.github.com/repos/{REPO}/releases?per_page=100")
+}
+
+/// The game's builds as GitHub (or its mirror) lists them now, never from a copy kept on disk.
+pub fn releases_from_network() -> Result<Vec<Release>, String> {
+    let list = crate::github::json_from_network(&release_list_url())?;
+    Ok(game_releases(
+        &list.unwrap_or_else(|| serde_json::json!([])),
+    ))
 }
 
 /// The releases in `list` whose tag passes `keep`, newest first, with the asset named `asset`.
@@ -1834,14 +1843,7 @@ fn refill_own_store(tag: &str) {
     else {
         return;
     };
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     if let Err(e) = download_for_owner(&pins, &own, &fetch, &|line| eprintln!("{line}")) {
         eprintln!("{tag}: the missing assets were not downloaded: {e}");
     }
@@ -2014,14 +2016,7 @@ pub fn download_version_for_owner(
     log: &dyn Fn(String),
 ) -> Result<PathBuf, String> {
     let dir = data_dir().join("minecraft");
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     let pins = sources::Pins::for_version(id, manifest_sha1);
     download_for_owner(&pins, &dir, &fetch, log)
         .map_err(|e| e.trim_start_matches("\n  • ").to_string())?;
@@ -2148,7 +2143,7 @@ fn download_for(
                 sources::Os::MacOs => "osx",
                 sources::Os::Windows => "windows",
             };
-            mojang::download(pins, dir, os, 8, fetch, &mojang::CANCEL, log).map_err(|e| {
+            mojang::download_http(pins, dir, os, mojang::JOBS, fetch, &mojang::CANCEL, log).map_err(|e| {
                 format!("\n  • Horizon tried to download {v} from Mojang for {name}, but: {e}")
             })
         }
@@ -2162,11 +2157,20 @@ fn download_for(
             "\n  • No signed-in account owns Minecraft: Java Edition, so Horizon can't download it."
                 .into(),
         ),
-        Err(_) => Err(format!(
-            "\n  • Or sign in with the Microsoft account that owns Minecraft: Horizon then \
-             downloads {v} from Mojang itself."
+        Err(_) => Err(crate::i18n::trf(
+            "\n  • Sign in with a Microsoft account that owns Minecraft: Java Edition to download \
+             {version} from Mojang.",
+            &[("version", v)],
         )),
     }
+}
+
+/// The folder of the Microsoft Store's Minecraft Launcher (the one Windows offers, and the Xbox
+/// app's) under `local`, `%LOCALAPPDATA%`. Its game files are in `%APPDATA%\.minecraft` like the
+/// other launcher's, but the Java it downloads is in this folder's `runtime`, so a preparation
+/// found none and downloaded the same runtime from Mojang again (411 files, 100 MB for 26.3).
+fn store_launcher_folder(local: &Path) -> PathBuf {
+    local.join(r"Packages\Microsoft.4297127D64EC6_8wekyb3d8bbwe\LocalCache\Local")
 }
 
 /// The Java home for this version: a runtime for precompiled exporters, a JDK for older
@@ -2211,19 +2215,14 @@ fn java(
             "{missing}\n  • Minecraft's own Java from Mojang needs glibc ({GLIBC_LOADER} is missing; on NixOS, enable programs.nix-ld), so install compatible Java instead."
         ));
     }
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     let runtime = data_dir().join("minecraft").join("runtime");
-    let home = mojang::java_runtime(&component, &runtime, 8, &fetch, &mojang::CANCEL, log)
+    let home = mojang::java_runtime_http(&component, &runtime, mojang::JOBS, &fetch, &mojang::CANCEL, log)
         .map_err(|e| {
         format!("{missing}\n  • Horizon also tried to download Minecraft's own Java from Mojang, but: {e}")
     })?;
+    // On macOS the download's Java home is inside its jre.bundle (#17894).
+    let home = prepare::java::runtime_home(&home).unwrap_or(home);
     find(major, &[home]).map(|jdk| jdk.home())
 }
 
@@ -2346,14 +2345,7 @@ pub fn preparer(
                 .map(|f| sources::known_folders(sources::Os::current(), &f))
                 .unwrap_or_default(),
         );
-        let fetch = |url: &str| -> Result<Vec<u8>, String> {
-            let mut body = Vec::new();
-            get(url)?
-                .into_reader()
-                .read_to_end(&mut body)
-                .map_err(|e| e.to_string())?;
-            Ok(body)
-        };
+        let fetch = crate::downloads::install_metadata;
         let linked = data_dir().join("linked-minecraft");
         if from == MinecraftFrom::Mojang {
             // Straight from Mojang (what is already there and whole is kept), for an owner only.
@@ -2401,6 +2393,9 @@ pub fn preparer(
             .into_iter()
             .map(|(_, dir)| dir),
     );
+    if cfg!(windows) {
+        games.extend(dirs::data_local_dir().map(|local| store_launcher_folder(&local)));
+    }
     set_prepare_step(PrepareStep::Java);
     let java_home = java(
         major,
@@ -2412,25 +2407,28 @@ pub fn preparer(
     let jar = data_dir()
         .join("server-jars")
         .join(format!("{version}.jar"));
-    if !reused && !jar.exists() {
-        let json: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&manifest).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        let url = json["downloads"]["server"]["url"]
-            .as_str()
-            .ok_or_else(|| format!("{} has no server download", manifest.display()))?;
-        log(format!("Downloading the {version} server jar from Mojang"));
-        fs::create_dir_all(jar.parent().unwrap()).map_err(|e| e.to_string())?;
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        let partial = jar.with_extension("partial");
-        fs::write(&partial, body)
-            .and_then(|_| fs::rename(&partial, &jar))
-            .map_err(|e| e.to_string())?;
+    if !reused {
+        let json = crate::java_launch::read(&manifest)?;
+        let server = &json["downloads"]["server"];
+        let artifact = crate::downloads::Artifact {
+            url: server["url"]
+                .as_str()
+                .ok_or_else(|| format!("{} has no server download", manifest.display()))?
+                .into(),
+            sha1: server["sha1"]
+                .as_str()
+                .ok_or("The server download has no SHA-1")?
+                .into(),
+            size: server["size"].as_u64(),
+            path: jar.clone(),
+        };
+        log(format!(
+            "Checking and downloading the {version} server jar from Mojang"
+        ));
+        let http = crate::downloads::shared()?.session();
+        crate::downloads::run(http.download(&artifact, &mojang::CANCEL))?;
     }
+
     if let Some(binary) = binary {
         if prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
             == Some(prepare::SOURCES_SHA256)
@@ -4000,6 +3998,8 @@ pub struct Running {
 /// Launcher-owned tree-lock primitives and optional Windows runtime state.
 pub struct RuntimeGuard {
     _leases: Vec<crate::run_leases::Claim>,
+    /// Why the command starts without its leases, for the launch log.
+    pub warning: Option<String>,
     #[cfg(windows)]
     _windows: Option<crate::windows_runtime::Guard>,
 }
@@ -4008,8 +4008,31 @@ pub use crate::run_leases::control::startup_cleanup;
 
 pub fn prepare_command(cmd: Command) -> Result<(Command, RuntimeGuard), String> {
     crate::developer_offline::validate(&cmd)?;
+    let mut warning = None;
     #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut leases = crate::run_leases::shared(&cmd).map_err(crate::native_mods::cache_error)?;
+    let mut leases = match crate::run_leases::shared(&cmd) {
+        Ok(leases) => leases,
+        // Leases keep cleanup away from what a running game uses, and only Horizon's own game
+        // runs from what the launcher cleans up: Java Edition starts without them (#18018).
+        // A busy tree is a cleanup that ends soon, and its message says to wait for it.
+        Err(error)
+            if !crate::run_leases::is_horizon(&cmd)
+                && !matches!(error, crate::native_cache::Error::Busy) =>
+        {
+            warning = Some(crate::i18n::trf(
+                "Starting without marking the game's folders as in use: {error}",
+                &[("error", &crate::native_mods::cache_error(error))],
+            ));
+            Vec::new()
+        }
+        Err(error @ crate::native_cache::Error::Io(_)) => {
+            return Err(crate::i18n::trf(
+                "{error}. Make sure your account can write to the game's and the launcher's folders, then try again.",
+                &[("error", &crate::native_mods::cache_error(error))],
+            ));
+        }
+        Err(error) => return Err(crate::native_mods::cache_error(error)),
+    };
     #[cfg(windows)]
     let cmd = crate::windows_runtime::redirect(cmd);
     #[cfg(windows)]
@@ -4029,6 +4052,7 @@ pub fn prepare_command(cmd: Command) -> Result<(Command, RuntimeGuard), String> 
         cmd,
         RuntimeGuard {
             _leases: leases,
+            warning,
             #[cfg(windows)]
             _windows: guard,
         },
@@ -4041,7 +4065,10 @@ pub fn spawn_attached(cmd: &mut Command) -> std::io::Result<std::process::Child>
 }
 
 pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String> {
-    let (mut cmd, runtime) = prepare_command(cmd)?;
+    let (mut cmd, mut runtime) = prepare_command(cmd)?;
+    if let Some(warning) = runtime.warning.take() {
+        let _ = tx.send(Msg::Line(job, warning));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -4574,9 +4601,29 @@ mod tests {
             Err("no network in tests".into())
         };
         let log = |_: String| {};
+        let refused = download_for(
+            &pins,
+            &dir,
+            Err(account::NoOwner::default()),
+            false,
+            &fetch,
+            &log,
+        )
+        .unwrap_err();
+        // Ordinary prepare appends the refusal to the missing-Minecraft diagnostic.
+        let diagnostic = sources::not_found(&pins.version, &[], Path::new("chosen")) + &refused;
+        let (_, remedies) = diagnostic.split_once("\nTo fix it:").unwrap();
+        assert_eq!(
+            remedies,
+            "\n  • Play 26.3 once in the official Minecraft launcher, or in Prism Launcher, \
+             MultiMC, the Modrinth App, ATLauncher, GDLauncher or Dawn Client, then prepare again.\
+             \n  • Or choose the folder where your launcher keeps Minecraft 26.3 (Minecraft \
+             folder › Choose… in the launcher, --minecraft on the command line).\
+             \n  • Sign in with a Microsoft account that owns Minecraft: Java Edition to download \
+             26.3 from Mojang."
+        );
         let no_owner = || Ok(account::Launch::default());
         for (pass, signed_in) in [
-            (Err(account::NoOwner::default()), false),
             (Err(account::NoOwner::default()), true),
             (no_owner(), false),
             (no_owner(), true),
@@ -4640,7 +4687,7 @@ mod tests {
             .iter()
             .filter(|(_, tests, _)| !tests)
             .flat_map(|(name, _, text)| {
-                text.matches("mojang::download(")
+                text.matches("mojang::download_http(")
                     .map(move |_| name.as_str())
             })
             .collect();
@@ -4650,7 +4697,7 @@ mod tests {
             let start = backend.find(&format!("\nfn {f}(")).unwrap();
             &backend[start..start + backend[start + 1..].find("\n}\n").unwrap()]
         };
-        assert!(body("download_for").contains("mojang::download("));
+        assert!(body("download_for").contains("mojang::download_http("));
         assert!(body("download_for_owner").contains("account::launch("));
         assert!(!body("download_for_owner").contains("launch_for_game("));
         // `download_for` is defined once and called once, by `download_for_owner`.
