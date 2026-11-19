@@ -1540,12 +1540,13 @@ fn whether_a_name_is_the_mods_own_follows_each_files_scope() {
         "impl It for X { type Settings = mod_api::Settings; }\nfn g() { let s = crate::X::Settings { height: 1 }; }",
     );
     assert_eq!(built_in(&[associated], "type:Settings"), full);
-    // An import of the mod's own enum's variant is the variant, no API struct.
+    // An import through `crate::` of an enum's variant: the scan does not know which file is
+    // the crate's root, so the API's.
     let variant = (
         "src/third.rs",
         "enum Kind { Settings { mine: u8 } }\nuse crate::Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }",
     );
-    assert_eq!(built_in(&[variant], "type:Settings"), none);
+    assert_eq!(built_in(&[variant], "type:Settings"), full);
     // A file with an API glob and no definition of its own: the API's.
     let api_glob = (
         "src/third.rs",
@@ -1561,66 +1562,98 @@ fn whether_a_name_is_the_mods_own_follows_each_files_scope() {
 }
 
 #[test]
-fn a_variant_of_the_mods_own_enum_builds_no_api_struct() {
+fn a_variant_of_the_files_own_enum_builds_no_api_struct() {
     let none = Some(Built::None);
     let full = Some(Built::Full);
-    let lib = ("src/lib.rs", "mod kind;\nmod other;");
-    let kind = (
-        "src/kind.rs",
-        "pub enum Kind { Settings { mine: u8 }, Pos(u8) }",
-    );
-    let of = |id: &str, source: &'static str| built_in(&[lib, kind, ("src/other.rs", source)], id);
-    // Through the enum, as a literal or an exhaustive pattern, or imported by name.
+    let enums = "pub enum Kind { Settings { mine: u8 }, Pos(u8) }\n";
+    let of = |id: &str, source: &str| {
+        let text = format!("{enums}{source}");
+        built_in(&[("src/lib.rs", text.as_str())], id)
+    };
+    // The file's own top-level enum: through the enum or `self::`, as a literal or an
+    // exhaustive pattern, through `Self` in an impl for it, or imported by name.
     for source in [
-        "use crate::kind::Kind;\nfn g() -> Kind { Kind::Settings { mine: 1 } }",
-        "fn g() -> crate::kind::Kind { crate::kind::Kind::Settings { mine: 1 } }",
-        "use crate::kind::Kind;\nfn g(k: Kind) -> u8 { match k { Kind::Settings { mine } => mine, _ => 0 } }",
-        "use crate::kind::Kind;\nimpl Kind { fn new() -> Self { Self::Settings { mine: 1 } } }",
-        "use crate::kind::Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }",
-        "use crate::kind::Kind::Settings as S;\nfn g() { let s = S { mine: 1 }; }",
+        "fn g() -> Kind { Kind::Settings { mine: 1 } }",
+        "fn g() -> Kind { self::Kind::Settings { mine: 1 } }",
+        "fn g(k: Kind) -> u8 { match k { Kind::Settings { mine } => mine, _ => 0 } }",
+        "impl Kind { fn new() -> Self { Self::Settings { mine: 1 } } }",
+        "use Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }",
+        "use self::Kind::Settings as S;\nfn g() { let s = S { mine: 1 }; }",
     ] {
         assert_eq!(of("type:Settings", source), none, "{source}");
     }
+    assert_eq!(of("type:Pos", "fn g() -> Kind { Kind::Pos(1) }"), none);
     assert_eq!(
-        of(
-            "type:Pos",
-            "use crate::kind::Kind;\nfn g() -> Kind { Kind::Pos(1) }"
-        ),
+        of("type:Pos", "use Kind::Pos;\nfn g() { let p = Pos(1); }"),
         none
     );
-    assert_eq!(
-        of(
-            "type:Pos",
-            "use crate::kind::Kind::Pos;\nfn g() { let p = Pos(1); }"
-        ),
-        none
-    );
-    // Kept strict: the API's own literal, an enum the mod does not define or that lacks the
-    // variant, an enum name brought in from outside the mod or that is an API name, a file
-    // with a glob or a second `use` of the name, and a macro body.
+    // Kept strict: anything the file cannot show leads to its own top-level enum.
     for source in [
-        "use crate::kind::Kind;\nfn g() { let k = Kind::Settings { mine: 1 }; let s = mod_api::Settings { height: 1 }; }",
+        // The API's own literal beside the variant's.
+        "fn g() { let k = Kind::Settings { mine: 1 }; let s = mod_api::Settings { height: 1 }; }",
+        // An enum the file does not define, or without the variant.
         "fn g() { let s = dep::Kind::Settings { mine: 1 }; }",
         "use dep::Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }",
-        "fn g() { let s = crate::kind::Other::Settings { mine: 1 }; }",
-        "use dep::Kind;\nfn g() { let s = Kind::Settings { mine: 1 }; }",
-        "use mod_api::*;\nuse crate::kind::Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }",
+        "fn g() { let s = Other::Settings { mine: 1 }; }",
+        // A path through `crate::`, whose root file the scan does not know.
+        "fn g() { let s = crate::Kind::Settings { mine: 1 }; }",
+        "use crate::Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }",
+        // The name bound again: a `use`, a function's own enum, a generic parameter.
+        "fn g() { use dep::Kind; let s = Kind::Settings { mine: 1 }; }",
+        "fn g() { enum Kind { Settings { height: u8 } } let s = Kind::Settings { height: 1 }; }",
+        "fn g<Kind: Make>() { let s = Kind::Settings { height: 1 }; }",
+        // A glob, a second `use` of the imported name, a macro body.
         "use mod_api::*;\nfn g() { let s = Kind::Settings { mine: 1 }; }",
-        "use crate::kind::Kind;\nuse mod_api::*;\nimpl Kind { fn new() -> Self { Self::Settings { mine: 1 } } }",
-        "use crate::kind::Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }\nfn h() { use mod_api::Settings; let s = Settings { height: 1 }; }",
-        "use crate::kind::Kind;\nfn g() { let v = vec![Kind::Settings { mine: 1 }]; }",
+        "use mod_api::*;\nimpl Kind { fn new() -> Self { Self::Settings { mine: 1 } } }",
+        "use Kind::Settings;\nfn g() { let s = Settings { mine: 1 }; }\nfn h() { use mod_api::Settings; let s = Settings { height: 1 }; }",
+        "fn g() { let v = vec![Kind::Settings { mine: 1 }]; }",
     ] {
         assert_eq!(of("type:Settings", source), full, "{source}");
     }
+    let alone = |files: &[(&str, &str)]| built_in(files, "type:Settings");
+    // An enum in a sibling module, or under `#[cfg]`, is no evidence.
     assert_eq!(
-        built_in(
-            &[(
-                "src/lib.rs",
-                "enum Pos { Settings { mine: u8 } }\nfn g() { let s = Pos::Settings { mine: 1 }; }"
-            )],
-            "type:Settings"
-        ),
+        alone(&[
+            ("src/lib.rs", "mod kind;\nmod other;"),
+            ("src/kind.rs", "pub enum Kind { Settings { mine: u8 } }"),
+            (
+                "src/other.rs",
+                "fn g() { let s = Kind::Settings { mine: 1 }; }"
+            ),
+        ]),
         full
+    );
+    assert_eq!(
+        alone(&[(
+            "src/lib.rs",
+            "#[cfg(feature = \"x\")]\nenum Kind { Settings { mine: u8 } }\nfn g() { let s = Kind::Settings { mine: 1 }; }"
+        )]),
+        full
+    );
+    // An API name as the enum's.
+    assert_eq!(
+        alone(&[(
+            "src/lib.rs",
+            "enum Pos { Settings { mine: u8 } }\nfn g() { let s = Pos::Settings { mine: 1 }; }"
+        )]),
+        full
+    );
+    // A function's enum does not hide the crate, renamed by `extern crate self`, through which
+    // the path reaches the API's struct.
+    assert_eq!(
+        alone(&[(
+            "src/lib.rs",
+            "extern crate self as LocalKind;\npub use mod_api::Settings;\nfn local_model() { enum LocalKind { Settings {} } }\npub fn build() -> LocalKind::Settings { LocalKind::Settings { height: 1 } }"
+        )]),
+        full
+    );
+    // A `use` rooted at `::` names a crate, not the file's enum of the same name.
+    assert_eq!(
+        alone(&[(
+            "src/lib.rs",
+            "enum blast_vocab { Settings {} }\nuse ::blast_vocab::Settings as Calc;\npub fn build() -> Calc { Calc { height: 1, ..Default::default() } }"
+        )]),
+        Some(Built::Base)
     );
 }
 
