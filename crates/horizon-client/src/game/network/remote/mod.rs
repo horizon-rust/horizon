@@ -929,6 +929,9 @@ impl Game<'_> {
         self.client_logging_out();
         if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
             log::warn!("Horizon: could not join server: {error}");
+            // Joining the destination server failed: clear any preserved server pack state
+            // so returning to the title screen does not leave lingering packs from the transfer.
+            self.server_packs_disconnect(false);
             let skip = self.settings.file.bool("skipMultiplayerWarning");
             match &mut self.title {
                 Some(title) => {
@@ -995,7 +998,7 @@ impl Game<'_> {
             },
             |a| (a.name.clone(), a.uuid),
         );
-        self.server_packs_connect(local.is_none().then_some(address), user);
+        self.server_packs_connect(local.is_none().then_some(address), user, cookies.is_some());
         let session = match local {
             Some(pipe) => Session::connect_local(
                 pipe,
@@ -1301,7 +1304,7 @@ impl Game<'_> {
             },
             |a| (a.name.clone(), a.uuid),
         );
-        self.server_packs_connect(None, user);
+        self.server_packs_connect(None, user, false);
         let session = Session::replay(name);
         let player_type = super::perspective::player_type(&root);
         let mut streaming = Streaming::new(
@@ -1521,6 +1524,15 @@ impl Game<'_> {
     /// Disconnect and return to the multiplayer screen (DisconnectedScreen), whose Back
     /// leads to the title after a single player world.
     pub(super) fn leave_server(&mut self, reason: Option<Text>) -> Result<()> {
+        self.leave_server_internal(reason, false)
+    }
+
+    /// Disconnect during a protocol transfer without returning to the title screen.
+    pub(super) fn leave_server_for_transfer(&mut self) -> Result<()> {
+        self.leave_server_internal(None, true)
+    }
+
+    fn leave_server_internal(&mut self, reason: Option<Text>, is_transfer: bool) -> Result<()> {
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
         }
@@ -1566,7 +1578,7 @@ impl Game<'_> {
         }
         super::lan::sync::forget_sync_data();
         self.gui.atlas.clear_object_skins();
-        self.server_packs_disconnect();
+        self.server_packs_disconnect(is_transfer);
         self.code_of_conduct = None;
         self.reset_tutorial();
         self.close_dialogs();
@@ -1614,6 +1626,9 @@ impl Game<'_> {
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
+        }
+        if is_transfer {
+            return Ok(());
         }
         let saves = std::env::current_dir()?.join("saves");
         let mut title = self
