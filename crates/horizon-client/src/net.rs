@@ -1142,6 +1142,7 @@ fn run(
     )?;
     deliver(
         send,
+        lang,
         Event::Joined {
             registries: Arc::new(registries),
             uuid: profile.uuid,
@@ -1219,19 +1220,28 @@ fn receive_play(
             }
             play::Clientbound::StartConfiguration(_) => {
                 payloads.begin_configuration();
-                configuring.store(true, Ordering::Release);
-                if let Some(w) = shared_writer.lock().unwrap().as_mut() {
-                    w.transition_protocol(
-                        horizon_protocol::payload_negotiation::Phase::Configuration,
-                        &play::Serverbound::ConfigurationAcknowledged(Empty).encode(),
-                    )
-                    .map_err(|error| Reason::plain(connection_lost(error, lang)))?;
-                    configuring.store(true, Ordering::Relaxed);
+                {
+                    // The game encodes its answers by `configuring`, read under this
+                    // lock: it turns only once the acknowledgement is queued, or an
+                    // answer could reach the server as configuration while it still
+                    // reads play (#18380).
+                    let mut writer = shared_writer.lock().unwrap();
+                    #[cfg(test)]
+                    tests::observe_phase_at_acknowledgement(configuring);
+                    if let Some(w) = writer.as_mut() {
+                        w.transition_protocol(
+                            horizon_protocol::payload_negotiation::Phase::Configuration,
+                            &play::Serverbound::ConfigurationAcknowledged(Empty).encode(),
+                        )
+                        .map_err(|error| Reason::plain(connection_lost(error, lang)))?;
+                    }
+                    configuring.store(true, Ordering::Release);
                 }
-                // Only after the acknowledgement: a game still answering play packets
-                // while this waits for room would otherwise send configuration ids
-                // the server still reads as play (#18380).
-                deliver(send, Event::Reconfiguring)?;
+                // Past the budget rather than waiting for it: configuration's keepalives
+                // and known packs are answered on this thread, while the game is stalled
+                // too. The game still gets the notice, in order.
+                send.send_over_budget(Event::Reconfiguring)
+                    .map_err(|refused| refusal(refused, lang))?;
                 let registries = configure(
                     reader,
                     shared_writer,
@@ -1243,7 +1253,7 @@ fn receive_play(
                     payloads,
                     false,
                 )?;
-                deliver(send, Event::Reconfigured(Arc::new(registries)))?;
+                deliver(send, lang, Event::Reconfigured(Arc::new(registries)))?;
             }
             // ClientCommonPacketListenerImpl.handleRequestCookie: the stored
             // cookie (or none) goes straight back.
@@ -1292,11 +1302,12 @@ fn receive_play(
                 )? {
                     deliver(
                         send,
+                        lang,
                         Event::Packet(Box::new(play::Clientbound::CustomPayload(payload))),
                     )?;
                 }
             }
-            other => deliver(send, Event::Packet(Box::new(other)))?,
+            other => deliver(send, lang, Event::Packet(Box::new(other)))?,
         }
     }
 }
@@ -1307,15 +1318,22 @@ fn receive_play(
 /// while a world's first view streams in no longer ends the connection (#18380).
 /// Events main already dropped under pressure keep `send`, so keepalives are still
 /// answered behind them.
-fn deliver(send: &ingress::Producer<Event>, event: Event) -> Result<(), Reason> {
+fn deliver(send: &ingress::Producer<Event>, lang: &Language, event: Event) -> Result<(), Reason> {
     send.send_waiting(event)
-        .map_err(|refused| match refused.reason {
-            ingress::Refusal::Pressure => Reason::plain(format!(
-                "incoming packet larger than the whole incoming queue ({} bytes)",
-                refused.value.ingress_charge()
-            )),
-            ingress::Refusal::Closed => Reason::plain("Disconnected"),
-        })
+        .map_err(|refused| refusal(refused, lang))
+}
+
+/// Why an event the game must get was refused. One larger than the whole incoming queue
+/// is keyed, so auto-reconnect never retries it: the next attempt would hit it again.
+fn refusal(refused: ingress::Refused<Event>, lang: &Language) -> Reason {
+    match refused.reason {
+        ingress::Refusal::Pressure => Reason::keyed_arg(
+            "horizon.multiplayer.incoming_too_large",
+            lang,
+            &refused.value.ingress_charge().to_string(),
+        ),
+        ingress::Refusal::Closed => Reason::plain("Disconnected"),
+    }
 }
 
 fn receive_application(
@@ -2882,24 +2900,41 @@ mod tests {
             let (id, body) = self.server.recv().expect("no reply in time");
             play::Serverbound::decode(id, &body).unwrap()
         }
+        fn configuration_reply(&mut self) -> cfg::Serverbound {
+            let (id, body) = self.server.recv().expect("no reply in time");
+            cfg::Serverbound::decode(id, &body).unwrap()
+        }
         fn running(&self) -> bool {
             matches!(
                 self.ended.try_recv(),
                 Err(std::sync::mpsc::TryRecvError::Empty)
             )
         }
-        /// The reason the loop ended with: `Ok` from the server, `Err` from this side.
-        fn end(self) -> Result<String, String> {
+        /// The reason the loop ended with, as its text and key: `Ok` from the server,
+        /// `Err` from this side.
+        fn end(self) -> Result<(String, Option<String>), (String, Option<String>)> {
             let ended = self.ended.recv_timeout(WAIT).expect("the loop never ended");
             std::fs::remove_dir_all(&self.root).unwrap();
-            ended.map(|reason| reason.text).map_err(|reason| reason.text)
+            let parts = |reason: Reason| (reason.text, reason.key);
+            ended.map(parts).map_err(parts)
         }
-        fn shut(self) -> Result<String, String> {
+        fn shut(self) -> Result<(String, Option<String>), (String, Option<String>)> {
             if let Some(writer) = self.writer.lock().unwrap().take() {
                 writer.shutdown();
             }
             self.end()
         }
+    }
+
+    /// What `configuring` read, by flag, as each reconfiguration's acknowledgement was
+    /// about to be queued under the writer lock.
+    static PHASE_AT_ACKNOWLEDGEMENT: Mutex<Vec<(usize, bool)>> = Mutex::new(Vec::new());
+
+    pub(super) fn observe_phase_at_acknowledgement(configuring: &AtomicBool) {
+        PHASE_AT_ACKNOWLEDGEMENT.lock().unwrap().push((
+            std::ptr::from_ref(configuring) as usize,
+            configuring.load(Ordering::Acquire),
+        ));
     }
 
     fn ping(id: i32) -> play::Clientbound {
@@ -2958,11 +2993,12 @@ mod tests {
         assert!(play.shut().is_err());
     }
 
-    /// #18380: a reconfiguration is acknowledged, and the connection switched to
-    /// configuration, before the loop waits to tell a stalled game. Otherwise the game's
-    /// answers to play packets it still holds reach a server that reads them as play.
+    /// #18380: a reconfiguration turns the game's answers to configuration only once the
+    /// acknowledgement is queued, or an answer to a play packet the game still holds
+    /// reaches a server that reads it as play. And a stalled game doesn't hold up
+    /// configuration: its keepalives are answered while the queue is still full.
     #[test]
-    fn a_reconfiguration_is_acknowledged_before_waiting_for_the_game() {
+    fn a_reconfiguration_is_acknowledged_first_and_answered_while_the_game_stalls() {
         let mut play = PlayLoop::start("ingress-reconfigure", ping_charge());
         play.send(ping(1));
         play.send(play::Clientbound::StartConfiguration(Empty));
@@ -2970,7 +3006,27 @@ mod tests {
             play.reply(),
             play::Serverbound::ConfigurationAcknowledged(Empty)
         );
+        let flag = Arc::as_ptr(&play.configuring) as usize;
+        let seen: Vec<bool> = PHASE_AT_ACKNOWLEDGEMENT
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(at, _)| *at == flag)
+            .map(|(_, configuring)| *configuring)
+            .collect();
+        assert_eq!(
+            seen,
+            [false],
+            "configuring turned before the acknowledgement"
+        );
         assert!(play.configuring.load(Ordering::Acquire));
+        play.server
+            .send(&cfg::Clientbound::KeepAlive(cfg::KeepAlive { id: 5 }).encode())
+            .unwrap();
+        assert_eq!(
+            play.configuration_reply(),
+            cfg::Serverbound::KeepAlive(cfg::KeepAlive { id: 5 })
+        );
         assert!(play.running());
         let (event, credit) = play.events.recv_timeout_owned(WAIT).unwrap().into_parts();
         assert!(matches!(event, Event::Packet(p) if *p == ping(1)));
@@ -2990,15 +3046,19 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert!(play.running(), "the full queue ended the connection");
         drop(std::mem::replace(&mut play.events, event_channel().1));
-        assert_eq!(play.end(), Err("Disconnected".to_owned()));
+        assert_eq!(play.end(), Err(("Disconnected".to_owned(), None)));
 
         let mut play = PlayLoop::start("ingress-oversize", ping_charge() - 1);
         play.send(ping(1));
-        let reason = play.end().unwrap_err();
-        assert!(
-            reason.starts_with("incoming packet larger than the whole incoming queue"),
-            "{reason}"
+        let Err((text, key)) = play.end() else {
+            panic!("a packet larger than the queue was taken");
+        };
+        assert_eq!(
+            key.as_deref(),
+            Some("horizon.multiplayer.incoming_too_large")
         );
+        // A permanent refusal: the next attempt would hit it again.
+        assert!(!crate::reconnect::allowed(&text, key.as_deref(), false));
     }
 
     #[test]

@@ -105,6 +105,12 @@ impl<T> Producer<T> {
         let charge = (self.charge)(&value);
         Self::prepared(self.sender.reserve_waiting(charge), value)?.publish()
     }
+    /// Publishes a small control value in order even when the queue is full, still
+    /// charging it. [`Refusal::Pressure`] means its charge exceeds the whole budget.
+    pub fn send_over_budget(&self, value: T) -> Result<(), Refused<T>> {
+        let charge = (self.charge)(&value);
+        Self::prepared(self.sender.reserve_over_budget(charge), value)?.publish()
+    }
     pub fn stats(&self) -> Stats {
         self.sender.stats()
     }

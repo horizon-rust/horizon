@@ -151,7 +151,7 @@ impl<T> Sender<T> {
         let charge = owned_bytes
             .checked_add(message_overhead::<T>())
             .ok_or(ReserveError::Full)?;
-        if charge > self.0.capacity - state.stats.reserved_bytes {
+        if charge > self.0.capacity.saturating_sub(state.stats.reserved_bytes) {
             return Err(ReserveError::Full);
         }
         Ok(self.take(&mut state, charge))
@@ -170,11 +170,26 @@ impl<T> Sender<T> {
             if !state.receiver_alive {
                 return Err(ReserveError::Disconnected);
             }
-            if charge <= self.0.capacity - state.stats.reserved_bytes {
+            if charge <= self.0.capacity.saturating_sub(state.stats.reserved_bytes) {
                 return Ok(self.take(&mut state, charge));
             }
             state = self.0.room.wait(state).unwrap_or_else(|e| e.into_inner());
         }
+    }
+    /// Like [`Self::reserve`], but admits the value even past the budget, for a small
+    /// control value that must reach the consumer in order without waiting. It still
+    /// holds its charge, so later reservations wait until it is released. `Full` only
+    /// when the charge exceeds the whole capacity.
+    pub fn reserve_over_budget(&self, owned_bytes: usize) -> Result<Permit<T>, ReserveError> {
+        let charge = owned_bytes
+            .checked_add(message_overhead::<T>())
+            .filter(|&charge| charge <= self.0.capacity)
+            .ok_or(ReserveError::Full)?;
+        let mut state = self.0.lock();
+        if !state.receiver_alive {
+            return Err(ReserveError::Disconnected);
+        }
+        Ok(self.take(&mut state, charge))
     }
     fn take(&self, state: &mut State<T>, charge: usize) -> Permit<T> {
         state.pending_bytes += charge;
@@ -609,38 +624,79 @@ mod tests {
     fn waiting_reserve_wakes_when_room_returns_or_the_receiver_closes() {
         let charge = message_overhead::<u32>() + 4;
         let (tx, rx) = channel::<u32>(charge).unwrap();
-        // Larger than the whole budget: refused at once instead of waiting forever.
-        assert!(matches!(
-            tx.reserve_waiting(charge),
-            Err(ReserveError::Full)
-        ));
-        tx.try_send(1, 4).unwrap();
-        let receipt = rx.recv_owned().unwrap();
-        // A waiter that publishes `value` once it has room. A missed wakeup fails the
-        // test on the timeout instead of hanging it.
-        let wait = |value| {
-            let (done, result) = std::sync::mpsc::channel();
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                let _ = done.send(tx.reserve_waiting(4).map(|p| p.publish(value).is_ok()));
-            });
-            std::thread::sleep(Duration::from_millis(50));
-            assert!(result.try_recv().is_err(), "it did not wait");
-            result
-        };
         let woken = Duration::from_secs(5);
-        let waiter = wait(2);
+        // Larger than the whole budget: refused at once instead of waiting forever.
+        assert_eq!(
+            waiting(&tx, charge, 0).recv_timeout(woken),
+            Ok(Err(ReserveError::Full))
+        );
+        tx.try_send(1, 4).unwrap();
+        let receipt = rx.recv_timeout_owned(woken).unwrap();
+        let waiter = waiting(&tx, 4, 2);
+        assert_waits(&waiter);
         drop(receipt);
         assert_eq!(waiter.recv_timeout(woken), Ok(Ok(true)));
-        let waiter = wait(3);
-        assert_eq!(rx.recv(), Ok(2));
+        let waiter = waiting(&tx, 4, 3);
+        assert_waits(&waiter);
+        assert_eq!(rx.recv_timeout(woken), Ok(2));
         assert_eq!(waiter.recv_timeout(woken), Ok(Ok(true)));
-        let waiter = wait(4);
+        let waiter = waiting(&tx, 4, 4);
+        assert_waits(&waiter);
         drop(rx);
         assert_eq!(
             waiter.recv_timeout(woken),
             Ok(Err(ReserveError::Disconnected))
         );
+    }
+
+    #[test]
+    fn over_budget_reserve_admits_a_control_value_and_still_charges_it() {
+        let charge = message_overhead::<u32>() + 4;
+        let (tx, rx) = channel::<u32>(charge).unwrap();
+        let woken = Duration::from_secs(5);
+        tx.try_send(1, 4).unwrap();
+        tx.reserve_over_budget(4).unwrap().publish(2).unwrap();
+        assert_eq!(tx.stats().reserved_bytes, 2 * charge);
+        assert!(matches!(
+            tx.reserve_over_budget(charge),
+            Err(ReserveError::Full)
+        ));
+        // Ordinary reservations wait until both charges are back within the budget.
+        let waiter = waiting(&tx, 4, 3);
+        assert_waits(&waiter);
+        assert_eq!(rx.recv_timeout(woken), Ok(1));
+        assert_waits(&waiter);
+        assert_eq!(rx.recv_timeout(woken), Ok(2));
+        assert_eq!(waiter.recv_timeout(woken), Ok(Ok(true)));
+        assert_eq!(rx.recv_timeout(woken), Ok(3));
+        drop(rx);
+        assert!(matches!(
+            tx.reserve_over_budget(0),
+            Err(ReserveError::Disconnected)
+        ));
+    }
+
+    /// A thread that reserves `bytes` with [`Sender::reserve_waiting`] and publishes
+    /// `value`. Read with a timeout, so a missed wakeup fails instead of hanging.
+    fn waiting(
+        tx: &Sender<u32>,
+        bytes: usize,
+        value: u32,
+    ) -> std::sync::mpsc::Receiver<Result<bool, ReserveError>> {
+        let (done, result) = std::sync::mpsc::channel();
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(
+                tx.reserve_waiting(bytes)
+                    .map(|permit| permit.publish(value).is_ok()),
+            );
+        });
+        result
+    }
+
+    fn assert_waits(waiter: &std::sync::mpsc::Receiver<Result<bool, ReserveError>>) {
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(waiter.try_recv().is_err(), "it did not wait");
     }
 
     #[test]
