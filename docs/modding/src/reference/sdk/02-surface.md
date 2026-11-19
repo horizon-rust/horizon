@@ -84,8 +84,9 @@ The game still refuses a mod, naming the call or point, when:
   out `dyn` host traits, and a vtable keeps every method of its trait, so a mod reaches every method of a trait it
   reaches. In practice a changed or removed host method refuses every wasm mod built before the change;
 - one of its exports (a hook or a handler method) changed or is gone;
-- what every call shares changed: the reserved IDs, the group state, the prepared ABI, or a hand-written codec
-  (one added counts too);
+- what every call shares changed: a transport value (`mod_api::wire::PROTOCOL`: reserved IDs, the group state,
+  reply tags and limits), the file roots, the prepared ABI, or a hand-written codec, including the NBT and JSON
+  formats some codecs embed (one added counts too);
 - the members of one linked group were built against different builds;
 - a point it listens to changed or is gone.
 
