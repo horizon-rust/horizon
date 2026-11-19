@@ -475,6 +475,68 @@ mod tests {
         assert!(Zip::open_exact(&path).is_err());
         let _ = fs::remove_file(&path);
     }
+    /// A package of more entries than the ZIP32 record counts carries a Zip64 one; the exact
+    /// open reads it as the `zip` crate does.
+    #[test]
+    fn an_exact_open_reads_a_zip64_archive() {
+        use std::io::Write as _;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for i in 0..65_537 {
+            writer
+                .start_file(format!("data/ruby/{i}.json"), options)
+                .unwrap();
+        }
+        writer.start_file("data/ruby/last.json", options).unwrap();
+        writer.write_all(b"{}").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let path =
+            std::env::temp_dir().join(format!("horizon-zip-{}-zip64.zip", std::process::id()));
+        fs::write(&path, &bytes).unwrap();
+        let zip = Zip::open_exact(&path).unwrap();
+        assert_eq!(zip.names().count(), 65_538);
+        assert_eq!(zip.read("data/ruby/last.json").unwrap(), b"{}");
+        let _ = fs::remove_file(&path);
+    }
+    /// A Zip64 record that counts one entry fewer than the directory holds, under a ZIP32
+    /// record whose length reaches the directory: the recount would list the last entry.
+    #[test]
+    fn an_exact_open_refuses_an_entry_a_zip64_record_leaves_out() {
+        let bytes = archive_of(&[
+            ("a.txt", b"a", false),
+            ("b.txt", b"b", false),
+            ("hidden.txt", b"c", false),
+        ]);
+        let end = bytes.len() - END_HEADER;
+        let (size, offset) = (u32_at(&bytes, end + 12), u32_at(&bytes, end + 16));
+        let mut out = bytes[..end].to_vec();
+        out.extend_from_slice(&[0x50, 0x4b, 0x06, 0x06]);
+        out.extend_from_slice(&44u64.to_le_bytes());
+        out.extend_from_slice(&[45, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&2u64.to_le_bytes());
+        out.extend_from_slice(&2u64.to_le_bytes());
+        out.extend_from_slice(&u64::from(size).to_le_bytes());
+        out.extend_from_slice(&u64::from(offset).to_le_bytes());
+        out.extend_from_slice(&[0x50, 0x4b, 0x06, 0x07, 0, 0, 0, 0]);
+        out.extend_from_slice(&(end as u64).to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        let at = out.len();
+        out.extend_from_slice(&bytes[end..]);
+        out[at + 8..at + 12].fill(0xFF);
+        out[at + 12..at + 16].copy_from_slice(&(size + 76).to_le_bytes());
+        let path = std::env::temp_dir().join(format!(
+            "horizon-zip-{}-zip64-hidden.zip",
+            std::process::id()
+        ));
+        fs::write(&path, &out).unwrap();
+        // As written, the crate reads the Zip64 record's two entries.
+        let file = fs::File::open(&path).unwrap();
+        assert_eq!(ZipArchive::new(file).unwrap().len(), 2);
+        assert!(Zip::open(&path).unwrap().contains("hidden.txt"));
+        assert!(Zip::open_exact(&path).is_err());
+        let _ = fs::remove_file(&path);
+    }
     #[test]
     fn a_file_is_opened_with_equal_nonzero_disk_numbers() {
         let mut bytes = archive();

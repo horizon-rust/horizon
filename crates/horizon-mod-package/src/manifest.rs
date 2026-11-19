@@ -2094,11 +2094,22 @@ issues = \"http://example.org/issues\"
             (&["README", "readme"][..], "ignoring case"),
             (&["NOTICE", "notice/"][..], "ignoring case"),
             (&["NUL.txt"][..], "invalid package path"),
+            (&["nul .txt"][..], "invalid package path"),
+            (&["README", "README."][..], "invalid package path"),
+            (&["README", "README "][..], "invalid package path"),
+            (&["docs/cafe\u{301}.txt"][..], "invalid package path"),
+            (&["docs/COM\u{b9}.txt"][..], "invalid package path"),
             (&["docs/com9"][..], "invalid package path"),
             (&[long.as_str()][..], "invalid package path"),
         ] {
             let error = read(names).err().unwrap_or_default();
             assert!(error.contains(expected), "{names:?}: {error}");
+        }
+        for device in ["COM\u{b9}.rs", "lpt\u{b3}", "aux .rs"] {
+            assert!(!portable_part(device), "{device}");
+        }
+        for part in ["com0.rs", "com10", "lpt\u{b9}0", "auxiliary.rs", "a.b"] {
+            assert!(portable_part(part), "{part}");
         }
     }
 
