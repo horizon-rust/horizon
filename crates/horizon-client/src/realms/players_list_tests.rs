@@ -221,6 +221,40 @@ fn players_draw_labels_with_trailing_icons_and_clip_the_scrolling_heading_and_bu
 }
 
 #[test]
+fn player_confirmation_waits_for_the_updated_operator_action_to_be_drawn() {
+    let (atlas, lang) = assets();
+    crate::lang::scoped(lang, || {
+        let mut title = title(1);
+        draw(&title, &atlas, (0.0, 0.0), 1);
+        title.tab_dir(false, SIZE);
+        title.tab_dir(false, SIZE);
+        assert_eq!(
+            screen(&title).displayed_player_action(),
+            Some(PlayerAction::Op(1))
+        );
+        if let Mode::Realms(screen) = &mut title.mode
+            && let SubScreen::Configure {
+                detail: Some(Ok(realm)),
+                ..
+            } = &mut screen.subscreen
+        {
+            realm.players[0].operator = true;
+        }
+        assert!(
+            !title.confirm_key_size(SIZE).1,
+            "the visible Op must not become a Deop"
+        );
+        assert!(screen(&title).displayed_player_action().is_none());
+        draw(&title, &atlas, (0.0, 0.0), 2);
+        // Inspect the activation gate without submitting an operator request.
+        assert_eq!(
+            screen(&title).displayed_player_action(),
+            Some(PlayerAction::Deop(1))
+        );
+    });
+}
+
+#[test]
 fn players_shared_scrollbar_reaches_the_35th_uuid_and_rejects_stale_hits() {
     let (atlas, lang) = assets();
     crate::lang::scoped(lang, || {

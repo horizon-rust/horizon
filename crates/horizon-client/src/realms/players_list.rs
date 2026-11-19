@@ -446,8 +446,8 @@ impl Screen {
         Some(focus.column)
     }
 
-    pub(crate) fn activate_player_focus(&mut self) -> Option<Outcome> {
-        let (_, players, _, active) = self.player_rows()?;
+    fn displayed_player_action(&self) -> Option<PlayerAction> {
+        let (realm, players, _, active) = self.player_rows()?;
         let ListFocus::Player(focus) = self.current_list_focus()? else {
             return None;
         };
@@ -455,7 +455,23 @@ impl Screen {
             .iter()
             .find(|player| player_uuid(player) == Some(focus.uuid))?;
         let action = focus.column.action(player, focus.uuid);
-        active.then(|| self.click_player_action(action))
+        // A reply can change Op into Deop before the next frame. Do not press
+        // an action the player has not seen. Match identity, not row index, so
+        // roster reordering still keeps keyboard focus on the same UUID.
+        let displayed = self
+            .players_list
+            .rendered
+            .borrow()
+            .as_ref()
+            .is_some_and(|frame| {
+                frame.realm == realm && frame.controls.iter().any(|(_, _, shown)| *shown == action)
+            });
+        (active && displayed).then_some(action)
+    }
+
+    pub(crate) fn activate_player_focus(&mut self) -> Option<Outcome> {
+        let action = self.displayed_player_action()?;
+        Some(self.click_player_action(action))
     }
 
     /// `ContainerObjectSelectionList.nextFocusPath`: vertical arrows keep the child

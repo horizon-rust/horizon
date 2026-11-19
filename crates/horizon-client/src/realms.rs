@@ -2813,7 +2813,10 @@ impl Screen {
                     &[&code as &dyn std::fmt::Display],
                 ),
                 detail,
-                next: Box::new(configure_screen(server, ConfigureTab::Players)),
+                next: self
+                    .players_parent
+                    .take()
+                    .unwrap_or_else(|| Box::new(configure_screen(server, ConfigureTab::Players))),
             };
         }
         if let Some((server, code, active, expiration, e)) = edit_error {
@@ -11639,6 +11642,36 @@ mod tests {
             }
             assert!(matches!(&screen.subscreen, SubScreen::Configure {
                 tab: ConfigureTab::Players, detail: Some(Ok(detail)), players_scroll, detail_job: None, ..
+            } if detail.players.len() == 2 && players_scroll.amount == 18.0));
+        }
+    }
+
+    #[test]
+    fn invite_code_list_failure_restores_the_saved_players_page() {
+        for escape in [false, true] {
+            let mut screen = loaded_players_screen();
+            let parent = std::mem::replace(&mut screen.subscreen, SubScreen::Main);
+            screen.players_parent = Some(Box::new(parent));
+            screen.subscreen = SubScreen::InviteCodes {
+                server: server(7, None),
+                codes: None,
+                list_job: Some(Arc::new(Mutex::new(Some(Err(RealmsError::Timeout))))),
+                job: None,
+                error: None,
+                selected: None,
+            };
+            let _ = screen.poll();
+            assert!(matches!(screen.subscreen, SubScreen::Error { .. }));
+            assert!(screen.players_parent.is_none());
+            if escape {
+                assert!(!screen.escape());
+            } else {
+                let _ = screen.click(Some(91), 0.0, 0.0, (800.0, 300.0));
+            }
+            assert!(screen.players_ready());
+            assert!(matches!(&screen.subscreen, SubScreen::Configure {
+                tab: ConfigureTab::Players, detail: Some(Ok(detail)), players_scroll,
+                detail_job: None, subscription_job: None, tier_job: None, regions_job: None, ..
             } if detail.players.len() == 2 && players_scroll.amount == 18.0));
         }
     }
