@@ -203,18 +203,18 @@ pub fn button(
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
-    flags: (bool, bool, bool),
+    flags: (bool, bool),
 ) {
     button_with_room(batch, atlas, rect, label, flags, 0.0);
 }
 /// A button whose label leaves `room` at its left, for a controller's glyph drawn there
-/// (`widgets::action_glyph_room`). Vanilla has no main button: `_primary` draws as any other.
+/// (`widgets::action_glyph_room`). `(hover, live)`: pointed at or focused; usable.
 pub fn button_with_room(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
-    (hover, live, _primary): (bool, bool, bool),
+    (hover, live): (bool, bool),
     room: f32,
 ) {
     vanilla::button(batch, atlas, rect, label, (hover, live), room);
@@ -322,9 +322,7 @@ mod tests {
         let short = Text::literal("Done");
         let short_w = atlas.font.width_text(&short.resolved());
         let draws: [(&str, fn(&mut HudBatch, &HudAtlas, [f32; 4], &Text)); 5] = [
-            ("button", |b, a, r, t| {
-                button(b, a, r, t, (false, true, false))
-            }),
+            ("button", |b, a, r, t| button(b, a, r, t, (false, true))),
             ("slider", |b, a, r, t| {
                 slider(b, a, r, t, 0.5, (false, true))
             }),

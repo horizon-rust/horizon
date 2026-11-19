@@ -157,7 +157,9 @@ A blocky, Minecraft-like look in Horizon's purple, for the website and the redes
 Minecraft's inventory rather than a document. Its colours are `horizon_theme::Blocks`
 (`BLOCKS_LIGHT`, `BLOCKS_DARK`), which `tokens.css` carries under the same names as before plus
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`
-of the main action. The game's other menus keep `LIGHT` and `DARK`.
+of the main action. The game uses none of these colours: its menus and overlays are vanilla's,
+and only the boot screen and the missing-resources window, drawn before any pack has a font, use
+the bundled Geist faces (`menu_style::install_bundled_fonts`).
 
 - **Pixel type for what names and what you act on.** Headings, navigation, buttons and the
   wordmark use Pixelify Sans (OFL; Medium, SemiBold, Bold); paragraphs and numbers stay in Geist

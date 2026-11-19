@@ -1757,13 +1757,19 @@ mod tests {
         assert_eq!(ui.current_page(&s, SIZE), Some(Page::Quality));
         // Groups sit apart: each name follows the gap under the panel before it.
         let (lines, _) = ui.lines_at(&s, SIZE);
-        let names: Vec<_> = lines.iter().filter(|l| l.group.is_some()).collect();
+        let names: Vec<_> = (0..lines.len())
+            .filter(|&i| lines[i].group.is_some())
+            .collect();
         assert!(names.len() > 1);
         for pair in names.windows(2) {
-            let (_, panel) = pair[0].group.unwrap();
+            let rows = lines[pair[0] + 1..pair[1]]
+                .iter()
+                .filter(|l| l.setting.is_some())
+                .count();
+            let panel = rows as f32 * style::ROW;
             assert_eq!(
-                pair[1].y,
-                pair[0].y + style::GROUP_ROW + panel + style::GROUP_GAP
+                lines[pair[1]].y,
+                lines[pair[0]].y + style::GROUP_ROW + panel + style::GROUP_GAP
             );
         }
         // Opened at a page (Advanced..., the HDR key), it shows that page.

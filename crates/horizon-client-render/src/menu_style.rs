@@ -25,19 +25,14 @@ pub struct MenuStyle {
 pub struct SettingsColours {
     /// The plate behind everything, drawn see-through.
     pub page: u32,
-    /// Text, and the light the panels, rules, hovers and controls are drawn in.
+    /// Text, and the light the studio's panels, rules and hovers are drawn in.
     pub ink: u32,
     /// Secondary text and values.
     pub ink_soft: u32,
     /// Labels, descriptions, what can't be used.
     pub muted: u32,
-    /// Wells and the dark edge of small marks.
-    pub outline: u32,
-    /// Focus, a checked box, a slider's fill.
+    /// Highlights: a page's name over its groups, marks.
     pub accent: u32,
-    /// The one main button, and while hovered.
-    pub face: u32,
-    pub face_hover: u32,
     pub success: u32,
     pub warn: u32,
     pub danger: u32,
@@ -97,10 +92,7 @@ pub const NEUTRAL: MenuStyle = MenuStyle {
         ink: 0xffffff,
         ink_soft: 0xe0e0e0,
         muted: 0xa0a0a0,
-        outline: 0x000000,
         accent: 0xffffff,
-        face: 0x555555,
-        face_hover: 0x6f6f6f,
         success: 0x55ff55,
         warn: 0xffff55,
         danger: 0xff5555,
@@ -137,6 +129,20 @@ static STYLE: OnceLock<MenuStyle> = OnceLock::new();
 /// returns false.
 pub fn install(style: MenuStyle) -> bool {
     STYLE.set(style).is_ok()
+}
+
+static BUNDLED: OnceLock<Fonts> = OnceLock::new();
+
+/// Give the faces text is drawn in where no resource pack has a font yet: the boot screen, and
+/// the window that says the prepared resources are missing. Separate from the look, which gives
+/// no fonts in vanilla's. Call it once at startup; a second call keeps the first and returns false.
+pub fn install_bundled_fonts(fonts: Fonts) -> bool {
+    BUNDLED.set(fonts).is_ok()
+}
+
+/// The faces given to [`install_bundled_fonts`], if any.
+pub fn bundled_fonts() -> Option<Fonts> {
+    BUNDLED.get().copied()
 }
 
 /// The look given to [`install`], or [`NEUTRAL`].

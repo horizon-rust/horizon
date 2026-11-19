@@ -1,6 +1,7 @@
-//! The design system's widgets drawn in the game: palette, type scale, radii,
-//! control sizes and fonts from `menu_style`, given at startup (in the official
-//! game `crates/horizon-theme`, `docs/design-system.md`). Every menu is vanilla's (`ui`); what is left
+//! The overlays' widgets drawn in the game: palette, type scale, radii, control
+//! sizes and fonts from `menu_style` (in the official game its `NEUTRAL`:
+//! vanilla's greys, the resource pack's font, and the bundled faces only where no
+//! pack has a font yet). Every menu is vanilla's (`ui`); what is left
 //! here draws Horizon's own overlays that vanilla has no screen for: the
 //! on-screen keyboard a controller types with (`osk`), plus the
 //! `horizon.txt` preferences.
@@ -133,10 +134,15 @@ struct Fonts {
     faces: [FontRef<'static>; 4],
 }
 impl Fonts {
-    /// The faces given in `menu_style`; none given, none (unit tests take the design system's).
-    fn load() -> Option<Self> {
-        let given = horizon_client_render::menu_style::get()
+    /// The faces given in `menu_style`. With none, the pack's font draws; where `atlas` has no
+    /// pack font (the boot screen, the missing-resources window), the bundled faces. Unit tests
+    /// take the design system's.
+    fn load(atlas: &HudAtlas) -> Option<Self> {
+        use horizon_client_render::menu_style;
+        let no_pack_font = || atlas.font.glyph('A').rect.is_none();
+        let given = menu_style::get()
             .fonts
+            .or_else(|| menu_style::bundled_fonts().filter(|_| no_pack_font()))
             .or(TEST_FONTS)?;
         let f = |b: &'static [u8]| FontRef::try_from_slice(b).expect("given font");
         Some(Self {
@@ -208,7 +214,7 @@ fn with_cache<R>(atlas: &HudAtlas, f: impl FnOnce(&mut Cache) -> R) -> R {
         let mut c = c.borrow_mut();
         let id = atlas as *const HudAtlas as usize;
         let cache = c.get_or_insert_with(|| Cache {
-            fonts: Fonts::load(),
+            fonts: Fonts::load(atlas),
             entries: HashMap::new(),
             shelf: (0, 0, 0),
             pending: Vec::new(),
@@ -216,6 +222,7 @@ fn with_cache<R>(atlas: &HudAtlas, f: impl FnOnce(&mut Cache) -> R) -> R {
         });
         if cache.atlas != id {
             cache.atlas = id;
+            cache.fonts = Fonts::load(atlas);
             cache.entries.clear();
             cache.shelf = (0, 0, 0);
             cache.pending.clear();
