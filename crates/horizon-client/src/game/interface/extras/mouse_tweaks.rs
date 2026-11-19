@@ -85,6 +85,21 @@ impl Game<'_> {
         }
         true
     }
+    /// Executes a sequence of slot operations.
+    pub(in crate::game) fn tweak_ops(&mut self, ops: &[(Option<usize>, i32, Input)]) -> bool {
+        if ops.is_empty() {
+            return false;
+        }
+        let done = if self.remote.is_some() {
+            self.remote_menu_ops(ops)
+        } else {
+            self.menu_ops(ops)
+        };
+        if done && let Some(key) = self.container {
+            self.container_changed(key);
+        }
+        done
+    }
     /// Puts the hand's stack (`right`: one of it) in `slot`, as a one-slot
     /// drag (`QUICK_CRAFT`) and not a click: a server that has the hand empty
     /// (the stack it was to come from just burned as fuel) ignores a drag, but

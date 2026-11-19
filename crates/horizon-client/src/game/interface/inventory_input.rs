@@ -72,6 +72,18 @@ impl Game<'_> {
         } else if key == KeyCode::KeyQ {
             let all = drop_whole_stack(self.modifiers);
             self.click_open_inventory(Some(slot), i32::from(all), Input::Throw)
+        } else if (self.settings.extras.sort || self.tweaks_on()) && key == KeyCode::Space {
+            if self.has_shift_down() {
+                if (300..500).contains(&slot) {
+                    self.easy_restock_all()
+                } else {
+                    self.easy_deposit_all()
+                }
+            } else {
+                self.quick_move_stack_all(slot)
+            }
+        } else if (self.settings.extras.sort || self.tweaks_on()) && key == KeyCode::KeyX {
+            self.easy_deposit_matching()
         } else {
             false
         };
@@ -162,6 +174,17 @@ impl Game<'_> {
             return;
         }
         if self.tweak_press(slot, right, shift) {
+            return;
+        }
+        let space = self.physical_keys.contains(&KeyCode::Space);
+        if space
+            && !right
+            && (self.settings.extras.sort || self.tweaks_on())
+            && let Some(slot) = slot
+            && slot != 200
+        {
+            self.quick_move_stack_all(slot);
+            self.inv_clicks.skip_release();
             return;
         }
         if let Some(slot) = slot
