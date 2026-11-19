@@ -275,6 +275,25 @@ fn sdr_at_once(presented: Option<hdr::Output>, offered: Option<Option<hdr::Outpu
     presented.is_some() && offered == Some(None)
 }
 
+/// The output published once HDR output's swapchain did not configure for `applied` and the
+/// surface, read again, `offered` this. SDR at once (`sdr_at_once`): `present_sdr`, and the
+/// snapshot says SDR on the same frame, so HDR output, the snapshot and the swapchain agree
+/// before the next frame (which configures nothing more). Else `applied` as it was.
+fn refused(
+    applied: EffectiveOutput,
+    offered: Option<Option<hdr::Output>>,
+    present_sdr: impl FnOnce(),
+) -> EffectiveOutput {
+    if !sdr_at_once(applied.encoding, offered) {
+        return applied;
+    }
+    present_sdr();
+    EffectiveOutput {
+        encoding: None,
+        ..applied
+    }
+}
+
 impl Renderer {
     fn present_sdr(&mut self) {
         self.hdr = None;
@@ -303,10 +322,11 @@ impl Renderer {
         }
         self.output_caps.hdr = offered.flatten();
         self.display_fresh = true;
-        if sdr_at_once(presented, offered) {
+        let applied = self.output;
+        self.output = refused(applied, offered, || {
             log::info!("Horizon renderer: the window surface offers no HDR now; SDR");
             self.present_sdr();
-        }
+        });
     }
 
     /// HDR output presenting `encoding` for `output`, made apart from the one presented: from
@@ -788,6 +808,24 @@ mod tests {
                 "{presented:?} {offered:?}"
             );
         }
+        // SDR is presented and published on the same frame, and the next frame, resolving on
+        // the offer read, configures nothing more.
+        let settings = on();
+        let (mut caps, reading) = window(Some(Pq), Some(true));
+        let pq = snapshot(&settings, NO_PACK, caps, reading);
+        let mut swapchain = Swapchain::default();
+        let sdr = refused(pq, Some(None), || swapchain.present_sdr());
+        assert_eq!(
+            (sdr.encoding, sdr.frame, swapchain.sdr),
+            (None, pq.frame, 1)
+        );
+        caps.hdr = None;
+        let next = candidate(&settings, caps, reading, &sdr);
+        let published = commit(&mut swapchain, &sdr, next, caps, &mut None);
+        assert_eq!((published.encoding, swapchain.sdr), (None, 1));
+        assert!(swapchain.asked.is_empty());
+        // Offered scRGB, nothing changes at once.
+        assert_eq!(refused(pq, Some(Some(ScRgb)), || unreachable!()), pq);
     }
 
     /// A window in Auto presenting HDR10 at 400/1000 nits on the layered frame, followed on
