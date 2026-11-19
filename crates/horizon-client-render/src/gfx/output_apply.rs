@@ -8,6 +8,7 @@
 use super::{DisplayReading, DisplayWatch, Renderer, hdr, output};
 use crate::graphics::HdrMode;
 use output::{EffectiveOutput, FrameRequest, OutputCapabilities};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 /// What an output's resources are made for: the encoding presented and the frame.
@@ -169,7 +170,9 @@ fn graced(
 /// Whether the output resolves again at `now`: a due poll (`read`, with the surface's
 /// `offer`; on Wayland, an event) changed `reading` or `caps`, or Auto's grace `since` is
 /// over. Its end reads the display once more first, however long until the next poll, unless
-/// a read since the deadline did (the last read is a `DISPLAY_POLL` before the next).
+/// a read since the deadline did (the last read is a `DISPLAY_POLL` before the next). With a
+/// reader thread, a poll takes what it handed over instead and reads nothing; only the end of
+/// the grace reads here.
 fn poll_display(
     watch: Option<&mut DisplayWatch>,
     reading: &mut DisplayReading,
@@ -183,15 +186,98 @@ fn poll_display(
     let Some(watch) = watch else {
         return over;
     };
+    let mut at_once = false;
     if let (Some(since), Some(next)) = (since.filter(|_| over), &mut watch.polled)
         && *next < since + AUTO_OFF_DELAY + super::DISPLAY_POLL
     {
         *next = now;
+        at_once = true;
+    }
+    if let Some(reader) = &watch.reader {
+        // Taken either way: a reading handed over before the one made at once is older.
+        let handed = reader.latest();
+        if !at_once {
+            let Some((read, offered)) = handed else {
+                return over;
+            };
+            watch.polled = Some(now + super::DISPLAY_POLL);
+            if read != *reading {
+                super::log_os_reported(read.luminance);
+            }
+            return observe(reading, caps, read, offered) || over;
+        }
     }
     let Some(read) = watch.poll(*reading, now, read) else {
         return over;
     };
     observe(reading, caps, read, offer()) || over
+}
+
+/// What a [`DisplayReader`] hands over at each read: the display's report and the surface's
+/// offer.
+type Handed = (DisplayReading, Option<Option<hdr::Output>>);
+
+/// Vulkan wants a surface's host access externally synchronized while a swapchain is made
+/// for it: the reader's capability query and a configure (`Renderer::configure`) never overlap.
+pub(super) static SURFACE_QUERY: Mutex<()> = Mutex::new(());
+
+/// Reads a polled display every `DISPLAY_POLL` on a thread of its own and hands the reading
+/// over: DXGI's walk and the surface's capabilities stalled the render thread 3-7 ms at each
+/// poll (#18535). It holds the surface, so it ends (dropped) before the renderer lets that go.
+pub(super) struct DisplayReader {
+    handed: mpsc::Receiver<Handed>,
+    /// Dropped to end the thread at once.
+    stop: Option<mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DisplayReader {
+    /// `None` on macOS, where AppKit answers on the main thread only.
+    fn start(surface: &Arc<wgpu::Surface<'static>>, adapter: &wgpu::Adapter) -> Option<Self> {
+        if cfg!(target_os = "macos") {
+            return None;
+        }
+        let (send, handed) = mpsc::channel();
+        let (stop, stopped) = mpsc::channel::<()>();
+        let (surface, adapter) = (Arc::clone(surface), adapter.clone());
+        let thread = std::thread::Builder::new()
+            .name("Display watch".into())
+            .spawn(move || {
+                while stopped.recv_timeout(super::DISPLAY_POLL)
+                    == Err(mpsc::RecvTimeoutError::Timeout)
+                {
+                    let reading = DisplayReading::read(Some(&*surface), &adapter);
+                    let offered = {
+                        let _configure =
+                            SURFACE_QUERY.lock().unwrap_or_else(PoisonError::into_inner);
+                        offer(Some(&*surface), &adapter)
+                    };
+                    if send.send((reading, offered)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self {
+            handed,
+            stop: Some(stop),
+            thread: Some(thread),
+        })
+    }
+
+    /// The newest reading handed over since the last call.
+    fn latest(&self) -> Option<Handed> {
+        self.handed.try_iter().last()
+    }
+}
+
+impl Drop for DisplayReader {
+    fn drop(&mut self) {
+        self.stop = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// What `surface` offers now (`None` offscreen): Vulkan's offered formats can change with
@@ -388,6 +474,7 @@ impl Renderer {
             let (watch, now) =
                 DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter);
             self.display = Some(watch);
+            self.start_display_reader();
             let offer = offer(self.surface.as_deref(), &self.adapter);
             self.output_caps.hdr = offer.unwrap_or(self.output_caps.hdr);
             self.reading = now;
@@ -457,6 +544,29 @@ impl Renderer {
         self.output_caps.hdr = offer.unwrap_or(self.output_caps.hdr);
         self.display_fresh = true;
         self.output_rejected = None;
+        self.start_display_reader();
+    }
+
+    /// A polled display's reads move to a thread for the window surface there is now
+    /// (`DisplayReader`), replacing the one there was.
+    fn start_display_reader(&mut self) {
+        if let Some(watch) = &mut self.display
+            && watch.polled.is_some()
+        {
+            watch.reader = None;
+            watch.reader = self
+                .surface
+                .as_ref()
+                .and_then(|s| DisplayReader::start(s, &self.adapter));
+        }
+    }
+
+    /// Ends the display reader's thread, which holds the surface: before the surface is
+    /// handed over or made again.
+    pub(super) fn stop_display_reader(&mut self) {
+        if let Some(watch) = &mut self.display {
+            watch.reader = None;
+        }
     }
 
     /// Whether what the system reports for the display, or what the surface offers, changed
@@ -580,6 +690,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             wayland: None,
             polled: Some(start + super::super::DISPLAY_POLL),
+            reader: None,
         };
         let same = reading;
         assert_eq!(watch.poll(reading, start, || unreachable!()), None);
@@ -597,6 +708,78 @@ mod tests {
             (published.nits, published.reported, published.system_hdr),
             (applied.nits, applied.reported, applied.system_hdr)
         );
+    }
+
+    /// With a reader thread the render thread reads nothing at a due poll: it takes the newest
+    /// reading handed over, the surface's offer with it, or nothing. Only the end of Auto's
+    /// grace reads at once, and a reading handed over before it doesn't override that read.
+    #[test]
+    fn the_render_thread_only_takes_what_the_reader_hands_over() {
+        /// A poll outside Auto's grace, which must not read.
+        fn poll(
+            watch: &mut DisplayWatch,
+            reading: &mut DisplayReading,
+            caps: &mut OutputCapabilities,
+            now: Instant,
+        ) -> bool {
+            poll_display(
+                Some(watch),
+                reading,
+                caps,
+                None,
+                now,
+                || unreachable!(),
+                || unreachable!(),
+            )
+        }
+        let (mut caps, mut reading) = window(Some(Pq), Some(true));
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let (hand, handed) = mpsc::channel();
+        let mut watch = DisplayWatch {
+            #[cfg(target_os = "linux")]
+            wayland: None,
+            polled: Some(start),
+            reader: Some(DisplayReader {
+                handed,
+                stop: None,
+                thread: None,
+            }),
+        };
+        // Long past due, nothing handed over.
+        assert!(!poll(&mut watch, &mut reading, &mut caps, at(5000)));
+        // The thread's read: the offer alone changed.
+        let same = reading;
+        hand.send((same, Some(Some(ScRgb)))).unwrap();
+        assert!(poll(&mut watch, &mut reading, &mut caps, at(5010)));
+        assert_eq!((reading, caps.hdr), (same, Some(ScRgb)));
+        assert!(!poll(&mut watch, &mut reading, &mut caps, at(5020)));
+        // Auto's grace from 5100 ends at 5600, the last read before it: read at once, and an
+        // older reading the thread handed over meanwhile is dropped.
+        let lost = DisplayReading {
+            hdr: Some(false),
+            ..same
+        };
+        hand.send((lost, Some(None))).unwrap();
+        let mut reads = 0;
+        let read = || {
+            reads += 1;
+            same
+        };
+        let since = Some(at(5100));
+        let offered = || Some(Some(ScRgb));
+        let ended = poll_display(
+            Some(&mut watch),
+            &mut reading,
+            &mut caps,
+            since,
+            at(5600),
+            read,
+            offered,
+        );
+        assert!(ended);
+        assert_eq!((reads, reading, caps.hdr), (1, same, Some(ScRgb)));
+        assert!(!poll(&mut watch, &mut reading, &mut caps, at(5610)));
     }
 
     /// The display's luminance, the UI brightness or Color Boost change on the same output: the values
@@ -775,6 +958,7 @@ mod tests {
                     #[cfg(target_os = "linux")]
                     wayland: None,
                     polled: polled.then_some(start),
+                    reader: None,
                 },
                 reading,
                 caps,
