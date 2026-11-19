@@ -16,16 +16,26 @@ use horizon_core::{
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// How long a due tick waits before it is offered again when its block's template is suppressed
+/// ([`LevelAccess::template_suppressed`]): once a second, so the block gets it once its mod is on
+/// again, without the queue spinning on it every tick.
+pub(crate) const SUPPRESSED_TICK_DELAY: i32 = 20;
+
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn rand_int(&mut self, bound: i32) -> i32 {
         self.random().next_int_bound(bound).unwrap_or(0)
     }
 
-    /// `BlockState.tick` (scheduled block tick).
+    /// `BlockState.tick` (scheduled block tick), unless the block's template is suppressed
+    /// ([`LevelAccess::template_suppressed`]).
     pub fn tick_block(&mut self, state: BlockStateId, pos: BlockPos) {
-        if self.level.template_suppressed(state) {
-            return;
+        if !self.level.template_suppressed(state) {
+            self.tick_block_template(state, pos);
         }
+    }
+
+    /// `BlockState.tick` with no suppression check: the caller has made it.
+    fn tick_block_template(&mut self, state: BlockStateId, pos: BlockPos) {
         let b = self.b;
         let p = b.props;
         let block = b.block(state);
@@ -272,8 +282,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
 
     /// `ServerLevel.tickBlock` once the block at `pos` is the tick's: the
-    /// level may handle the tick first, else `BlockState.tick`.
-    fn tick_due_block(&mut self, state: BlockStateId, pos: BlockPos) {
+    /// level may handle the tick first, else `BlockState.tick`. True when the template didn't
+    /// run because it is suppressed ([`LevelAccess::template_suppressed`]): the tick is still
+    /// owed. That one answer both skips the template and reports it, so a switch flipped in
+    /// between can't drop the tick.
+    fn tick_due_block(&mut self, state: BlockStateId, pos: BlockPos) -> bool {
         // The hooks read the mod's switch themselves: asked before them as well as after, a
         // switch in between can't hand the block to its template with no hook answering.
         let before = self.level.template_suppressed(state);
@@ -282,12 +295,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             .before_tick_block(self.ticks, pos, &mut current, &mut handled);
         // A block the level changed ticks as it is now, if it is still the
         // tick's block.
-        if !handled
-            && (current == state || self.block_of(current) == self.block_of(state))
-            && !self.suppressed_after_hooks(before, state, current)
-        {
-            self.tick_block(current, pos);
+        if handled || (current != state && self.block_of(current) != self.block_of(state)) {
+            return false;
         }
+        if self.suppressed_after_hooks(before, state, current) {
+            return true;
+        }
+        self.tick_block_template(current, pos);
+        false
     }
 
     /// Whether `current`, the block a dispatch that began on `state` reaches its template with,
@@ -304,25 +319,37 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             || self.level.template_suppressed(current)
     }
 
-    /// A due block tick from the queue.
+    /// A due block tick from the queue. One its block's suppressed template still owes goes
+    /// back in the queue ([`Self::requeue_owed`]).
     fn run_due_block_tick(&mut self, tick: ScheduledTick) {
         let state = self.state(tick.pos);
         let block = self.b.block(state);
         horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
         horizon_threads::work::set_block(block.0);
-        if u32::from(block.0) == tick.kind.0 {
-            self.tick_due_block(state, tick.pos);
+        if u32::from(block.0) == tick.kind.0 && self.tick_due_block(state, tick.pos) {
+            self.requeue_owed(false, tick);
         }
     }
 
-    /// A due fluid tick from the queue.
+    /// A due fluid tick from the queue, put back as [`Self::run_due_block_tick`] puts back a
+    /// block tick.
     fn run_due_fluid_tick(&mut self, tick: ScheduledTick) {
         let state = self.state(tick.pos);
         horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
         horizon_threads::work::set_block(self.b.block(state).0);
-        if TickTypeId(self.b.fluid(state).kind().tick_id()) == tick.kind {
-            self.fluid_tick(tick.pos);
+        if TickTypeId(self.b.fluid(state).kind().tick_id()) == tick.kind
+            && self.fluid_tick(tick.pos)
+        {
+            self.requeue_owed(true, tick);
         }
+    }
+
+    /// Puts the owed due `tick` back in its queue [`SUPPRESSED_TICK_DELAY`] ticks on, with its
+    /// own kind and priority, and has the level save the chunk's new deadline.
+    fn requeue_owed(&mut self, fluid: bool, tick: ScheduledTick) {
+        let time = self.level.game_time();
+        self.ticks.requeue(fluid, tick, time, SUPPRESSED_TICK_DELAY);
+        self.level.tick_requeued(tick.pos);
     }
 
     /// `BlockState.randomTick` followed by the fluid's random tick.
@@ -2116,7 +2143,7 @@ impl Behaviours {
     ) {
         let mut sim = self.sim(level, ticks);
         let state = sim.state(pos);
-        sim.tick_due_block(state, pos);
+        let _ = sim.tick_due_block(state, pos);
     }
     /// Run one scheduled block tick at `pos` immediately (no queue check).
     pub fn scheduled_block_tick<L: LevelAccess + ?Sized>(
@@ -2136,7 +2163,7 @@ impl Behaviours {
         ticks: &mut Ticks,
         pos: BlockPos,
     ) {
-        self.sim(level, ticks).fluid_tick(pos);
+        let _ = self.sim(level, ticks).fluid_tick(pos);
     }
 }
 

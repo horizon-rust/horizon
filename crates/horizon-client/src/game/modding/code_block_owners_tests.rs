@@ -123,9 +123,31 @@ fn ticks(game: &mut Game<'_>) {
         1,
         "an enabled mod's part still hears the tick"
     );
+    // A clean chunk: only the put-back tick can mark it changed.
+    game.world.modified.remove(&(0, 0));
     game.world.game_time = start + 1;
     game.tick_scheduled().unwrap();
     assert_eq!(game.world.block(4, 64, 4), young, "the due tick leaves it");
+    assert!(
+        game.with_level(|b, _, ticks| ticks.has_block_tick(loose, b.block(young))),
+        "the tick waits in the queue"
+    );
+    assert!(
+        game.world.modified.remove(&(0, 0)),
+        "its chunk is saved with the new deadline"
+    );
+    // Saved and loaded back as an unloaded chunk is: 20 ticks from the save.
+    let mut saved = (*game.world.chunks[&(0, 0)]).clone();
+    game.attach_save_data(&mut saved);
+    let block_ticks = &saved.saved.as_deref().unwrap().block_ticks;
+    assert_eq!(block_ticks.len(), 1);
+    assert_eq!((block_ticks[0].pos, block_ticks[0].delay), (loose, 20));
+    let chunk = horizon_core::position::ChunkPos::new(0, 0);
+    game.block_ticks.remove_chunk(chunk);
+    game.world.chunks.insert((0, 0), std::sync::Arc::new(saved));
+    game.register_chunk_ticks((0, 0));
+    let time = game.world.game_time;
+    game.block_ticks.blocks.unpack_chunk(chunk, time);
 
     frost_on(true);
     random_tick(game);
@@ -134,6 +156,16 @@ fn ticks(game: &mut Game<'_>) {
         young,
         "on again, the cane grows"
     );
+    game.world.game_time = start + 20;
+    game.tick_scheduled().unwrap();
+    assert_eq!(
+        game.world.block(4, 64, 4),
+        young,
+        "on again, the waiting tick keeps its deadline"
+    );
+    game.world.game_time = start + 21;
+    game.tick_scheduled().unwrap();
+    assert_eq!(game.world.block(4, 64, 4), air, "and then breaks it");
 }
 
 /// A TNT template beside a new power source.

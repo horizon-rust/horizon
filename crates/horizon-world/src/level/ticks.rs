@@ -279,6 +279,35 @@ impl Ticks {
         };
         self.fluids.schedule(tick)
     }
+    /// Puts the due `tick` back in its queue (the fluid queue if `fluid`) `delay` ticks after
+    /// `game_time`, keeping its kind, position and priority.
+    pub(crate) fn requeue(
+        &mut self,
+        fluid: bool,
+        tick: ScheduledTick,
+        game_time: i64,
+        delay: i32,
+    ) -> ScheduleResult {
+        if let Some(captured) = &mut self.capture {
+            captured.push(CapturedTick {
+                fluid,
+                kind: tick.kind.0,
+                pos: tick.pos,
+                delay,
+            });
+            return ScheduleResult::Added;
+        }
+        let tick = ScheduledTick {
+            trigger_tick: game_time.wrapping_add(i64::from(delay)),
+            sub_tick_order: self.next_sub_tick(),
+            ..tick
+        };
+        if fluid {
+            self.fluids.schedule(tick)
+        } else {
+            self.blocks.schedule(tick)
+        }
+    }
     pub fn has_block_tick(&self, pos: BlockPos, block: BlockId) -> bool {
         self.blocks
             .has_scheduled(pos, TickTypeId(u32::from(block.0)))

@@ -554,6 +554,9 @@ impl LevelAccess for GameLevel<'_> {
     fn template_suppressed(&self, state: BlockStateId) -> bool {
         self.native_authoritative && super::code_block_owners::suppressed(self.registry, state)
     }
+    fn tick_requeued(&mut self, pos: BlockPos) {
+        self.world.modified.insert((pos.x >> 4, pos.z >> 4));
+    }
     fn before_random_tick(
         &mut self,
         ticks: &mut Ticks,
