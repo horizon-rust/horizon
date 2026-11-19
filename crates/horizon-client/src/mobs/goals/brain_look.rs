@@ -76,7 +76,7 @@ impl Goal for BrainLookAround {
         }
         // Behavior.tryStart draws the behaviour's duration (60, 60) from the
         // level's random, before `RandomLookAround.start`.
-        let _ = cx.lr.next_int_bound(1);
+        let _ = cx.level.random().next_int_bound(1);
         let pitch = (m.random.next_float() * self.pitch_range + self.min_pitch).clamp(-90.0, 90.0);
         let rotation = crate::mobs::living::wrap(
             m.yaw + 2.0 * m.random.next_float() * self.max_yaw - self.max_yaw,
@@ -94,6 +94,6 @@ impl Goal for BrainLookAround {
                 .unwrap_or(0);
         self.ready_at = m.age.saturating_add(cooldown as u32 + 1);
         // LookAtTargetSink(45, 90)'s own duration, drawn when it starts.
-        self.hold = 45 + cx.lr.next_int_bound(46).unwrap_or(0);
+        self.hold = 45 + cx.level.random().next_int_bound(46).unwrap_or(0);
     }
 }
