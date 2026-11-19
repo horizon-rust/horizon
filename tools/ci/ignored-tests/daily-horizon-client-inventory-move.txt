@@ -1,0 +1,1 @@
+horizon-client game::native_inventories::tests::an_offline_inventory_move_is_visible_on_login lib daily resources

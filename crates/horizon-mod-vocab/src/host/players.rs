@@ -42,6 +42,26 @@ pub trait PlayersServerHost {
     /// taken: it lets nobody else on.
     #[access(WorldOnly)]
     fn server_set_max_players(&mut self, max_players: u32) -> Result<(), PlayerLimitRefusal>;
+    /// Read a real player's inventory by UUID. Reads live slots when they are online,
+    /// or the existing player file after pending saves finish. Refuses while the
+    /// player is joining, dead or swapped out.
+    #[access(WorldOnly)]
+    fn server_player_inventory(
+        &mut self,
+        uuid: u128,
+        kind: PlayerInventoryKind,
+    ) -> Result<PlayerInventorySnapshot, PlayerInventoryError>;
+    /// Move the exact stack an inventory snapshot showed. Fills matching stacks before
+    /// empty slots; a player inventory receives into its 36 main slots. The move can
+    /// change one existing saved player file and a live player, or two live inventories.
+    /// A move within one saved player can change both of their inventories in one write.
+    /// Refuses with no change if the stack no longer matches, it cannot fit whole,
+    /// or a required file write fails. Call outside a transaction and a player swap.
+    #[access(WorldOnly)]
+    fn server_move_inventory_stack(
+        &mut self,
+        request: &PlayerInventoryMove,
+    ) -> Result<(), PlayerInventoryError>;
 }
 /// The client host's methods of the `players` area, implemented by the game and reached through [`crate::ClientHost`].
 #[horizon_mod_api_macros::host_area]
@@ -499,8 +519,11 @@ pub trait PlayersBackend {
     /// may call it. On a client, for the local player only. None for an unknown state, a
     /// stale or unavailable player.
     #[access(WorldOnly)]
-    fn player_has_correct_tool_for_drops(&self, player: PlayerRef, state: BlockState)
-    -> Option<bool>;
+    fn player_has_correct_tool_for_drops(
+        &self,
+        player: PlayerRef,
+        state: BlockState,
+    ) -> Option<bool>;
 }
 /// The handles' client reads of the `players` area, implemented by the game and reached through [`Backend`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
