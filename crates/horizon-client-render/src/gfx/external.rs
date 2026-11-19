@@ -190,9 +190,10 @@ pub struct Capabilities {
     pub ray_looks: bool,
     /// Its terrain pipelines bind the arenas' quad looks (`looks::wanted`): sections carry them.
     pub looks: bool,
-    /// Its post has passes (`[[post]]`) that draw the picture. Without them the renderer
-    /// anti-aliases the world before the output reads it (`WorldOutput::resolved`).
-    pub post_chain: bool,
+    /// The renderer anti-aliases its world before the output reads it
+    /// (`WorldOutput::resolved`): it has no post passes (`[[post]]`) that draw the picture, and
+    /// its frame holds gamma light, which FXAA's blend is made for (not `blend = "linear"`).
+    pub engine_fxaa: bool,
 }
 
 /// What the renderer hands the pack's post stage (`ExternalPipeline::run_post`).

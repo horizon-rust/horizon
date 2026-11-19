@@ -297,7 +297,7 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
 
-- 2026-11-19: API 0.2 (addition, preview): a pack without `[[post]]` gets the player's FXAA, at the world's size,
+- 2026-11-19: API 0.2 (addition, preview): a pack without `[[post]]` whose frame holds gamma light (no `blend = "linear"`) gets the player's FXAA, at the world's size,
   before its `[tonemap]` (#16126 step 6). TAA and upscaling stay off under every pack, and a pack with a post chain is
   unchanged. With FXAA off nothing changes.
 - 2026-11-19: API 0.2 (addition, preview): `MaterialInput.lit_tint`, vanilla's lit vertex colour as Horizon's terrain

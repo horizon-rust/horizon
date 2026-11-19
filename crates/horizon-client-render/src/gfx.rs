@@ -10874,7 +10874,7 @@ impl Renderer {
             // The engine's resolve of the pack's world goes here, between its chain and its
             // output (#16126): the player's FXAA, at the world's size, where no chain draws
             // the picture. TAA, its upscaling and sharpening stay off under every pack.
-            let resolved = (self.executor.is_some_and(|c| !c.post_chain)
+            let resolved = (self.executor.is_some_and(|c| c.engine_fxaa)
                 && self.world_post.antialias)
                 .then(|| self.world_post.resolved(&self.device))
                 .flatten();

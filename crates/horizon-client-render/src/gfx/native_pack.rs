@@ -657,7 +657,7 @@ impl NativePack {
             ray_entities: self.traces_entities(),
             ray_looks: self.traces_looks(),
             looks: self.looks,
-            post_chain: self.post.chain(),
+            engine_fxaa: !self.post.chain() && !self.frame.linear,
         }
     }
 
@@ -798,19 +798,32 @@ file = \"material.wgsl\"
             built.expect("the pack builds").0.capabilities()
         };
         let material = "[material]\nfile = \"material.wgsl\"\n";
-        assert_eq!(does(""), Capabilities::default());
+        // Without post passes, a pack whose frame holds gamma light keeps the player's FXAA.
+        let plain = Capabilities {
+            engine_fxaa: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(does(""), plain);
+        // FXAA's blend is made for gamma light, not the linear light of `blend = "linear"`.
+        let linear = TerrainShape {
+            linear: true,
+            ..terrain_shape(&globals, &empty)
+        };
+        let built = NativePack::new(&device, &queue, &linear, pack(""), &[], Default::default());
+        let linear = built.expect("the pack builds").0.capabilities();
+        assert_eq!(linear, Capabilities::default());
         let hides = Capabilities {
             hides_clouds: true,
             hides_sun: true,
             hides_moon: true,
             hides_stars: true,
-            ..Capabilities::default()
+            ..plain
         };
         let all = "clouds = false\nsun = false\nmoon = false\nstars = false\n";
         assert_eq!(does(all), hides);
         let terrain = Capabilities {
             material: true,
-            ..Capabilities::default()
+            ..plain
         };
         assert_eq!(does(material), terrain);
         // No resource pack's height maps here (`TerrainShape::pbr`): nothing to displace.
@@ -822,7 +835,7 @@ file = \"material.wgsl\"
         assert_eq!(does(&format!("{material}[ray_tracing]\n")), traces);
         let tonemap = Capabilities {
             tone_curve: true,
-            ..Capabilities::default()
+            ..plain
         };
         assert_eq!(does("[tonemap]\nfile = \"tonemap.wgsl\"\n"), tonemap);
     }
