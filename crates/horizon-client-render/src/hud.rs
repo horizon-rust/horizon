@@ -3689,10 +3689,9 @@ mod tests {
         assert!(!atlas.sprites.contains_key("gems:item/ruby"));
         fs::remove_dir_all(&root).unwrap();
     }
-    /// A pack's particle sprite of any size packs whole, as vanilla's particle atlas stitches
-    /// it (a light shaft drawn from a 1024-wide texture); the cap on GUI textures stays.
+    /// Large particle and GUI sprites keep their full dimensions and pixels.
     #[test]
-    fn large_particle_sprites_pack_and_large_gui_textures_dont() {
+    fn large_particle_and_gui_sprites_pack_at_full_size() {
         let root =
             std::env::temp_dir().join(format!("horizon-atlas-big-particle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -3712,7 +3711,10 @@ mod tests {
         let rect = atlas.sprites["mypack:particle/light_rays/02"];
         assert_eq!(rect.texels((atlas.width, atlas.height)), (1024, 1024));
         assert_eq!(texel_at(&atlas, rect, 512, 512), [250, 240, 200, 255]);
-        assert!(!atlas.sprites.contains_key("gui/huge"));
+        let rect = atlas.sprites["gui/huge"];
+        assert_eq!((rect.w, rect.h), (2048, 64));
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (2048, 64));
+        assert_eq!(texel_at(&atlas, rect, 2047, 63), [1, 2, 3, 255]);
         fs::remove_dir_all(&root).unwrap();
     }
     /// OptiFine random entity variants outside `textures/` pack under the names
