@@ -9406,6 +9406,7 @@ impl Renderer {
                     .size()
                     .filter(|_| scaled.is_some())
                     .unwrap_or([self.config.width, self.config.height]),
+                projection: views.primary().projection,
                 output: &output,
                 lights: &self.light_blocks,
                 light_revision: self.light_revision,

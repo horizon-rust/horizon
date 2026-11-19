@@ -570,8 +570,8 @@ pub fn markdown() -> String {
             change. Where the pack has no `[tonemap]`, or one that never reads `previous`, TAA upscaling applies too: the world\n\
             draws at the `upscaling` ratio's share of the scaled window, and TAA rebuilds it at the scaled window's size, then\n\
             sharpens it there, in the frame's encoding, before the decode and the tone curve. `frame.resolution` stays the size\n\
-            the world draws at, and `previous` is then the size TAA rebuilt it at, larger than `frame.resolution`. A `[tonemap]`\n\
-            that reads `previous` gets TAA at the world's size, its upscaling and sharpening off. Either way\n\
+            the world draws at, and the tonemap's `input.color` samples the picture TAA rebuilt. A `[tonemap]` that reads\n\
+            `previous` keeps the picture at the world's size: TAA runs for it without its upscaling and sharpening. Either way\n\
             `resolutionScale` still reaches the window through the tone curve's read. Under any other pack TAA is off.\n\n\
             A pack must never write an infinite value into the world's frame: TAA's history would carry it.\n\n\
             Without a pack the settings apply as the player set them.\n\n";

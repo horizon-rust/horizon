@@ -246,6 +246,10 @@ pub struct FrameStart<'a> {
     pub frame: &'a Frame<'a>,
     /// The world's size this frame: the scaled target's, else the window's.
     pub size: [u32; 2],
+    /// The lens the world is drawn with this frame, unjittered and before the pose
+    /// (`View::projection`): its aspect is the window's, which the world's rounded `size`
+    /// can miss.
+    pub projection: glam::Mat4,
     /// This frame's output, whose display values a 0.2 pack reads.
     pub output: &'a EffectiveOutput,
     /// The light sources the section meshes list, and their revision (`BlockLight::update`).

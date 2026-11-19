@@ -590,7 +590,7 @@ Resources (bind group 3):
 | Binding | Declaration | Meaning |
 | --- | --- | --- |
 | 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
-| 3 | `var previous: texture_2d<f32>` | The post chain's picture at the window's size (without a post chain, the world's at the world's size), linear light: what `input.color` samples, for a curve that reads around the pixel. |
+| 3 | `var previous: texture_2d<f32>` | The post chain's picture at the window's size (without a post chain, the world's at the world's size: a tonemap that reads it keeps TAA from upscaling the world), linear light: what `input.color` samples, for a curve that reads around the pixel. |
 | 4 | `var linear_sampler: sampler` | Bilinear filtering, clamped to the edges. |
 | 5 | `var nearest_sampler: sampler` | Nearest texel, clamped to the edges. |
 
@@ -781,8 +781,8 @@ encoding, before the pack's `[tonemap]` (or Horizon's curve) reads it. TAA jitte
 change. Where the pack has no `[tonemap]`, or one that never reads `previous`, TAA upscaling applies too: the world
 draws at the `upscaling` ratio's share of the scaled window, and TAA rebuilds it at the scaled window's size, then
 sharpens it there, in the frame's encoding, before the decode and the tone curve. `frame.resolution` stays the size
-the world draws at, and `previous` is then the size TAA rebuilt it at, larger than `frame.resolution`. A `[tonemap]`
-that reads `previous` gets TAA at the world's size, its upscaling and sharpening off. Either way
+the world draws at, and the tonemap's `input.color` samples the picture TAA rebuilt. A `[tonemap]` that reads
+`previous` keeps the picture at the world's size: TAA runs for it without its upscaling and sharpening. Either way
 `resolutionScale` still reaches the window through the tone curve's read. Under any other pack TAA is off.
 
 A pack must never write an infinite value into the world's frame: TAA's history would carry it.
