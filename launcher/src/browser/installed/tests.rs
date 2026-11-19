@@ -412,23 +412,85 @@ fn a_cached_refusal_of_a_hyphenated_id_is_checked_again() {
     fs::remove_dir_all(&home).unwrap();
 }
 
-#[test]
-fn a_hyphenated_id_that_another_installed_mod_has_is_refused() {
-    let home = home("hyphen-clash");
-    let (fake, _) = hyphenated_mod();
-    fs::create_dir_all(home.join("horizon-mods")).unwrap();
-    fs::write(home.join("horizon-mods/a_b.hmod"), b"archive").unwrap();
+/// A valid `.hmod` at `horizon-mods/.backup.hmod` whose manifest says mod id `a_b`: the game
+/// finds it by its manifest, not its name.
+fn backup_archive(home: &Path) {
+    use std::io::Write;
+    let path = home.join("horizon-mods/.backup.hmod");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    zip.start_file("horizon-mod.toml", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(
+        b"id = \"a_b\"
+name = \"Backup\"
+version = \"1.0\"
+api = \"0.2\"
+side = \"both\"
+capabilities = [\"registries\"]
+",
+    )
+    .unwrap();
+    zip.finish().unwrap();
+    let found = horizon_platform::mod_package::find(&home.join("horizon-mods"));
+    assert_eq!(found, [path.clone()]);
+    let package = horizon_platform::mod_package::Package::read(&path).unwrap();
+    assert_eq!(package.manifest.id, "a_b");
     fs::write(
         home.join("horizon-mods.txt"),
         "mod.a_b:true
 ",
     )
     .unwrap();
+}
+
+#[test]
+fn a_hyphenated_id_that_another_installed_mod_has_is_refused() {
+    let home = home("hyphen-clash");
+    let (fake, _) = hyphenated_mod();
+    backup_archive(&home);
     let refused = install(&fake, &fake.project("ab").unwrap(), false, &home, NONE).unwrap_err();
     assert!(
         refused.contains("Another mod already uses the id a_b"),
         "{refused}"
     );
+    assert!(!home.join("horizon-mods/a_b").exists());
+    assert_eq!(
+        fs::read_to_string(home.join("horizon-mods.txt")).unwrap(),
+        "mod.a_b:true
+"
+    );
+    assert!(Installed::load(&home).entries.is_empty());
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn a_refused_install_installs_none_of_its_dependencies() {
+    let home = home("hyphen-clash-deps");
+    let (mut fake, jar) = hyphenated_mod();
+    // `a-b` needs `ruby`, a mod that runs.
+    let mut ruby = project("ruby", Kind::Mod);
+    ruby.loaders = vec!["neoforge".into()];
+    fake.add(ruby);
+    let block = r#"{"variants": {"": {"model": "ruby:block/ruby_block"}}}"#;
+    fake.release(
+        "ruby",
+        "1",
+        &[],
+        &mod_jar(
+            "ruby",
+            &[("assets/ruby/blockstates/ruby_block.json", block)],
+        ),
+        false,
+    );
+    fake.release("ab", "2", &["ruby"], &jar, false);
+    backup_archive(&home);
+    let refused = install(&fake, &fake.project("ab").unwrap(), false, &home, NONE).unwrap_err();
+    assert!(
+        refused.contains("Another mod already uses the id a_b"),
+        "{refused}"
+    );
+    assert!(!home.join("horizon-mods/ruby").exists());
     assert!(!home.join("horizon-mods/a_b").exists());
     assert_eq!(
         fs::read_to_string(home.join("horizon-mods.txt")).unwrap(),
