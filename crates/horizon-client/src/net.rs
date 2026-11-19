@@ -2852,6 +2852,9 @@ mod tests {
         configuring: Arc<AtomicBool>,
         /// How the loop ended, once it has.
         ended: std::sync::mpsc::Receiver<Result<Reason, Reason>>,
+        /// What `configuring` read on this loop's thread each time a reconfiguration's
+        /// acknowledgement was about to be queued.
+        phase_at_acknowledgement: std::sync::mpsc::Receiver<bool>,
         root: PathBuf,
     }
 
@@ -2868,7 +2871,9 @@ mod tests {
             let (send, events) = ingress::channel(budget, Event::ingress_charge).unwrap();
             let (thread_writer, thread_configuring) = (writer.clone(), configuring.clone());
             let (done, ended) = channel();
+            let (probe, phase_at_acknowledgement) = channel();
             std::thread::spawn(move || {
+                PHASE_PROBE.set(Some(probe));
                 let _ = done.send(receive_play(
                     &mut reader,
                     &thread_writer,
@@ -2890,6 +2895,7 @@ mod tests {
                 writer,
                 configuring,
                 ended,
+                phase_at_acknowledgement,
                 root,
             }
         }
@@ -2926,15 +2932,20 @@ mod tests {
         }
     }
 
-    /// What `configuring` read, by flag, as each reconfiguration's acknowledgement was
-    /// about to be queued under the writer lock.
-    static PHASE_AT_ACKNOWLEDGEMENT: Mutex<Vec<(usize, bool)>> = Mutex::new(Vec::new());
+    thread_local! {
+        /// Set only on a [`PlayLoop`]'s own thread: where it hears what `configuring`
+        /// read as a reconfiguration's acknowledgement was about to be queued.
+        static PHASE_PROBE: std::cell::RefCell<Option<std::sync::mpsc::Sender<bool>>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
+    /// Called under the writer lock, right before the acknowledgement is queued.
     pub(super) fn observe_phase_at_acknowledgement(configuring: &AtomicBool) {
-        PHASE_AT_ACKNOWLEDGEMENT.lock().unwrap().push((
-            std::ptr::from_ref(configuring) as usize,
-            configuring.load(Ordering::Acquire),
-        ));
+        PHASE_PROBE.with_borrow(|probe| {
+            if let Some(probe) = probe {
+                let _ = probe.send(configuring.load(Ordering::Acquire));
+            }
+        });
     }
 
     fn ping(id: i32) -> play::Clientbound {
@@ -3006,14 +3017,8 @@ mod tests {
             play.reply(),
             play::Serverbound::ConfigurationAcknowledged(Empty)
         );
-        let flag = Arc::as_ptr(&play.configuring) as usize;
-        let seen: Vec<bool> = PHASE_AT_ACKNOWLEDGEMENT
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(at, _)| *at == flag)
-            .map(|(_, configuring)| *configuring)
-            .collect();
+        // The acknowledgement is on the wire, so the probe before it has reported.
+        let seen: Vec<bool> = play.phase_at_acknowledgement.try_iter().collect();
         assert_eq!(
             seen,
             [false],
