@@ -85,8 +85,10 @@ The game still refuses a mod, naming the call or point, when:
   reaches. In practice a changed or removed host method refuses every wasm mod built before the change;
 - one of its exports (a hook or a handler method) changed or is gone;
 - what every call shares changed: a transport value (`mod_api::wire::PROTOCOL`: reserved IDs, the group state,
-  reply tags and limits), the file roots, the prepared ABI, or a hand-written codec, including the NBT and JSON
-  formats some codecs embed (one added counts too);
+  reply tags and limits, and `CORE_VERSION`, bumped by hand for a transport change no value shows), the file
+  roots, the prepared ABI, or a hand-written codec, including the NBT tag ids and limits and the `serde` shapes
+  some codecs embed (one added counts too). Encodings written outside those files, such as the NBT reader and
+  writer, are pinned byte for byte by `horizon-mod-vocab/tests/wire_golden.rs` instead;
 - the members of one linked group were built against different builds;
 - a point it listens to changed or is gone.
 
