@@ -581,13 +581,22 @@ fn cargo_home_in(build: &Path, takes_times: bool, program_data: Option<PathBuf>)
     backend::ascii_build_dir(build, program_data).join("cargo")
 }
 
-/// Whether files in `dir` take the time Cargo gives the files it writes into a crate it unpacks
-/// (`Cargo.toml`, `.cargo_vcs_info.json`: 1970-01-01, one second in). FAT32's and exFAT's times
-/// start in 1980, and Windows refuses an earlier one ("The parameter is incorrect", os error 87),
-/// so no crate unpacks on a drive formatted so, as portable drives often are (#16702). Asked of a
-/// scratch file in `dir`; a folder where none can be made is taken to take it.
+/// Whether files in `dir` take the time Cargo sets on the files it generated into a crate it unpacks
+/// (`Cargo.toml`, `.cargo_vcs_info.json`): 1970-01-01, one second in, in crates an older Cargo
+/// packaged (`itoa` 0.4.8, `cargo-platform` 0.1.9; newer ones carry 2006-07-24). FAT32's and
+/// exFAT's times start in 1980, and Windows refuses an earlier one ("The parameter is incorrect",
+/// os error 87), so no such crate unpacks on a drive formatted so, as portable drives often are
+/// (#16702). Asked of a scratch file in `dir`, named for this call alone: threads asking at once
+/// would otherwise share one file, and a name another call is deleting can't be created. A folder
+/// where none can be made is taken to take it.
 fn takes_cargo_times(dir: &Path) -> bool {
-    let probe = dir.join(format!(".cargo-time-probe-{}", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PROBES: AtomicU64 = AtomicU64::new(0);
+    let probe = dir.join(format!(
+        ".cargo-time-probe-{}-{}",
+        std::process::id(),
+        PROBES.fetch_add(1, Ordering::Relaxed)
+    ));
     let Ok(file) = fs::File::create(&probe) else {
         return true;
     };
