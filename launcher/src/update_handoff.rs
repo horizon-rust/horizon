@@ -6,9 +6,10 @@
 //! process holds, which closes with it). If the launcher in place is already that version or newer
 //! it changes nothing. Otherwise it checks the signed SHA-256 again and puts the new launcher in
 //! place ([`backend::place_checked`], the same code `horizon-launcher update` uses), then starts
-//! it. When that fails it starts the old one again, which says why ([`take_failure`]). Nothing
-//! goes in without Update: a window closed with an update staged drops it ([`forget`]), and the
-//! next start checks again.
+//! it. When that fails it starts the old one again, which says why ([`take_failure`]). A window
+//! closed with an update staged hands it over the same way without the restart ([`on_close`]), and
+//! says so while it waits, so the next start is the new launcher; a failure there is said at that
+//! start. Only quitting for a data move drops it ([`forget`]), and the next start checks again.
 //!
 //! `main` handles the command before the CLI parser, so MCP and the completions never list it.
 //! Every launcher keeps it: the installer is whatever launcher file is in place when Update is
@@ -31,7 +32,7 @@ const SHA256_ENV: &str = "HORIZON_LAUNCHER_UPDATE_SHA256";
 /// under a running launcher too (the old file is moved aside, not overwritten).
 const WAIT: Duration = Duration::from_secs(60);
 
-/// The update Update hands over ([`start_now`]).
+/// The update Update ([`start_now`]) or a closing window ([`on_close`]) hands over.
 static PENDING: Mutex<Option<Staged>> = Mutex::new(None);
 
 pub fn set_pending(staged: Option<Staged>) {
@@ -44,6 +45,47 @@ pub fn forget() {
     let staged = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(staged) = staged {
         backend::remove_stage(&backend::update_work_dir(), &staged.payload);
+    }
+}
+
+/// What a closing window does with its staged update.
+#[derive(Debug, PartialEq)]
+enum Close {
+    Nothing,
+    /// Drop it with its stage, as [`forget`] does.
+    Drop(Staged),
+    /// Hand it to the installer, which doesn't start the launcher again.
+    Install(Staged),
+}
+
+/// Whether closing the window installs a staged update: not in a copy that doesn't replace itself
+/// (a development build, `HORIZON_LAUNCHER_NO_SELF_UPDATE`) or that a package manager owns.
+pub fn installs_on_close() -> bool {
+    backend::self_update_allowed() && !backend::package_managed_launcher()
+}
+
+fn close_with(staged: Option<Staged>, installs: bool) -> Close {
+    match staged {
+        None => Close::Nothing,
+        Some(staged) if installs => Close::Install(staged),
+        Some(staged) => Close::Drop(staged),
+    }
+}
+
+/// The window is closing: a staged update goes in once this process has exited, and the next start
+/// is the new launcher. A game started from the window is a process of its own, which the
+/// installer neither waits for nor touches. An installer that doesn't start is said at the next
+/// start, as one that fails is ([`take_failure`]).
+pub fn on_close() {
+    let staged = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
+    match close_with(staged, installs_on_close()) {
+        Close::Nothing => {}
+        Close::Drop(staged) => backend::remove_stage(&backend::update_work_dir(), &staged.payload),
+        Close::Install(staged) => {
+            if let Err(e) = hand_over(&staged, false) {
+                record_failure(&staged.tag, &e);
+            }
+        }
     }
 }
 
@@ -314,6 +356,28 @@ mod tests {
                 restart: None,
             })
         );
+    }
+
+    /// Closing installs a staged update, without the restart, only where this copy replaces
+    /// itself; elsewhere it is dropped. A data move drops it before the window quits.
+    #[test]
+    fn closing_installs_a_staged_update_only_where_the_launcher_updates_itself() {
+        assert_eq!(close_with(None, true), Close::Nothing);
+        assert_eq!(close_with(Some(staged()), true), Close::Install(staged()));
+        let args = installer_args(&staged(), false, os(&["play"]));
+        assert!(!args.iter().any(|a| a == RESTART));
+        assert_eq!(parse(args, "abc".into()).unwrap().restart, None);
+        assert_eq!(close_with(Some(staged()), false), Close::Drop(staged()));
+        // This test build is a development build, which never replaces itself.
+        assert!(!installs_on_close());
+        // The data move: `forget` empties what the close would hand over.
+        set_pending(Some(Staged {
+            payload: std::env::temp_dir().join("horizon-no-stage"),
+            ..staged()
+        }));
+        forget();
+        let left = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take();
+        assert_eq!(close_with(left, true), Close::Nothing);
     }
 
     #[test]
