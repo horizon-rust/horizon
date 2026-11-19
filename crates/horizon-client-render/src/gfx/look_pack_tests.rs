@@ -263,6 +263,12 @@ struct Worst {
 
 impl Worst {
     fn see(&mut self, own: [f32; 4], staged: [f32; 4], case: impl Fn() -> String) {
+        // A NaN difference compares false and would never count as the worst.
+        assert!(
+            own[..3].iter().chain(&staged[..3]).all(|v| v.is_finite()),
+            "a pixel isn't finite: {own:?} {staged:?} ({})",
+            case()
+        );
         for c in 0..3 {
             let d = (own[c] - staged[c]).abs();
             let r = d / own[c].max(staged[c]).max(1e-6);

@@ -5,7 +5,8 @@ Horizon's own HDR look as a shader pack on the public API ([shaders.md](../../..
 by its kind of light, and a tone curve fits that light to the display. It is the look the game draws itself with HDR
 on and no pack (Look: Horizon), and the example to copy from: a pack that wants that look under its own starts here.
 Like Golden Hour it comes with the SDK, not with the game: the game never picks it by itself, and nothing changes
-until a player puts the folder in `shaderpacks/` and picks it. With HDR off it draws vanilla's picture.
+until a player puts the folder in `shaderpacks/` and picks it. With HDR off it lifts nothing; what else still differs
+there is listed below.
 
 `hdr_look.wgsl` is the look: its numbers (the brightness a texel lifts at, each tier's gain, the scene's peak) and
 its maths, with no name of the renderer in it. There is one copy of it. The renderer's own shaders start with this
@@ -38,7 +39,8 @@ differ in SDR.
   item) isn't lifted.
 - **Light sources in fog, and in a section that is fading in.** Horizon fades a section toward the fog colour, then
   lifts the faded colour by a mark that only fog lowers. A stage lifts first; Horizon then fades and fogs its lifted
-  light. Near the camera there is no difference.
+  light. On a fully visible surface outside fog there is no difference; in coloured fog that starts at the camera
+  (under water), Horizon lifts the fog's colour with the pixel and a stage doesn't.
 - **Distant terrain where it meets near terrain.** Horizon dithers tiles and sections in and out and offsets their depth
   so the right one shows where they overlap; a material stage's terrain does neither, so overlaps can show.
 - **The enchantment glint on something that shines** is added after a stage, and so after the lift; Horizon lifts

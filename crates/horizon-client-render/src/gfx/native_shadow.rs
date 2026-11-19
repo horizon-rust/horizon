@@ -531,7 +531,7 @@ fn shader_source(
             PREFIX
         ),
         super::native_post::line_helpers(false),
-        super::native_material::SECTION_CORNER,
+        super::native_material::section_corner(),
     );
     // The grid's lit colour is the material's (`lit_tint`); the shadow map has no use for it.
     super::native_material::lit_marks(&text, false)
