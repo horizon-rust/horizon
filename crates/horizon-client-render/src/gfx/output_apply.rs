@@ -193,29 +193,29 @@ fn poll_display(
         *next = now;
         at_once = true;
     }
-    if let Some(reader) = &watch.reader {
-        // Taken either way: a reading handed over before the one made at once is older.
-        let handed = reader.latest();
-        if !at_once {
-            let Some((read, offered)) = handed else {
-                return over;
-            };
-            watch.polled = Some(now + super::DISPLAY_POLL);
-            if read != *reading {
-                super::log_os_reported(read.luminance);
-            }
-            return observe(reading, caps, read, offered) || over;
+    if !at_once && let Some(reader) = &watch.reader {
+        let Some((read, offered, _)) = reader.latest() else {
+            return over;
+        };
+        watch.polled = Some(now + super::DISPLAY_POLL);
+        if read != *reading {
+            super::log_os_reported(read.luminance);
         }
+        return observe(reading, caps, read, offered) || over;
     }
     let Some(read) = watch.poll(*reading, now, read) else {
         return over;
     };
+    if let Some(reader) = &mut watch.reader {
+        // The read just finished: `Instant::now()`, or `now` where a test's clock runs ahead.
+        reader.read_fresh(now.max(Instant::now()));
+    }
     observe(reading, caps, read, offer()) || over
 }
 
-/// What a [`DisplayReader`] hands over at each read: the display's report and the surface's
-/// offer.
-type Handed = (DisplayReading, Option<Option<hdr::Output>>);
+/// What a [`DisplayReader`] hands over at each read: the display's report, the surface's
+/// offer and when the read started.
+type Handed = (DisplayReading, Option<Option<hdr::Output>>, Instant);
 
 /// Vulkan wants a surface's host access externally synchronized while a swapchain is made
 /// for it: the reader's capability query and a configure (`Renderer::configure`) never overlap.
@@ -229,6 +229,8 @@ pub(super) struct DisplayReader {
     /// Dropped to end the thread at once.
     stop: Option<mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// When the last read the render thread made itself finished (`read_fresh`).
+    fresh: Option<Instant>,
 }
 
 impl DisplayReader {
@@ -246,13 +248,14 @@ impl DisplayReader {
                 while stopped.recv_timeout(super::DISPLAY_POLL)
                     == Err(mpsc::RecvTimeoutError::Timeout)
                 {
+                    let started = Instant::now();
                     let reading = DisplayReading::read(Some(&*surface), &adapter);
                     let offered = {
                         let _configure =
                             SURFACE_QUERY.lock().unwrap_or_else(PoisonError::into_inner);
                         offer(Some(&*surface), &adapter)
                     };
-                    if send.send((reading, offered)).is_err() {
+                    if send.send((reading, offered, started)).is_err() {
                         break;
                     }
                 }
@@ -262,12 +265,23 @@ impl DisplayReader {
             handed,
             stop: Some(stop),
             thread: Some(thread),
+            fresh: None,
         })
     }
 
-    /// The newest reading handed over since the last call.
+    /// The newest reading handed over since the last call, of those that started after the
+    /// last fresh read: one already running then may be handed over after it, but is older.
     fn latest(&self) -> Option<Handed> {
-        self.handed.try_iter().last()
+        let fresh = self.fresh;
+        self.handed
+            .try_iter()
+            .filter(|(.., started)| fresh.is_none_or(|fresh| *started >= fresh))
+            .last()
+    }
+
+    /// The render thread read the display itself, finishing at `finished`.
+    fn read_fresh(&mut self, finished: Instant) {
+        self.fresh = Some(finished);
     }
 }
 
@@ -744,13 +758,14 @@ mod tests {
                 handed,
                 stop: None,
                 thread: None,
+                fresh: None,
             }),
         };
         // Long past due, nothing handed over.
         assert!(!poll(&mut watch, &mut reading, &mut caps, at(5000)));
         // The thread's read: the offer alone changed.
         let same = reading;
-        hand.send((same, Some(Some(ScRgb)))).unwrap();
+        hand.send((same, Some(Some(ScRgb)), at(5005))).unwrap();
         assert!(poll(&mut watch, &mut reading, &mut caps, at(5010)));
         assert_eq!((reading, caps.hdr), (same, Some(ScRgb)));
         assert!(!poll(&mut watch, &mut reading, &mut caps, at(5020)));
@@ -760,7 +775,7 @@ mod tests {
             hdr: Some(false),
             ..same
         };
-        hand.send((lost, Some(None))).unwrap();
+        hand.send((lost, Some(None), at(5590))).unwrap();
         let mut reads = 0;
         let read = || {
             reads += 1;
@@ -780,6 +795,14 @@ mod tests {
         assert!(ended);
         assert_eq!((reads, reading, caps.hdr), (1, same, Some(ScRgb)));
         assert!(!poll(&mut watch, &mut reading, &mut caps, at(5610)));
+        // A read the thread started before that read finished, handed over after it: dropped.
+        hand.send((lost, Some(None), at(5599))).unwrap();
+        assert!(!poll(&mut watch, &mut reading, &mut caps, at(5620)));
+        assert_eq!((reading, caps.hdr), (same, Some(ScRgb)));
+        // One it started after: taken.
+        hand.send((lost, Some(None), at(5630))).unwrap();
+        assert!(poll(&mut watch, &mut reading, &mut caps, at(5640)));
+        assert_eq!((reading, caps.hdr), (lost, None));
     }
 
     /// The display's luminance, the UI brightness or Color Boost change on the same output: the values
