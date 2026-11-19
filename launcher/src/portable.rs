@@ -124,6 +124,20 @@ pub fn apply() {
     }
 }
 
+/// Why a launcher can't write to the computer's own folders (the applications menu, its icons,
+/// desktop shortcuts): a portable one leaves nothing behind on the computers it runs on.
+pub fn host_refusal_for(portable: bool) -> Option<String> {
+    portable.then(|| {
+        crate::i18n::tr("This launcher is portable: it doesn't add menu entries, icons or desktop shortcuts to this computer.")
+            .to_string()
+    })
+}
+
+/// [`host_refusal_for`] this launcher.
+pub fn host_refusal() -> Option<String> {
+    host_refusal_for(is_on())
+}
+
 /// Whether this process is a portable launcher's (or one it started).
 pub fn is_on() -> bool {
     data_folder().is_some()
@@ -213,6 +227,12 @@ mod tests {
         );
         assert!(outside(data, &[("HORIZON_HOME", Some(data.join("game")))]).is_empty());
         assert!(outside(data, &[("HORIZON_HOME", None)]).is_empty());
+    }
+
+    #[test]
+    fn a_portable_launcher_refuses_to_write_menu_entries_and_shortcuts() {
+        assert!(host_refusal_for(true).is_some_and(|why| why.contains("portable")));
+        assert_eq!(host_refusal_for(false), None);
     }
 
     #[test]

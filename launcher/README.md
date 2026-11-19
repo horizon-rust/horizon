@@ -36,7 +36,8 @@ The opening, then Play ([clip](docs/opening.webm)):
   folder you unpacked the ZIP to; beside the AppImage on Linux, beside the `.app` on macOS) and everything the launcher and the game write goes to `data/`
   beside it: `data/launcher` for the launcher's installations, downloads and accounts, `data/game`
   for worlds, options and logs. Nothing goes to the system's own folders or the registry, so the
-  folder runs from a USB drive or another disk. Microsoft sign-ins stay in
+  folder runs from a USB drive or another disk: no applications-menu entry or icons (the Settings
+  switch and `desktop-entry` refuse), and no desktop shortcuts. Microsoft sign-ins stay in
   `data/launcher/account-secrets.json` instead of the system keychain, sealed so they open on any
   computer the folder moves to: keep the folder as safe as the account. The Tailscale access token
   lasts until the launcher closes. To move a portable install, move its whole folder; Move… is off.

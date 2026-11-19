@@ -428,6 +428,9 @@ fn desktop_or_err() -> Result<PathBuf, String> {
 
 /// Makes the shortcut on this computer's desktop that plays `id`, starting `exe`.
 pub fn make(exe: &Path, id: &str, name: &str) -> Result<Vec<PathBuf>, String> {
+    if let Some(why) = crate::portable::host_refusal() {
+        return Err(why);
+    }
     let desktop = desktop_or_err()?;
     let made = make_in(
         System::here(),
