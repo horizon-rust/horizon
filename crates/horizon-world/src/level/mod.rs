@@ -694,7 +694,8 @@ pub trait LevelAccess: BlockEntityNeighbors {
     /// Whether the block `state` must not run its template's own behaviour now: a mod block
     /// whose mod is installed and switched off. Its hooks are off, and the template's ticks,
     /// shape updates, neighbour reactions, block events and entity contacts would rewrite or
-    /// remove it, so it keeps still until the mod is on again. Asked on hot paths: a vanilla
+    /// remove it, so it keeps still until the mod is on again. Only the authoritative level
+    /// answers true: a client replays what its server decided. Asked on hot paths: a vanilla
     /// block must answer at once. The default is false.
     fn template_suppressed(&self, _state: BlockStateId) -> bool {
         false

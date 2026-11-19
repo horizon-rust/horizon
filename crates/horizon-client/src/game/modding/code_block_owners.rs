@@ -70,19 +70,7 @@ pub(in crate::game) fn bind(registry: &BlockRegistry, root: &Path) {
     let _ = registry.code_block_owners.set(table);
 }
 
-/// Whether `state` is a block of a code mod that is installed and turned off now. A vanilla
-/// block costs one table read.
-#[inline]
-pub(in crate::game) fn suppressed(registry: &BlockRegistry, state: BlockStateId) -> bool {
-    match registry
-        .code_block_owners
-        .get()
-        .and_then(|owners| owners.get(state.0 as usize))
-    {
-        Some(&owner) if owner != NONE => !mod_api::__private::mod_index_on(usize::from(owner)),
-        _ => false,
-    }
-}
+pub(in crate::game) use horizon_client::block_contact::template_suppressed as suppressed;
 
 #[cfg(test)]
 mod tests {

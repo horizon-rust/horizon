@@ -1145,7 +1145,9 @@ impl Game<'_> {
         // A mod block's sculk template (a catalyst spreading, a sensor's vibrations) is the
         // template's own: it waits while the block's mod is off.
         let state = self.world.block(key.0, key.1, key.2);
-        if crate::game::code_block_owners::suppressed(self.pack.assets.registry, state) {
+        if self.native_authoritative()
+            && crate::game::code_block_owners::suppressed(self.pack.assets.registry, state)
+        {
             return Ok(());
         }
         let time = self.world.game_time;

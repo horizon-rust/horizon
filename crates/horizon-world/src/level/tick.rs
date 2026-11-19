@@ -16,11 +16,6 @@ use horizon_core::{
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// How long a due tick waits before it is offered again when its block's template is suppressed
-/// ([`LevelAccess::template_suppressed`]): once a second, so the block gets it once its mod is on
-/// again, without the queue spinning on it every tick.
-pub(crate) const SUPPRESSED_TICK_DELAY: i32 = 20;
-
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn rand_int(&mut self, bound: i32) -> i32 {
         self.random().next_int_bound(bound).unwrap_or(0)
@@ -277,55 +272,55 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
 
     /// `ServerLevel.tickBlock` once the block at `pos` is the tick's: the
-    /// level may handle the tick first, else `BlockState.tick`. True when
-    /// nothing handled it because the block's template is suppressed
-    /// ([`LevelAccess::template_suppressed`]): the tick is still owed.
-    fn tick_due_block(&mut self, state: BlockStateId, pos: BlockPos) -> bool {
-        // The hooks read the mod's switch themselves. Asked before them and again after, a
-        // switch in between can't leave the block to its template with no hook answering.
-        let suppressed = self.level.template_suppressed(state);
+    /// level may handle the tick first, else `BlockState.tick`.
+    fn tick_due_block(&mut self, state: BlockStateId, pos: BlockPos) {
+        // The hooks read the mod's switch themselves: asked before them as well as after, a
+        // switch in between can't hand the block to its template with no hook answering.
+        let before = self.level.template_suppressed(state);
         let (mut current, mut handled) = (state, false);
         self.level
             .before_tick_block(self.ticks, pos, &mut current, &mut handled);
-        if handled {
-            return false;
-        }
-        if suppressed || self.level.template_suppressed(state) {
-            return true;
-        }
         // A block the level changed ticks as it is now, if it is still the
         // tick's block.
-        if current == state || self.block_of(current) == self.block_of(state) {
+        if !handled
+            && (current == state || self.block_of(current) == self.block_of(state))
+            && !self.suppressed_after_hooks(before, state, current)
+        {
             self.tick_block(current, pos);
         }
-        false
     }
 
-    /// A due block tick from the queue. One whose block's template is suppressed goes back in
-    /// the queue [`SUPPRESSED_TICK_DELAY`] ticks on, at its position, block and priority.
+    /// Whether `current`, the block a dispatch that began on `state` reaches its template with,
+    /// must not run it ([`LevelAccess::template_suppressed`]). `before` is the answer for `state`
+    /// from before the hooks; it counts only while the target is still that block, as a hook may
+    /// have put another in its place.
+    fn suppressed_after_hooks(
+        &self,
+        before: bool,
+        state: BlockStateId,
+        current: BlockStateId,
+    ) -> bool {
+        (before && self.block_of(current) == self.block_of(state))
+            || self.level.template_suppressed(current)
+    }
+
+    /// A due block tick from the queue.
     fn run_due_block_tick(&mut self, tick: ScheduledTick) {
         let state = self.state(tick.pos);
         let block = self.b.block(state);
         horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
         horizon_threads::work::set_block(block.0);
-        if u32::from(block.0) == tick.kind.0 && self.tick_due_block(state, tick.pos) {
-            self.schedule_tick_priority(tick.pos, block, SUPPRESSED_TICK_DELAY, tick.priority);
+        if u32::from(block.0) == tick.kind.0 {
+            self.tick_due_block(state, tick.pos);
         }
     }
 
-    /// A due fluid tick from the queue, put back as [`Self::run_due_block_tick`] puts a block
-    /// tick back when its block's template is suppressed.
+    /// A due fluid tick from the queue.
     fn run_due_fluid_tick(&mut self, tick: ScheduledTick) {
         let state = self.state(tick.pos);
         horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
         horizon_threads::work::set_block(self.b.block(state).0);
-        let fluid = self.b.fluid(state).kind();
-        if TickTypeId(fluid.tick_id()) != tick.kind {
-            return;
-        }
-        if self.level.template_suppressed(state) {
-            self.schedule_fluid_tick(tick.pos, fluid, SUPPRESSED_TICK_DELAY);
-        } else {
+        if TickTypeId(self.b.fluid(state).kind().tick_id()) == tick.kind {
             self.fluid_tick(tick.pos);
         }
     }
@@ -334,23 +329,26 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub fn random_tick_at(&mut self, pos: BlockPos) {
         let state = self.state(pos);
         horizon_threads::work::set_block(self.b.block(state).0);
-        // Asked before the hooks and again after, as in `tick_due_block`.
-        let mut suppressed = self.level.template_suppressed(state);
+        // Asked before the hooks as well as after, as in `tick_due_block`.
+        let before = self.level.template_suppressed(state);
         if self.b.is_randomly_ticking(state) {
             let (mut current, mut handled) = (state, false);
             self.level
                 .before_random_tick(self.ticks, pos, &mut current, &mut handled);
-            suppressed |= self.level.template_suppressed(state);
             // A block the level changed ticks as it is now, if it still ticks
             // randomly.
-            if !handled && !suppressed && (current == state || self.b.is_randomly_ticking(current))
+            if !handled
+                && (current == state || self.b.is_randomly_ticking(current))
+                && !self.suppressed_after_hooks(before, state, current)
             {
                 self.random_tick_block(current, pos);
             }
         }
         // Only lava's fluid state ticks randomly. A lava block is ticked twice
         // (LiquidBlock.randomTick, then FluidState.randomTick), as in vanilla.
-        if !suppressed && super::fluids::fluid_randomly_ticks(self.b.fluid(state).kind()) {
+        if super::fluids::fluid_randomly_ticks(self.b.fluid(state).kind())
+            && !self.suppressed_after_hooks(before, state, self.state(pos))
+        {
             self.lava_random_tick(pos);
         }
     }

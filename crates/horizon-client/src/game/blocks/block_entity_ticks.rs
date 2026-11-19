@@ -405,6 +405,7 @@ impl Game<'_> {
                 this.world.block_entities.get(&pos).map_or("", ticker_name),
             ));
             let suppressed = !matches!(kind, TickedKind::Mod)
+                && this.native_authoritative()
                 && crate::game::code_block_owners::suppressed(
                     this.pack.assets.registry,
                     this.world.block(pos.0, pos.1, pos.2),

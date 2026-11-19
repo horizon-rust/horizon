@@ -116,6 +116,9 @@ impl BlockLandingWorld for MobLanding<'_, '_, '_> {
         );
         cancel
     }
+    fn template_suppressed(&self, state: BlockStateId) -> bool {
+        crate::block_contact::template_suppressed(self.w.registry, state)
+    }
     // A mob never sneaks, so nothing suppresses a slime block's bounce.
     fn suppressing_bounce(&mut self) -> Result<bool, String> {
         Ok(false)

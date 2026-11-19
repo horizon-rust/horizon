@@ -126,10 +126,6 @@ fn ticks(game: &mut Game<'_>) {
     game.world.game_time = start + 1;
     game.tick_scheduled().unwrap();
     assert_eq!(game.world.block(4, 64, 4), young, "the due tick leaves it");
-    assert!(
-        game.with_level(|b, _, ticks| ticks.has_block_tick(loose, b.block(young))),
-        "the tick waits in the queue"
-    );
 
     frost_on(true);
     random_tick(game);
@@ -137,14 +133,6 @@ fn ticks(game: &mut Game<'_>) {
         game.world.block(0, 65, 0),
         young,
         "on again, the cane grows"
-    );
-    // The waiting tick comes due 20 ticks after it was put back.
-    game.world.game_time = start + 21;
-    game.tick_scheduled().unwrap();
-    assert_eq!(
-        game.world.block(4, 64, 4),
-        air,
-        "and the waiting tick breaks it"
     );
 }
 
