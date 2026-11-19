@@ -51,6 +51,14 @@ class SnbtDiffTests(unittest.TestCase):
         self.assertEqual(fuzz.compare(renamed, missing)[0][0], '<result>')
         self.assertEqual(fuzz.normalise('Items[3].components[0].id'), 'Items[].components[].id')
 
+    def test_absolute_game_times_compare_only_whether_they_are_set(self):
+        vanilla = record('Villager has the following entity data: {LastGossipDecay: 6612L}')
+        self.assertEqual(fuzz.compare(vanilla, record('Villager has the following entity data: {LastGossipDecay: 1294L}')), [])
+        self.assertEqual(fuzz.compare(vanilla, record('Villager has the following entity data: {LastGossipDecay: 0L}')),
+                         [('LastGossipDecay', '6612L', '0L')])
+        self.assertEqual(fuzz.compare(vanilla, record('Villager has the following entity data: {}')),
+                         [('LastGossipDecay', '6612L', None)])
+
     def test_attributes_compare_in_any_order_but_by_value(self):
         a = {'attributes': [{'id': 'b', 'base': '1.0d'}, {'id': 'a', 'base': '2.0d'}]}
         self.assertEqual(fuzz.diff(a, {'attributes': a['attributes'][::-1]}), [])
@@ -103,6 +111,11 @@ class FamilyTests(unittest.TestCase):
 
 
 class ReloadWitnessTests(unittest.TestCase):
+    def test_a_reload_gives_the_oracle_time_to_unload_the_chunk(self):
+        scenario = {'family': 'persist', 'seed': 1, 'steps': [{'k': 'reload'}, {'k': 'tick', 'n': 4}]}
+        ticks = [op for op in fuzz.render(scenario, 0) if op.get('op') == 'tick']
+        self.assertEqual([op.get('allow_chunk_io') for op in ticks], [True, None])  # only the reload's wait
+
     def test_a_reload_witnesses_the_chunk_and_every_entity_summoned_before_it(self):
         scenario = {'family': 'persist', 'seed': 1, 'steps': [
             {'k': 'summon', 'type': 'pig', 'at': [1.5, 0, 1.5], 'n': 0, 'nbt': {}},
@@ -121,11 +134,27 @@ class ReloadWitnessTests(unittest.TestCase):
         self.assertEqual(fuzz.witness('persist', entity, gone, gone), (None, None))
         self.assertEqual(fuzz.witness('persist', entity, kept, kept)[0],
                          'vanilla kept the entity loaded: [[True, 1]]')
-        self.assertEqual(fuzz.witness('persist', entity, gone, kept)[1][0], 'persist|chunk|<unload>')
+        self.assertEqual(fuzz.witness('persist', entity, gone, kept)[1][0], 'persist|entity|<unload>')
         chunk_op = {'cmd': chunk, 'guard': 'chunk'}
         chunk_stayed = {'cmd': chunk, 'results': [[False, 0]]}  # `/execute unless loaded` failed
         self.assertEqual(fuzz.witness('persist', chunk_op, chunk_stayed, chunk_stayed)[0],
                          'vanilla kept the chunk loaded: [[False, 0]]')
+
+    def test_each_guard_names_its_signature_so_divergences_do_not_merge(self):
+        # An entity guard and a chunk guard diverge the same way, but must not be grouped as one bug.
+        entity = {'cmd': '/execute if entity 00000000-0000-0000-0000-000000000001', 'guard': 'entity'}
+        chunk = {'cmd': '/execute unless loaded 4096 300 4096', 'guard': 'chunk'}
+        gone, kept = {'results': [[False, 0]]}, {'results': [[True, 1]]}
+        entity_invalid, entity_failure = fuzz.witness('spawn', entity, gone, kept)
+        chunk_invalid, chunk_failure = fuzz.witness('spawn', chunk, gone, kept)
+        self.assertIsNone(entity_invalid)  # [[False, 0]] is the valid reload for an entity guard
+        self.assertEqual(entity_failure[0], 'spawn|entity|<unload>')
+        self.assertEqual(chunk_failure[0], 'spawn|chunk|<unload>')  # chunk behavior is unchanged
+        self.assertNotEqual(entity_failure[0], chunk_failure[0])
+        self.assertEqual(fuzz.signatures({'invalid': None, 'failures': [entity_failure]}),
+                         ['spawn|entity|<unload>'])
+        self.assertEqual(fuzz.signatures({'invalid': None, 'failures': [chunk_failure]}),
+                         ['spawn|chunk|<unload>'])
 
 
 if __name__ == '__main__':

@@ -701,6 +701,10 @@ pub(super) struct Remote {
     /// (`AbstractClientPlayer.getPlayerInfo` keeps that `PlayerInfo`): its skin
     /// outlives the entry, which NPC plugins remove a moment after spawning.
     level_player_textures: HashMap<i32, horizon_client::skins::Textures>,
+    /// `ClientPacketListener.seenPlayers`: the player-info entries of the
+    /// players whose entity this connection has added. It outlives an entity's
+    /// removal and a dimension change, as vanilla's does.
+    seen_players: std::collections::HashSet<u128>,
     /// Entities with shared flag 6 (`Entity.isCurrentlyGlowing` on a client); mobs keep
     /// theirs in `Mob::glowing`.
     pub(super) glowing: std::collections::HashSet<i32>,
@@ -1228,6 +1232,7 @@ impl Game<'_> {
             level_players: HashMap::new(),
             level_player_names: HashMap::new(),
             level_player_textures: HashMap::new(),
+            seen_players: std::collections::HashSet::new(),
             glowing: Default::default(),
             own_invisible: false,
             own_on_fire: false,
@@ -1469,6 +1474,7 @@ impl Game<'_> {
             level_players: HashMap::new(),
             level_player_names: HashMap::new(),
             level_player_textures: HashMap::new(),
+            seen_players: std::collections::HashSet::new(),
             glowing: Default::default(),
             own_invisible: false,
             own_on_fire: false,
@@ -1512,7 +1518,8 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// Disconnect and return to the multiplayer screen (DisconnectedScreen).
+    /// Disconnect and return to the multiplayer screen (DisconnectedScreen), whose Back
+    /// leads to the title after a single player world.
     pub(super) fn leave_server(&mut self, reason: Option<Text>) -> Result<()> {
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
@@ -1624,6 +1631,7 @@ impl Game<'_> {
                 reason,
                 retry: None,
                 lines: std::cell::Cell::new(1),
+                to_title: single_player,
             },
             None => horizon_client::multiplayer::Screen::list(&saves),
         });
@@ -2505,9 +2513,8 @@ impl Game<'_> {
             renderer.remove_columns(gone.iter().copied());
         }
         horizon_client::chunk::free_columns(freed, gone.len());
-        self.world
-            .block_entities
-            .unload(|k| gone.contains(&(k.0 >> 4, k.2 >> 4)));
+        let gone_chunks: Vec<(i32, i32)> = gone.iter().copied().collect();
+        self.world.block_entities.unload_chunks(&gone_chunks);
         if let Some(r) = self.remote.as_mut() {
             r.attachments.retain(|holder, _| match *holder {
                 Holder::Chunk([x, z]) => !gone.contains(&(x, z)),
@@ -3577,6 +3584,11 @@ impl Game<'_> {
                     r.level_player_textures.remove(&p.id);
                     if kind == "minecraft:player" {
                         r.level_players.insert(p.id, p.uuid);
+                        // ClientLevel.addEntity: a player entity whose
+                        // PlayerInfo the client holds is a seen player.
+                        if r.tab_players.contains_key(&p.uuid) {
+                            r.seen_players.insert(p.uuid);
+                        }
                         // createEntityFromPacket: the player takes the profile of its list entry.
                         match r.players.get(&p.uuid) {
                             Some(name) => r.level_player_names.insert(p.id, name.clone()),
@@ -5681,11 +5693,7 @@ impl Game<'_> {
                     } else {
                         horizon_client::skins::Signature::Unsigned
                     };
-                    horizon_client::skins::unpack(
-                        &t.value,
-                        signature,
-                        horizon_client::skins::texture_uris(),
-                    )
+                    horizon_client::skins::unpack_known(&t.value, signature)
                 } else {
                     // `ResolvableProfile.resolveProfile`: no `textures` and
                     // only a name or an id resolves through the services.
@@ -5699,11 +5707,7 @@ impl Game<'_> {
                     key.and_then(|key| match self.skin_profiles.borrow_mut().state(&key) {
                         horizon_client::skins::Resolve::Done(Some(profile)) => {
                             profile.textures().map(|(value, signature)| {
-                                horizon_client::skins::unpack(
-                                    &value,
-                                    signature,
-                                    horizon_client::skins::texture_uris(),
-                                )
+                                horizon_client::skins::unpack_known(&value, signature)
                             })
                         }
                         _ => None,
@@ -9963,8 +9967,8 @@ fn look_at_rotation(from: [f64; 3], to: [f64; 3]) -> (f32, f32) {
     use horizon_core::geometry::trig::atan2;
     let (dx, dy, dz) = (to[0] - from[0], to[1] - from[1], to[2] - from[2]);
     let horizontal = (dx * dx + dz * dz).sqrt();
-    // `* 180.0F / (float)Math.PI` on the double.
-    let degrees = |r: f64| r * 180.0 / f64::from(std::f32::consts::PI);
+    // `* 57.2957763671875` (`Mth.RAD_TO_DEG` widened) on the double.
+    let degrees = |r: f64| r * f64::from(horizon_core::geometry::trig::RAD_TO_DEG);
     let pitch = wrap_degrees((-degrees(atan2(dy, horizontal))) as f32);
     let yaw = wrap_degrees(degrees(atan2(dz, dx)) as f32 - 90.0);
     (yaw, pitch)
@@ -10540,6 +10544,14 @@ impl Remote {
         }
         let uuid = *self.level_players.get(&id)?;
         Some((uuid, self.level_player_names.get(&id).map(String::as_str)))
+    }
+    /// `ClientPacketListener.getSeenPlayers`: the player-info entries of the
+    /// players this connection has seen, without this client's own profile.
+    pub(super) fn seen_players_other_than_self(&self) -> usize {
+        self.seen_players
+            .iter()
+            .filter(|id| **id != self.profile)
+            .count()
     }
     /// `PlayerInfo.getMessageValidator().updateAndValidate(message)` for `message.sender`.
     fn validate_chat(
