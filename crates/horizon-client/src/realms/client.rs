@@ -1030,6 +1030,9 @@ pub enum RealmsError {
     Parse,
     /// `GetServerDetailsTask`'s `TimeoutException`: still busy after 40 tries.
     Timeout,
+    /// `CustomError.unknownCompatibilityResponse`: `mco/client/compatible` answered
+    /// something other than a `CompatibleVersionResponse` name (the answer, as sent).
+    UnknownCompatibility(String),
 }
 
 impl RealmsError {
@@ -1040,14 +1043,27 @@ impl RealmsError {
             Self::Authentication(_) => 401,
             Self::Retry(_) => 503,
             Self::Service { status, code, .. } => code.unwrap_or(i32::from(*status)),
-            Self::Parse | Self::Timeout => 500,
+            Self::Parse | Self::Timeout | Self::UnknownCompatibility(_) => 500,
         }
     }
-    /// `RealmsError.errorMessage`, as `RealmsGenericErrorScreen` shows it after the
-    /// `mco.errorMessage.realmsService.realmsError` line.
+    /// `RealmsError.errorMessage` after the `mco.errorMessage.realmsService.realmsError`
+    /// line.
     pub fn text(&self) -> String {
+        let code = self.code();
+        format!(
+            "{} {}",
+            crate::lang::tr(
+                "mco.errorMessage.realmsService.realmsError",
+                &[&code as &dyn std::fmt::Display]
+            ),
+            self.message()
+        )
+    }
+    /// `RealmsError.errorMessage`: what `RealmsGenericErrorScreen.ErrorMessage.forServiceError`
+    /// shows under the `mco.errorMessage.realmsService.realmsError` title.
+    pub fn message(&self) -> String {
         let no_details = || crate::lang::get("mco.errorMessage.noDetails");
-        let detail = match self {
+        match self {
             Self::Connectivity(e) => crate::lang::tr(
                 "mco.errorMessage.realmsService.connectivity",
                 &[e as &dyn std::fmt::Display],
@@ -1071,15 +1087,11 @@ impl RealmsError {
                 }
             }
             Self::Parse | Self::Timeout => crate::lang::get("mco.errorMessage.connectionFailure"),
-        };
-        let code = self.code();
-        format!(
-            "{} {detail}",
-            crate::lang::tr(
-                "mco.errorMessage.realmsService.realmsError",
-                &[&code as &dyn std::fmt::Display]
-            )
-        )
+            Self::UnknownCompatibility(answer) => crate::lang::tr(
+                "mco.errorMessage.realmsService.unknownCompatibility",
+                &[answer as &dyn std::fmt::Display],
+            ),
+        }
     }
     /// `RealmsError.parse` of a non-2xx answer.
     fn from_answer(status: u16, body: &str, html: bool) -> Self {
@@ -1116,6 +1128,14 @@ impl RealmsError {
         // ErrorWithRawPayload.
         service(None, None, Some(body.chars().take(256).collect()))
     }
+}
+
+/// `RealmsClient.CompatibleVersionResponse`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompatibleVersion {
+    Compatible,
+    Outdated,
+    Other,
 }
 
 /// The client for one signed-in account.
@@ -1581,6 +1601,27 @@ impl RealmsClient {
             .and_then(|news| news.news_link))
     }
 
+    /// `RealmsClient.clientCompatible`: `GET mco/client/compatible`, whose text answer names
+    /// a `CompatibleVersionResponse` exactly (`Enum.valueOf`: no trimming, case counts).
+    pub fn client_compatible(&self) -> Result<CompatibleVersion, RealmsError> {
+        let url = self.url("mco/client/compatible");
+        let answer = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        match answer.as_str() {
+            "COMPATIBLE" => Ok(CompatibleVersion::Compatible),
+            "OUTDATED" => Ok(CompatibleVersion::Outdated),
+            "OTHER" => Ok(CompatibleVersion::Other),
+            _ => Err(RealmsError::UnknownCompatibility(answer)),
+        }
+    }
+
+    /// `RealmsClient.hasParentalConsent`: `GET mco/available`, read with
+    /// `Boolean.parseBoolean` (`true` in any case is yes, anything else is no).
+    pub fn has_parental_consent(&self) -> Result<bool, RealmsError> {
+        let url = self.url("mco/available");
+        let answer = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        Ok(answer.eq_ignore_ascii_case("true"))
+    }
+
     /// `RealmsClient.trialAvailable`: `GET trial`, the service's yes or no. The product
     /// page shows its trial note only when this says yes.
     pub fn trial_available(&self) -> Result<bool, RealmsError> {
@@ -1923,6 +1964,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn requests_send_the_session_cookie_only_and_errors_never_hold_the_token() {
         let (base, server) = serve_once(
             "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"Realms\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -1954,6 +1996,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_refused_connection_names_no_header() {
         // A port nothing listens on: the transport error.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -1969,6 +2012,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn busy_answers_ask_for_a_retry_after_their_delay() {
         let (base, server) = serve_once(
             "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -1983,6 +2027,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn the_join_answer_reads_vanillas_field_names() {
         let (base, server) = serve_once(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"address\":\"1.2.3.4:25565\",\"resourcePackUrl\":\"https://x.test/p.zip\",\"resourcePackHash\":\"abc\",\"sessionRegionData\":null}",
@@ -2049,6 +2094,7 @@ mod tests {
 
     /// `notificationsSeen`/`notificationsDismiss`: a JSON array of the UUIDs.
     #[test]
+    #[ignore = "daily"]
     fn a_notification_answer_posts_its_uuids() {
         let answer = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let (base, server) = serve_request(answer);
@@ -2154,6 +2200,7 @@ mod tests {
     /// `RealmsClient.updateConfiguration`'s request as gson writes `RealmsConfigurationDto`:
     /// the slot under `options`, the preference as its id and the region as its `nameId`.
     #[test]
+    #[ignore = "daily"]
     fn a_configuration_update_posts_the_vanilla_dto() {
         let (base, server) =
             serve_once("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -2233,6 +2280,7 @@ mod tests {
         );
     }
     #[test]
+    #[ignore = "daily"]
     fn the_tier_configuration_names_both_ranges_and_their_default() {
         let body = r#"{"renderDistance":{"min":2,"max":16,"defaultValue":8,"current":12},"simDistance":{"min":3,"max":12,"defaultValue":6,"current":null}}"#;
         let answer: &'static str = Box::leak(
@@ -2268,6 +2316,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_distance_update_puts_its_value_into_the_path() {
         for (realm, distance, path) in [
             (
@@ -2355,6 +2404,7 @@ mod tests {
     /// `RealmsClient.op`/`deop`: the `ops` endpoint, not the world one (a POST to
     /// `worlds/{id}/{uuid}` answers 404).
     #[test]
+    #[ignore = "daily"]
     fn player_permissions_go_to_the_ops_endpoint() {
         let uuid = "1b7b6c60-dd98-4748-a5e9-4bb21feaffc1";
         let (base, server) =
@@ -2378,6 +2428,7 @@ mod tests {
     /// `RealmsClient.invite`/`uninvite`: the `invites` endpoint, the `{"name": ...}` body,
     /// and the answered Realm's `players` (not the answer itself as a player list).
     #[test]
+    #[ignore = "daily"]
     fn invites_go_to_the_invites_endpoint() {
         let body = r#"{"id":7,"name":"Friends","players":[{"name":"Alex","uuid":"01234567-89ab-cdef-0123-456789abcdef","operator":false,"accepted":false,"online":false}]}"#;
         let answer: &'static str = Box::leak(
@@ -2454,6 +2505,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_reset_posts_the_template_with_no_seed() {
         let (base, server) =
             serve_request("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue");
@@ -2472,6 +2524,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn world_templates_are_asked_for_by_page_and_world_type() {
         let body = r#"{"templates":[{"id":"42","name":"Skyblock","version":"1.21","author":"Mojang","recommendedPlayers":"1-4","type":"MINIGAME"}],"page":2,"size":10,"total":11}"#;
         let answer: &'static str = Box::leak(
@@ -2574,6 +2627,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_minigame_switch_puts_the_template_in_the_path() {
         let (base, server) =
             serve_once("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue");
@@ -2588,5 +2642,89 @@ mod tests {
             .put_into_minigame_mode(7, "../worlds")
             .unwrap_err();
         assert!(matches!(error, RealmsError::Service { status: 400, .. }));
+    }
+
+    /// A `200 OK` text answer, as the fake service sends it.
+    fn text_answer(body: &str) -> &'static str {
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        Box::leak(answer.into_boxed_str())
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn the_compatibility_answer_is_one_of_three_exact_names() {
+        for (body, expected) in [
+            ("COMPATIBLE", Ok(CompatibleVersion::Compatible)),
+            ("OUTDATED", Ok(CompatibleVersion::Outdated)),
+            ("OTHER", Ok(CompatibleVersion::Other)),
+            // `Enum.valueOf` neither trims nor ignores case: these are
+            // `CustomError.unknownCompatibilityResponse`, a 500 carrying the answer.
+            (
+                "compatible",
+                Err(RealmsError::UnknownCompatibility("compatible".into())),
+            ),
+            (
+                "COMPATIBLE\n",
+                Err(RealmsError::UnknownCompatibility("COMPATIBLE\n".into())),
+            ),
+            ("", Err(RealmsError::UnknownCompatibility(String::new()))),
+        ] {
+            let (base, server) = serve_once(text_answer(body));
+            let answer = client(&base).client_compatible();
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with("GET /mco/client/compatible HTTP/1.1"),
+                "{request}"
+            );
+            assert_eq!(answer, expected, "{body:?}");
+        }
+        assert_eq!(RealmsError::UnknownCompatibility("x".into()).code(), 500);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn parental_consent_reads_like_javas_parse_boolean() {
+        // `Boolean.parseBoolean`: "true" in any case, nothing else (not even padded).
+        for (body, expected) in [
+            ("true", true),
+            ("TRUE", true),
+            ("True", true),
+            ("false", false),
+            ("yes", false),
+            (" true", false),
+            ("", false),
+        ] {
+            let (base, server) = serve_once(text_answer(body));
+            let answer = client(&base).has_parental_consent();
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with("GET /mco/available HTTP/1.1"),
+                "{request}"
+            );
+            assert_eq!(answer, Ok(expected), "{body:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn the_availability_calls_fail_like_any_other_request() {
+        // `RealmsClient.execute`: a 401 is `AuthenticationError`, whose code is 401.
+        let (base, server) = serve_once(
+            "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let error = client(&base).client_compatible().unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error, RealmsError::Authentication("Bearer".into()));
+        assert_eq!(error.code(), 401);
+        // A JSON error's own `errorCode` wins over the status (`ErrorWithJsonPayload`).
+        let (base, server) = serve_once(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"errorCode\":401}",
+        );
+        let error = client(&base).has_parental_consent().unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.code(), 401);
     }
 }

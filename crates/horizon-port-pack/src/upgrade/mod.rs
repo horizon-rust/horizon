@@ -16,7 +16,7 @@
 mod density;
 pub(crate) mod features;
 mod noise;
-mod registries;
+pub(crate) mod registries;
 mod settings;
 
 use density::Context;
@@ -273,7 +273,7 @@ pub fn read_pack(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
         }
     } else {
         let file = fs::File::open(path).map_err(|e| at(&e))?;
-        let mut zip = zip::ZipArchive::new(file).map_err(|e| at(&e))?;
+        let mut zip = crate::zip_intake::open(file).map_err(|e| at(&e))?;
         let mut budget = crate::entry::Budget::archive();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| at(&e))?;
@@ -430,6 +430,16 @@ mod tests {
         );
         assert_eq!(v, json!({"base_octave": 0, "amplitude_modifiers": [0.0]}));
         assert!(report.lossy.is_empty(), "{:?}", report.lossy);
+    }
+
+    #[test]
+    fn a_spline_without_its_spline_is_ported_not_a_panic() {
+        // A cache over a spline function the pack left without its "spline" field.
+        let (v, _) = up(
+            "data/x/worldgen/density_function/f.json",
+            json!({"type": "minecraft:flat_cache", "argument": {"type": "minecraft:spline"}}),
+        );
+        assert!(v.is_object(), "{v}");
     }
 
     #[test]

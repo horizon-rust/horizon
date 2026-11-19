@@ -20,7 +20,7 @@ use std::{
 
 /// `PreeditEvent`: the composition, its caret and the blocks of text the
 /// input method set apart (the one being converted is `focused_block`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PreeditEvent {
     pub full_text: String,
     /// Byte offset of the caret in `full_text` (vanilla's UTF-16 offset).
@@ -277,6 +277,14 @@ pub fn take_text_input_area() -> Option<[f32; 4]> {
 mod tests {
     use super::*;
 
+    /// The tests that change [`STATE`] take turns: it is one for the whole process, and
+    /// cargo runs tests in parallel, so one test's `reset` or `should_suppress_key` could
+    /// land in the middle of another (#14577).
+    static STATE_TESTS: Mutex<()> = Mutex::new(());
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        STATE_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn empty_text_is_no_composition() {
         assert_eq!(PreeditEvent::from_sdl_text_editing(None, 0, 0), None);
@@ -352,6 +360,7 @@ mod tests {
 
     #[test]
     fn set_and_clear_preedit() {
+        let _turn = one_at_a_time();
         reset();
         set_preedit(PreeditEvent::from_winit("nihongo", Some((0, 7))));
         assert!(composing());
@@ -362,6 +371,7 @@ mod tests {
 
     #[test]
     fn empty_preedit_clears_composing_and_suppresses_trailing_enter_once() {
+        let _turn = one_at_a_time();
         reset();
         set_preedit(PreeditEvent::from_winit("こんにちは", Some((0, 15))));
         assert!(composing());
@@ -385,6 +395,7 @@ mod tests {
 
     #[test]
     fn mark_committed_suppresses_single_trailing_key() {
+        let _turn = one_at_a_time();
         reset();
         set_preedit(PreeditEvent::from_winit("漢字", Some((0, 6))));
         mark_committed();

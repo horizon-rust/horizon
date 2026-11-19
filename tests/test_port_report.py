@@ -1,8 +1,12 @@
 import json
 from pathlib import Path
+import subprocess
 import tempfile
+import sys
 import unittest
 from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
 
 from tools import port_report as report
 from tools import version_port as port
@@ -87,6 +91,22 @@ class PortReportTests(unittest.TestCase):
         text = report.markdown(built)
         self.assertIn("1 pass, 1 whose oracle no longer compiles, 2 fail; 2 newly failing, 1 failing on 26.2 too", text)
         self.assertIn("- javac: `VanillaBlockExporter.java:9: cannot find symbol: class Foo`", text)
+
+    def test_shifted_block_state_ids_are_blocking_even_with_no_block_changes(self):
+        data = diff()
+        data["blocks"] = {"added": [], "removed": [], "changed": {}, "format": [],
+                          "state_count": [1000, 1000], "state_ids_shifted": 7,
+                          "first_shifted": "minecraft:stone"}
+        with mock.patch.object(report, "files_containing", return_value=["crates/w/src/blocks.rs"]):
+            items = report.blocking_items(data, mapping(), {"id": "26.3", "protocol_version": "777", "world_version": "5023"}, ROOT)
+        [shifted] = [i for i in items if i["kind"] == "block-ids"]
+        self.assertEqual(shifted["details"]["shifted"], 7)
+        self.assertEqual(shifted["details"]["first"], "minecraft:stone")
+        with mock.patch.object(report, "version_sites", return_value=[]), \
+                mock.patch.object(report, "files_naming", return_value=[]), \
+                mock.patch.object(report, "files_containing", return_value=[]):
+            built = report.build(data, mapping(), "26.2", "26.3", {"id": "26.3"})
+        self.assertNotIn("blocks", built["clean"])
 
     def test_regen_results_replace_the_stale_tables(self):
         regen = {"new": "26.3", "candidate": "/ports/26.3", "commit": "0123456789abcdef", "generators": {
@@ -181,6 +201,16 @@ class VersionPortReportTests(unittest.TestCase):
     def test_class_names_drop_moved_old_names(self):
         self.assertEqual(port.class_names({"a/X": 0, "a/Y": 0}, {"b/X": 0, "a/Y": 0}, {"a/X": "b/X"}),
                          ["a/Y", "b/X"])
+
+
+class UsedThroughVersionPortTests(unittest.TestCase):
+    """The module is used through `tools/version_port.py`; run on its own it says so."""
+
+    def test_it_says_how_it_is_used(self):
+        result = subprocess.run([sys.executable, str(ROOT / "tools/port_report.py"), "--help"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("version_port.py", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

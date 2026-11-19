@@ -2,7 +2,7 @@
 //! with `IS_GUI`): servers' HUDs that their pack's vertex shader moves to the screen's corners,
 //! and text effects in its fragment shader. Without one the text draws natively.
 
-use std::path::Path;
+use crate::resource_source::ResourceSource;
 use std::sync::Arc;
 
 use crate::core_shader::{CoreProgram, Glue};
@@ -31,7 +31,7 @@ const GLUE: Glue = Glue {
 };
 
 /// The packs' text shader, when a pack replaces either stage.
-pub(super) fn load(root: &Path, defaults: &Path) -> Option<Arc<CoreProgram>> {
+pub(super) fn load(root: &ResourceSource, defaults: &ResourceSource) -> Option<Arc<CoreProgram>> {
     load_core(root, defaults, "text", &["IS_GUI"], &GLUE)
 }
 
@@ -39,16 +39,13 @@ pub(super) fn load(root: &Path, defaults: &Path) -> Option<Arc<CoreProgram>> {
 /// game's own resources, which have vanilla's and its includes), when a pack replaces either
 /// stage.
 pub(super) fn load_core(
-    root: &Path,
-    defaults: &Path,
+    root: &ResourceSource,
+    defaults: &ResourceSource,
     name: &str,
     defines: &[&str],
     glue: &Glue,
 ) -> Option<Arc<CoreProgram>> {
-    if root == defaults {
-        return None;
-    }
-    let read = |base: &Path, path: &str| std::fs::read_to_string(base.join(path)).ok();
+    let read = |base: &ResourceSource, path: &str| base.read_to_string(path).ok();
     let own =
         |path: &str| read(root, path).filter(|text| read(defaults, path).as_ref() != Some(text));
     let vertex_path = format!("assets/minecraft/shaders/core/{name}.vsh");
@@ -77,8 +74,12 @@ pub(super) fn load_core(
 }
 
 /// The packs' core shaders the atlas carries (text, block outline, sky, stars).
-pub(super) fn load_shaders(atlas: &mut super::HudAtlas, root: &Path, defaults: &Path) {
-    atlas.text_shader = load(root, defaults);
+pub(super) fn load_shaders(
+    atlas: &mut super::HudAtlas,
+    root: &ResourceSource,
+    defaults: &ResourceSource,
+) {
+    atlas.text_shaders.gui = load(root, defaults);
     atlas.lines_shader = load_core(
         root,
         defaults,
@@ -89,6 +90,12 @@ pub(super) fn load_shaders(atlas: &mut super::HudAtlas, root: &Path, defaults: &
     let sky = |name| load_core(root, defaults, name, &[], &crate::gfx::core_sky::GLUE);
     atlas.sky_shader = sky("sky");
     atlas.stars_shader = sky("stars");
+    let world = |defines: &[&str], glue| load_core(root, defaults, "text", defines, glue);
+    atlas.text_shaders.world = world(&[], &crate::gfx::core_text::WORLD_GLUE);
+    atlas.text_shaders.see_through = world(
+        &["IS_SEE_THROUGH"],
+        &crate::gfx::core_text::SEE_THROUGH_GLUE,
+    );
 }
 
 /// Each uniform block's offset in the one buffer (`core_shader::BLOCKS` order).
@@ -326,7 +333,7 @@ mod tests {
 
     #[test]
     fn the_gui_projection_maps_gui_pixels_to_the_screen() {
-        let mut batch = HudBatch::new([1920, 1080]);
+        let mut batch = HudBatch::scratch([1920, 1080]);
         batch.scale = 4.0;
         let data: Vec<f32> =
             bytemuck::cast_slice(&uniforms(&batch, [1920, 1080], batch.scale)).to_vec();

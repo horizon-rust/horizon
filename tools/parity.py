@@ -31,6 +31,11 @@ that fails runs once more from scratch instead, and a pass then counts. Every
 retry is printed as a RETRIED line in the summary and in the CI job's summary.
 Fix the cause, then take the harness off the list: nothing else gets this retry.
 
+A harness or shard (datafix#2) listed in parity_hosts.json's "known_failing"
+("#issue: what differs") runs and reports as usual, but its failure, of any kind,
+doesn't fail the run: parity-main and the Nightly stop only for new failures
+(docs/parity-workflow.md).
+
 Harness probes build into .local/parity-target with release optimisations but
 without LTO and with 16 codegen units (`PROFILE` below), which builds in
 seconds instead of minutes. Rust does not let those settings change results:
@@ -38,7 +43,9 @@ there is no fast-math, and overflow checks stay as in release. Probes built in
 the dev profile are optimised too, keeping their overflow checks. The probes the
 selected harnesses built last time are built before they start, so parallel
 harnesses don't queue on Cargo's lock, with each harness's own package and
-feature flags so that its Cargo run then finds them fresh.
+feature flags so that its Cargo run then finds them fresh. On Windows, two
+harnesses that build one program with different flags don't run at once:
+the second build would replace the program the first is running.
 """
 
 import argparse
@@ -57,9 +64,11 @@ import time
 try:
     from . import parity_reach
     from . import file_lock
+    from . import process_tree
 except ImportError:
     import parity_reach
     import file_lock
+    import process_tree
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local"
@@ -86,27 +95,33 @@ FAILURE_TAILS, FAILURE_TAIL_LINES = 10, 30  # the summary prints the end of the 
 
 
 def harness_settings(path):
-    """PARITY_SHARDS and PARITY_RUST_SCOPE, read from a harness's source without running it."""
+    """PARITY_SHARDS, PARITY_RUST_SCOPE and PARITY_MANUAL, read from a harness's source without running it."""
     import ast
     text = Path(path).read_text(encoding="utf-8")
     settings = {}
     if "PARITY_" in text:
         for node in ast.parse(text).body:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
-                    and node.targets[0].id in ("PARITY_SHARDS", "PARITY_RUST_SCOPE"):
+                    and node.targets[0].id in ("PARITY_SHARDS", "PARITY_RUST_SCOPE", "PARITY_MANUAL"):
                 settings[node.targets[0].id] = ast.literal_eval(node.value)
     return settings
 
 
 SHARDS = {}  # "datafix#2" -> "2/8": the share of a sharded harness each entry runs (PARITY_SHARD)
+MANUAL = {}  # "guest_close_event" -> how to run it: a proof script that needs arguments, which no run starts
 
 
 def harnesses():
-    """Harness names and scripts. A harness declaring PARITY_SHARDS = N runs as N entries, NAME#1 to NAME#N."""
+    """Harness names and scripts. A harness declaring PARITY_SHARDS = N runs as N entries, NAME#1 to NAME#N.
+    A script declaring PARITY_MANUAL = "<how to run it>" is a proof run by hand with arguments: left out (MANUAL)."""
     found = {}
     for path in sorted((ROOT / "tools").glob("test_*_parity.py")):
         name = path.name[len("test_"):-len("_parity.py")]
-        count = harness_settings(path).get("PARITY_SHARDS", 1)
+        settings = harness_settings(path)
+        if settings.get("PARITY_MANUAL"):
+            MANUAL[name] = settings["PARITY_MANUAL"]
+            continue
+        count = settings.get("PARITY_SHARDS", 1)
         if count > 1:
             for index in range(1, count + 1):
                 found[f"{name}#{index}"] = path
@@ -196,9 +211,22 @@ def environment_key(hasher):
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
+# Directories whose modules a harness finds by file name (tools/command_exec_corpus.py, discovered_groups): a
+# harness that recorded one of their files depends on all of them, also on one added after its record was made.
+GROUP_DIRECTORIES = ("tools/command_exec_groups/",)
+
+
+def group_files(dependencies):
+    """The .py files now in the GROUP_DIRECTORIES that dependencies name a file of, as paths from ROOT."""
+    plain = {path.split(KEEP)[0].replace("\\", "/") for path in dependencies}
+    return {file.relative_to(ROOT).as_posix()
+            for directory in GROUP_DIRECTORIES if any(path.startswith(directory) for path in plain)
+            for file in (ROOT / directory).glob("*.py")}
+
+
 def key(record, hasher, environment):
     digest = hashlib.sha256(environment.encode())
-    for path in sorted(record["dependencies"]):
+    for path in sorted({*record["dependencies"], *group_files(record["dependencies"])}):
         digest.update(f"{path}\0{hasher(ROOT / path)}\n".encode())
     return digest.hexdigest()
 
@@ -213,7 +241,7 @@ def inside(path, root):
 
 def dep_info(binary):
     """Source files Cargo recorded for a built binary (its .d file, spaces escaped as "\\ ")."""
-    info = Path(str(binary) + ".d")
+    info = Path(str(binary).removesuffix(".exe") + ".d")  # client_probe.exe's is client_probe.d
     if not info.exists():
         return []
     sources = []
@@ -248,7 +276,9 @@ def artifacts_of(arguments):
     index = 1
     while index < len(arguments):
         argument = arguments[index]
-        flag, _, value = argument.partition("=")
+        flag, sep, value = argument.partition("=")
+        if not sep and flag[:2] in ("-p", "-F") and len(flag) > 2:
+            flag, value = flag[:2], flag[2:]
         if flag in SELECTION_FLAGS | {"--profile", "--example", "--bin"} and not value and index + 1 < len(arguments):
             value = arguments[index + 1]
             index += 1
@@ -391,7 +421,7 @@ def impl_targets(header, text, workspace):
 def narrow_rust_sources(sources, scope):
     """Drop the workspace Rust sources a harness's declared PARITY_RUST_SCOPE proves it can't reach.
 
-    The scope lists source prefixes (crates/horizon-world/src/nbt.rs,
+    The scope lists source prefixes (crates/horizon-core/src/nbt.rs,
     crates/horizon-world/src/datafix/). It applies only if it is closed: no
     file in it names a module, crate item or macro outside it (crate::,
     super::, other workspace crates), declares a module it doesn't cover, or
@@ -631,13 +661,37 @@ def target_packages():
 
 def prebuild_commands(artifacts, packages=None):
     """The Cargo runs that build the recorded probes exactly as their harnesses do: one per profile, package and
-    feature selection, and whether examples are among the command's targets (see artifacts_of).
+    feature selection, and whether examples are among the command's targets (see artifacts_of)."""
+    groups = {}
+    for kind, name, profile, selection, examples in selected_builds(artifacts, packages):
+        targets = groups.setdefault((profile, tuple(selection), examples), [])
+        target = [f"--{kind}", name] if name else [f"--{kind}"]
+        if target not in targets:
+            targets.append(target)
+    return [["cargo", "build", "--locked", "--profile", profile, *selection, *(part for target in targets for part in target)]
+            for (profile, selection, _), targets in sorted(groups.items())]
+
+
+def executables(artifacts, packages):
+    """{(kind, name, profile): (selection, examples)}: the programs recorded Cargo runs build, and how (see
+    LocalExecutor.clashes). A run naming every bin or example (--bins) builds those of the packages it selects."""
+    built = {}
+    for kind, name, profile, selection, examples in selected_builds(artifacts, packages):
+        kind = kind.removesuffix("s")
+        selected = {value for flag, value in zip(selection, selection[1:]) if flag == "-p"}
+        for target in [name] if name else [target for (other, target), package in (packages or {}).items()
+                                           if other == kind and (package in selected or "--workspace" in selection)]:
+            built[(kind, target, profile)] = (tuple(selection), examples)
+    return built
+
+
+def selected_builds(artifacts, packages=None):
+    """Recorded artifacts as [kind, name, profile, selection, examples], each with the selection that builds it now.
 
     packages: target_packages(). Records of targets that no longer exist (a probe renamed or deleted since a harness
     ran it) are left out, since one unknown target fails its whole Cargo run. A [kind, name, profile] record from
     before selections were kept is taken as built with `-p` and its own crate, as nearly every harness does; the
     harness's next run records the real one."""
-    groups = {}
     for artifact in artifacts:
         if packages and artifact[1] and tuple(artifact[:2]) not in packages:
             continue
@@ -656,12 +710,7 @@ def prebuild_commands(artifacts, packages=None):
         if owner and selected and owner not in selected:
             # A recorded target may have moved packages; retain its feature flags and old selections.
             selection = [*selection, "-p", owner]
-        targets = groups.setdefault((profile, tuple(selection), examples), [])
-        target = [f"--{kind}", name] if name else [f"--{kind}"]
-        if target not in targets:
-            targets.append(target)
-    return [["cargo", "build", "--locked", "--profile", profile, *selection, *(part for target in targets for part in target)]
-            for (profile, selection, _), targets in sorted(groups.items())]
+        yield kind, name, profile, selection, examples
 
 
 def prebuild(artifacts, jobs):
@@ -797,7 +846,8 @@ def outcome(name, script, passed, elapsed, trace_path, hasher=None):
         if passed:
             clear_large_outputs(name, trace)
         if hasher is not None:
-            record["hashes"] = {path: hasher(ROOT / path) for path in record["dependencies"]}
+            record["hashes"] = {path: hasher(ROOT / path)
+                                for path in {*record["dependencies"], *group_files(record["dependencies"])}}
     else:
         record["dependencies"], record["artifacts"] = [], []
     return record
@@ -811,6 +861,7 @@ class LocalExecutor:
         self.max_peak = max_peak  # set while other machines can take heavier harnesses
         self.running = {}
         self.solo = set()  # harnesses that run alone here (solo_harnesses)
+        self.builds = {}  # Windows: {harness: executables(...)}, see clashes
         self.dead = False  # this machine never drops out, unlike a remote host
         self.available, self.measured = 0, 0.0
         (STATE_DIR / "logs").mkdir(parents=True, exist_ok=True)
@@ -824,7 +875,16 @@ class LocalExecutor:
     def accepts(self, name):
         # A solo harness waits until nothing else runs here; the others fill the slots meanwhile, so solo ones
         # run last, alone.
-        return name not in self.solo or not self.running
+        return (name not in self.solo or not self.running) and not self.clashes(name)
+
+    def clashes(self, name):
+        """Whether the harness builds a program a running harness built too, with another package or feature
+        selection. Cargo on Windows names a program in deps/ without the hash that keeps such builds apart elsewhere,
+        so the second build relinks the very file the first harness runs, and Windows refuses ("Access is denied").
+        Builds with the same selection find it fresh and leave it alone."""
+        mine = self.builds.get(name, {})
+        return any(mine.get(program, how) != how for label in self.running
+                   for program, how in self.builds.get(harness_of(label), {}).items())
 
     def fits(self, expected, only_here=True):
         """Admission by recorded peak, within the budget and leaving MEMORY_RESERVE of what is free now.
@@ -858,10 +918,11 @@ class LocalExecutor:
         if shard:
             environment["PARITY_SHARD"] = shard
         # stdin from /dev/null: tools/parity_shim.py never reuses an oracle run that reads a pipe, and CI runners
-        # (and --worker's ssh) give the runner one, which kept oracle reuse off on CI.
-        process = subprocess.Popen([sys.executable, str(Path(__file__)), "--trace", str(trace), str(script)],
-                                   cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+        # (and --worker's ssh) give the runner one, which kept oracle reuse off on CI. Whatever the harness starts
+        # ends with it (tools/process_tree.py).
+        process = process_tree.popen([sys.executable, str(Path(__file__)), "--trace", str(trace), str(script)],
+                                     cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log,
+                                     stderr=subprocess.STDOUT)
         self.running[name] = {"process": process, "started": time.monotonic(), "log": log, "expected": expected,
                               "slot": slot, "script": script}
         return True
@@ -871,11 +932,12 @@ class LocalExecutor:
         finished = []
         for name, item in list(self.running.items()):
             process, elapsed = item["process"], time.monotonic() - item["started"]
-            if process.poll() is None and elapsed < self.timeout:
+            if not process_tree.ended(process) and elapsed < self.timeout:
                 continue
-            if process.poll() is None:
-                kill_tree(process)
+            if process.returncode is None:
+                process_tree.kill(process)
                 process.wait()
+                process_tree.ended(process)
                 print(f"--- {name}: timed out after {self.timeout}s", file=item["log"])
             item["log"].close()
             item["slot"].close()
@@ -885,18 +947,7 @@ class LocalExecutor:
 
     def stop(self):
         for item in self.running.values():
-            kill_tree(item["process"])
-
-
-def kill_tree(process):
-    """Kill a harness and what it started: its process group (start_new_session), or its tree on Windows."""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
-        return
-    try:
-        os.killpg(process.pid, 9)
-    except ProcessLookupError:
-        pass
+            process_tree.kill(item["process"])
 
 
 def host_config():
@@ -1161,7 +1212,7 @@ def run(selected, state, hasher, environment_digest, executors, reuse_oracles, r
                           rounds=len(runs))
             if name in second_chance:
                 record["retried"] = "known flaky"
-            elif label in retried:
+            elif any(harness_of(rl) == name for rl in retried):
                 record["retried"] = "reused oracle results"
             if len({run["status"] for run in runs}) > 1:
                 record["flaky"] = [run["status"] for run in runs]
@@ -1176,7 +1227,8 @@ def run(selected, state, hasher, environment_digest, executors, reuse_oracles, r
 def exit_on_termination():
     """SIGTERM and SIGHUP (a cancelled CI job, a dropped ssh) end this process through its finally blocks, which stop
     the running harnesses. Each runs in its own session, so without that they, and the vanilla servers they started,
-    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26). Windows has no SIGHUP."""
+    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26). Windows has no SIGHUP; there each
+    harness's job ends with this process however it ends (tools/process_tree.py)."""
     for name in ("SIGTERM", "SIGHUP"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda received, _frame: sys.exit(128 + received))
@@ -1214,6 +1266,7 @@ def worker_main(shared_local):
         return 0
     state = load_state()
     hasher = Hasher(state["hashes"])
+    process_tree.start_build_server()  # before any build here: the probe build's would start it otherwise
     built, errors = prebuild(first["prebuild"], default_build_jobs()) if first["prebuild"] else (True, "")
     executor = LocalExecutor(MACHINE_JOBS, int(memory_available() * 0.75), first["timeout"])
     send({"hello": {"jobs": MACHINE_JOBS, "memory": executor.memory_budget, "built": built, "errors": errors[-4000:]}})
@@ -1264,6 +1317,23 @@ def stale(name, state, hasher, environment):
     return True
 
 
+def command_line_arguments(line):
+    """A Windows command line split as programs split it (CommandLineToArgvW): list2cmdline's inverse."""
+    import ctypes
+    from ctypes import wintypes
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    count = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(line, ctypes.byref(count))
+    if not argv:
+        return [line]
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
+
+
 def trace_main(output, script, arguments):
     """Run one harness and record what it read and executed."""
     import atexit
@@ -1281,6 +1351,9 @@ def trace_main(output, script, arguments):
                 read.add(os.fsdecode(path))
         elif event == "subprocess.Popen":
             arguments_ = details[1]
+            if os.name == "nt" and isinstance(arguments_, str):
+                # Windows audits the command line Popen built from the list (list2cmdline), not the list.
+                arguments_ = command_line_arguments(arguments_)
             arguments_ = [arguments_] if isinstance(arguments_, (str, bytes, os.PathLike)) else list(arguments_ or [])
             commands.append([os.fsdecode(a) if isinstance(a, (bytes, os.PathLike)) else str(a) for a in arguments_])
 
@@ -1324,13 +1397,17 @@ def git_show(base, path):
     return result.stdout if result.returncode == 0 else None
 
 
+# A TOML line up to its comment: a "#" inside a basic ("...", with escapes) or literal ('...') string is kept.
+MANIFEST_COMMENT = re.compile(r'''^((?:[^#"']|"(?:[^"\\]|\\.)*"|'[^']*')*).*$''')
+
+
 def manifest_lines(text):
     """A Cargo.toml's lines that decide what is built: (section, line) pairs, without its package's identity and
     targets, comments, or workspace crates (whose code counts through its own sources)."""
     lines, section = set(), ""
     name = re.search(r'^\[package\][^\[]*?^name\s*=\s*"([^"]+)"', text or "", re.M | re.S)
     for raw in (text or "").splitlines():
-        line = re.sub(r"\s+", " ", raw.split("#", 1)[0]).strip()
+        line = re.sub(r"\s+", " ", MANIFEST_COMMENT.sub(r"\1", raw) if "#" in raw else raw).strip()
         if not line:
             continue
         if line.startswith("["):
@@ -1477,6 +1554,9 @@ def affected_harnesses(found, records, changed, reach=True, base=None):
         dependencies = [canonical_dependency_path(path) for path in dependencies]
         plain = {path.split(KEEP)[0] for path in dependencies}
         hit = (plain & changed) | parity_reach.unrecorded(ROOT, plain, changed)
+        # A group file added since the record was made isn't in it: the directory's other files stand for it.
+        hit |= {path for path in changed for directory in GROUP_DIRECTORIES
+                if path.startswith(directory) and any(known.startswith(directory) for known in plain)}
         if not hit:
             continue
         if graph is None or any(not path.startswith("crates/") for path in hit):
@@ -1518,6 +1598,46 @@ def known_flaky(config):
     """Harnesses tools/parity_hosts.json lists as failing now and then for a cause not fixed yet: one that fails runs
     once more, and passing then counts, reported as RETRIED. {name: reason}"""
     return dict(config.get("known_flaky", {}))
+
+
+def known_failing(config):
+    """Harnesses tools/parity_hosts.json lists as failing on main until their issue is fixed ({name: "#issue: why"}):
+    they still run and report, but their failure doesn't fail the run, so main's parity-main and the Nightly it gates
+    stay held only by new failures. Without this, one regression on main kept every later parity-main red, each run
+    rechecked every merge since the last green one, and no Nightly shipped for days (2026-11-15 to 11-17)."""
+    return dict(config.get("known_failing", {}))
+
+
+def known_entry(name, known):
+    """The known_failing entry covering a harness or shard: the shard's own (datafix#2), else its harness's (datafix,
+    every shard), else None."""
+    return name if name in known else base_name(name) if base_name(name) in known else None
+
+
+def split_known_failing(results, known):
+    """(failures that fail the run, known failing harnesses that failed again, known failing entries all of whose
+    harnesses or shards that ran here passed)."""
+    failed = sorted(name for name, record in results.items() if record["status"] != "pass")
+    blocking = [name for name in failed if known_entry(name, known) is None]
+    again = [name for name in failed if known_entry(name, known) is not None]
+    passed = sorted({known_entry(name, known) for name, record in results.items()
+                     if record["status"] == "pass" and known_entry(name, known) is not None}
+                    - {known_entry(name, known) for name in again})
+    return blocking, again, passed
+
+
+def report_known_failing(again, passed, known):
+    """Say which known failing harnesses failed again, and which passed here, here and in the CI job's summary."""
+    lines = [f"KNOWN FAILING {name}: failed again, not counted ({known[known_entry(name, known)]})" for name in again]
+    # A run of some shards only can pass an entry whose other shards still fail: parity-main's full run decides.
+    lines += [f"KNOWN FAILING {name} passed here: once parity-main passes it too, take it off "
+              f"tools/parity_hosts.json's known_failing ({known[name]})" for name in passed]
+    for line in lines:
+        print(line, flush=True)
+    if lines and os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+            summary.write("### Known failing harnesses (tools/parity_hosts.json)\n" +
+                          "".join(f"- {line}\n" for line in lines))
 
 
 def solo_harnesses(config):
@@ -1574,6 +1694,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("names", nargs="*", help="harness names, e.g. food or block_update")
     parser.add_argument("--all", action="store_true", help="run every harness from scratch, ignoring earlier passes")
+    parser.add_argument("--exclude", action="append", default=[], help="exclude a harness and its shards")
     parser.add_argument("--fresh", action="store_true", help="run the vanilla oracles even if their inputs are unchanged")
     parser.add_argument("--failed", action="store_true", help="rerun the harnesses that failed last time")
     parser.add_argument("--list", action="store_true", help="print what would run, then stop")
@@ -1606,6 +1727,9 @@ def main():
     # A sharded harness's name stands for all its shards.
     args.names = [entry for name in args.names for entry in ([name] if name in found else
                   [shard for shard in found if base_name(shard) == name] or [name])]
+    by_hand = [name for name in args.names if name in MANUAL]
+    if by_hand:
+        parser.error("; ".join(f"{name} is run by hand, not by parity.py: {MANUAL[name]}" for name in by_hand))
     unknown = [name for name in args.names if name not in found]
     if unknown:
         parser.error("unknown harnesses: " + ", ".join(unknown))
@@ -1625,7 +1749,11 @@ def main():
         chosen = [name for name in found if records.get(name, {}).get("status") == "fail"]
     elif args.changed or args.changed_files:
         if args.changed_files:
-            changed, since = set(Path(args.changed_files).read_text(encoding="utf-8").split("\n")) - {""}, ""
+            try:
+                text = Path(args.changed_files).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                parser.error(f"cannot read changed-files path {args.changed_files}: {error}")
+            changed, since = set(text.split("\n")) - {""}, ""
         else:
             changed, since = changed_files(args.changed), f" since the merge base with {args.changed}"
         if changed is None:
@@ -1644,6 +1772,7 @@ def main():
               f"depend on them, {len(chosen)} without a pass for their current inputs.", flush=True)
     else:
         chosen = [name for name in found if stale(name, state, hasher, environment)]
+    chosen = [name for name in chosen if base_name(name) not in args.exclude]
     skips = platform_skips(host_config())
     for name in [name for name in chosen if base_name(name) in skips and not args.names]:
         print(f"skipped on {HOST} ({sys.platform}): {name}: {skips[base_name(name)]}", flush=True)
@@ -1654,7 +1783,8 @@ def main():
         chosen.remove(name)
     rounds = {name: args.repeat for name in chosen} if args.repeat > 1 else {}
     if args.flake_check:
-        changed = {name for name in changed_harnesses(found, records, args.flake_check) if base_name(name) not in manual}
+        changed = {name for name in changed_harnesses(found, records, args.flake_check)
+                   if base_name(name) not in manual and base_name(name) not in args.exclude}
         for name in sorted(changed):
             # A pass counts for a changed harness only if it held over enough runs.
             if name not in chosen and records.get(name, {}).get("rounds", 1) < args.flake_rounds:
@@ -1675,13 +1805,14 @@ def main():
 
     # The probes the selected harnesses built last time, here or (for those that never ran here) in another
     # worktree. A harness with no record builds its own: building every probe for it would be ~275 binaries.
-    artifacts = []
+    artifacts, built_by = [], {}
     for name in selected:
         record = records.get(name)
         if not record or "artifacts" not in record:
             template = SHARED / "dependencies" / f"{name}.json"
             record = json.loads(template.read_text(encoding="utf-8")) if template.exists() else {}
-        for artifact in recorded_artifacts(record):
+        built_by[name] = recorded_artifacts(record)
+        for artifact in built_by[name]:
             if artifact not in artifacts:
                 artifacts.append(artifact)
     config = host_config()
@@ -1701,6 +1832,7 @@ def main():
     local = None
     try:
         if jobs:
+            process_tree.start_build_server()  # before any build here: the probe build's would start it otherwise
             print("Building probes...", flush=True)
             started = time.monotonic()
             built, errors = prebuild(artifacts, default_build_jobs())
@@ -1714,6 +1846,9 @@ def main():
         local = LocalExecutor(jobs, int(memory_available() * 0.75), args.timeout,
                               REMOTE_LOCAL_PEAK if remotes and args.jobs is None else None)
         local.solo = solo_harnesses(config)
+        if os.name == "nt":
+            packages = target_packages()
+            local.builds = {name: executables(built, packages) for name, built in built_by.items()}
         if local.solo & {harness_of(name) for name in selected}:
             print(f"Alone on this machine ({SOLO_CPUS} CPUs or fewer), after the others: "
                   f"{', '.join(sorted(local.solo & {harness_of(name) for name in selected}))}", flush=True)
@@ -1727,7 +1862,11 @@ def main():
     finished_run(failed)
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed in {elapsed / 60:.1f} min.")
     report_retries(results, known_flaky(config))
-    for index, name in enumerate(failed):
+    known = known_failing(config)
+    blocking, again, passed = split_known_failing(results, known)
+    report_known_failing(again, passed, known)
+    # The new failures' logs first: they are what fails the run.
+    for index, name in enumerate(blocking + again):
         log = STATE_DIR / 'logs' / (name + '.log')
         print(f"  {name}: {log}")
         # The end of a harness's output says why it failed, and CI shows only this output.
@@ -1738,7 +1877,7 @@ def main():
                 lines = []
             for line in lines:
                 print(f"    {line[:300]}")
-    return 1 if failed else 0
+    return 1 if blocking else 0
 
 
 if __name__ == "__main__":

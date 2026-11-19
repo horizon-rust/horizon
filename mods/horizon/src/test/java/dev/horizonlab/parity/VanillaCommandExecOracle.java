@@ -576,13 +576,19 @@ public final class VanillaCommandExecOracle {
                     }
                 }) : new EmbeddedChannel(connection);
             JsonObject login = new JsonObject();
-            if (Boolean.getBoolean("horizon.loadedFixture")) {
+            java.util.Map<Integer, JsonArray> sentMerchantOffers = new java.util.HashMap<>();
+            if (Boolean.getBoolean("horizon.loadedFixture") || Boolean.getBoolean("horizon.merchantCraftedFixture")) {
                 channel.pipeline().addLast(new io.netty.channel.ChannelOutboundHandlerAdapter() {
                     @Override public void write(io.netty.channel.ChannelHandlerContext context, Object message,
                             io.netty.channel.ChannelPromise promise) throws Exception {
                         if (message instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket packet) {
                             login.addProperty("view_distance", packet.chunkRadius());
                             login.addProperty("simulation_distance", packet.simulationDistance());
+                        }
+                        if (message instanceof net.minecraft.network.protocol.game.ClientboundMerchantOffersPacket packet) {
+                            JsonArray offers = new JsonArray();
+                            for (var offer : packet.getOffers()) offers.add(merchantOffer(offer));
+                            sentMerchantOffers.put(packet.getContainerId(), offers);
                         }
                         super.write(context, message, promise);
                     }
@@ -1050,12 +1056,42 @@ public final class VanillaCommandExecOracle {
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
                         // ThreadedLevelLightEngine runs the checkBlock tasks a /fill queues at most 1000 per update,
                         // so after a large fill the light lags by many ticks on a loaded runner (command_reinforcements
-                        // read block light 10 in its sealed room, 2026-11-07). Read it once the tasks queued so far ran.
-                        var pending = player.level().getChunkSource().getLightEngine().waitForPendingTasks(
-                            pos.getX() >> 4, pos.getZ() >> 4);
+                        // read block light 10 in its sealed room, 2026-11-07). Read it once the tasks queued across
+                        // the neighbourhood and pending engine work have drained and the expected light holds.
+                        var light = (net.minecraft.server.level.ThreadedLevelLightEngine) player.level().getChunkSource().getLightEngine();
+                        int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
                         long lightDeadline = System.nanoTime() + 120_000_000_000L;
-                        while (!pending.isDone()) {
-                            if (System.nanoTime() > lightDeadline) throw new IllegalStateException("light updates did not finish");
+                        Integer expBlock = op.has("expect_light") ? op.getAsJsonArray("expect_light").get(0).getAsInt() : null;
+                        Integer expSky = op.has("expect_light") ? op.getAsJsonArray("expect_light").get(1).getAsInt() : null;
+                        int settled = 0;
+                        while (System.nanoTime() < lightDeadline) {
+                            var tasks = new java.util.ArrayList<java.util.concurrent.CompletableFuture<?>>();
+                            for (int dx = -2; dx <= 2; dx++) {
+                                for (int dz = -2; dz <= 2; dz++) {
+                                    tasks.add(light.waitForPendingTasks(cx + dx, cz + dz));
+                                }
+                            }
+                            for (var task : tasks) {
+                                while (!task.isDone()) {
+                                    if (System.nanoTime() > lightDeadline) throw new IllegalStateException("light updates did not finish");
+                                    tick();
+                                    try { Thread.sleep(5); } catch (InterruptedException e) { throw new RuntimeException(e); }
+                                }
+                            }
+                            boolean matches = true;
+                            if (expBlock != null && player.level().getBrightness(net.minecraft.world.level.LightLayer.BLOCK, pos) != expBlock) {
+                                matches = false;
+                            }
+                            if (expSky != null && player.level().getBrightness(net.minecraft.world.level.LightLayer.SKY, pos) != expSky) {
+                                matches = false;
+                            }
+                            if (!light.hasLightWork() && matches) {
+                                if (++settled >= 5) {
+                                    break;
+                                }
+                            } else {
+                                settled = 0;
+                            }
                             tick();
                             try { Thread.sleep(5); } catch (InterruptedException e) { throw new RuntimeException(e); }
                         }
@@ -1133,8 +1169,11 @@ public final class VanillaCommandExecOracle {
                         uuid=new JsonArray();for(int n:net.minecraft.core.UUIDUtil.uuidToIntArray(player.getUUID()))uuid.add(n);state.add("player",uuid);
                         JsonArray slots=new JsonArray();for(int n=0;n<3;n++)slots.add(merchantStack(menu.getSlot(n).getItem()));state.add("slots",slots);
                         state.add("carried",merchantStack(menu.getCarried()));state.addProperty("xp",menu.getTraderXp());
+                        boolean offerPackets = op.has("offer_packets") && op.get("offer_packets").getAsBoolean();
+                        if (offerPackets) state.add("sent_offers",sentMerchantOffers.get(menu.containerId));
                         JsonArray offers=new JsonArray();for(var offer:menu.getOffers()) {
                             JsonObject o=new JsonObject();o.addProperty("uses",offer.getUses());o.addProperty("special",offer.getSpecialPriceDiff());
+                            if (offerPackets) o.addProperty("demand",offer.getDemand());
                             o.addProperty("cost",offer.getCostA().getCount());offers.add(o);
                         }state.add("offers",offers);
                         JsonObject record=new JsonObject();record.addProperty("cmd","#merchant_state "+op.get("label").getAsString());
@@ -1241,6 +1280,15 @@ public final class VanillaCommandExecOracle {
                 }
             }
             Files.writeString(output, out.toString(), StandardCharsets.UTF_8);
+        }
+
+        static JsonObject merchantOffer(net.minecraft.world.item.trading.MerchantOffer offer) {
+            JsonObject value = new JsonObject();
+            value.addProperty("uses", offer.getUses());
+            value.addProperty("special", offer.getSpecialPriceDiff());
+            value.addProperty("demand", offer.getDemand());
+            value.addProperty("cost", offer.getCostA().getCount());
+            return value;
         }
 
         static net.minecraft.world.entity.npc.villager.Villager merchantOwner(net.minecraft.world.inventory.MerchantMenu menu) {
@@ -1369,7 +1417,7 @@ public final class VanillaCommandExecOracle {
                         ready = level.areEntitiesActuallyLoadedAndTicking(new net.minecraft.world.level.ChunkPos(cx + dx, cz + dz));
                     }
                 }
-                if (ready && i >= 5) {
+                if (ready && !level.getChunkSource().getLightEngine().hasLightWork() && i >= 5) {
                     return;
                 }
                 try { Thread.sleep(5); } catch (InterruptedException e) { throw new RuntimeException(e); }

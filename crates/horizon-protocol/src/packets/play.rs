@@ -17,13 +17,23 @@ use crate::{
             Disconnect, KeepAlive, Ping, ResourcePackPop, ResourcePackPush, ResourcePackResponse,
             ServerLinks, StoreCookie, Transfer, UpdateTags,
         },
-        login::Property,
     },
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
+mod advancements;
 mod commands;
+mod hud;
+mod player_info;
+mod waypoints;
+pub use advancements::{Advancement, AdvancementDisplay, SeenAdvancements, UpdateAdvancements};
 pub use commands::{ARGUMENT_TYPES, ArgumentProperties, CommandNode, Commands};
+pub use hud::{
+    BossAction, BossEvent, NumberFormat, ResetScore, SetDisplayObjective, SetObjective,
+    SetPlayerTeam, SetScore, TeamParameters,
+};
+pub use player_info::{PlayerInfo, PlayerInfoRemove, PlayerInfoUpdate};
+pub use waypoints::{TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation};
 
 // ---- shared structures -------------------------------------------------
 
@@ -242,7 +252,7 @@ impl Codec<i32> for HolderId {
     fn read(r: &mut Reader) -> Result<i32> {
         match r.varint()? {
             0 => Err(Error::new("inline registry values are not supported")),
-            id => Ok(id - 1),
+            id => Ok(id.wrapping_sub(1)),
         }
     }
     fn write(v: &i32, w: &mut Writer) {
@@ -261,7 +271,7 @@ impl Codec<DialogHolder> for DialogHolder {
     fn read(r: &mut Reader) -> Result<Self> {
         Ok(match r.varint()? {
             0 => Self::Direct(r.nbt()?),
-            id => Self::Registry(id - 1),
+            id => Self::Registry(id.wrapping_sub(1)),
         })
     }
     fn write(v: &Self, w: &mut Writer) {
@@ -530,6 +540,11 @@ macro_rules! move_entity {
     ($name:ident, pos: $pos:expr, rot: $rot:expr) => {
         #[derive(Clone, Debug, PartialEq)]
         pub struct $name(pub MoveEntity);
+        impl crate::retained::OwnedHeap for $name {
+            fn owned_heap_bytes(&self) -> usize {
+                crate::retained::OwnedHeap::owned_heap_bytes(&self.0)
+            }
+        }
         impl Codec<$name> for $name {
             fn read(r: &mut Reader) -> Result<$name> {
                 Self::read_inner(r).map($name)
@@ -599,7 +614,7 @@ packet!(PlayerAbilities { flags: i8 => Byte, flying_speed: f32 => Float, walking
 pub struct PackedSignature;
 impl Codec<(i32, Option<Vec<u8>>)> for PackedSignature {
     fn read(r: &mut Reader) -> Result<(i32, Option<Vec<u8>>)> {
-        let id = r.varint()? - 1;
+        let id = r.varint()?.wrapping_sub(1);
         Ok(if id == -1 {
             (-1, Some(r.bytes(256)?.to_vec()))
         } else {
@@ -663,117 +678,6 @@ packet!(
     DeleteChat { signature: (i32, Option<Vec<u8>>) => PackedSignature }
 );
 packet!(PlayerCombatKill { id: i32 => VarInt, message: Tag => Nbt });
-packet!(PlayerInfoRemove { uuids: Vec<u128> => List<Uuid> });
-/// One ClientboundPlayerInfoUpdatePacket entry; fields are set for the
-/// actions in the packet.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PlayerInfo {
-    pub uuid: u128,
-    pub name: Option<String>,
-    pub properties: Vec<Property>,
-    /// RemoteChatSession.Data: session id, key expiry, key, key signature.
-    pub chat_session: Option<(u128, i64, Vec<u8>, Vec<u8>)>,
-    pub game_mode: Option<i32>,
-    pub listed: Option<bool>,
-    pub latency: Option<i32>,
-    pub display_name: Option<Option<Tag>>,
-    pub list_order: Option<i32>,
-    pub show_hat: Option<bool>,
-}
-/// Actions bits: ADD_PLAYER, INITIALIZE_CHAT, UPDATE_GAME_MODE, UPDATE_LISTED,
-/// UPDATE_LATENCY, UPDATE_DISPLAY_NAME, UPDATE_LIST_ORDER, UPDATE_HAT.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PlayerInfoUpdate {
-    pub actions: u8,
-    pub entries: Vec<PlayerInfo>,
-}
-impl Codec<PlayerInfoUpdate> for PlayerInfoUpdate {
-    fn read(r: &mut Reader) -> Result<Self> {
-        let actions = r.u8()?;
-        let n = r.count(r.remaining())?;
-        let mut entries = Vec::with_capacity(n.min(256));
-        for _ in 0..n {
-            let mut e = PlayerInfo {
-                uuid: r.uuid()?,
-                ..PlayerInfo::default()
-            };
-            if actions & 1 != 0 {
-                e.name = Some(r.string(16)?);
-                let count = r.count(16)?;
-                e.properties = (0..count)
-                    .map(|_| Property::read(r))
-                    .collect::<Result<_>>()?;
-            }
-            if actions & 2 != 0 && r.bool()? {
-                e.chat_session =
-                    Some((r.uuid()?, r.i64()?, r.byte_array(512)?, r.byte_array(4096)?));
-            }
-            if actions & 4 != 0 {
-                e.game_mode = Some(r.varint()?);
-            }
-            if actions & 8 != 0 {
-                e.listed = Some(r.bool()?);
-            }
-            if actions & 16 != 0 {
-                e.latency = Some(r.varint()?);
-            }
-            if actions & 32 != 0 {
-                e.display_name = Some(if r.bool()? { Some(r.nbt()?) } else { None });
-            }
-            if actions & 64 != 0 {
-                e.list_order = Some(r.varint()?);
-            }
-            if actions & 128 != 0 {
-                e.show_hat = Some(r.bool()?);
-            }
-            entries.push(e);
-        }
-        Ok(Self { actions, entries })
-    }
-    fn write(v: &Self, w: &mut Writer) {
-        w.u8(v.actions);
-        w.varint(v.entries.len() as i32);
-        for e in &v.entries {
-            w.uuid(e.uuid);
-            if v.actions & 1 != 0 {
-                w.string(e.name.as_deref().unwrap_or(""));
-                w.varint(e.properties.len() as i32);
-                e.properties.iter().for_each(|p| Property::write(p, w));
-            }
-            if v.actions & 2 != 0 {
-                w.bool(e.chat_session.is_some());
-                if let Some((id, expires, key, sig)) = &e.chat_session {
-                    w.uuid(*id);
-                    w.i64(*expires);
-                    w.byte_array(key);
-                    w.byte_array(sig);
-                }
-            }
-            if v.actions & 4 != 0 {
-                w.varint(e.game_mode.unwrap_or(0));
-            }
-            if v.actions & 8 != 0 {
-                w.bool(e.listed.unwrap_or(false));
-            }
-            if v.actions & 16 != 0 {
-                w.varint(e.latency.unwrap_or(0));
-            }
-            if v.actions & 32 != 0 {
-                let name = e.display_name.clone().flatten();
-                w.bool(name.is_some());
-                if let Some(t) = &name {
-                    w.nbt(t);
-                }
-            }
-            if v.actions & 64 != 0 {
-                w.varint(e.list_order.unwrap_or(0));
-            }
-            if v.actions & 128 != 0 {
-                w.bool(e.show_hat.unwrap_or(false));
-            }
-        }
-    }
-}
 packet!(PlayerPosition {
     teleport: i32 => VarInt,
     position: [f64; 3] => Vec3d,
@@ -908,7 +812,7 @@ impl Codec<(i32, Option<(String, Option<f32>)>)> for SoundHolder {
     fn read(r: &mut Reader) -> Result<(i32, Option<(String, Option<f32>)>)> {
         let id = r.varint()?;
         if id != 0 {
-            return Ok((crate::adapter::ids::sound_event(id - 1), None));
+            return Ok((crate::adapter::ids::sound_event(id.wrapping_sub(1)), None));
         }
         let location = r.string(32767)?;
         let range = if r.bool()? { Some(r.f32()?) } else { None };
@@ -987,93 +891,6 @@ packet!(
     /// ClientboundSetBorderWarningDistancePacket.
     SetBorderWarningDistance { blocks: i32 => VarInt }
 );
-packet!(
-    /// ClientboundSetDisplayObjectivePacket: `DisplaySlot` id (0 list,
-    /// 1 sidebar, 2 below name, 3.. team sidebars) and the objective ("" clears).
-    SetDisplayObjective { slot: i32 => VarInt, objective: String => Str }
-);
-packet!(
-    /// ClientboundResetScorePacket: one objective, or all of them when absent.
-    ResetScore { owner: String => Str, objective: Option<String> => Opt<Str> }
-);
-/// `NumberFormatTypes.STREAM_CODEC`, by `number_format_type` registry id.
-#[derive(Clone, Debug, PartialEq)]
-pub enum NumberFormat {
-    /// 0: `minecraft:blank`.
-    Blank,
-    /// 1: `minecraft:styled`, a style compound.
-    Styled(Tag),
-    /// 2: `minecraft:fixed`, a component.
-    Fixed(Tag),
-}
-impl Codec<NumberFormat> for NumberFormat {
-    fn read(r: &mut Reader) -> Result<Self> {
-        Ok(match r.varint()? {
-            0 => NumberFormat::Blank,
-            1 => NumberFormat::Styled(r.nbt()?),
-            2 => NumberFormat::Fixed(r.nbt()?),
-            other => return Err(crate::Error::new(format!("unknown number format {other}"))),
-        })
-    }
-    fn write(v: &Self, w: &mut Writer) {
-        match v {
-            NumberFormat::Blank => w.varint(0),
-            NumberFormat::Styled(t) => {
-                w.varint(1);
-                w.nbt(t);
-            }
-            NumberFormat::Fixed(t) => {
-                w.varint(2);
-                w.nbt(t);
-            }
-        }
-    }
-}
-packet!(
-    /// ClientboundSetScorePacket.
-    SetScore {
-        owner: String => Str,
-        objective: String => Str,
-        score: i32 => VarInt,
-        display: Option<Tag> => Opt<Nbt>,
-        number_format: Option<NumberFormat> => Opt<NumberFormat>,
-    }
-);
-/// ClientboundSetObjectivePacket: method 0 adds, 1 removes, 2 changes;
-/// adds and changes carry the display name, render type (0 integer,
-/// 1 hearts) and number format.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SetObjective {
-    pub name: String,
-    pub method: i8,
-    pub display: Option<(Tag, i32, Option<NumberFormat>)>,
-}
-impl Codec<SetObjective> for SetObjective {
-    fn read(r: &mut Reader) -> Result<Self> {
-        let name = r.string(32767)?;
-        let method = r.i8()?;
-        let display = if method == 0 || method == 2 {
-            Some((r.nbt()?, r.varint()?, <Opt<NumberFormat>>::read(r)?))
-        } else {
-            None
-        };
-        Ok(Self {
-            name,
-            method,
-            display,
-        })
-    }
-    fn write(v: &Self, w: &mut Writer) {
-        w.string(&v.name);
-        w.i8(v.method);
-        if v.method == 0 || v.method == 2 {
-            let (name, render, format) = v.display.clone().unwrap_or((Tag::End, 0, None));
-            w.nbt(&name);
-            w.varint(render);
-            <Opt<NumberFormat>>::write(&format, w);
-        }
-    }
-}
 /// ClientboundLevelParticlesPacket: a particle, whether it ignores the
 /// client's particle setting (`overrideLimiter`) and its distance limit
 /// (`alwaysShow`), where, the spread and the speed on each axis, how many
@@ -1185,85 +1002,6 @@ impl Codec<Explode> for Explode {
         w.bool(v.play_sound);
     }
 }
-/// `ClientboundSetPlayerTeamPacket.Parameters`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TeamParameters {
-    pub display_name: Tag,
-    pub prefix: Tag,
-    pub suffix: Tag,
-    /// `Team.Visibility` id.
-    pub name_tag_visibility: i32,
-    /// `Team.CollisionRule` id.
-    pub collision_rule: i32,
-    /// `TeamColor` id (0 black .. 15 white), absent for no colour.
-    pub color: Option<i32>,
-    /// 1: friendly fire, 2: see friendly invisibles.
-    pub options: i8,
-}
-/// ClientboundSetPlayerTeamPacket: method 0 adds (parameters and players),
-/// 1 removes, 2 changes (parameters), 3 joins and 4 leaves (players).
-#[derive(Clone, Debug, PartialEq)]
-pub struct SetPlayerTeam {
-    pub name: String,
-    pub method: i8,
-    pub parameters: Option<TeamParameters>,
-    pub players: Vec<String>,
-}
-impl Codec<SetPlayerTeam> for SetPlayerTeam {
-    fn read(r: &mut Reader) -> Result<Self> {
-        let name = r.string(32767)?;
-        let method = r.i8()?;
-        let parameters = if method == 0 || method == 2 {
-            Some(TeamParameters {
-                display_name: r.nbt()?,
-                prefix: r.nbt()?,
-                suffix: r.nbt()?,
-                name_tag_visibility: r.varint()?,
-                collision_rule: r.varint()?,
-                color: <Opt<VarInt>>::read(r)?,
-                options: r.i8()?,
-            })
-        } else {
-            None
-        };
-        let players = if matches!(method, 0 | 3 | 4) {
-            <List<Str>>::read(r)?
-        } else {
-            Vec::new()
-        };
-        Ok(Self {
-            name,
-            method,
-            parameters,
-            players,
-        })
-    }
-    fn write(v: &Self, w: &mut Writer) {
-        w.string(&v.name);
-        w.i8(v.method);
-        if v.method == 0 || v.method == 2 {
-            let p = v.parameters.clone().unwrap_or(TeamParameters {
-                display_name: Tag::End,
-                prefix: Tag::End,
-                suffix: Tag::End,
-                name_tag_visibility: 0,
-                collision_rule: 0,
-                color: None,
-                options: 0,
-            });
-            w.nbt(&p.display_name);
-            w.nbt(&p.prefix);
-            w.nbt(&p.suffix);
-            w.varint(p.name_tag_visibility);
-            w.varint(p.collision_rule);
-            <Opt<VarInt>>::write(&p.color, w);
-            w.i8(p.options);
-        }
-        if matches!(v.method, 0 | 3 | 4) {
-            <List<Str>>::write(&v.players, w);
-        }
-    }
-}
 packet!(ServerData { motd: Tag => Nbt, icon: Option<Vec<u8>> => Opt<crate::buf::Bytes> });
 packet!(
     /// ClientboundUpdateMobEffectPacket; flags: 1 ambient, 2 visible, 4 icon, 8 blend.
@@ -1337,172 +1075,6 @@ impl Codec<StopSound> for StopSound {
         }
     }
 }
-/// `DisplayInfo` of an advancement as sent.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdvancementDisplay {
-    pub title: Tag,
-    pub description: Tag,
-    pub icon: crate::item::Stack,
-    /// `AdvancementType` ordinal: task, challenge, goal.
-    pub frame: i32,
-    pub show_toast: bool,
-    pub hidden: bool,
-    pub background: Option<String>,
-}
-/// `ClientboundUpdateAdvancementsPacket.PositionedAdvancement`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Advancement {
-    pub id: String,
-    pub parent: Option<String>,
-    pub display: Option<AdvancementDisplay>,
-    pub requirements: Vec<Vec<String>>,
-    pub telemetry: bool,
-    pub x: f32,
-    pub y: f32,
-}
-/// `ClientboundUpdateAdvancementsPacket`: whether it replaces what the
-/// client has, the advancements added and removed, the progress of each
-/// changed one (criterion, when obtained in epoch milliseconds), and whether
-/// to show toasts.
-#[derive(Clone, Debug, PartialEq)]
-pub struct UpdateAdvancements {
-    pub reset: bool,
-    pub added: Vec<Advancement>,
-    pub removed: Vec<String>,
-    pub progress: Vec<(String, Vec<(String, Option<i64>)>)>,
-    pub show: bool,
-}
-impl Codec<UpdateAdvancements> for UpdateAdvancements {
-    fn read(r: &mut Reader) -> Result<Self> {
-        let reset = r.bool()?;
-        let n = r.count(r.remaining())?;
-        let mut added = Vec::with_capacity(n.min(1024));
-        for _ in 0..n {
-            let id = r.string(32767)?;
-            let parent = if r.bool()? {
-                Some(r.string(32767)?)
-            } else {
-                None
-            };
-            let display = if r.bool()? {
-                let title = r.nbt()?;
-                let description = r.nbt()?;
-                let icon = crate::item::Template::read(r)?;
-                let frame = r.varint()?;
-                let flags = r.i32()?;
-                let background = if flags & 1 != 0 {
-                    Some(r.string(32767)?)
-                } else {
-                    None
-                };
-                Some(AdvancementDisplay {
-                    title,
-                    description,
-                    icon,
-                    frame,
-                    show_toast: flags & 2 != 0,
-                    hidden: flags & 4 != 0,
-                    background,
-                })
-            } else {
-                None
-            };
-            let groups = r.count(r.remaining())?;
-            let mut requirements = Vec::with_capacity(groups.min(256));
-            for _ in 0..groups {
-                let k = r.count(r.remaining())?;
-                requirements.push((0..k).map(|_| r.string(32767)).collect::<Result<_>>()?);
-            }
-            let telemetry = r.bool()?;
-            let (x, y) = (r.f32()?, r.f32()?);
-            added.push(Advancement {
-                id,
-                parent,
-                display,
-                requirements,
-                telemetry,
-                x,
-                y,
-            });
-        }
-        let n = r.count(r.remaining())?;
-        let removed = (0..n).map(|_| r.string(32767)).collect::<Result<_>>()?;
-        let n = r.count(r.remaining())?;
-        let mut progress = Vec::with_capacity(n.min(1024));
-        for _ in 0..n {
-            let id = r.string(32767)?;
-            let k = r.count(r.remaining())?;
-            let mut criteria = Vec::with_capacity(k.min(256));
-            for _ in 0..k {
-                let name = r.string(32767)?;
-                let at = if r.bool()? { Some(r.i64()?) } else { None };
-                criteria.push((name, at));
-            }
-            progress.push((id, criteria));
-        }
-        let show = r.bool()?;
-        Ok(Self {
-            reset,
-            added,
-            removed,
-            progress,
-            show,
-        })
-    }
-    fn write(v: &Self, w: &mut Writer) {
-        w.bool(v.reset);
-        w.varint(v.added.len() as i32);
-        for a in &v.added {
-            w.string(&a.id);
-            w.bool(a.parent.is_some());
-            if let Some(p) = &a.parent {
-                w.string(p);
-            }
-            w.bool(a.display.is_some());
-            if let Some(d) = &a.display {
-                w.nbt(&d.title);
-                w.nbt(&d.description);
-                crate::item::Template::write(&d.icon, w);
-                w.varint(d.frame);
-                w.i32(
-                    i32::from(d.background.is_some())
-                        | i32::from(d.show_toast) << 1
-                        | i32::from(d.hidden) << 2,
-                );
-                if let Some(b) = &d.background {
-                    w.string(b);
-                }
-            }
-            w.varint(a.requirements.len() as i32);
-            for g in &a.requirements {
-                w.varint(g.len() as i32);
-                for c in g {
-                    w.string(c);
-                }
-            }
-            w.bool(a.telemetry);
-            w.f32(a.x);
-            w.f32(a.y);
-        }
-        w.varint(v.removed.len() as i32);
-        for id in &v.removed {
-            w.string(id);
-        }
-        w.varint(v.progress.len() as i32);
-        for (id, criteria) in &v.progress {
-            w.string(id);
-            w.varint(criteria.len() as i32);
-            for (name, at) in criteria {
-                w.string(name);
-                w.bool(at.is_some());
-                if let Some(at) = at {
-                    w.i64(*at);
-                }
-            }
-        }
-        w.bool(v.show);
-    }
-}
 packet!(
     /// ClientboundAwardStatsPacket: (stat type, value, count) by network id.
     AwardStats { stats: Vec<(i32, i32, i32)> => StatList }
@@ -1526,125 +1098,6 @@ impl Codec<Vec<(i32, i32, i32)>> for StatList {
     }
 }
 
-/// `ClientboundBossEventPacket` (`boss_event`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum BossAction {
-    Add {
-        name: Tag,
-        progress: f32,
-        /// `BossBarColor` ordinal.
-        color: i32,
-        /// `BossBarOverlay` ordinal.
-        overlay: i32,
-        darken: bool,
-        music: bool,
-        fog: bool,
-    },
-    Remove,
-    UpdateProgress {
-        progress: f32,
-    },
-    UpdateName {
-        name: Tag,
-    },
-    UpdateStyle {
-        color: i32,
-        overlay: i32,
-    },
-    UpdateProperties {
-        darken: bool,
-        music: bool,
-        fog: bool,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct BossEvent {
-    pub id: u128,
-    pub action: BossAction,
-}
-fn boss_flags(darken: bool, music: bool, fog: bool) -> u8 {
-    u8::from(darken) | (u8::from(music) << 1) | (u8::from(fog) << 2)
-}
-fn split_flags(flags: u8) -> (bool, bool, bool) {
-    (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0)
-}
-impl Codec<BossEvent> for BossEvent {
-    fn read(r: &mut Reader) -> Result<BossEvent> {
-        let id = r.uuid()?;
-        let action = match r.varint()? {
-            0 => {
-                let name = r.nbt()?;
-                let progress = r.f32()?;
-                let color = r.varint()?;
-                let overlay = r.varint()?;
-                let (darken, music, fog) = split_flags(r.u8()?);
-                BossAction::Add {
-                    name,
-                    progress,
-                    color,
-                    overlay,
-                    darken,
-                    music,
-                    fog,
-                }
-            }
-            1 => BossAction::Remove,
-            2 => BossAction::UpdateProgress { progress: r.f32()? },
-            3 => BossAction::UpdateName { name: r.nbt()? },
-            4 => BossAction::UpdateStyle {
-                color: r.varint()?,
-                overlay: r.varint()?,
-            },
-            5 => {
-                let (darken, music, fog) = split_flags(r.u8()?);
-                BossAction::UpdateProperties { darken, music, fog }
-            }
-            op => return Err(Error::new(format!("unknown boss event operation {op}"))),
-        };
-        Ok(BossEvent { id, action })
-    }
-    fn write(v: &BossEvent, w: &mut Writer) {
-        w.uuid(v.id);
-        match &v.action {
-            BossAction::Add {
-                name,
-                progress,
-                color,
-                overlay,
-                darken,
-                music,
-                fog,
-            } => {
-                w.varint(0);
-                w.nbt(name);
-                w.f32(*progress);
-                w.varint(*color);
-                w.varint(*overlay);
-                w.u8(boss_flags(*darken, *music, *fog));
-            }
-            BossAction::Remove => w.varint(1),
-            BossAction::UpdateProgress { progress } => {
-                w.varint(2);
-                w.f32(*progress);
-            }
-            BossAction::UpdateName { name } => {
-                w.varint(3);
-                w.nbt(name);
-            }
-            BossAction::UpdateStyle { color, overlay } => {
-                w.varint(4);
-                w.varint(*color);
-                w.varint(*overlay);
-            }
-            BossAction::UpdateProperties { darken, music, fog } => {
-                w.varint(5);
-                w.u8(boss_flags(*darken, *music, *fog));
-            }
-        }
-    }
-}
-
 packet_enum!(Clientbound, crate::ids::play::clientbound {
     BundleDelimiter(Empty) = BUNDLE_DELIMITER,
     AddEntity(AddEntity) = ADD_ENTITY,
@@ -1662,6 +1115,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     ClearTitles(Bool1) = CLEAR_TITLES,
     LowDiskSpaceWarning(Empty) = LOW_DISK_SPACE_WARNING,
     Commands(Commands) = COMMANDS,
+    UpdateRecipes(super::recipes::UpdateRecipes) = UPDATE_RECIPES,
     RecipeBookAdd(super::recipes::RecipeBookAdd) = RECIPE_BOOK_ADD,
     RecipeBookRemove(super::recipes::RecipeBookRemove) = RECIPE_BOOK_REMOVE,
     RecipeBookSettings(super::recipes::RecipeBookSettings) = RECIPE_BOOK_SETTINGS,
@@ -1673,7 +1127,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     CookieRequest(CookieRequest) = COOKIE_REQUEST,
     Cooldown(Cooldown) = COOLDOWN,
     CustomChatCompletions(CustomChatCompletions) = CUSTOM_CHAT_COMPLETIONS,
-    CustomPayload(CustomPayload) = CUSTOM_PAYLOAD,
+    CustomPayload(CustomPayload) = CUSTOM_PAYLOAD => super::custom_payload::ClientboundPlayPayload,
     Disconnect(Disconnect) = DISCONNECT,
     DeleteChat(DeleteChat) = DELETE_CHAT,
     DisguisedChat(DisguisedChat) = DISGUISED_CHAT,
@@ -1788,119 +1242,6 @@ packet!(
     Bool1 { value: bool => Bool }
 );
 
-/// ClientboundTrackedWaypointPacket.Operation, by ordinal.
-pub mod waypoint_operation {
-    pub const TRACK: i32 = 0;
-    pub const UNTRACK: i32 = 1;
-    pub const UPDATE: i32 = 2;
-}
-
-/// TrackedWaypoint's identifier: `Either<UUID, String>`.
-#[derive(Clone, Debug, PartialEq)]
-pub enum WaypointId {
-    Uuid(u128),
-    Name(String),
-}
-
-/// What a TrackedWaypoint points at (its `Type` and contents).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum WaypointTarget {
-    /// `TrackedWaypoint.empty`: an untracked waypoint.
-    Empty,
-    /// A block position (`Vec3iWaypoint`).
-    Block([i32; 3]),
-    /// A chunk (`ChunkWaypoint`).
-    Chunk([i32; 2]),
-    /// An angle in radians (`AzimuthWaypoint`).
-    Azimuth(f32),
-}
-
-/// ClientboundTrackedWaypointPacket: the locator bar's waypoints.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TrackedWaypoint {
-    /// `waypoint_operation`.
-    pub operation: i32,
-    pub id: WaypointId,
-    /// Waypoint.Icon: the style (a `waypoint_style_asset` key) and an RGB colour.
-    pub style: String,
-    pub color: Option<i32>,
-    pub target: WaypointTarget,
-}
-
-impl Codec<TrackedWaypoint> for TrackedWaypoint {
-    fn read(r: &mut Reader) -> Result<TrackedWaypoint> {
-        let operation = r.varint()?;
-        if !(0..=2).contains(&operation) {
-            return Err(Error::new(format!("waypoint operation {operation}")));
-        }
-        let id = if r.bool()? {
-            WaypointId::Uuid(r.uuid()?)
-        } else {
-            WaypointId::Name(r.string(32767)?)
-        };
-        let style = Ident::read(r)?;
-        // ByteBufCodecs.RGB_COLOR: three bytes, read back as an opaque ARGB colour.
-        let color = if r.bool()? {
-            let [red, green, blue] = [r.u8()?, r.u8()?, r.u8()?].map(i32::from);
-            Some(-16_777_216 | red << 16 | green << 8 | blue)
-        } else {
-            None
-        };
-        let target = match r.varint()? {
-            0 => WaypointTarget::Empty,
-            1 => WaypointTarget::Block([r.varint()?, r.varint()?, r.varint()?]),
-            2 => WaypointTarget::Chunk([r.varint()?, r.varint()?]),
-            3 => WaypointTarget::Azimuth(r.f32()?),
-            other => return Err(Error::new(format!("waypoint type {other}"))),
-        };
-        Ok(TrackedWaypoint {
-            operation,
-            id,
-            style,
-            color,
-            target,
-        })
-    }
-    fn write(v: &TrackedWaypoint, w: &mut Writer) {
-        w.varint(v.operation);
-        match &v.id {
-            WaypointId::Uuid(uuid) => {
-                w.bool(true);
-                w.uuid(*uuid);
-            }
-            WaypointId::Name(name) => {
-                w.bool(false);
-                w.string(name);
-            }
-        }
-        w.string(&v.style);
-        w.bool(v.color.is_some());
-        if let Some(color) = v.color {
-            for shift in [16, 8, 0] {
-                w.u8((color >> shift) as u8);
-            }
-        }
-        match v.target {
-            WaypointTarget::Empty => w.varint(0),
-            WaypointTarget::Block([x, y, z]) => {
-                w.varint(1);
-                w.varint(x);
-                w.varint(y);
-                w.varint(z);
-            }
-            WaypointTarget::Chunk([x, z]) => {
-                w.varint(2);
-                w.varint(x);
-                w.varint(z);
-            }
-            WaypointTarget::Azimuth(angle) => {
-                w.varint(3);
-                w.f32(angle);
-            }
-        }
-    }
-}
-
 // ---- serverbound -------------------------------------------------------
 
 packet!(AcceptTeleportation { id: i32 => VarInt, x: f64 => Double, y: f64 => Double, z: f64 => Double, yaw: f32 => Float, pitch: f32 => Float });
@@ -2009,30 +1350,6 @@ packet!(
         carried: Option<Hashed> => HashedSlot,
     }
 );
-/// ServerboundSeenAdvancementsPacket: the tab the player opened (action 0, `OPENED_TAB`), or
-/// that its screen closed (1, `CLOSED_SCREEN`, which carries no tab).
-#[derive(Clone, Debug, PartialEq)]
-pub struct SeenAdvancements {
-    pub action: i32,
-    pub tab: Option<String>,
-}
-impl Codec<SeenAdvancements> for SeenAdvancements {
-    fn read(r: &mut Reader) -> Result<SeenAdvancements> {
-        let action = r.varint()?;
-        // The identifier is there for OPENED_TAB only (`readIdentifier` in the other branch).
-        let tab = match action {
-            0 => Some(r.string(32767)?),
-            _ => None,
-        };
-        Ok(SeenAdvancements { action, tab })
-    }
-    fn write(v: &SeenAdvancements, w: &mut Writer) {
-        w.varint(v.action);
-        if v.action == 0 {
-            w.string(v.tab.as_deref().unwrap_or_default());
-        }
-    }
-}
 packet!(SelectTrade { item: i32 => VarInt });
 packet!(
     /// ServerboundBlockEntityTagQueryPacket: an operator's F3+I asks for the
@@ -2368,7 +1685,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ContainerClick(ContainerClick) = CONTAINER_CLICK,
     ContainerClose(ContainerClose) = CONTAINER_CLOSE,
     CookieResponse(CookieResponse) = COOKIE_RESPONSE,
-    CustomPayload(CustomPayload) = CUSTOM_PAYLOAD,
+    CustomPayload(CustomPayload) = CUSTOM_PAYLOAD => super::custom_payload::ServerboundPlayPayload,
     CustomClickAction(CustomClickAction) = CUSTOM_CLICK_ACTION,
     EditBook(EditBook) = EDIT_BOOK,
     Interact(Interact) = INTERACT,
@@ -2409,6 +1726,329 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     UseItem(UseItem) = USE_ITEM,
     UseItemOn(UseItemOn) = USE_ITEM_ON,
 });
+
+// Generated retained-allocation traversals; regenerate with protocol-retained-gen.
+impl crate::retained::OwnedHeap for NetCost {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            item,
+            count,
+            components,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(item))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(count))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(components))
+    }
+}
+impl crate::retained::OwnedHeap for NetOffer {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            cost_a,
+            result,
+            cost_b,
+            out_of_stock,
+            uses,
+            max_uses,
+            xp,
+            special_price,
+            price_multiplier,
+            demand,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(cost_a))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(result))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(cost_b))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(out_of_stock))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(uses))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(max_uses))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(xp))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(special_price))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(
+                price_multiplier,
+            ))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(demand))
+    }
+}
+impl crate::retained::OwnedHeap for Offers {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for HolderId {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for DialogHolder {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Registry(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Direct(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for PositionPath {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Linear(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Stepped(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for MapPatch {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            start_x,
+            start_y,
+            width,
+            height,
+            colors,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(start_x))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(start_y))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(width))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(height))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(colors))
+    }
+}
+impl crate::retained::OwnedHeap for MapPatchOpt {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for VecDelta {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Linear(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Stepped(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for MoveEntity {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            id,
+            delta,
+            rotation,
+            on_ground,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(id))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(delta))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(rotation))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(on_ground))
+    }
+}
+impl crate::retained::OwnedHeap for PackedSignature {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for Signature {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for FilterMask {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for Equipment {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for SoundHolder {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for LevelParticles {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            particle,
+            override_limiter,
+            always_show,
+            pos,
+            dist,
+            max_speed,
+            count,
+            randomization,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(particle))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(
+                override_limiter,
+            ))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(always_show))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(pos))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(dist))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(max_speed))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(count))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(randomization))
+    }
+}
+impl crate::retained::OwnedHeap for ExplosionParticle {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            particle,
+            scaling,
+            speed,
+            weight,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(particle))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(scaling))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(speed))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(weight))
+    }
+}
+impl crate::retained::OwnedHeap for Explode {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            center,
+            radius,
+            block_count,
+            knockback,
+            particle,
+            sound,
+            block_particles,
+            play_sound,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(center))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(radius))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(block_count))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(knockback))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(particle))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(sound))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(
+                block_particles,
+            ))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(play_sound))
+    }
+}
+impl crate::retained::OwnedHeap for StopSound {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self { source, sound } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(source))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(sound))
+    }
+}
+impl crate::retained::OwnedHeap for StatList {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for Fixed3 {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for ArgumentSignatures {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for ChangedSlots {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for SetStructureBlock {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            pos,
+            update_type,
+            mode,
+            name,
+            offset,
+            size,
+            mirror,
+            rotation,
+            data,
+            ignore_entities,
+            strict,
+            show_air,
+            show_bounding_box,
+            integrity,
+            seed,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(pos))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(update_type))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(mode))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(name))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(offset))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(size))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(mirror))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(rotation))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(data))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(
+                ignore_entities,
+            ))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(strict))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(show_air))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(
+                show_bounding_box,
+            ))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(integrity))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(seed))
+    }
+}
+impl crate::retained::OwnedHeap for BookPages {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for SignSide {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for SignLines {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+impl crate::retained::OwnedHeap for Cursor {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+// End generated retained traversals.
 
 #[cfg(test)]
 mod tests;

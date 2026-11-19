@@ -278,7 +278,7 @@ measures the work, and only people above a floor can be nominated. Their body th
 
 | Signal | What counts | Source |
 | --- | --- | --- |
-| **Merged pull requests** | Pull requests merged in a public horizon-rust repo. For Modding, also in the mod API's fork (arismoko/horizon). Counted overall, and per group by label or by files touched | GitHub search, as the ranks are counted today |
+| **Merged pull requests** | Pull requests merged in a public horizon-rust repo. Counted overall, and per group by label or by files touched | GitHub search, as the ranks are counted today |
 | **Reviews** | Others' pull requests you reviewed: approved, asked for changes, or left a review with comments. One per pull request | GitHub search `reviewed-by:` and Kira's GitHub webhook |
 | **Triage** | Triage commands run (`/label`, `/close`, duplicates), issues labelled or closed, bug posts routed on Discord | The triage workflow's comments and Kira's webhook |
 | **Support answers** | #horizon-support posts you answered that ended solved | Kira's support feature |
@@ -400,7 +400,7 @@ holder or an org owner removes GitHub access when the Team role ends.
 
 | Group | Covers | GitHub | Discord |
 | --- | --- | --- | --- |
-| **Modding** | The mod API, native and content mods, mixins, the mod registry, `cargo horizon-mod` | The mod API lives in Ari's fork **arismoko/horizon**. Its owner runs that repo by their own rules; the council governs only what is Horizon's: horizon-rust/horizon-mods, horizon-mixins, horizon-native-mod-template, the registry. Label `mods` | The 🧩 MODDING category (#modding, #horizon-modding-team); roles 🧩 Modder (picked) and 🧩 Horizon Modding Team (the lead gives it) |
+| **Modding** | The mod API, native and content mods, mixins, the mod registry, `cargo horizon-mod` | The mod API lives in horizon-rust/horizon, beside horizon-rust/horizon-mods, horizon-mixins, horizon-native-mod-template and the registry. Label `mods` | The 🧩 MODDING category (#modding, #horizon-modding-team); roles 🧩 Modder (picked) and 🧩 Horizon Modding Team (the lead gives it) |
 | **Shaders and rendering** | The renderer, shaders, shader packs, OptiFine and Polytone pack formats | Label `rendering`; `crates/horizon-client-render` (gfx), `*.wgsl`, `horizon-shaders`, `horizon-shader-api`, `horizon-optifine`, `horizon-polytone` | #shaders-rendering |
 | **Performance** | Frame rate, memory, server tick, benchmarks | Label `perf`; `horizon-bench`, the benchmark tools | #performance |
 | **Launcher** | The launcher: installs, updates, instances, its pages | Label `launcher`; `launcher/` | #launcher |
@@ -530,7 +530,7 @@ unable to act, and never puts an account that is tied to a person into anyone el
 
 | Account | Today | Can it be shared? | Plan |
 | --- | --- | --- | --- |
-| **GitHub organisation** (horizon-rust) | One owner (the founder) | Yes: an organisation can have several owners | **Step 1:** a second owner from the council, chosen by a 2/3 poll in the council's first week, with two-factor authentication on. **Step 2:** a `council` team; CODEOWNERS reviews and the release tools' owner powers (`paused`, `/nightly remove`) move from the founder to that team |
+| **GitHub organisation** (horizon-rust) | Two owners since 2026-11-11: the founder and rdbtCVS (P28); a `council` team holds CODEOWNERS (P35) and is the security managers (P36) | Yes: an organisation can have several owners | **Step 1:** a second owner from the council, chosen by a 2/3 poll in the council's first week, with two-factor authentication on. **Step 2:** a `council` team; CODEOWNERS reviews and the release tools' owner powers (`paused`, `/nightly remove`) move from the founder to that team |
 | **Discord server** | Owned by the founder | Partly: a server has exactly one owner; powers can be given through roles | **Step 1:** the 🏛️ Council role gets moderation and ban permissions; Kira applies the outcomes of passed polls, so nobody needs Manage Roles; two-factor authentication becomes required for moderation. Ownership itself stays with the founder until a legal entity exists |
 | **Kira** (bot application, Railway service) | The founder's Discord developer account and Railway | The bot: yes (a Discord developer team). Railway: adding members may need a paid plan | **Step 1:** a Discord developer team with two council members. Railway members once the council decides on money |
 | **Official server** (hosting panel) | The founder's account | Yes: panel sub-users | **Step 1:** sub-users for the Server and SMP lead and for one council member |

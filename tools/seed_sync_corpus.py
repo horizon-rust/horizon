@@ -75,9 +75,40 @@ def cases(cmd, setup):
         *setup('/setblock 13 201 10 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:"minecraft:armor_stand",count:1}]}'),
         sync(12), {'op': 'crafter_tick', 'pos': [13, 201, 10]},
         *get('@e[type=armor_stand,x=13.5,y=202,z=10.5,distance=..2,limit=1]', 'UUID'),
+        # A dispensed firework rocket (FireworkRocketItem.asProjectile, then Projectile.spawnProjectileUsingShoot): one
+        # Entity.random makes the UUID, the constructor's motion and lifetime, and then the shot's spread.
+        *setup('/setblock 13 201 13 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:"minecraft:firework_rocket",count:2}]}'),
+        sync(14), {'op': 'crafter_tick', 'pos': [13, 201, 13]},
+        *get('@e[type=firework_rocket,x=13.5,y=202,z=13.5,distance=..6,sort=nearest,limit=1]', 'UUID', 'LifeTime', 'Motion'),
+        *setup('/kill @e[type=!player]', '/setblock 13 201 13 minecraft:air'),
         # A chicken due to lay lays on its first tick and draws the next egg time from its own random, which carries
         # on through the load of a summon's NBT.
         sync(13), *setup('/summon chicken 7.5 201 13.5 {NoAI:1b,EggLayTime:1}'), {'op': 'tick'},
         *get(near('chicken', 7, 13), 'EggLayTime'),
         *setup('/kill @e[type=!player]', '/fill 0 201 0 15 202 15 minecraft:air'),
+        # Projectile.shoot spreads a dispensed shot with the projectile's own random, after its UUID's two draws.
+        *[c for case, item, kind, z in ((14, 'arrow', 'arrow', 7), (15, 'snowball', 'snowball', 9)) for c in (
+            *setup(f'/setblock 1 201 {z} minecraft:dispenser[facing=east]{{Items:[{{Slot:0b,id:"minecraft:{item}",count:1}}]}}'),
+            sync(case), {'op': 'crafter_tick', 'pos': [1, 201, z]},
+            *get(near(kind, 2, z), 'UUID', 'Motion'),
+            *setup('/kill @e[type=!player]', f'/setblock 1 201 {z} minecraft:air'),
+        )],
+        # A summoned arrow without a UUID keeps the one its own random made.
+        sync(16), *setup('/summon arrow 6.5 201 11.5 {NoGravity:1b}'), *get(near('arrow', 6, 11), 'UUID'),
+        *setup('/kill @e[type=!player]'),
+        # Mob.finalizeSpawn and most overrides draw from the level's random. A spawn egg's chicken, finalized, still
+        # draws its next egg time from its own random right after its UUID and constructor draws.
+        *setup('/setblock 3 201 15 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:"minecraft:chicken_spawn_egg",'
+               'count:1,components:{"minecraft:entity_data":{id:"minecraft:chicken",NoAI:1b,EggLayTime:1}}}]}'),
+        sync(17), {'op': 'crafter_tick', 'pos': [3, 201, 15]}, {'op': 'tick'},
+        *get(near('chicken', 4, 15), 'EggLayTime'),
+        *setup('/kill @e[type=!player]', '/setblock 3 201 15 minecraft:air'),
+        # A mob summoned without NBT is finalized: a pig's variant pick, sound variant, follow range bonus and
+        # handedness, and a zombie's rolls after those, come from the level's random before the TNT's kick does.
+        *[c for case, kind in ((18, 'pig'), (19, 'zombie')) for c in (
+            *setup('/setblock 8 201 15 minecraft:redstone_block'), sync(case),
+            *setup(f'/summon {kind} 12.5 201 15.5', '/setblock 9 201 15 minecraft:tnt'),
+            *get(near('tnt', 9, 15), 'Motion'),
+            *setup('/kill @e[type=!player]', '/setblock 8 201 15 minecraft:air'),
+        )],
     ]

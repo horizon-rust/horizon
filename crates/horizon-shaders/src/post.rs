@@ -15,10 +15,30 @@ use std::collections::BTreeSet;
 use crate::config::{self, Config};
 use crate::custom::Custom;
 use crate::{
-    ComputeProgram, eval_condition, preprocess, translate_composite, translate_compute,
-    translate_gbuffers, translate_shadow,
+    ComputeProgram, eval_condition, preprocess, translate_composite, translate_gbuffers,
+    translate_shadow,
 };
 use crate::{GbuffersInputs, Macros, Pack, Preprocessed, Program, Properties, Target};
+
+/// `indirect.<pass>`: three unsigned work-group counts in a storage buffer (3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndirectDispatch {
+    pub buffer: u32,
+    pub offset: u64,
+}
+
+impl IndirectDispatch {
+    fn parse(value: &str) -> Option<Self> {
+        let mut words = value.split_whitespace();
+        let buffer = words.next()?.parse().ok()?;
+        let offset: u64 = words.next()?.parse().ok()?;
+        if buffer > 8 || !offset.is_multiple_of(4) || words.next().is_some() {
+            return None;
+        }
+        offset.checked_add(12)?;
+        Some(Self { buffer, offset })
+    }
+}
 
 /// Which group of 2.1 a program belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,10 +333,20 @@ impl BufferSize {
 }
 
 /// `bufferObject.<n>`: an SSBO's size in bytes, or bytes per pixel of the render size scaled.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BufferObject {
     Bytes(u64),
-    PerPixel { bytes: u64, scale: [f32; 2] },
+    PerPixel {
+        bytes: u64,
+        scale: [f32; 2],
+    },
+    /// A fixed size with the bytes a file of the pack holds, read on load: the documented
+    /// `bufferObject.<n> = <size> <file>` form, the file's path inside `shaders`.
+    File {
+        bytes: u64,
+        path: String,
+        data: Vec<u8>,
+    },
 }
 
 impl BufferObject {
@@ -329,20 +359,42 @@ impl BufferObject {
                 bytes,
                 scale: [x.parse().ok()?, y.parse().ok()?],
             }),
+            [_, path] => Some(Self::File {
+                bytes,
+                path: path.to_owned(),
+                data: Vec::new(),
+            }),
             _ => None,
         }
     }
 
     /// The size in bytes for a render size of `render`, at least 16.
-    pub fn size(self, render: [u32; 2]) -> u64 {
+    pub fn size(&self, render: [u32; 2]) -> u64 {
         match self {
-            Self::Bytes(b) => b,
+            Self::Bytes(b) => *b,
             Self::PerPixel { bytes, scale } => {
                 let [w, h] = [0, 1].map(|k| (render[k] as f32 * scale[k]) as u64);
                 bytes.saturating_mul(w).saturating_mul(h)
             }
+            Self::File { bytes, .. } => *bytes,
         }
         .max(16)
+    }
+
+    /// The file's path inside `shaders`, when the buffer is initialized from one.
+    pub fn file(&self) -> Option<&str> {
+        match self {
+            Self::File { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The bytes the buffer starts with, when it is initialized from a file.
+    pub fn initial_data(&self) -> Option<&[u8]> {
+        match self {
+            Self::File { data, .. } => Some(data),
+            _ => None,
+        }
     }
 }
 
@@ -519,6 +571,8 @@ pub struct Post {
     /// The shadowcolor buffers the shadow programs have: 2, or all 8 when the pack names the
     /// `HIGHER_SHADOWCOLOR` feature (`iris.features.required` or `.optional`).
     pub shadow_colors: usize,
+    /// Required independent attachment blending (spec 3.2); the renderer checks its adapter.
+    pub per_buffer_blending_required: bool,
     /// `bufferObject.*`, by binding.
     pub buffer_objects: std::collections::BTreeMap<u32, BufferObject>,
     /// `image.*`.
@@ -650,9 +704,12 @@ pub struct GameInputs {
     pub lines: Option<GbuffersInputs>,
     /// The first-person hand and held items.
     pub hand: Option<GbuffersInputs>,
-    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, every pack
-    /// draws terrain in these two parts.
+    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, a pack with
+    /// `gbuffers_terrain_solid` or `gbuffers_terrain_cutout` draws terrain in these two parts.
     pub terrain_parts: Option<[GbuffersInputs; 2]>,
+    /// `terrain` with both parts in one draw (`GbuffersInputs::parts`): given, a pack drawing
+    /// both with one program draws them in one pass.
+    pub terrain_one_pass: Option<GbuffersInputs>,
     /// Terrain read vertex by vertex, for a shadow program with a geometry stage.
     pub terrain_geometry: Option<crate::GeometryInputs>,
     /// Entities and block entities read vertex by vertex, for the same.
@@ -661,6 +718,27 @@ pub struct GameInputs {
 
 /// Loads the post-processing programs of `folder` and, for the geometry `inputs` describes, the
 /// gbuffers programs it draws with.
+/// The buffer object with its file read, when it has one: the documented
+/// `bufferObject.<n> = <size> <file>` form reads the file's bytes from the pack. A file that
+/// is not there, or that is bigger than the buffer it fills, is refused with a note.
+fn buffer_object_file(pack: &Pack, object: BufferObject) -> Result<BufferObject, String> {
+    let BufferObject::File { bytes, path, .. } = &object else {
+        return Ok(object);
+    };
+    let Some(data) = pack.read(path) else {
+        return Err(format!("`{path}`: no such file in the pack"));
+    };
+    // The size the pack asks for, not the size the buffer is made (which is at least 16).
+    if data.len() as u64 > *bytes {
+        return Err(format!("`{path}`: bigger than the buffer it fills"));
+    }
+    Ok(BufferObject::File {
+        bytes: *bytes,
+        path: path.clone(),
+        data,
+    })
+}
+
 pub fn load_post(
     pack: &Pack,
     folder: &str,
@@ -714,6 +792,11 @@ pub fn load_post(
             2
         },
         buffer_objects: Default::default(),
+        per_buffer_blending_required: properties
+            .get("iris.features.required")
+            .unwrap_or_default()
+            .split_whitespace()
+            .any(|name| name.eq_ignore_ascii_case("PER_BUFFER_BLENDING")),
         images: Vec::new(),
         shadow_culling: match properties.get("shadow.culling").map(str::trim) {
             Some("false") => ShadowCulling::Off,
@@ -727,13 +810,16 @@ pub fn load_post(
     for e in &properties.entries {
         if let Some(n) = e.key.strip_prefix("bufferObject.") {
             match (n.parse(), BufferObject::parse(&e.value)) {
-                (Ok(n), Some(b)) => _ = post.buffer_objects.insert(n, b),
+                (Ok(n), Some(b)) => match buffer_object_file(pack, b) {
+                    Ok(b) => _ = post.buffer_objects.insert(n, b),
+                    Err(note) => post.notes.push(note),
+                },
                 _ => post.notes.push(format!("`{}`: not a buffer object", e.key)),
             }
             continue;
         }
         if let Some(name) = e.key.strip_prefix("image.") {
-            match CustomImage::parse(name, &options.expand(&e.value)) {
+            match CustomImage::parse(name, &e.value) {
                 Some(i) => post.images.push(i),
                 None => post.notes.push(format!("`{}`: not an image", e.key)),
             }
@@ -801,6 +887,10 @@ pub fn load_post(
             let mut inputs = inputs.clone();
             if let Some(test) = test {
                 inputs.alpha_test = test;
+                // One program's solid and cutout parts in one pass: both, as in two.
+                if let Some(parts) = &mut inputs.parts {
+                    parts.cutout_alpha_test = test;
+                }
             }
             loader.load(name.to_string(), group, |v, f| {
                 translate_gbuffers(v, f, Target::Buffers, &inputs)
@@ -934,18 +1024,20 @@ pub fn load_post(
         // gbuffers_terrain alone or gbuffers_terrain_cutout: cutout fragments written with alpha
         // 0.5 and below were discarded, 0.51 and above kept, and alphaTestRef read 0.5. Vanilla's
         // cutout terrain cuts at 0.5 too (`RenderPipelines.CUTOUT_TERRAIN`'s `ALPHA_CUTOUT`).
+        let cut = Some(crate::AlphaTest {
+            op: ">",
+            reference: 0.5,
+        });
         let cutout = |inputs: &GbuffersInputs| {
             let mut cutout = inputs.clone();
-            cutout.alpha_test = cutout.alpha_test.or(Some(crate::AlphaTest {
-                op: ">",
-                reference: 0.5,
-            }));
+            cutout.alpha_test = cutout.alpha_test.or(cut);
             cutout
         };
-        // Solid and cutout terrain draw apart. A pack with Iris's gbuffers_terrain_solid or
-        // gbuffers_terrain_cutout draws each with its own, falling back to gbuffers_terrain's
+        // A pack with Iris's gbuffers_terrain_solid or gbuffers_terrain_cutout draws solid and
+        // cutout terrain apart, each with its own program, falling back to gbuffers_terrain's
         // chain (Iris 1.11.7 with probe packs having both, or one of them); any other pack draws
-        // both parts with gbuffers_terrain's chain, each with its own alpha test (#9307). Solid
+        // both parts with gbuffers_terrain's chain, each quad with its part's alpha test (#9307),
+        // in one pass: two passes would run every vertex of solid terrain twice. Solid
         // terrain gets no default alpha test, and alphaTestRef 0: in those probes Iris kept
         // solid fragments written with alpha 0.05, through either program, and also 0.0
         // through gbuffers_terrain alone or gbuffers_terrain_solid (#9307).
@@ -984,15 +1076,14 @@ pub fn load_post(
                     None => (solid, cut),
                 }
             }
-            None => match &inputs.terrain_parts {
-                // One program draws both parts, so both load or neither does.
-                Some([solid, cut]) => match (
-                    gbuffers(&TERRAIN, Group::Gbuffers, solid),
-                    gbuffers(&TERRAIN, Group::Gbuffers, &cutout(cut)),
-                ) {
-                    (Some(solid), Some(cut)) => (Some(solid), Some(cut)),
-                    _ => (None, None),
-                },
+            None => match &inputs.terrain_one_pass {
+                Some(both) => {
+                    let mut both = both.clone();
+                    if let Some(parts) = &mut both.parts {
+                        parts.cutout_alpha_test = parts.cutout_alpha_test.or(cut);
+                    }
+                    (gbuffers(&TERRAIN, Group::Gbuffers, &both), None)
+                }
                 // A game that draws terrain in one part: all of it with the cutout test.
                 None => (gbuffers(&TERRAIN, Group::Gbuffers, &cutout(terrain)), None),
             },
@@ -1099,16 +1190,33 @@ fn load_shadow(
     ];
     // A program's compute stages count as its other stages do: Iris 1.11.7 drew the shadow map
     // for a probe pack of ours whose only reader of it was `prepare.csh` (#10490).
+    let image_reads = |interface: &crate::Interface| {
+        interface.images.iter().any(|image| {
+            matches!(
+                image.before.as_deref().unwrap_or(&image.name),
+                "shadowcolorimg0" | "shadowcolorimg1"
+            )
+        })
+    };
     let reads = (post.programs.iter())
         .chain(gbuffers.into_iter().flatten())
         .flat_map(|p| {
             let stages = p.program.iter().map(|q| &q.interface);
             stages.chain(p.compute.iter().map(|(_, c)| &c.interface))
         })
-        .flat_map(|i| &i.samplers)
-        .any(|s| {
-            SHADOW_SAMPLERS.contains(&s.name.as_str())
-                || config::shadow_color(&s.name).is_some_and(|n| n < loader.post.shadow_colors)
+        .any(|i| {
+            i.samplers.iter().any(|s| {
+                SHADOW_SAMPLERS.contains(&s.name.as_str())
+                    || config::shadow_color(&s.name).is_some_and(|n| n < loader.post.shadow_colors)
+            }) || image_reads(i)
+        })
+        || post.lines.iter().any(|program| {
+            program
+                .program
+                .iter()
+                .map(|stage| &stage.interface)
+                .chain(program.compute.iter().map(|(_, stage)| &stage.interface))
+                .any(image_reads)
         });
     let forced = match loader.properties.get("shadow.enabled").map(str::trim) {
         Some("true") => Some(true),
@@ -1319,6 +1427,13 @@ impl Loader<'_> {
         ) {
             return None;
         }
+        let tessellated = self.pack.exists(&path("tcs")) || self.pack.exists(&path("tes"));
+        if tessellated {
+            self.post.notes.push(format!(
+                "{name}: uses a tessellation stage (unsupported); skipped"
+            ));
+            return None;
+        }
         if self.pack.exists(&path("gsh")) {
             let Some(inputs) = self.geometry.clone() else {
                 self.post.notes.push(format!(
@@ -1326,8 +1441,7 @@ impl Loader<'_> {
                 ));
                 return None;
             };
-            let (vsh, gsh) = (path("vsh"), path("gsh"));
-            return self.load_geometry(name, group, &vsh, &gsh, &fsh, &inputs);
+            return self.load_geometry(name.clone(), group, &vsh, &path("gsh"), &fsh, &inputs);
         }
         let vertex = self.preprocess(&vsh);
         let fragment = self.preprocess(&fsh);
@@ -1577,6 +1691,19 @@ impl Loader<'_> {
             {
                 continue;
             }
+            let indirect = match self.properties.get(&format!("indirect.{name}")) {
+                Some(value) => match IndirectDispatch::parse(&self.options.expand(value)) {
+                    Some(request) => Some(request),
+                    None => {
+                        self.post.notes.push(format!(
+                            "{name}: skipped: invalid indirect request; expected SSBO index 0–8 \
+                             and a four-byte-aligned byte offset"
+                        ));
+                        continue;
+                    }
+                },
+                None => None,
+            };
             let pp = self.preprocess(&path);
             let problems = diagnostics(&pp);
             let notes = &mut self.post.notes;
@@ -1585,7 +1712,7 @@ impl Loader<'_> {
                 notes.push(format!("{name}: skipped"));
                 continue;
             }
-            match translate_compute(&pp) {
+            match crate::translate::translate_compute_dispatch(&pp, indirect) {
                 Ok(program) => {
                     notes.extend(
                         program
@@ -1757,6 +1884,46 @@ fn flips(properties: &Properties, program: &str) -> Vec<(u32, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_indirect_requests_skip_the_compute_instead_of_dispatching_directly() {
+        let pack = Pack::from_zip_bytes(
+            "original-indirect-property",
+            crate::pack::tests::zip(&[(
+                "shaders/composite.csh",
+                "#version 430\nlayout(local_size_x=1) in; void main() {}",
+            )]),
+        )
+        .unwrap();
+        for value in [
+            "",
+            "2",
+            "2 0 extra",
+            "-1 0",
+            "9 0",
+            "2 -4",
+            "2 2",
+            "2 18446744073709551612",
+        ] {
+            let properties =
+                Properties::parse(&format!("indirect.composite={value}"), &Macros::standard());
+            let post = load_post(
+                &pack,
+                "",
+                &properties,
+                &Macros::standard(),
+                &GameInputs::default(),
+            );
+            assert!(post.programs.is_empty(), "{value}: silently became direct");
+            assert!(
+                post.notes
+                    .iter()
+                    .any(|n| n.contains("invalid indirect request")),
+                "{value}: {:?}",
+                post.notes
+            );
+        }
+    }
 
     #[test]
     fn unsupported_defaults_are_notes_without_skipping_render_or_compute() {
@@ -1955,8 +2122,13 @@ mod tests {
 
     #[test]
     fn image_dimensions_expand_default_and_chosen_options() {
-        let bytes =
-            crate::pack::tests::zip(&[("shaders/options.glsl", "#define SIZE 16 // [8 16]\n")]);
+        let bytes = crate::pack::tests::zip(&[
+            ("shaders/options.glsl", "#define SIZE 16 // [8 16]\n"),
+            (
+                "shaders/shaders.properties",
+                "image.grid = none RGBA RGBA8 BYTE false false SIZE SIZE",
+            ),
+        ]);
         for (choice, expected) in [(None, [16, 16]), (Some("8"), [8, 8])] {
             let mut pack = Pack::from_zip_bytes("image.zip", bytes.clone()).unwrap();
             if let Some(value) = choice {
@@ -1965,16 +2137,96 @@ mod tests {
                     value.into(),
                 )]));
             }
-            let macros = Macros::standard();
-            let properties = Properties::parse(
-                "image.grid = none RGBA RGBA8 BYTE false false SIZE SIZE",
-                &macros,
-            );
+            let mut macros = Macros::standard();
+            let (properties, _) = crate::read_properties(&pack, &mut macros);
             let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
             assert!(post.notes.is_empty(), "{:?}", post.notes);
             assert_eq!(post.images.len(), 1);
             assert_eq!(post.images[0].size, ImageSize::Absolute(expected));
         }
+    }
+
+    #[test]
+    fn image_dimensions_keep_the_macros_of_their_own_line() {
+        let pack = Pack::from_zip_bytes(
+            "image.zip",
+            crate::pack::tests::zip(&[("shaders/placeholder.glsl", "")]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse(
+            "#define SIZE 16\n\
+             image.first = none RGBA RGBA8 BYTE false false SIZE SIZE\n\
+             #undef SIZE\n\
+             #define SIZE 32\n\
+             image.second = none RGBA RGBA8 BYTE false false SIZE SIZE",
+            &macros,
+        );
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        let sizes: Vec<ImageSize> = post.images.iter().map(|i| i.size).collect();
+        assert_eq!(
+            sizes,
+            [ImageSize::Absolute([16, 16]), ImageSize::Absolute([32, 32])]
+        );
+    }
+
+    #[test]
+    fn an_image_does_not_see_an_option_undefined_before_it() {
+        let pack = Pack::from_zip_bytes(
+            "image.zip",
+            crate::pack::tests::zip(&[
+                ("shaders/options.glsl", "#define SIZE 16 // [16 32]\n"),
+                (
+                    "shaders/shaders.properties",
+                    "#undef SIZE\nimage.grid = none RGBA RGBA8 BYTE false false SIZE SIZE",
+                ),
+                ("shaders/placeholder.glsl", ""),
+            ]),
+        )
+        .unwrap();
+        let mut macros = Macros::standard();
+        let (properties, _) = crate::read_properties(&pack, &mut macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.images.is_empty(), "{:?}", post.images);
+        assert!(
+            post.notes.iter().any(|n| n.contains("not an image")),
+            "{:?}",
+            post.notes
+        );
+    }
+
+    #[test]
+    fn image_dimensions_expand_macros_the_properties_file_defines() {
+        let pack = Pack::from_zip_bytes(
+            "image.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/options.glsl",
+                    "#define SKYBOX_RESOLUTION 128 // [128 256]\n",
+                ),
+                (
+                    "shaders/shaders.properties",
+                    "#if SKYBOX_RESOLUTION == 128\n\
+                     #define SKYBOX_RESOLUTION_X 384\n\
+                     #define SKYBOX_RESOLUTION_Y 256\n\
+                     #endif\n\
+                     image.skyBox2D = none RGBA RGBA8 BYTE false false \
+                     SKYBOX_RESOLUTION_X SKYBOX_RESOLUTION_Y",
+                ),
+                ("shaders/placeholder.glsl", ""),
+            ]),
+        )
+        .unwrap();
+        let mut macros = Macros::standard();
+        // The pack reads its properties with its options, and writes the size as macros it
+        // defines further up in the same file, inside an `#if` (IterationRP's
+        // `SKYBOX_RESOLUTION_X/Y`).
+        let (properties, _) = crate::read_properties(&pack, &mut macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        assert_eq!(post.images.len(), 1);
+        assert_eq!(post.images[0].size, ImageSize::Absolute([384, 256]));
     }
 
     #[test]
@@ -2007,6 +2259,106 @@ mod tests {
     const FSH: &str = "#version 120\nuniform sampler2D colortex0;\nvarying vec2 uv;\n\
                        void main() {\n/* DRAWBUFFERS:3 */\n\
                        gl_FragData[0] = texture2D(colortex0, uv);\n}\n";
+
+    #[test]
+    fn a_buffer_object_can_name_the_file_it_starts_with() {
+        assert_eq!(
+            BufferObject::parse("16 data/seed.bin"),
+            Some(BufferObject::File {
+                bytes: 16,
+                path: "data/seed.bin".to_owned(),
+                data: Vec::new(),
+            })
+        );
+        // The other forms still read as they did.
+        assert_eq!(BufferObject::parse("4096"), Some(BufferObject::Bytes(4096)));
+        assert_eq!(
+            BufferObject::parse("16 true 0.5 0.25"),
+            Some(BufferObject::PerPixel {
+                bytes: 16,
+                scale: [0.5, 0.25]
+            })
+        );
+    }
+
+    #[test]
+    fn a_buffer_object_reads_the_file_it_names() {
+        let seed: Vec<u8> = (0..16).collect();
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/shaders.properties",
+                    b"bufferObject.2 = 16 data/seed.bin".to_vec(),
+                ),
+                ("shaders/data/seed.bin", seed.clone()),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        let buffer = post.buffer_objects.get(&2).expect("the buffer is there");
+        assert_eq!(buffer.initial_data(), Some(seed.as_slice()));
+        assert_eq!(buffer.size([1, 1]), 16);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_is_missing_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[(
+                "shaders/shaders.properties",
+                b"bufferObject.2 = 16 data/seed.bin".to_vec(),
+            )]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+        assert!(post.notes[0].contains("data/seed.bin"), "{:?}", post.notes);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_is_bigger_than_it_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/shaders.properties",
+                    b"bufferObject.2 = 4 data/seed.bin".to_vec(),
+                ),
+                ("shaders/data/seed.bin", (0..16).collect::<Vec<u8>>()),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 4 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+        assert!(post.notes[0].contains("bigger"), "{:?}", post.notes);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_leaves_the_pack_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[(
+                "shaders/shaders.properties",
+                "bufferObject.2 = 16 ../seed.bin",
+            )]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 ../seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+    }
 
     #[test]
     fn buffer_objects_and_images_parse() {
@@ -2240,6 +2592,9 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
                 ("shaders/composite4.vsh", VSH),
                 ("shaders/composite4.fsh", FSH),
                 ("shaders/composite4.gsh", "x"),
+                ("shaders/composite6.vsh", VSH),
+                ("shaders/composite6.fsh", FSH),
+                ("shaders/composite6.tcs", "x"),
                 ("shaders/composite5.vsh", VSH),
                 (
                     "shaders/composite5.fsh",
@@ -2281,6 +2636,10 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             notes.contains(
                 "composite4: uses a geometry stage (supported for the shadow pass's terrain and entities only)"
             ),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("composite6: uses a tessellation stage (unsupported); skipped"),
             "{notes}"
         );
         assert!(notes.contains("composite5.fsh:2:"), "{notes}");
@@ -2497,6 +2856,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
     /// The shadow pass runs when a program reads a shadow buffer or `shadow.enabled` says so;
     /// then `shadow`, `shadow_water` and the `shadowcomp` series load, writing shadowcolor0/1.
     #[test]
+    #[ignore = "daily"]
     fn shadow_programs_load_when_a_shadow_buffer_is_read() {
         let reads = "#version 120\nuniform sampler2D shadowtex0;\nvarying vec2 uv;\n\
                      void main() { gl_FragColor = texture2D(shadowtex0, uv); }\n";
@@ -2644,6 +3004,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
     /// Without the feature, outputs stop at shadowcolor1 as before. As in Iris 1.11.7 with
     /// probe packs p7951a to c (the PR has the readings).
     #[test]
+    #[ignore = "daily"]
     fn higher_shadowcolor_gives_shadow_programs_eight_buffers() {
         let shadow_vsh = "#version 120\nvoid main() {\ngl_Position = ftransform();\n}\n";
         let writes = |targets: Option<&str>| {
@@ -2961,8 +3322,16 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
             ..Default::default()
         };
+        let one_pass = crate::GbuffersInputs {
+            parts: Some(crate::Parts {
+                solid: "hz_v_pos.x > 0.0".into(),
+                cutout_alpha_test: None,
+            }),
+            ..inputs.clone()
+        };
         let inputs = GameInputs {
             terrain_parts: parts.then(|| [inputs.clone(), inputs.clone()]),
+            terrain_one_pass: parts.then_some(one_pass),
             terrain: Some(inputs),
             ..Default::default()
         };
@@ -2998,8 +3367,8 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
 
     /// Iris 1.11.7 with our probe packs (#9137): `gbuffers_terrain_solid` draws solid terrain
     /// and `gbuffers_terrain_cutout` cutout terrain, each falling back to `gbuffers_terrain`;
-    /// a pack with only `gbuffers_terrain` draws both parts with it, each with its own alpha
-    /// test (#9307).
+    /// a pack with only `gbuffers_terrain` draws both parts with it, in one pass, each with its
+    /// own alpha test (#9307).
     #[test]
     fn terrain_solid_and_cutout_fall_back_to_terrain() {
         let names = |programs: &[&str], parts: bool| terrain_names(programs, "", parts);
@@ -3014,7 +3383,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             names(&[terrain, cutout], true),
             [some(terrain), some(cutout)]
         );
-        assert_eq!(names(&[terrain], true), [some(terrain), some(terrain)]);
+        assert_eq!(names(&[terrain], true), [some(terrain), None]);
         // Without the game's two parts, terrain draws whole.
         assert_eq!(
             names(&[terrain, solid, cutout], false),
@@ -3067,7 +3436,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         let some = |name: &str| Some(name.to_owned());
         assert_eq!(
             terrain_names(&[terrain, solid], off, true),
-            [some(terrain), some(terrain)]
+            [some(terrain), None]
         );
         let on = "program.gbuffers_terrain_solid.enabled = true\n";
         assert_eq!(
@@ -3149,6 +3518,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
     }
 
     #[test]
+    #[ignore = "daily"]
     fn water_falls_back_to_terrain_and_blends() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/packs/terrain-test");
         let pack = Pack::open(&dir).unwrap();
@@ -3168,6 +3538,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             lines: Some(inputs.clone()),
             hand: Some(inputs),
             terrain_parts: None,
+            terrain_one_pass: None,
             terrain_geometry: None,
             entity_geometry: None,
         };
@@ -3373,3 +3744,75 @@ mod buffer_blend_tests;
 
 #[cfg(test)]
 mod material_variant_tests;
+
+#[cfg(test)]
+mod shadow_image_demand_tests {
+    use super::*;
+
+    fn check_image_demand(line: bool) {
+        for (name, demand) in [
+            ("shadowcolorimg0", true),
+            ("shadowcolorimg1", true),
+            ("colorimg2", false),
+            ("shadowcolorimg2", false),
+        ] {
+            for (properties, enabled) in [("", demand), ("shadow.enabled=false", false)] {
+                let stage = if line {
+                    ""
+                } else {
+                    "layout(local_size_x=1) in;\n"
+                };
+                let output = if line {
+                    "gl_FragData[0]=vec4(0.5);"
+                } else {
+                    ""
+                };
+                let shader = format!(
+                    "#version 430\n{stage}layout(rgba8) writeonly uniform image2D {name};\nvoid main() {{ imageStore({name},ivec2(0),vec4(0.25)); {output} }}"
+                );
+                let mut files = vec![("shaders/shaders.properties", properties)];
+                if line {
+                    files.push((
+                        "shaders/gbuffers_line.vsh",
+                        "#version 430\nvoid main() { gl_Position=vec4(0,0,0,1); }",
+                    ));
+                    files.push(("shaders/gbuffers_line.fsh", shader.as_str()));
+                } else {
+                    files.push(("shaders/prepare.csh", shader.as_str()));
+                }
+                let pack =
+                    Pack::from_zip_bytes("original-shadow-demand", crate::pack::tests::zip(&files))
+                        .unwrap();
+                let mut macros = Macros::standard();
+                let (properties, _) = crate::read_properties(&pack, &mut macros);
+                let inputs = GameInputs {
+                    lines: line.then(GbuffersInputs::default),
+                    ..Default::default()
+                };
+                let post = load_post(&pack, "", &properties, &macros, &inputs);
+                assert_eq!(
+                    post.programs.len(),
+                    usize::from(!line),
+                    "line={line}, {name}: {:?}",
+                    post.notes
+                );
+                assert_eq!(post.lines.is_some(), line, "{name}: {:?}", post.notes);
+                assert_eq!(
+                    post.shadow_pass, enabled,
+                    "line={line}, {name}: {:?}",
+                    post.notes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_images_request_shadow_buffers_without_a_sampler_and_respect_disable() {
+        check_image_demand(false);
+    }
+
+    #[test]
+    fn line_images_request_shadow_buffers_and_respect_disable() {
+        check_image_demand(true);
+    }
+}

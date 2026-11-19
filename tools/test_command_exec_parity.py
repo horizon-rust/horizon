@@ -12,6 +12,9 @@ command reported to the player's CommandResultCallback. World, entity and item
 changes are observed through probe commands whose feedback reports them
 (execute if, clear with a zero count, data get, scoreboard queries...).
 Messages that depend on time or a random UUID are compared after masking.
+The explicitly scoped vanilla_help comparison projects declared Horizon-only
+native root usage after checking its complete raw callback count; both raw
+captures and the projection boundary are retained in the report.
 Direct falling-block probes also compare the physical entities in each level,
 independently of the command selector's support for those entity types.
 """
@@ -39,6 +42,11 @@ except ImportError:
     import command_exec_corpus as corpus_module
 
 SEED = 1
+
+# vanilla::session_dispatcher adds this documented platform command outside the
+# reference vanilla dispatcher. Do not infer exclusions from unexpected output:
+# any new extension must be declared here explicitly.
+HORIZON_ONLY_COMMAND_ROOTS = frozenset({'modprofile'})
 
 
 def install_datapack_fixtures(world, predicates, functions, jar, advancements=None, loot_tables=None, recipes=None):
@@ -128,6 +136,7 @@ def main():
     parser.add_argument('--orb-water-raw-diagnostic', action='store_true', help='add whole Pos/Motion records')
     parser.add_argument('--orb-lava-fixture', action='store_true', help='guarded server orb lava contact scene')
     parser.add_argument('--orb-lava-raw-diagnostic', action='store_true', help='retain random Pos/Motion as exact raw diagnostics')
+    parser.add_argument('--orb-fire-fixture', action='store_true', help='server orb saved Fire and its burn, tick by tick')
     parser.add_argument('--mob-home-fixture', action='store_true')
     parser.add_argument('--mob-home-holder-removal-diagnostic', action='store_true')
     parser.add_argument('--mob-home-late-detach-control', action='store_true')
@@ -180,6 +189,7 @@ def main():
     parser.add_argument('--mob-health-boost-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument('--sulfur-body-attributes-fixture', action='store_true', help='a sulfur cube\'s body archetype attribute modifiers through /attribute')
     parser.add_argument('--sulfur-body-replace-fixture', action='store_true', help='a sulfur cube\'s body replaced and removed through /data')
+    parser.add_argument('--sulfur-body-item-fixture', action='store_true', help='/item replace on a sulfur cube\'s armor.body')
     parser.add_argument('--sulfur-body-attributes-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
     parser.add_argument('--mob-absorption-fixture', action='store_true', help='a mob\'s Absorption effect once the absorption is used up')
     parser.add_argument('--mob-absorption-infinite-fixture', action='store_true', help='infinite Absorption used up, kept, and beside another infinite effect')
@@ -227,6 +237,8 @@ def main():
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_ITEM_COUNT]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_SHULKER_LOCK]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_POT_HOPPER]
     if args.vehicle_container_diagnostic:
         try:
@@ -373,6 +385,12 @@ def main():
             from orb_lava_corpus import orb_lava
         groups = [('setup', corpus_module.group_setup()),
                   ('orb lava contact', orb_lava(args.orb_lava_raw_diagnostic))]
+    if args.orb_fire_fixture:
+        try:
+            from .orb_fire_corpus import orb_fire
+        except ImportError:
+            from orb_fire_corpus import orb_fire
+        groups = [('setup', corpus_module.group_setup()), ('orb fire', orb_fire())]
     if args.mob_home_fixture:
         try:
             from .mob_home_corpus import mob_home
@@ -398,7 +416,7 @@ def main():
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import contact_fixture
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
-    if args.only == 'hopper pot saved slot':
+    if args.only in ('hopper pot saved slot', 'shulker external lock drop'):
         groups = [g for g in groups if g[0] == args.only]
     elif args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
@@ -417,11 +435,17 @@ def main():
     if args.vehicle_kill_diagnostic:
         from vehicle_kill_corpus import vehicle_kill_contents
         groups = [('setup', corpus_module.group_setup()), ('vehicle kill contents', vehicle_kill_contents(corpus_module.cmd, True))]
+    if args.only in corpus_module.ISOLATED_ITEM_COUNT:
+        groups = [g for g in groups if g[0] == args.only]
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     if any(name in corpus_module.ISOLATED_JUKEBOX_CLOCK for name, _ in groups) and len(groups) != 1:
         parser.error('jukebox clock fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_ITEM_COUNT for name, _ in groups) and len(groups) != 1:
+        parser.error('item count fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_SHULKER_LOCK for name, _ in groups) and len(groups) != 1:
+        parser.error('shulker lock fixture requires --only with its exact group')
     if any(name in corpus_module.ISOLATED_POT_HOPPER for name, _ in groups) and len(groups) != 1:
         parser.error('pot hopper fixture requires --only with its exact group')
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
@@ -467,6 +491,9 @@ def main():
     if args.sulfur_body_replace_fixture:
         from sulfur_body_attributes_corpus import sulfur_body_replace
         groups = [('setup', corpus_module.group_setup()), ('sulfur body replace', sulfur_body_replace())]
+    if args.sulfur_body_item_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_item_replace
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body item replace', sulfur_body_item_replace())]
     if args.mob_absorption_fixture:
         from mob_absorption_corpus import mob_absorption
         groups = [('setup', corpus_module.group_setup()), ('mob depleted absorption', mob_absorption(args.mob_absorption_raw_diagnostic))]
@@ -492,9 +519,7 @@ def main():
         # Generated scripts (tools/parity_fuzz.py): the common setup, then the file's [name, ops] groups only.
         groups = [('setup', corpus_module.group_setup()),
                   *[(name, ops) for name, ops in json.loads(args.groups_file.read_text(encoding='utf-8'))]]
-    script = []
-    for _, lines in groups:
-        script.extend(op for op in lines if not (args.unsynced_randoms and op['op'] == 'sync_randoms'))
+    script = assemble(groups, args.unsynced_randoms)
     # docs/parity-workflow.md "Randoms that repeat": both engines' unseeded randoms repeat for a script that syncs them.
     synced = any(op['op'] == 'sync_randoms' for op in script)
     script_path = build / 'script.jsonl'
@@ -581,7 +606,7 @@ def main():
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'], 'compile-rust', cwd=lab.ROOT)
+        run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], 'compile-rust', cwd=lab.ROOT)
         metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
     rust_dir = build / 'rust'
@@ -695,7 +720,11 @@ def main():
                   {'cmd': op['cmd'], 'comparison': op['comparison'],
                    'vanilla_results': v['results'], 'rust_results': r['results']}
                   for op, v, r in zip(recorded_ops, vanilla, rust) if op.get('comparison')],
-              'scope': 'Feedback and failure messages (text and resolved style), chat lines, and CommandResultCallback results of commands run by the single-player owner of an integrated server; world, entity and item effects through probe commands. Explicit positive_result operations compare presence only; their unmodified raw counts remain in the records and comparison_overrides.'}
+              'vanilla_help_projection': {
+                  'excluded_native_roots': sorted(HORIZON_ONLY_COMMAND_ROOTS),
+                  'native_count_guard': 'One successful integer callback must equal the complete raw usage-line count before subtracting excluded lines.',
+                  'raw_records': ['vanilla.jsonl', 'rust.jsonl']},
+              'scope': 'Feedback and failure messages (text and resolved style), chat lines, and CommandResultCallback results of commands run by the single-player owner of an integrated server; world, entity and item effects through probe commands. Explicit positive_result operations compare presence only; vanilla_help projects only declared Horizon-only native root usage after validating the complete raw callback count. Vanilla expected records are unchanged; unmodified raw counts remain in the records and comparison_overrides.'}
     for override in report['comparison_overrides']:
         print(f'{override["comparison"]}: {override["cmd"]}: '
               f'Java {override["vanilla_results"]}, Horizon {override["rust_results"]}', flush=True)
@@ -703,6 +732,16 @@ def main():
     if mismatches and not args.allow_gaps:
         sys.exit(f'{len(mismatches)} command execution mismatches; see {build}')
     print(f'Command execution parity report: {report_path}')
+
+
+def assemble(groups, unsynced_randoms=False):
+    """The script: the groups in order, with corpus_module.group_cleanup() between two groups."""
+    script = []
+    for index, (name, lines) in enumerate(groups):
+        if index and groups[index - 1][0] != 'setup' and name not in corpus_module.CONTINUES_PREVIOUS:
+            script.extend(corpus_module.group_cleanup())
+        script.extend(op for op in lines if not (unsynced_randoms and op['op'] == 'sync_randoms'))
+    return script
 
 
 def require_anger_reference(op, record):
@@ -735,11 +774,124 @@ MASKS = [
 GAMERULES = re.compile(r'/gamerule \(([^)]*)\)')
 
 
+ATTRIBUTES_LIST = re.compile(r'attributes: \[')
+
+
+def unordered_attributes(record):
+    """Sort only the root attributes list in full `/data get entity` feedback.
+
+    `AttributeMap.pack` lists the instances in the iteration order of an `Object2ObjectOpenHashMap` keyed by
+    `Holder.Reference`, which keeps `Object.hashCode`: an identity hash, so the order changes with the JVM's
+    startup (the same script gives another order under another main class). Each entry keeps its text and
+    styles; only the entries' order is normalised. parity_fuzz compares these lists unordered too."""
+    out = json.loads(json.dumps(record))
+    if not re.fullmatch(r'/data get entity \S+', out.get('cmd', '')):
+        return out
+    for line in out.get('messages') or []:
+        if not isinstance(line, list) or not all(isinstance(span, list) and len(span) == 2
+                                               and isinstance(span[0], str) for span in line):
+            continue
+        chars = [(ch, span[1]) for span in line for ch in span[0]]
+        text = ''.join(ch for ch, _ in chars)
+        prefix = ' has the following entity data: '
+        body = text.find(prefix)
+        if body < 0 or text[body + len(prefix):body + len(prefix) + 1] != '{':
+            continue
+        # Find actual root keys, not quoted text, suffixes of other keys or nested custom data.
+        root = body + len(prefix)
+        stack, quote, matches = [], None, []
+        i = root
+        while i < len(text):
+            ch = text[i]
+            if quote:
+                if ch == '\\':
+                    i += 1
+                elif ch == quote:
+                    quote = None
+            elif ch in ('"', "'"):
+                quote = ch
+            elif ch in '[{':
+                stack.append(']' if ch == '[' else '}')
+            elif ch in ']}':
+                if not stack or stack.pop() != ch:
+                    break
+                if not stack:
+                    i += 1
+                    break
+            elif stack == ['}'] and (i == root + 1 or text[i - 2:i] == ', '):
+                match = ATTRIBUTES_LIST.match(text, i)
+                if match:
+                    matches.append(match)
+            i += 1
+        # Malformed or truncated SNBT stays exact, rather than being repaired by sorting.
+        if i != len(text) or stack or quote or not matches:
+            continue
+        for match in reversed(matches):
+            start = i = match.end()
+            depth, quoted, cuts = 0, None, [start]
+            while i < len(text):
+                ch = text[i]
+                if quoted:
+                    if ch == '\\':
+                        i += 1
+                    elif ch == quoted:
+                        quoted = None
+                elif ch in ('"', "'"):
+                    quoted = ch
+                elif ch in '[{':
+                    depth += 1
+                elif ch in ']}':
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif ch == ',' and depth == 0 and text[i + 1:i + 2] == ' ':
+                    cuts += [i, i + 2]
+                    i += 1
+                i += 1
+            if len(cuts) == 1:
+                continue
+            cuts.append(i)
+            entries = [chars[a:b] for a, b in zip(cuts[0::2], cuts[1::2])]
+            if not all(entry and entry[0][0] == '{' and entry[-1][0] == '}' for entry in entries):
+                continue
+            separators = [chars[a:b] for a, b in zip(cuts[1::2], cuts[2::2])]
+            ordered = sorted(entries, key=lambda e: json.dumps(e))
+            joined = ordered[0]
+            for separator, entry in zip(separators, ordered[1:]):
+                joined = joined + separator + entry
+            chars[start:i] = joined
+            text = ''.join(ch for ch, _ in chars)
+        spans = []
+        for ch, style in chars:
+            if spans and spans[-1][1] == style:
+                spans[-1][0] += ch
+            else:
+                spans.append([ch, style])
+        line[:] = spans
+    return out
+
+
 def masked(record):
-    text = json.dumps(record['messages'], ensure_ascii=False)
-    # GameRuleCommand registers the rules in identity-hash order, different
-    # in every JVM: compare /help's gamerule alternatives as a set.
-    text = GAMERULES.sub(lambda m: '/gamerule (' + '|'.join(sorted(m.group(1).split('|'))) + ')', text)
+    messages = record['messages']
+    if record.get('cmd') == '/help':
+        messages = json.loads(json.dumps(messages))
+        for line in messages:
+            if len(line) != 1:
+                continue
+            match = GAMERULES.fullmatch(line[0][0])
+            if match is None:
+                continue
+            alternatives = match.group(1).split('|')
+            pairs = list(zip(alternatives[::2], alternatives[1::2]))
+            # GameRules.visitGameRuleTypes visits GameRuleMap's identity-hash
+            # keySet, not the built-in registry's insertion order. Only rule
+            # identities are unordered: GameRuleCommand.register always adds
+            # each short name immediately before its minecraft-qualified alias.
+            if len(alternatives) % 2 == 0 and all(
+                    re.fullmatch(r'[a-z0-9_./-]+', short) and qualified == 'minecraft:' + short
+                    for short, qualified in pairs):
+                line[0][0] = '/gamerule (' + '|'.join(name for pair in sorted(pairs) for name in pair) + ')'
+    text = json.dumps(messages, ensure_ascii=False)
     for pattern, replacement in MASKS:
         text = pattern.sub(replacement, text)
     return text
@@ -756,14 +908,46 @@ def positive_result(record):
     return count > 0
 
 
+def vanilla_help(record):
+    """Project native root usage, never repairing an incorrect raw callback."""
+    messages, results = record.get('messages'), record.get('results')
+    if record.get('cmd') != '/help' or not isinstance(messages, list):
+        return None
+    if (not isinstance(results, list) or len(results) != 1 or
+            not isinstance(results[0], list) or len(results[0]) != 2 or
+            results[0][0] is not True or type(results[0][1]) is not int or
+            results[0][1] != len(messages)):
+        return None
+    kept, excluded = [], set()
+    for line in messages:
+        # HelpCommand sends one literal component per root's smart usage.
+        if (not isinstance(line, list) or len(line) != 1 or
+                not isinstance(line[0], list) or len(line[0]) != 2 or
+                not isinstance(line[0][0], str) or not line[0][0].startswith('/')):
+            return None
+        root = line[0][0][1:].split(' ', 1)[0]
+        if root in HORIZON_ONLY_COMMAND_ROOTS:
+            if root in excluded:
+                return None
+            excluded.add(root)
+        else:
+            kept.append(line)
+    return {**record, 'messages': kept, 'results': [[True, results[0][1] - len(excluded)]]}
+
+
 def compare(v, r, comparison=None):
-    # Explicit per-operation scope for random counts (for example explosion
-    # fire). All raw feedback/results remain in the JSON and report; every
-    # other command still compares exact feedback, styles and results.
+    # Explicit per-operation scope retains all raw feedback/results in the JSON
+    # and report. The default still compares exact feedback, styles and results.
     if comparison == 'positive_result':
         left, right = positive_result(v), positive_result(r)
         return None if left is not None and right is not None and left == right else 'positive_result'
-    if comparison is not None:
+    if comparison == 'vanilla_help':
+        if v.get('cmd') != '/help':
+            return 'vanilla_help'
+        r = vanilla_help(r)
+        if r is None:
+            return 'vanilla_help'
+    elif comparison is not None:
         raise ValueError(f'unknown command comparison: {comparison}')
     if v.get("state") != r.get("state"):
         return "state"
