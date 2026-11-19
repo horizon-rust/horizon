@@ -146,25 +146,18 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   stacks of panels, the stone texture behind the page and Horizon's pixel landscape (a dawn or a
   sunset) behind the hero. Light and dark follow the system, with a toggle. A giant wordmark in
   pixels sits in the footer.
-- **Game**: vanilla's screens. The on-screen keyboard is a rounded plate of keys in the page
-  colour, the focused key in the accent. Horizon's graphics, controller, Extras and Shaders
-  settings screens take the Blocks palette below in a lighter form (`graphics_style.rs`, through
-  the shared `settings_shell.rs`); with no style given, they draw on vanilla's own surfaces
-  ([docs/ui-kit.md](ui-kit.md#its-look)).
+- **Game**: vanilla's look throughout. Horizon's graphics, controller, Extras and Shaders settings
+  screens draw on vanilla's own surfaces (`graphics_style.rs`, through the shared
+  `settings_shell.rs`; [docs/ui-kit.md](ui-kit.md#its-look)), and the overlays (the on-screen
+  keyboard among them) in vanilla's greys and the resource pack's font.
 
 ## Blocks
 
-A blocky, Minecraft-like look in Horizon's purple, for the website, the redesigned launcher and
-the game's graphics, controller, Extras and Shaders settings screens:
+A blocky, Minecraft-like look in Horizon's purple, for the website and the redesigned launcher:
 Minecraft's inventory rather than a document. Its colours are `horizon_theme::Blocks`
 (`BLOCKS_LIGHT`, `BLOCKS_DARK`), which `tokens.css` carries under the same names as before plus
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`
 of the main action. The game's other menus keep `LIGHT` and `DARK`.
-
-In the game these settings screens draw the Blocks palette in GUI pixels, lighter than the
-website's blocks so the world stays in view: square panels of the page colour, see-through, with a
-1 px edge and no bevel or lip, flat controls, the violet face on Done, and vanilla's font rather
-than Pixelify. Hover and focus are vanilla's white edge.
 
 - **Pixel type for what names and what you act on.** Headings, navigation, buttons and the
   wordmark use Pixelify Sans (OFL; Medium, SemiBold, Bold); paragraphs and numbers stay in Geist

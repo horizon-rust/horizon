@@ -71,8 +71,8 @@ Cases:
 - osk_sign_done: on a sign Done (Menu) closes the sign with what was typed, as its Done button.
 - osk_chat_suggestions: over chat with the keyboard open, RT fills in the selected command suggestion (Tab) and the
   right stick picks another first (Up and Down), without closing the keyboard.
-- osk_labels: the on-screen keyboard over chat draws its keys' labels, in Horizon's look and with no menu style given
-  (`HORIZON_MENU_STYLE=vanilla`, where the overlays have no fonts of their own and use the pack's).
+- osk_labels: the on-screen keyboard over chat draws its keys' labels in the game's look, where the overlays have no
+  fonts of their own and use the pack's.
 Needs built fast binaries (`cargo build --profile fast -p horizon-game -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 - radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
@@ -2389,25 +2389,22 @@ def label_pixels(rows, width, channels, row, left, units):
 
 
 def osk_labels(args, name):
-    failures = []
-    for look, env in (('horizon', None), ('vanilla', {'HORIZON_MENU_STYLE': 'vanilla'})):
-        game = Game(args, f'{name}-{look}', world=True, env=env)
-        check = Check()
-        try:
-            game.pad('up')
-            time.sleep(SETTLE)
-            check(game.menu()['keyboard'], f'{look}: the keyboard did not open over chat')
-            path = game.home / 'keyboard.png'
-            game.ctl('screenshot', path, timeout=120)
-            shot(game, f'osk-labels-{look}')
-            rows, width, channels = png_rows(path)
-            for key, (row, left, units) in LABELLED_KEYS.items():
-                ink = label_pixels(rows, width, channels, row, left, units)
-                check(ink >= LABEL_PIXELS, f'{look}: the {key} key draws no label ({ink} bright pixels)')
-        finally:
-            game.quit()
-        failures += check.failures
-    return failures
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.pad('up')
+        time.sleep(SETTLE)
+        check(game.menu()['keyboard'], 'the keyboard did not open over chat')
+        path = game.home / 'keyboard.png'
+        game.ctl('screenshot', path, timeout=120)
+        shot(game, 'osk-labels')
+        rows, width, channels = png_rows(path)
+        for key, (row, left, units) in LABELLED_KEYS.items():
+            ink = label_pixels(rows, width, channels, row, left, units)
+            check(ink >= LABEL_PIXELS, f'the {key} key draws no label ({ink} bright pixels)')
+    finally:
+        game.quit()
+    return check.failures
 
 def walk_to_field(game, check):
     """The D-pad, towards the screen's text field."""

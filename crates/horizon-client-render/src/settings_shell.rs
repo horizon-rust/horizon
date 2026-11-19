@@ -365,18 +365,6 @@ pub(crate) fn list<P: Copy, S: Copy>(
     let shows = |y: f32, h: f32| y + h > cols.top && y < cols.bottom;
     for line in lines {
         let y = row_y(line);
-        if let Some((_, panel)) = line.group
-            && shows(y + style::GROUP_ROW, panel)
-        {
-            let rect = [cols.list_x, y + style::GROUP_ROW, cols.list_w, panel];
-            style::group(batch, atlas, rect);
-        }
-    }
-    // A group's first row, which has no rule over it.
-    let mut first = false;
-    for line in lines {
-        let y = row_y(line);
-        let after_name = std::mem::replace(&mut first, line.group.is_some());
         if !shows(y, line.h()) {
             continue;
         }
@@ -389,10 +377,6 @@ pub(crate) fn list<P: Copy, S: Copy>(
             batch.text_styled(atlas, &name, cols.list_x + 2.0, y + dy, color, true);
             continue;
         };
-        if !after_name {
-            let rule = [cols.list_x + 8.0, y, cols.list_w - 16.0, 1.0];
-            style::rule(batch, atlas, rule);
-        }
         row(batch, setting, y);
     }
     if lines.is_empty() {
@@ -530,7 +514,6 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
         crate::widgets::target_as(rect, kind);
     }
     let color = if live { style::WHITE } else { style::muted() };
-    let soft = if live { style::soft() } else { style::muted() };
     let ty = y + ((style::ROW - 8.0) / 2.0).floor();
     let lit = live && (hover || held);
     let left = rect[0] + style::INSET;
@@ -540,27 +523,20 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
         style::button(batch, atlas, wide, &Text::literal(name), (lit, live, false));
     } else {
         let value = value.unwrap_or_default();
-        let vw = atlas.font.width(value);
         // A warning tag takes its room from the name, before the control.
         let tag = tag.filter(|_| live);
         let tag_w = tag.map_or(0.0, |tag| atlas.font.width(tag) + 6.0);
-        // Where the control starts, and the value's text for a slider at rest.
+        // Where the control starts.
         let start = match (switch, slider) {
             (Some(_), _) => right - style::CONTROL_H,
-            (None, Some(_)) if active || style::vanilla_surfaces() => tx,
-            (None, Some(_)) => right - vw,
+            (None, Some(_)) => tx,
             (None, None) => right - style::value_w(atlas, value),
         };
         match (switch, slider) {
             (Some(on), _) => style::checkbox(batch, atlas, right, y, on, (lit, live)),
-            // A slider shows its track, the value on it, while it is pointed at, focused or held.
             (None, Some(position)) => {
                 let value = Text::literal(value);
-                if active || style::vanilla_surfaces() {
-                    style::slider(batch, atlas, control, &value, position, (lit, live));
-                } else {
-                    batch.text_styled(atlas, &value, start, ty, soft, true);
-                }
+                style::slider(batch, atlas, control, &value, position, (lit, live));
             }
             (None, None) if key.is_some() => {
                 let value = Text::literal(value);

@@ -1,7 +1,6 @@
-//! The settings pages on vanilla's own surfaces (`menu_style::Surfaces::Vanilla`, the look with
-//! no style given): what vanilla's Options screens draw, from the player's resource packs, so a
-//! pack that restyles vanilla's menus restyles these too. The pages keep their own layout; only
-//! the paint changes.
+//! The settings pages on vanilla's own surfaces: what vanilla's Options screens draw, from the
+//! player's resource packs, so a pack that restyles vanilla's menus restyles these too. The pages
+//! keep their own layout; only the paint changes.
 use super::{WHITE, scrolling_label};
 use crate::{
     hud::{HudAtlas, HudBatch, rgba},
