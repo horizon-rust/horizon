@@ -6126,6 +6126,7 @@ impl Renderer {
         {
             log::warn!("Horizon renderer: the window surface did not configure ({e})");
             self.frame_gen.refused = true;
+            self.surface_refused();
         }
     }
     /// HDR calibration's test picture (`crate::hdr_calibration`) while it runs, else None.
@@ -9373,6 +9374,7 @@ impl Renderer {
                 sky_visible,
                 scene: self.ray_scene.as_ref(),
                 lightmap: &self.lightmap_pixels,
+                jitter: self.world_post.jitter_clip(),
             });
         }
         // One of Horizon's own packs: its shadow passes, from the shadow camera's lists.
