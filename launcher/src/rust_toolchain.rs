@@ -600,12 +600,18 @@ fn takes_cargo_times(dir: &Path) -> bool {
     let Ok(file) = fs::File::create(&probe) else {
         return true;
     };
-    let taken = file
-        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
-        .is_ok();
+    let set = file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1));
     drop(file);
     let _ = fs::remove_file(&probe);
-    taken
+    time_taken(set)
+}
+
+/// What setting the probe's time says about its folder: only Windows' answer for a time the
+/// volume can't store (os error 87, what FAT32 and exFAT give) moves the Cargo home. A probe that
+/// fails for another reason keeps it in the build folder, so a folder only the player can write
+/// to never sends Cargo's configuration to a shared one.
+fn time_taken(set: std::io::Result<()>) -> bool {
+    !matches!(set, Err(error) if error.raw_os_error() == Some(87))
 }
 
 fn dir_for(host: &Host) -> PathBuf {
@@ -1434,6 +1440,19 @@ mod tests {
         assert!(takes_cargo_times(&dir));
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "the probe is gone");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Only the answer FAT32 and exFAT give for a time they can't store moves the Cargo home; a
+    /// probe refused for another reason keeps it in the build folder.
+    #[test]
+    fn only_a_time_the_drive_cant_store_moves_the_cargo_home() {
+        assert!(time_taken(Ok(())));
+        assert!(!time_taken(Err(std::io::Error::from_raw_os_error(87))));
+        assert!(
+            time_taken(Err(std::io::Error::from_raw_os_error(5))),
+            "access denied"
+        );
+        assert!(time_taken(Err(std::io::Error::other("anything else"))));
     }
 
     /// #16718: the Settings page's proxy reaches the build's Cargo, which downloads the crates and
