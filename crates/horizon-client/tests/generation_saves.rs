@@ -226,6 +226,18 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The save that closes the world (`save_level`'s `Streaming::prepare_save` loop, waiting).
+    fn close(mut self) {
+        self.streaming.save(&mut self.world, true);
+        for key in std::mem::take(&mut self.world.modified) {
+            if let Some(chunk) = self.world.chunks.get(&key) {
+                self.generator.save_chunk(chunk);
+            }
+        }
+    }
+}
+
 fn worker_context(root: &Path) -> Arc<WorkerContext> {
     let assets = Arc::new(Assets::load(root).unwrap());
     let render = Arc::new(
@@ -314,13 +326,21 @@ fn a_failed_generation_ends_the_session_and_nothing_unfinished_is_saved_final() 
     let failed = (10, 0);
     *generator.fails_at.lock().unwrap() = Some(failed);
     session.settle_at((8, 0));
-    assert!(
+    // Tried once: there is no retry.
+    assert_eq!(
         generator
             .failures
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
     );
     assert!(session.streaming.fatal().is_some());
+    // A `/forceload add` of the failed column ends instead of waiting for it.
+    assert!(
+        session
+            .streaming
+            .set_forced_loaded(&mut session.world, failed.0, failed.1, true)
+    );
+    assert!(!session.world.chunks.contains_key(&failed));
     session.save();
     drop(session);
     assert_finals_whole(&generator);
@@ -373,8 +393,7 @@ fn a_final_chunk_that_fails_to_generate_again_decorates_nothing() {
             > 0
     );
     assert!(session.streaming.fatal().is_some());
-    session.save();
-    drop(session);
+    session.close();
     assert_finals_whole(&generator);
     assert_eq!(generator.finished.lock().unwrap()[&edge].len(), 1);
     let protos = generator.protos.lock().unwrap();
