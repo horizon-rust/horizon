@@ -408,6 +408,7 @@ fn post_pack_with_material(
 
 const MATERIAL: &str =
     "fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }\n";
+const ENTITY: &str = "fn entity(input: EntityInput) -> Surface { return Surface(input.albedo); }\n";
 
 fn refused(problems: &[Problem], name: &str) -> Vec<(String, usize)> {
     let needle = format!("constructs `{name}`: it is Horizon's and may gain fields");
@@ -498,6 +499,34 @@ fn a_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface() {
     post_pack_with_material(MATERIAL, POST, tonemap).unwrap();
 }
 
+/// The entity stage's fixture, which the frame identity test draws with
+/// (tools/test_frame_identity_parity.py).
+#[test]
+fn the_entity_fixture_passes() {
+    let pack = Pack::read(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/samples/entity-stage"
+    )))
+    .unwrap();
+    let report = check(&pack).unwrap();
+    let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
+    assert_eq!(kinds, [StageKind::Sky, StageKind::Entity]);
+}
+
+/// The fixture of a pack that fogs its stages itself, as vanilla does.
+#[test]
+fn the_own_fog_fixture_passes() {
+    let pack = Pack::read(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/samples/own-fog"
+    )))
+    .unwrap();
+    let report = check(&pack).unwrap();
+    let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
+    assert_eq!(kinds, [StageKind::Material, StageKind::Entity]);
+    assert!(!report.material_fog);
+}
+
 /// A pack of the entity stage alone.
 fn entity_pack(entity: &str) -> Result<horizon_shader_api::Report, Vec<Problem>> {
     let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
@@ -518,7 +547,7 @@ fn the_entity_stage_is_checked_like_the_material_s() {
                let tinted = textureLoad(shadow_color, vec2<i32>(p.xy * vec2<f32>(textureDimensions(shadow_color))), 0);\n    \
                let lamp = block_light_color(input.position);\n    \
                let facing = max(dot(input.normal, frame.light_direction), 0.0) * input.shade;\n    \
-               var light = input.lightmap * (1.0 + input.emission) + lamp.rgb * lamp.a * input.light.x;\n    \
+               var light = input.lightmap * (1.0 + f32(input.full_light)) + lamp.rgb * lamp.a * input.light.x;\n    \
                light += input.colored_light + sun * through * tinted.rgb * facing * f32(frame.has_shadow);\n    \
                if input.kind == 4u || input.translucent { light *= 0.5 + input.uv.x * input.screen.y; }\n    \
                let base = mix(input.albedo.rgb * input.tint.rgb, input.overlay.rgb, input.overlay.a);\n    \
@@ -576,7 +605,7 @@ fn the_entity_stage_is_checked_like_the_material_s() {
     // `EntityInput` may gain fields: read, not constructed.
     let built = "fn entity(input: EntityInput) -> Surface {\n    \
                  let again = EntityInput(input.albedo, input.tint, input.overlay, input.lightmap, input.shade, \
-                 input.position, input.emission, input.normal, input.kind, input.colored_light, \
+                 input.position, input.full_light, input.normal, input.kind, input.colored_light, \
                  input.translucent, input.light, input.uv, input.screen);\n    \
                  return Surface(again.albedo);\n}\n";
     let p = entity_pack(built).expect_err("should fail");
@@ -745,7 +774,7 @@ fn post(input: PostInput) -> vec4<f32> {
     // maps are read from either.
     let built = "fn post(input: PostInput) -> vec4<f32> {
     let hit = RayHit(1.0, vec3<f32>(0.0), vec3<f32>(0.0), vec2<f32>(0.0), input.color, input.color,
-        vec2<f32>(0.0), 0u, 0u, 0.0, 0u, false, vec4<f32>(0.0), 7u);
+        1.0, 1.0, vec2<f32>(0.0), 0u, 0u, 0.0, 0u, false, false, vec4<f32>(0.0), 7u);
     return hit_normal_map(hit);
 }
 ";
@@ -753,20 +782,23 @@ fn post(input: PostInput) -> vec4<f32> {
     assert_eq!(refused(&problems, "RayHit"), [("post.wgsl".to_owned(), 2)]);
 }
 
-/// A material pack: `[material]` with `keys`, its `material.wgsl` and a shared `helpers.wgsl`.
+/// A 0.2 pack with one stage, `[{stage}]` with `keys`: its `{stage}.wgsl` holds `body`, and a
+/// shared `helpers.wgsl`.
 fn coverage_pack(
+    stage: &str,
     keys: &str,
-    material: &str,
+    body: &str,
     helpers: &str,
 ) -> Result<horizon_shader_api::Report, Vec<Problem>> {
     let manifest = format!(
         "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
-         shared = [\"helpers.wgsl\"]\n[material]\nfile = \"material.wgsl\"\n{keys}"
+         shared = [\"helpers.wgsl\"]\n[{stage}]\nfile = \"{stage}.wgsl\"\n{keys}"
     );
+    let file = format!("{stage}.wgsl");
     let files = [
         (MANIFEST, manifest.as_str()),
         ("helpers.wgsl", helpers),
-        ("material.wgsl", material),
+        (&file, body),
     ]
     .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
     .into();
@@ -774,39 +806,52 @@ fn coverage_pack(
 }
 
 #[test]
-fn a_discard_reachable_from_material_needs_pack_coverage() {
-    let direct = "fn material(input: MaterialInput) -> Surface {\n    \
-                  if input.albedo.a < 0.3 {\n        discard;\n    }\n    \
-                  return Surface(input.albedo);\n}\n";
+fn a_discard_reachable_from_material_or_entity_needs_pack_coverage() {
     // Through a shared helper, two calls deep, inside a loop.
     let helpers = "fn cut(a: f32) {\n    for (var i = 0; i < 2; i++) {\n        \
                    if a < 0.3 {\n            discard;\n        }\n    }\n}\n\
                    fn holes(a: f32) -> f32 {\n    cut(a);\n    return a;\n}\n";
-    let through = "fn material(input: MaterialInput) -> Surface {\n    \
-                   return Surface(vec4(input.albedo.rgb, holes(input.albedo.a)));\n}\n";
-    let refused = |keys: &str, material: &str, helpers: &str| {
-        let p = coverage_pack(keys, material, helpers).expect_err("should fail");
-        let p: Vec<_> = p
-            .into_iter()
-            .filter(|p| p.message.contains("`discard` reachable from `material`"))
-            .collect();
-        assert_eq!(p.len(), 1, "{p:#?}");
-        assert!(p[0].message.contains("coverage = \"pack\""), "{p:#?}");
-        (p[0].file.clone(), p[0].line)
-    };
     let none = "fn unused() {}\n";
-    assert_eq!(refused("", direct, none), ("material.wgsl".into(), 3));
-    assert_eq!(refused("", through, helpers), ("helpers.wgsl".into(), 4));
-    let engine = "coverage = \"engine\"\n";
-    assert_eq!(
-        refused(engine, through, helpers),
-        ("helpers.wgsl".into(), 4)
-    );
-    let own = "coverage = \"pack\"\n";
-    coverage_pack(own, direct, none).unwrap();
-    coverage_pack(own, through, helpers).unwrap();
-    // A helper with a discard that `material` never calls cuts no hole.
-    coverage_pack("", MATERIAL, helpers).unwrap();
+    for (stage, input, plain) in [
+        ("material", "MaterialInput", MATERIAL),
+        ("entity", "EntityInput", ENTITY),
+    ] {
+        let direct = format!(
+            "fn {stage}(input: {input}) -> Surface {{\n    \
+             if input.albedo.a < 0.3 {{\n        discard;\n    }}\n    \
+             return Surface(input.albedo);\n}}\n"
+        );
+        let through = format!(
+            "fn {stage}(input: {input}) -> Surface {{\n    \
+             return Surface(vec4(input.albedo.rgb, holes(input.albedo.a)));\n}}\n"
+        );
+        let refused = |keys: &str, body: &str, helpers: &str| {
+            let p = coverage_pack(stage, keys, body, helpers).expect_err("should fail");
+            let p: Vec<_> = p
+                .into_iter()
+                .filter(|p| {
+                    p.message
+                        .contains(&format!("`discard` reachable from `{stage}`"))
+                })
+                .collect();
+            assert_eq!(p.len(), 1, "{p:#?}");
+            assert!(p[0].message.contains("coverage = \"pack\""), "{p:#?}");
+            (p[0].file.clone(), p[0].line)
+        };
+        let own_file = format!("{stage}.wgsl");
+        assert_eq!(refused("", &direct, none), (own_file, 3));
+        assert_eq!(refused("", &through, helpers), ("helpers.wgsl".into(), 4));
+        let engine = "coverage = \"engine\"\n";
+        assert_eq!(
+            refused(engine, &through, helpers),
+            ("helpers.wgsl".into(), 4)
+        );
+        let own = "coverage = \"pack\"\n";
+        coverage_pack(stage, own, &direct, none).unwrap();
+        coverage_pack(stage, own, &through, helpers).unwrap();
+        // A helper with a discard that the stage never calls cuts no hole.
+        coverage_pack(stage, "", plain, helpers).unwrap();
+    }
 }
 
 #[test]
@@ -815,6 +860,7 @@ fn a_traced_pack_s_own_hit_helper_is_refused_as_its_own_trace_is() {
         "trace_any",
         "trace_layers",
         "RAY_TRANSLUCENT",
+        "RAY_ENTITY",
         "hit_normal_map",
         "block_pbr_maps",
     ];
@@ -920,6 +966,19 @@ fn a_traced_material_stage_is_checked_without_the_scene_and_with_it() {
     assert!(report.stages[0].scene.is_some());
 }
 
+#[test]
+fn a_material_can_read_hdr_light_sources_and_ray_hit_looks_together() {
+    let material = "fn material(input: MaterialInput) -> Surface {
+    let hit = trace(input.position, frame.sun_direction, 64.0);
+    let tier = f32(input.light_source_tier);
+    return Surface(vec4(frame.full_lightmap * tier * hit.ao, 1.0));
+}";
+    let report = traced_material(material, "", &[]).unwrap();
+    let stage = &report.stages[0];
+    assert!(stage.light_source() && stage.traces_looks());
+    assert!(!report.looks());
+}
+
 /// Ordinary `[[post]]` entries sharing a file are built from the first entry's, `files` and all,
 /// as before compute passes: only compute entries are built per entry.
 #[test]
@@ -957,7 +1016,7 @@ fn a_material_stage_that_doesn_t_trace_is_built_as_before() {
     let report = traced_material(quiet, "", &[]).unwrap();
     assert!(report.stages[0].scene.is_none() && report.stages[0].scene_source.is_none());
     // Its composition before `trace` reached the material stage, from the same pack with a
-    // post pass (which `[ray_tracing]` needed then).
+    // post pass (which `[ray_tracing]` needed then), but for the frame's fog fields since.
     let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
                     [material]\nfile = \"material.wgsl\"\n[[post]]\nfile = \"post.wgsl\"\n\
                     [tonemap]\nfile = \"tonemap.wgsl\"\n[ray_tracing]\n";
@@ -973,7 +1032,7 @@ fn a_material_stage_that_doesn_t_trace_is_built_as_before() {
     let composed = horizon_shader_api::compose(&pack, StageKind::Material, "material.wgsl");
     assert_eq!(
         horizon_shader_api::package::sha256_hex(composed.text.as_bytes()),
-        "a8df6b5822f7cb911604859061d438ea45924677ff146376e249e7f2e38768d3"
+        "b60d3c32cdaa469cdff8b8b746769b88229fbd0ad0cc89a757a17b3d51cf1b49"
     );
     // Without the key `trace` is the pack's own name, in the material stage too.
     let own = "fn trace(c: vec4<f32>) -> vec4<f32> { return c; }\n\
@@ -1035,6 +1094,23 @@ fn a_ray_from_a_vertex_shader_is_refused() {
         [("material.wgsl".to_owned(), 3)],
         "{problems:#?}"
     );
+    // Nor is the entity layer, in either function.
+    let entities = displaced.replace("8.0)", "8.0, RAY_ENTITY)");
+    let entities = entities.replace("trace_any(", "trace_any_layers(");
+    let problems = traced_material(&entities, "[displacement]\n", &[]).unwrap_err();
+    assert_eq!(
+        reached(&problems, "displacement"),
+        [("material.wgsl".to_owned(), 3)],
+        "{problems:#?}"
+    );
+    let entities = vertex.replace("8.0)", "8.0, RAY_ENTITY)");
+    let entities = entities.replace("trace(", "trace_layers(");
+    let problems = traced_material(MATERIAL, keys, &[("vertex.wgsl", &entities)]).unwrap_err();
+    assert_eq!(
+        reached(&problems, "vertex"),
+        [("vertex.wgsl".to_owned(), 1)],
+        "{problems:#?}"
+    );
     // The material's own rays beside both are its to trace.
     let both = format!(
         "{REFLECTING}fn displacement(input: DisplacementInput) -> f32 {{ return input.height; }}\n"
@@ -1042,4 +1118,398 @@ fn a_ray_from_a_vertex_shader_is_refused() {
     let plain = "fn vertex(input: VertexInput) -> vec3<f32> { return input.position; }\n";
     let keys = format!("{keys}[displacement]\n");
     traced_material(&both, &keys, &[("vertex.wgsl", plain)]).unwrap();
+}
+
+/// A post pass that reads the entity layer: what of an entity the sun's ray meets first.
+const ENTITY_SHADOWED: &str = "fn post(input: PostInput) -> vec4<f32> {
+    let p = view_position(input.uv, input.depth);
+    let hit = trace_layers(p, frame.sun_direction, 64.0, RAY_SOLID | RAY_ENTITY);
+    let mob = select(0.0, 1.0, hit.entity);
+    let shadowed = f32(trace_any_layers(p, frame.sun_direction, 64.0, RAY_ENTITY));
+    return vec4<f32>(hit.albedo.rgb * mob + hit_normal_map(hit).rgb * shadowed, 1.0);
+}
+";
+
+/// The entity layer is only a pack's whose files name `RAY_ENTITY`, anywhere outside a comment:
+/// its post pass is checked without the scene and with it (each translated to SPIR-V, HLSL and
+/// Metal), and has `RayHit.entity`; another pack's has neither.
+#[test]
+fn the_entity_layer_is_the_pack_s_that_names_it() {
+    let report = traced(ENTITY_SHADOWED).unwrap();
+    let post = &report.stages[0];
+    assert!(post.traces_entities());
+    let plain = naga::valid::Capabilities::default();
+    assert!(!ray_queries(&post.module) && valid(&post.module, plain));
+    let scene = post.scene.as_ref().unwrap();
+    assert!(valid(scene, plain | naga::valid::Capabilities::RAY_QUERY));
+    // Dead code names it as well.
+    let dead = format!("fn unused() -> u32 {{ return RAY_ENTITY; }}\n{SHADOWED}");
+    assert!(traced(&dead).unwrap().stages[0].traces_entities());
+    // A comment doesn't; nor does a pack without `[ray_tracing]`, which has no layers at all.
+    let commented = format!("// RAY_ENTITY\n{SHADOWED}");
+    assert!(!traced(&commented).unwrap().stages[0].traces_entities());
+    assert!(post_pack(ENTITY_SHADOWED, TONEMAP, "").is_err());
+    // `entity` is a field only where the layer is.
+    let reads = SHADOWED.replace("hit.material + hit.tags", "u32(hit.entity)");
+    let problems = traced(&reads).unwrap_err();
+    assert!(problems[0].message.contains("entity"), "{problems:#?}");
+    let named = format!("const LAYERS: u32 = RAY_ENTITY;\n{reads}");
+    assert!(traced(&named).unwrap().stages[0].traces_entities());
+}
+
+/// Pin the post and material WGSL of a pack that reads `hit.tint` and `hit.emission` and leaves
+/// the entity layer off. The miss-only builds keep their old hashes; the scene builds add looks.
+#[test]
+fn a_traced_pack_that_doesn_t_name_ray_entity_composes_as_before() {
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [material]\nfile = \"material.wgsl\"\n[[post]]\nfile = \"post.wgsl\"\n\
+                    [tonemap]\nfile = \"tonemap.wgsl\"\n[ray_tracing]\n";
+    let files = [
+        (MANIFEST, manifest),
+        ("material.wgsl", REFLECTING),
+        ("post.wgsl", SHADOWED),
+        ("tonemap.wgsl", TONEMAP),
+    ]
+    .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+    .into();
+    let pack = Pack::from_files(files).unwrap();
+    let stages = [
+        (StageKind::Post, "post.wgsl"),
+        (StageKind::Material, "material.wgsl"),
+    ];
+    let hashes: Vec<String> = stages
+        .into_iter()
+        .flat_map(|(kind, file)| {
+            use horizon_shader_api::{compose, compose_scene};
+            [compose(&pack, kind, file), compose_scene(&pack, kind, file)]
+        })
+        .map(|c| horizon_shader_api::package::sha256_hex(c.text.as_bytes()))
+        .collect();
+    assert_eq!(
+        hashes,
+        [
+            "1af2ec758e6f343986c676a7df695a1bf820ac9f498840422bbb8ef72df65cc4",
+            "89fcc776fe9b408a89e71fcc10716a5d2744d79e6c1581889de27752c25e4e6a",
+            "e646501b8bcd9097579a8bcb14e11710439d85617dfc61b044bde4e0490c8681",
+            "6c25d87e7bd62b1d8ba9fccc35d6ef6426a845e344e3bf45c197afdf1bdb7db2",
+        ]
+    );
+}
+
+/// The same pack with stages that read none of a terrain hit's look (`RayHit.tint`, `shade`,
+/// `ao`) composes as before the scene kept looks, with the scene and without it.
+#[test]
+fn a_traced_pack_that_reads_no_hit_look_composes_as_before() {
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [material]\nfile = \"material.wgsl\"\n[[post]]\nfile = \"post.wgsl\"\n\
+                    [tonemap]\nfile = \"tonemap.wgsl\"\n[ray_tracing]\n";
+    let plain = |text: &str| text.replace("hit.tint", "hit.albedo");
+    let (material, post) = (plain(REFLECTING), plain(SHADOWED));
+    let files = [
+        (MANIFEST, manifest),
+        ("material.wgsl", &material),
+        ("post.wgsl", &post),
+        ("tonemap.wgsl", TONEMAP),
+    ]
+    .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+    .into();
+    let pack = Pack::from_files(files).unwrap();
+    let report = check(&pack).unwrap();
+    // Both stages still read `hit.emission`. Only `input.tint` needs the arena's looks.
+    assert!(!report.ray_looks() && report.looks());
+    let stages = [
+        (StageKind::Post, "post.wgsl"),
+        (StageKind::Material, "material.wgsl"),
+    ];
+    let hashes: Vec<String> = stages
+        .into_iter()
+        .flat_map(|(kind, file)| {
+            use horizon_shader_api::{compose, compose_scene};
+            [compose(&pack, kind, file), compose_scene(&pack, kind, file)]
+        })
+        .map(|c| horizon_shader_api::package::sha256_hex(c.text.as_bytes()))
+        .collect();
+    assert_eq!(
+        hashes,
+        [
+            "63fdd95b1f17608e158dbd7106ec22583c6cf5337f542bf31d6028d436d6e833",
+            "867893c5981df7efb562ecb414a836bed778dbf8323f0e76c2b675f6188227e5",
+            "dd8aade96c75cdd11a2866b8ab9164c7a7d36355d317dc527de0b1eba4f4880c",
+            "1e944762ceee869009feb9a014806d08aa635aa706fb2683cdf1b28e4b325880",
+        ]
+    );
+}
+
+/// The entity layer's bindings against the scene, the retained block entities' store the last of
+/// them (`RAY_ENTITY_RETAINED_BINDING`), are the naming pack's alone: another traced pack's scene
+/// has none of them.
+#[test]
+fn the_retained_block_entities_store_is_the_layer_s_last_binding() {
+    use horizon_shader_api::stages::{
+        GROUP, RAY_ENTITY_RETAINED_BINDING, RAY_ENTITY_STORE_BINDING,
+    };
+    let bindings = |post: &str| -> Vec<u32> {
+        let report = traced(post).unwrap();
+        let scene = report.stages[0].scene.clone().unwrap();
+        let mut found: Vec<u32> = (scene.global_variables.iter())
+            .filter_map(|(_, g)| g.binding.as_ref())
+            .filter(|b| b.group == GROUP && b.binding >= RAY_ENTITY_STORE_BINDING)
+            // The terrain's looks, after the layer's, are another trigger's.
+            .filter(|b| b.binding != horizon_shader_api::stages::RAY_LOOKS_BINDING)
+            .map(|b| b.binding)
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    assert_eq!(RAY_ENTITY_RETAINED_BINDING, 63);
+    assert_eq!(bindings(ENTITY_SHADOWED), [60, 61, 62, 63]);
+    assert_eq!(bindings(SHADOWED), [0u32; 0]);
+}
+
+/// `Report::looks`: a stage reads a field only the terrain's quad looks hold (`tint`, `shade`,
+/// `ao`, `face`), by member on `MaterialInput` or `VertexInput`, through a `var` too; the
+/// prelude reads none, nor do an entity stage's `tint`, a pack's own `shade`, and `emission` and
+/// `shaded_tint`, which the vertex holds.
+#[test]
+fn looks_are_read_by_the_terrain_fields_alone() {
+    let dir = |path: &str| Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    let report = |path: &str| check(&Pack::read(&dir(path)).unwrap()).unwrap();
+    for (pack, looks) in [
+        ("packs/golden_hour", false),
+        ("packs/traced_shadows", false),
+        ("packs/traced_water", false),
+        ("tests/samples/entity-stage", false),
+        (
+            "../../tools/fixtures/shaderpacks/frame_identity_terrain",
+            true,
+        ),
+        (
+            "../../tools/fixtures/shaderpacks/frame_identity_world",
+            true,
+        ),
+        ("../../tools/fixtures/shaderpacks/entity_traced", false),
+    ] {
+        assert_eq!(report(pack).looks(), looks, "{pack}");
+    }
+    let material = |body: &str| {
+        let mut files = sample().files;
+        let text = format!(
+            "override reflections: bool = true;\nfn material(input: MaterialInput) -> Surface {{\n{body}\n}}\n"
+        );
+        files.insert("material.wgsl".into(), text.into_bytes());
+        check(&Pack::from_files(files).unwrap()).unwrap().looks()
+    };
+    assert!(!material(
+        "    let shade = 0.5;\n    return Surface(input.albedo * shade);"
+    ));
+    assert!(material("    return Surface(input.albedo * input.tint);"));
+    assert!(material(
+        "    var i = input;\n    i.light.x = 1.0;\n    return Surface(vec4(f32(i.face)));"
+    ));
+    assert!(!material(
+        "    var i = input;\n    i.light.x = 1.0;\n    \
+         return Surface(i.shaded_tint * (1.0 + i.emission));"
+    ));
+    // Nor do Horizon's look's light sources, which the vertex and the sprite hold, and the
+    // frame's full light.
+    assert!(!material(
+        "    let full = vec4(frame.full_lightmap * input.light_source_threshold, 1.0);\n    \
+         let tier = f32(input.light_source_tier) * f32(input.light_source_whole);\n    \
+         return Surface(input.albedo * full * tier);"
+    ));
+}
+
+/// The sample with its material stage's file `material`, its other `files` (the stage's own,
+/// before its file) and, with `vertex`, a vertex stage of that file: whether it reads the looks.
+fn reads_looks(material: &str, files: &[(&str, &str)], vertex: Option<&str>) -> bool {
+    let mut pack = sample();
+    // The sample's `[reflection]` is switched by this option of the material's.
+    let material = format!("override reflections: bool = true;\n{material}");
+    pack.files
+        .insert("material.wgsl".into(), material.into_bytes());
+    for (name, text) in files {
+        pack.files.insert((*name).into(), text.as_bytes().to_vec());
+    }
+    let manifest = String::from_utf8(pack.files[MANIFEST].clone()).unwrap();
+    let names: Vec<String> = files
+        .iter()
+        .map(|(name, _)| format!("\"{name}\""))
+        .collect();
+    let stage = "file = \"material.wgsl\"";
+    let listed = format!("{stage}\nfiles = [{}]", names.join(", "));
+    let mut manifest = manifest.replacen(stage, &listed, 1);
+    if let Some(vertex) = vertex {
+        manifest.push_str("\n[vertex]\nfile = \"vertex.wgsl\"\n");
+        pack.files
+            .insert("vertex.wgsl".into(), vertex.as_bytes().to_vec());
+    }
+    pack.files.insert(MANIFEST.into(), manifest.into_bytes());
+    check(&Pack::from_files(pack.files).unwrap())
+        .unwrap()
+        .looks()
+}
+
+/// Every way a stage reaches a look field turns the looks on: through a pointer to the struct
+/// (a helper taking `ptr<function, _>` or `ptr<private, _>`, on both structs), a copy passed to
+/// a helper, a `let`, an array or a struct holding it, a swizzle after the member, and a helper
+/// in another of the stage's files, called or not.
+#[test]
+fn looks_are_read_through_pointers_copies_and_other_files() {
+    const PLAIN: &str =
+        "fn material(input: MaterialInput) -> Surface {\n    return Surface(input.albedo);\n}\n";
+    assert!(!reads_looks(PLAIN, &[], None));
+    let forms = [
+        (
+            "a function pointer",
+            "fn glow(p: ptr<function, MaterialInput>) -> f32 { return (*p).ao; }\n\
+             fn material(input: MaterialInput) -> Surface {\n    var i = input;\n    \
+             return Surface(vec4(glow(&i)));\n}\n",
+        ),
+        (
+            "a private pointer",
+            "var<private> kept: MaterialInput;\n\
+             fn shade_of(p: ptr<private, MaterialInput>) -> f32 { return (*p).shade; }\n\
+             fn material(input: MaterialInput) -> Surface {\n    kept = input;\n    \
+             return Surface(vec4(shade_of(&kept)));\n}\n",
+        ),
+        (
+            "a copy passed to a helper",
+            "fn tinted(i: MaterialInput) -> vec4<f32> { return i.albedo * i.tint; }\n\
+             fn material(input: MaterialInput) -> Surface {\n    return Surface(tinted(input));\n}\n",
+        ),
+        (
+            "a let and a swizzle",
+            "fn material(input: MaterialInput) -> Surface {\n    let i = input;\n    \
+             return Surface(vec4(i.tint.rgb, 1.0));\n}\n",
+        ),
+        (
+            "an array",
+            "fn material(input: MaterialInput) -> Surface {\n    \
+             var a = array<MaterialInput, 2>(input, input);\n    \
+             return Surface(vec4(f32(a[1].face)));\n}\n",
+        ),
+        (
+            "a struct holding it",
+            "struct Wrap { inner: MaterialInput }\n\
+             fn material(input: MaterialInput) -> Surface {\n    let w = Wrap(input);\n    \
+             return Surface(vec4(w.inner.ao));\n}\n",
+        ),
+    ];
+    let mut missed: Vec<&str> = (forms.iter())
+        .filter(|(_, material)| !reads_looks(material, &[], None))
+        .map(|(form, _)| *form)
+        .collect();
+    // In the stage's own other file, a helper the stage never calls.
+    let lib = (
+        "lib.wgsl",
+        "fn lit(i: MaterialInput) -> f32 { return i.ao; }\n",
+    );
+    if !reads_looks(PLAIN, &[lib], None) {
+        missed.push("another file");
+    }
+    // The vertex stage's input through a pointer.
+    let vertex = "fn shade_of(p: ptr<function, VertexInput>) -> f32 { return (*p).shade; }\n\
+                  fn vertex(input: VertexInput) -> vec3<f32> {\n    var i = input;\n    \
+                  return input.position * shade_of(&i);\n}\n";
+    if !reads_looks(PLAIN, &[], Some(vertex)) {
+        missed.push("a vertex pointer");
+    }
+    assert!(missed.is_empty(), "missed: {missed:?}");
+    let plain = "fn vertex(input: VertexInput) -> vec3<f32> { return input.position; }\n";
+    assert!(!reads_looks(PLAIN, &[], Some(plain)));
+}
+
+/// What doesn't read a look field leaves the looks off, however near it comes: a post pass
+/// that samples `shadow_color` (it holds the vertex colour, looks or none), and a traced post
+/// pass reading a hit's `tint`, `shade`, `ao` and `emission` (the ray scene's own store holds
+/// them, not the sections' looks).
+#[test]
+fn shadow_color_and_ray_hits_leave_the_looks_off() {
+    let shadowed = "fn post(input: PostInput) -> vec4<f32> {\n    \
+                    let size = vec2<f32>(textureDimensions(shadow_color));\n    \
+                    let c = textureLoad(shadow_color, vec2<i32>(input.uv * size), 0);\n    \
+                    return input.color * c;\n}\n";
+    let report = post_pack(shadowed, TONEMAP, "[shadow]\n").unwrap();
+    assert!(report.stages.iter().any(|s| s.reads("shadow_color")));
+    assert!(!report.looks());
+    let traced_hit = "fn post(input: PostInput) -> vec4<f32> {\n    \
+                      let p = view_position(input.uv, input.depth);\n    \
+                      let hit = trace(p, frame.sun_direction, frame.ray_distance);\n    \
+                      let c = hit.tint.rgb * hit.shade * hit.ao + vec3(hit.emission);\n    \
+                      return vec4<f32>(input.color.rgb * c, 1.0);\n}\n";
+    assert!(!traced(traced_hit).unwrap().looks());
+}
+
+/// The ray scene's store of terrain looks is a stage's whose code reads a hit's `tint`, `shade`,
+/// or `ao`: directly, through a copy, or in a helper of another file. Hits get
+/// `shaded_tint` and `emission` from the vertex.
+#[test]
+fn a_hit_s_look_fields_bring_the_scene_s_looks() {
+    let post = |body: &str| {
+        format!(
+            "fn post(input: PostInput) -> vec4<f32> {{\n    \
+             let hit = trace(view_position(input.uv, input.depth), frame.sun_direction, 64.0);\n    \
+             {body}\n}}\n"
+        )
+    };
+    // Every pack has `lib.wgsl` beside its post pass, with `lit`.
+    let looked = "fn lit(h: RayHit) -> f32 { return h.ao; }\n";
+    let plain = "fn lit(h: RayHit) -> f32 { return h.emission; }\n";
+    let ray_looks = |text: &str, lib: &str| {
+        let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                        [[post]]\nfile = \"post.wgsl\"\nfiles = [\"lib.wgsl\"]\n\
+                        [tonemap]\nfile = \"tonemap.wgsl\"\n[ray_tracing]\n";
+        let files = [
+            (MANIFEST, manifest),
+            ("post.wgsl", text),
+            ("lib.wgsl", lib),
+            ("tonemap.wgsl", TONEMAP),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        assert!(!report.looks(), "{text}");
+        report.ray_looks()
+    };
+    let reads = [
+        post("return vec4<f32>(hit.tint.rgb, 1.0);"),
+        post("var h = hit; return vec4<f32>(h.tint.r);"),
+        "fn component(p: ptr<function, RayHit>) -> f32 { return (*p).ao; }\n".to_owned()
+            + &post("var h = hit; return vec4<f32>(component(&h));"),
+        post("if input.uv.x > 0.5 { return vec4<f32>(lit(hit)); }\n    return input.color;"),
+    ];
+    for text in &reads {
+        assert!(ray_looks(text, looked), "{text}");
+    }
+    // A hit held elsewhere than a local: in a pack struct, an array, a `var<private>`, or
+    // returned from a pack helper and read by its caller.
+    let held = [
+        "struct Held { k: f32, hit: RayHit }\n".to_owned()
+            + &post("let held = Held(1.0, hit);\n    return vec4<f32>(held.hit.tint.rgb, 1.0);"),
+        post(
+            "var hits = array<RayHit, 2>(hit, hit);\n    \
+             return vec4<f32>(hits[u32(input.uv.x)].shade);",
+        ),
+        "var<private> kept: RayHit;\n".to_owned()
+            + &post("kept = hit;\n    return vec4<f32>(kept.ao);"),
+        "fn traced(p: vec3<f32>) -> RayHit { return trace(p, frame.sun_direction, 8.0); }\n"
+            .to_owned()
+            + &post(
+                "let near = traced(view_position(input.uv, input.depth));\n    \
+                 return vec4<f32>(near.ao + hit.distance);",
+            ),
+    ];
+    for text in &held {
+        assert!(ray_looks(text, plain), "{text}");
+    }
+    let none = [
+        post("return input.color * hit.albedo;"),
+        post("return vec4<f32>(hit.shaded_tint.rgb * hit.albedo.rgb, 1.0);"),
+        post("return input.color * lit(hit);"),
+        post("var h = hit; h.ao = 1.0; return vec4<f32>(h.distance);"),
+    ];
+    for text in &none {
+        assert!(!ray_looks(text, plain), "{text}");
+    }
+    assert!(!ray_looks(&none[0], looked), "uncalled look helper");
 }

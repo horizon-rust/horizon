@@ -55,14 +55,18 @@ fn haste_and_mining_fatigue_change_the_swing_length() {
         m
     };
     let mut fast = spear();
-    fast.extra.effects.push(("minecraft:haste", 200, 1));
+    fast.extra
+        .effects
+        .push(crate::mobs::StoredEffect::new("minecraft:haste", 200, 1));
     fast.swing_for_attack(false);
     assert_eq!(fast.swing_duration(), 17, "19 - (1 + haste's amplifier)");
 
     let mut slow = spear();
-    slow.extra
-        .effects
-        .push(("minecraft:mining_fatigue", 200, 1));
+    slow.extra.effects.push(crate::mobs::StoredEffect::new(
+        "minecraft:mining_fatigue",
+        200,
+        1,
+    ));
     slow.swing_for_attack(false);
     assert_eq!(
         slow.swing_duration(),
@@ -122,12 +126,13 @@ fn a_zombies_melee_goal_swings_the_spear_it_holds() {
         world.player = Some(test_player(Vec3::new(0.5, 64.0, 2.5)));
         let mut goals = GoalSelector::default();
         goals.add(1, MeleeAttack::new(1.0, true));
-        let (mut lr, mut events) = (crate::mobs::world::level_random(0), Vec::new());
+        let mut fixture = crate::health::TestLevel::new(0);
+        let mut events = Vec::new();
         goals.tick(
             &mut m,
             &mut Cx {
                 w: &world,
-                lr: &mut lr,
+                level: &mut fixture.level(),
                 events: &mut events,
             },
         );
