@@ -523,7 +523,7 @@ fn shader_source(
             super::native_material::DISPLACE_VANILLA,
         ),
     };
-    format!(
+    let text = format!(
         "{head}// Horizon's terrain (terrain.wgsl)\n{}{solid}{}{displace}{}{ENTRIES}",
         prefixed(
             &(super::wgsl_prefix::HDR_LIGHT.to_owned()
@@ -532,7 +532,9 @@ fn shader_source(
         ),
         super::native_post::line_helpers(false),
         super::native_material::SECTION_CORNER,
-    )
+    );
+    // The grid's lit colour is the material's (`lit_tint`); the shadow map has no use for it.
+    super::native_material::lit_marks(&text, false)
 }
 
 impl NativeShadow {
@@ -555,8 +557,6 @@ impl NativeShadow {
         // The vertex stage's call (`DISPLACE_PACK`) passes `shaded_tint` where its input has it.
         let shaded = vertex.is_some_and(horizon_shader_api::check::CheckedStage::shaded_tint);
         let text = horizon_shader_api::stages::shaded_entries(&text, shaded);
-        // The grid's lit colour is the material's; the shadow map has no use for it.
-        let text = super::native_material::lit_marks(&text, false);
         let staged = vertex.is_some();
         let module = naga::front::wgsl::parse_str(&text)
             .map_err(|e| format!("shadow pass: {}", e.emit_to_string(&text)))?;
