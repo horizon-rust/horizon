@@ -556,8 +556,17 @@ pub const SHADED_TINT: Field = Field {
 
 /// `input` with `SHADED_TINT` last where `shaded`.
 pub fn shaded(input: &Struct, shaded: bool) -> String {
-    declared(input, false, shaded)
+    declared(input, false, false, shaded)
 }
+
+/// `lit_tint`, in `MaterialInput` after its light-source fields and before `shaded_tint`, in a
+/// pack whose files name it (`stages::names_lit_tint`): the renderer hands it down in a varying
+/// of its own, the last one the terrain has on the weakest GPUs.
+pub const LIT_TINT: Field = Field {
+    name: "lit_tint",
+    ty: "vec3<f32>",
+    doc: "Only in a pack whose files name `lit_tint`: vanilla's lit vertex colour, `shaded_tint.rgb * lightmap` multiplied at each corner and then smoothed over the face, as Horizon's own terrain draws blocks, with the frame's coloured lights added under the vertex colour at each corner (`min(shaded_tint.rgb * (lightmap + colored_light), 1)` there, wherever any reaches). So `albedo.rgb * lit_tint` is vanilla's lit colour, where multiplying `shaded_tint` by `lightmap`, each smoothed apart, differs from it where both change across a face (an occluded corner beside a torch). Decoded with the 2.2 power, as `shaded_tint` and `lightmap` are. `[displacement]`'s grid has it at each of its points between the face's four corners' products, as it has the vertex colour.",
+};
 
 /// What a pack whose files name one of their names (`stages::names_light_source`) has after
 /// `MaterialInput`'s other fields, before `shaded_tint`: Horizon's own look's light sources,
@@ -597,13 +606,14 @@ pub fn light_source(input: &Struct) -> &'static [Field] {
     }
 }
 
-/// `input` with its `light_source` fields where `light_source`, then `SHADED_TINT` where
-/// `shaded`.
-pub fn declared(input: &Struct, light_source: bool, shaded: bool) -> String {
+/// `input` with its `light_source` fields where `light_source`, `LIT_TINT` where `lit` (only
+/// `MaterialInput` has it), then `SHADED_TINT` where `shaded`.
+pub fn declared(input: &Struct, light_source: bool, lit: bool, shaded: bool) -> String {
     let mut out = input.wgsl();
     out.truncate(out.len() - 2);
     let more = (self::light_source(input).iter()).filter(|_| light_source);
-    for f in more.chain(shaded.then_some(&SHADED_TINT)) {
+    let lit = (lit && input.name == MATERIAL_INPUT.name).then_some(&LIT_TINT);
+    for f in more.chain(lit).chain(shaded.then_some(&SHADED_TINT)) {
         out += &format!("    {}: {},\n", f.name, f.ty);
     }
     out + "}\n"
