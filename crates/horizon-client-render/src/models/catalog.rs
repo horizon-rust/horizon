@@ -132,6 +132,9 @@ pub struct BakedModel {
     pub cube: Option<[super::cube::CubeStyle; 6]>,
 }
 type VariantKey = (String, [u8; 3], bool);
+/// Sentinel in `StateModels::single_models` for states without a single deterministic model.
+const NO_SINGLE_MODEL: u32 = u32::MAX;
+
 /// Empty by default: no state has a model (a dedicated server, which draws
 /// nothing).
 #[derive(Default)]
@@ -142,7 +145,8 @@ pub struct StateModels {
     bounds: OnceLock<Vec<Option<[[f32; 3]; 2]>>>,
     /// By state id: its definition in `choices` and the models it selects.
     states: Vec<Option<(usize, SelectedModels)>>,
-    single_models: Vec<Option<u32>>,
+    /// By state id: index in `baked` when the state has one deterministic model, else `NO_SINGLE_MODEL`.
+    single_models: Vec<u32>,
     /// Every transformed model once, with the variant it was baked from.
     baked: Vec<(Variant, BakedModel)>,
     /// Standalone models by id: their index in `baked`.
@@ -233,6 +237,7 @@ fn bake_form(
                 combined.ambient_occlusion &= baked.ambient_occlusion;
                 combined.faces.extend(baked.faces);
             }
+            combined.faces.shrink_to_fit();
             combined.cube = super::cube::cube_styles(&combined.faces);
             Ok(combined)
         }
@@ -490,18 +495,24 @@ impl StateModels {
         let single_models = states
             .iter()
             .map(|state| {
-                let (choice, selected) = state.as_ref()?;
-                choices[*choice].single_variant(selected).copied()
+                state
+                    .as_ref()
+                    .and_then(|(choice, selected)| {
+                        choices[*choice].single_variant(selected).copied()
+                    })
+                    .unwrap_or(NO_SINGLE_MODEL)
             })
             .collect();
-        Ok(Self {
+        let mut catalog = Self {
             choices,
             bounds: OnceLock::new(),
             states,
             single_models,
             baked,
             standalone: BTreeMap::new(),
-        })
+        };
+        catalog.shrink_to_fit();
+        Ok(catalog)
     }
     /// Bakes `names`, models no blockstate needs to name (vanilla's
     /// standalone models, NeoForge's `ModelEvent.RegisterStandalone`), as
@@ -579,6 +590,21 @@ impl StateModels {
                     entry.owner
                 ),
             }
+        }
+    }
+    /// Release excess capacity accumulated while baking and mutating models.
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.choices.shrink_to_fit();
+        self.states.shrink_to_fit();
+        for state in &mut self.states {
+            if let Some((_, SelectedModels::Multipart(parts))) = state {
+                parts.shrink_to_fit();
+            }
+        }
+        self.single_models.shrink_to_fit();
+        self.baked.shrink_to_fit();
+        for (_, model) in &mut self.baked {
+            model.faces.shrink_to_fit();
         }
     }
     /// Every baked model with the variant it was baked from, to change its faces.
@@ -670,8 +696,10 @@ impl StateModels {
         out: &mut Vec<&'a BakedModel>,
     ) -> Result<()> {
         out.clear();
-        if let Some(Some(model)) = self.single_models.get(state.0 as usize) {
-            out.push(&self.baked[*model as usize].1);
+        if let Some(&model) = self.single_models.get(state.0 as usize)
+            && model != NO_SINGLE_MODEL
+        {
+            out.push(&self.baked[model as usize].1);
             return Ok(());
         }
         self.each_seeded(state, position_seed(position), |(_, model)| out.push(model))

@@ -1481,9 +1481,9 @@ impl HudAtlas {
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
         let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
         let mut pixels = vec![0u8; (width * height * 4) as usize];
-        let mut sprites = HashMap::new();
+        let mut sprites = HashMap::with_capacity(images.len());
         let mut translucent = HashSet::new();
-        for ((name, w, h, data), (px, py)) in images.iter().zip(placements) {
+        for ((name, w, h, data), (px, py)) in images.into_iter().zip(placements) {
             if data
                 .as_chunks::<4>()
                 .0
@@ -1493,17 +1493,17 @@ impl HudAtlas {
                 translucent.insert(name.clone());
             }
             if !data.is_empty() {
-                for row in 0..*h {
+                for row in 0..h {
                     let src = &data[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
                     let dst = (((py + row) * width + px) * 4) as usize;
                     pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
                 }
             }
-            let b = u32::from(bordered.contains(name));
+            let b = u32::from(bordered.contains(&name));
             let (px, py, w, h) = (px + b, py + b, w - 2 * b, h - 2 * b);
-            let (gw, gh) = gui_sizes.get(name).copied().unwrap_or((w, h));
+            let (gw, gh) = gui_sizes.get(&name).copied().unwrap_or((w, h));
             sprites.insert(
-                name.clone(),
+                name,
                 Rect {
                     u0: px as f32 / width as f32,
                     v0: py as f32 / height as f32,
@@ -1514,49 +1514,54 @@ impl HudAtlas {
                 },
             );
         }
+        drop(bordered);
+        drop(gui_sizes);
+        drop(cit_names);
         // Every animated sprite animates: the packed strip is the raw first
         // frame, while the mcmeta's frame list may start anywhere, so each
         // animation's frame(0) overwrites its atlas rect before drawing.
-        let mut loaded = crate::sprites::Sprites::new(root.clone());
         let mut sprite_animations = Vec::new();
-        animated.sort();
-        for name in animated {
-            let Some(rect) = sprites.get(&name).copied() else {
-                continue;
-            };
-            // Another namespace's sprite is named with it (`lobby:item/...`).
-            let id = if name.contains(':') {
-                name.clone()
-            } else {
-                format!("minecraft:{name}")
-            };
-            let Ok(layer) = loaded.insert(&id) else {
-                continue;
-            };
-            let Some(animation) = loaded.animations.iter().find(|a| a.layer == layer).cloned()
-            else {
-                continue;
-            };
-            let (tw, th) = rect.texels((width, height));
-            let image = animation.resized_pixels(animation.frame(0), tw, th);
-            let x = (rect.u0 * width as f32).round() as usize;
-            let y = (rect.v0 * height as f32).round() as usize;
-            let row_bytes = tw as usize * 4;
-            for row in 0..th as usize {
-                let dst = ((y + row) * width as usize + x) * 4;
-                let src = row * row_bytes;
-                pixels[dst..dst + row_bytes].copy_from_slice(&image[src..src + row_bytes]);
+        {
+            let mut loaded = crate::sprites::Sprites::new(root.clone());
+            animated.sort();
+            for name in animated {
+                let Some(rect) = sprites.get(&name).copied() else {
+                    continue;
+                };
+                // Another namespace's sprite is named with it (`lobby:item/...`).
+                let id = if name.contains(':') {
+                    name.clone()
+                } else {
+                    format!("minecraft:{name}")
+                };
+                let Ok(layer) = loaded.insert(&id) else {
+                    continue;
+                };
+                let Some(animation) = loaded.animations.iter().find(|a| a.layer == layer).cloned()
+                else {
+                    continue;
+                };
+                let (tw, th) = rect.texels((width, height));
+                let image = animation.resized_pixels(animation.frame(0), tw, th);
+                let x = (rect.u0 * width as f32).round() as usize;
+                let y = (rect.v0 * height as f32).round() as usize;
+                let row_bytes = tw as usize * 4;
+                for row in 0..th as usize {
+                    let dst = ((y + row) * width as usize + x) * 4;
+                    let src = row * row_bytes;
+                    pixels[dst..dst + row_bytes].copy_from_slice(&image[src..src + row_bytes]);
+                }
+                sprite_animations.push((rect, animation));
             }
-            sprite_animations.push((rect, animation));
         }
         // Each mapped texture's maps at its size in the atlas, paged.
         let material_maps = if maps.is_empty() {
             Default::default()
         } else {
             let mapped: Vec<crate::paged_maps::SpriteMaps> = maps
-                .iter()
+                .into_iter()
                 .filter_map(|(name, m)| {
-                    let rect = sprites.get(name)?;
+                    let rect = sprites.get(&name)?;
                     let (tw, th) = rect.texels((width, height));
                     let x = (rect.u0 * width as f32).round() as u32;
                     let y = (rect.v0 * height as f32).round() as u32;
@@ -1572,8 +1577,14 @@ impl HudAtlas {
             crate::paged_maps::build((width, height), &mapped, MAX_ATLAS_SIZE)
         };
         let white = sprites["horizon/white"];
-        let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
-        let glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
+        let mut glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
+        let mut glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
+        glint.0.shrink_to_fit();
+        glint_armor.0.shrink_to_fit();
+        sprites.shrink_to_fit();
+        translucent.shrink_to_fit();
+        flags.shrink_to_fit();
+        sprite_animations.shrink_to_fit();
         let font = crate::font::Font::load_over(
             root,
             defaults,

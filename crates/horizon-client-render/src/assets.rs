@@ -478,8 +478,17 @@ impl RenderAssets {
         } else {
             sprites.finish_without_pixels();
         }
-        // `finish` grows the buffer by doubling: keep only the bytes in use.
+        // `finish` grows the sprite and LabPBR buffers by doubling: keep only the bytes in use.
         sprites.pixels.shrink_to_fit();
+        sprites.normals.shrink_to_fit();
+        sprites.specular.shrink_to_fit();
+        sprites.animations.shrink_to_fit();
+        sprites.translucent.shrink_to_fit();
+        sprites.mips.shrink_to_fit();
+        emissive.shrink_to_fit();
+        models.catalog.shrink_to_fit();
+        models.placements.shrink_to_fit();
+        models.states.shrink_to_fit();
         let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         Ok(Self {
             sprite_size: sprites.size,

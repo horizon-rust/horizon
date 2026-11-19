@@ -320,6 +320,338 @@ impl PartialEq<Vec<Span>> for Spans {
         self.as_slice() == other.as_slice()
     }
 }
+type ReduceEvent = (i16, (BlockStateId, u16, u16), i32);
+type ReduceVote = ((BlockStateId, u16), i32);
+
+/// Sweep-line reduction of a `width x width` footprint starting at `(x, z)`,
+/// appending merged spans directly into `out`.
+fn reduce_spans_into<'a>(
+    get_spans: impl Fn(usize, usize) -> &'a [Span],
+    x: usize,
+    z: usize,
+    width: usize,
+    events: &mut Vec<ReduceEvent>,
+    votes: &mut Vec<ReduceVote>,
+    out: &mut Vec<Span>,
+) {
+    events.clear();
+    votes.clear();
+    for dz in z..z + width {
+        for dx in x..x + width {
+            for span in get_spans(dx, dz) {
+                let material = (span.state, span.biome, span.light);
+                events.push((span.min, material, 1));
+                events.push((span.max, material, -1));
+            }
+        }
+    }
+    events.sort_unstable_by_key(|event| event.0);
+    let start = out.len();
+    let mut sky = [0i32; 16];
+    let mut block = [0i32; 16];
+    let mut occupied = 0;
+    let mut bottom = MIN_Y as i16;
+    for &(y, material, change) in events.iter() {
+        if bottom < y {
+            if occupied > 0
+                && let Some(&((state, biome), _)) = votes.iter().max_by_key(|&(material, count)| {
+                    (*count, std::cmp::Reverse((material.0.0, material.1)))
+                })
+            {
+                // Lighting must not split votes for the same material.
+                // Reduction can expose buried faces; retain the brightest
+                // actual light in this occupied footprint, per channel.
+                let light = (sky.iter().rposition(|&n| n > 0).unwrap_or(0) << 4)
+                    | (block.iter().rposition(|&n| n > 0).unwrap_or(0) << 12);
+                let span = Span {
+                    min: bottom,
+                    max: y,
+                    state,
+                    biome,
+                    light: light as u16,
+                };
+                if out.len() > start
+                    && let Some(last) = out.last_mut()
+                    && last.max == span.min
+                    && last.state == span.state
+                    && last.biome == span.biome
+                    && last.light == span.light
+                {
+                    last.max = span.max;
+                } else {
+                    out.push(span);
+                }
+            }
+            bottom = y;
+        }
+        occupied += change;
+        sky[usize::from((material.2 >> 4) & 15)] += change;
+        block[usize::from((material.2 >> 12) & 15)] += change;
+        let material = (material.0, material.1);
+        if let Some(vote) = votes.iter_mut().find(|vote| vote.0 == material) {
+            vote.1 += change;
+        } else {
+            votes.push((material, change));
+        }
+    }
+}
+
+/// Compact flat storage for a grid of voxel columns (a 16x16 far tile, a saved
+/// chunk summary, or a reduced chunk level).
+///
+/// Replaces `Vec<Column>` (256 x 80 B = 20,480 B plus per-column SmallVec heap
+/// spills) with one contiguous `Box<[Span]>`, compact offsets (`u16` unless
+/// total spans exceed 65,535), and optional compact `(height, state)` ground
+/// data for `Lod::ground`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TileColumns {
+    spans: Box<[Span]>,
+    offsets: SpanOffsets,
+    ground: TileGround,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SpanOffsets {
+    /// All `len` columns have zero spans.
+    Empty(usize),
+    /// `offsets[i]..offsets[i + 1]` in `spans` (length `len + 1`).
+    U16(Box<[u16]>),
+    /// Fallback when total spans exceed `u16::MAX` (length `len + 1`).
+    U32(Box<[u32]>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TileGround16 {
+    present: [u64; 4],
+    heights: [i16; CELLS * CELLS],
+    states: [BlockStateId; CELLS * CELLS],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TileGround32 {
+    present: [u64; 4],
+    heights: [i32; CELLS * CELLS],
+    states: [BlockStateId; CELLS * CELLS],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TileGround {
+    None,
+    I16(Box<TileGround16>),
+    I32(Box<TileGround32>),
+}
+
+impl TileColumns {
+    /// Shared empty 16x16 stand-in tile (zero heap bytes for spans, offsets, or ground).
+    pub(crate) fn empty() -> Arc<Self> {
+        static EMPTY: std::sync::OnceLock<Arc<TileColumns>> = std::sync::OnceLock::new();
+        EMPTY
+            .get_or_init(|| {
+                Arc::new(Self {
+                    spans: Box::default(),
+                    offsets: SpanOffsets::Empty(CELLS * CELLS),
+                    ground: TileGround::None,
+                })
+            })
+            .clone()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match &self.offsets {
+            SpanOffsets::Empty(len) => *len,
+            SpanOffsets::U16(o) => o.len().saturating_sub(1),
+            SpanOffsets::U32(o) => o.len().saturating_sub(1),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn spans(&self, index: usize) -> &[Span] {
+        match &self.offsets {
+            SpanOffsets::Empty(_) => &[],
+            SpanOffsets::U16(o) => &self.spans[usize::from(o[index])..usize::from(o[index + 1])],
+            SpanOffsets::U32(o) => &self.spans[o[index] as usize..o[index + 1] as usize],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn ground(&self, index: usize) -> Option<(i32, BlockStateId)> {
+        match &self.ground {
+            TileGround::None => None,
+            TileGround::I16(g) => {
+                if g.present[index / 64] & (1 << (index % 64)) != 0 {
+                    Some((i32::from(g.heights[index]), g.states[index]))
+                } else {
+                    None
+                }
+            }
+            TileGround::I32(g) => {
+                if g.present[index / 64] & (1 << (index % 64)) != 0 {
+                    Some((g.heights[index], g.states[index]))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub(crate) fn is_empty_column(&self, index: usize) -> bool {
+        self.spans(index).is_empty() && self.ground(index).is_none()
+    }
+
+    fn column_matches(
+        &self,
+        index: usize,
+        spans: &[Span],
+        ground: Option<(i32, BlockStateId)>,
+    ) -> bool {
+        self.spans(index) == spans && self.ground(index) == ground
+    }
+
+    #[cfg(test)]
+    pub(crate) fn filled(column: &Column) -> Self {
+        Self::from_cells(CELLS * CELLS, |_| {
+            (
+                column.spans.as_slice(),
+                column.surface.map(|s| (s.height, s.state)),
+            )
+        })
+    }
+
+    pub(crate) fn from_columns(columns: &[Column]) -> Self {
+        Self::from_cells(columns.len(), |i| {
+            let col = &columns[i];
+            (
+                col.spans.as_slice(),
+                col.surface.map(|s| (s.height, s.state)),
+            )
+        })
+    }
+
+    fn from_cells<'a>(
+        len: usize,
+        get: impl Fn(usize) -> (&'a [Span], Option<(i32, BlockStateId)>),
+    ) -> Self {
+        let mut total_spans = 0usize;
+        let mut any_ground = false;
+        let mut needs_i32 = false;
+        for i in 0..len {
+            let (spans, ground) = get(i);
+            total_spans += spans.len();
+            if let Some((height, _)) = ground {
+                any_ground = true;
+                if i16::try_from(height).is_err() {
+                    needs_i32 = true;
+                }
+            }
+        }
+        let mut spans = Vec::with_capacity(total_spans);
+        let mut offsets_u16 = if total_spans > 0 && total_spans <= usize::from(u16::MAX) {
+            let mut v = Vec::with_capacity(len + 1);
+            v.push(0u16);
+            Some(v)
+        } else {
+            None
+        };
+        let mut offsets_u32 = if total_spans > usize::from(u16::MAX) {
+            let mut v = Vec::with_capacity(len + 1);
+            v.push(0u32);
+            Some(v)
+        } else {
+            None
+        };
+        let mut ground = if !any_ground {
+            TileGround::None
+        } else if needs_i32 {
+            debug_assert!(len <= CELLS * CELLS);
+            TileGround::I32(Box::new(TileGround32 {
+                present: [0; 4],
+                heights: [0; CELLS * CELLS],
+                states: [BlockStateId(0); CELLS * CELLS],
+            }))
+        } else {
+            debug_assert!(len <= CELLS * CELLS);
+            TileGround::I16(Box::new(TileGround16 {
+                present: [0; 4],
+                heights: [0; CELLS * CELLS],
+                states: [BlockStateId(0); CELLS * CELLS],
+            }))
+        };
+        for i in 0..len {
+            let (col_spans, col_ground) = get(i);
+            spans.extend_from_slice(col_spans);
+            if let Some(o) = &mut offsets_u16 {
+                o.push(spans.len() as u16);
+            } else if let Some(o) = &mut offsets_u32 {
+                o.push(spans.len() as u32);
+            }
+            if let Some((height, state)) = col_ground {
+                match &mut ground {
+                    TileGround::I16(g) => {
+                        g.present[i / 64] |= 1 << (i % 64);
+                        g.heights[i] = height as i16;
+                        g.states[i] = state;
+                    }
+                    TileGround::I32(g) => {
+                        g.present[i / 64] |= 1 << (i % 64);
+                        g.heights[i] = height;
+                        g.states[i] = state;
+                    }
+                    TileGround::None => unreachable!(),
+                }
+            }
+        }
+        let offsets = if let Some(o) = offsets_u16 {
+            SpanOffsets::U16(o.into_boxed_slice())
+        } else if let Some(o) = offsets_u32 {
+            SpanOffsets::U32(o.into_boxed_slice())
+        } else {
+            SpanOffsets::Empty(len)
+        };
+        Self {
+            spans: spans.into_boxed_slice(),
+            offsets,
+            ground,
+        }
+    }
+
+    fn from_raw(spans: Vec<Span>, offsets: Vec<u32>, ground: TileGround) -> Self {
+        let len = offsets.len().saturating_sub(1);
+        let offsets = if spans.is_empty() {
+            SpanOffsets::Empty(len)
+        } else if spans.len() <= usize::from(u16::MAX) {
+            SpanOffsets::U16(
+                offsets
+                    .into_iter()
+                    .map(|o| o as u16)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            )
+        } else {
+            SpanOffsets::U32(offsets.into_boxed_slice())
+        };
+        Self {
+            spans: spans.into_boxed_slice(),
+            offsets,
+            ground,
+        }
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + std::mem::size_of_val(self.spans.as_ref())
+            + match &self.offsets {
+                SpanOffsets::Empty(_) => 0,
+                SpanOffsets::U16(o) => std::mem::size_of_val(o.as_ref()),
+                SpanOffsets::U32(o) => std::mem::size_of_val(o.as_ref()),
+            }
+            + match &self.ground {
+                TileGround::None => 0,
+                TileGround::I16(_) => std::mem::size_of::<TileGround16>(),
+                TileGround::I32(_) => std::mem::size_of::<TileGround32>(),
+            }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Column {
     pub surface: Option<Surface>,
@@ -336,57 +668,20 @@ impl Column {
         if width == 1 {
             return columns[z * 16 + x].clone();
         }
-        let mut events = Vec::new();
-        for dz in z..z + width {
-            for dx in x..x + width {
-                for span in &columns[dz * 16 + dx].spans {
-                    let material = (span.state, span.biome, span.light);
-                    events.push((span.min, material, 1));
-                    events.push((span.max, material, -1));
-                }
-            }
+        let mut spans = Vec::new();
+        reduce_spans_into(
+            |dx, dz| columns[dz * 16 + dx].spans.as_slice(),
+            x,
+            z,
+            width,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut spans,
+        );
+        Self {
+            surface: None,
+            spans: spans.into(),
         }
-        events.sort_unstable_by_key(|event| event.0);
-        let mut result = Self::default();
-        let mut votes = Vec::<((BlockStateId, u16), i32)>::new();
-        let mut sky = [0i32; 16];
-        let mut block = [0i32; 16];
-        let mut occupied = 0;
-        let mut bottom = MIN_Y as i16;
-        for (y, material, change) in events {
-            if bottom < y {
-                if occupied > 0
-                    && let Some(&((state, biome), _)) =
-                        votes.iter().max_by_key(|&(material, count)| {
-                            (*count, std::cmp::Reverse((material.0.0, material.1)))
-                        })
-                {
-                    // Lighting must not split votes for the same material.
-                    // Reduction can expose buried faces; retain the brightest
-                    // actual light in this occupied footprint, per channel.
-                    let light = (sky.iter().rposition(|&n| n > 0).unwrap_or(0) << 4)
-                        | (block.iter().rposition(|&n| n > 0).unwrap_or(0) << 12);
-                    result.push(Span {
-                        min: bottom,
-                        max: y,
-                        state,
-                        biome,
-                        light: light as u16,
-                    });
-                }
-                bottom = y;
-            }
-            occupied += change;
-            sky[usize::from((material.2 >> 4) & 15)] += change;
-            block[usize::from((material.2 >> 12) & 15)] += change;
-            let material = (material.0, material.1);
-            if let Some(vote) = votes.iter_mut().find(|vote| vote.0 == material) {
-                vote.1 += change;
-            } else {
-                votes.push((material, change));
-            }
-        }
-        result
     }
     pub fn from_surface(surface: Option<Surface>) -> Self {
         let mut column = Self {
@@ -625,7 +920,7 @@ fn forget_detail(
 /// which a chunk's own detail can't fill (`apply_detail`). The others hold
 /// it once `finish_detail` applies it.
 fn resampled_over(
-    ready: &FxHashMap<TileKey, Arc<Vec<Column>>>,
+    ready: &FxHashMap<TileKey, Arc<TileColumns>>,
     pending: &FxHashSet<TileKey>,
     (cx, cz): (i32, i32),
 ) -> Vec<TileKey> {
@@ -645,9 +940,8 @@ fn resampled_over(
                     let cell = (cz * 16 - oz) / stride * CELLS as i32 + (cx * 16 - ox) / stride;
                     stride > 16
                         && (pending.contains(&key)
-                            || samples
-                                .get(cell as usize)
-                                .is_some_and(|c| *c == Column::default()))
+                            || ((cell as usize) < samples.len()
+                                && samples.is_empty_column(cell as usize)))
                 }
             };
             resample.then_some(key)
@@ -966,7 +1260,7 @@ const SEAM: u8 = 0;
 const BACKDROP: u8 = 1;
 const REST: u8 = 2;
 /// Visited chunks' summaries (`Lod::saved`) and their reductions.
-type Saved = FxHashMap<(i32, i32), Arc<[Column; 256]>>;
+type Saved = FxHashMap<(i32, i32), Arc<TileColumns>>;
 type Reduced = FxHashMap<(i32, i32), Arc<ReducedColumns>>;
 /// What a mesh job reads, as it was when the job began: the worker gathers
 /// every tile's inputs from it (gathering on the render thread stalled the
@@ -984,24 +1278,20 @@ struct Snapshot {
 /// to clone all 256 columns of a tile (each with its own span allocation);
 /// now an input is a base tile plus a handful of overrides.
 enum ColumnSource {
-    Tile(Arc<Vec<Column>>, u16),
-    Saved(Arc<[Column; 256]>, u16),
+    Tile(Arc<TileColumns>, u16),
+    Saved(Arc<TileColumns>, u16),
     Reduced(Arc<ReducedColumns>, u8, u16, u16),
     Empty,
 }
-static EMPTY_COLUMN: Column = Column {
-    surface: None,
-    spans: Spans::new(),
-};
 impl ColumnSource {
-    fn get(&self) -> &Column {
+    fn get(&self) -> &[Span] {
         match self {
-            Self::Tile(columns, index) => &columns[*index as usize],
-            Self::Saved(columns, index) => &columns[*index as usize],
+            Self::Tile(columns, index) => columns.spans(*index as usize),
+            Self::Saved(columns, index) => columns.spans(*index as usize),
             Self::Reduced(columns, width, x, z) => {
                 columns.get(*x as usize, *z as usize, *width as usize)
             }
-            Self::Empty => &EMPTY_COLUMN,
+            Self::Empty => &[],
         }
     }
 }
@@ -1014,13 +1304,13 @@ struct EdgeSource {
 }
 struct MeshInput {
     /// The tile's samples, with `overrides` replacing some of them.
-    base: Arc<Vec<Column>>,
+    base: Arc<TileColumns>,
     overrides: [Option<ColumnSource>; CELLS * CELLS],
     neighbors: [Vec<EdgeSource>; 4],
     finer: Vec<TileKey>,
 }
 struct ReducedColumns {
-    columns: Arc<[Column; 256]>,
+    columns: Arc<TileColumns>,
     /// The chunk reduced to cells 2, 4, 8 and 16 blocks wide, each built the
     /// first time a tile of that width asks for it.
     ///
@@ -1030,19 +1320,16 @@ struct ReducedColumns {
     /// terrain thread for every chunk the world sent (`Column::reduced` walks
     /// every span of the footprint four times over), and held 85 columns
     /// beside the chunk's 256.
-    levels: [std::sync::OnceLock<Vec<Column>>; 4],
+    levels: [std::sync::OnceLock<TileColumns>; 4],
 }
 impl MeshInput {
-    /// The column of every cell: the tile's own samples unless the snapshot
+    /// The spans of every cell: the tile's own samples unless the snapshot
     /// has actual visited detail there.
-    fn columns(&self) -> Vec<&Column> {
-        let mut columns: Vec<&Column> = self.base.iter().collect();
-        for (index, source) in self.overrides.iter().enumerate() {
-            if let Some(source) = source {
-                columns[index] = source.get();
-            }
-        }
-        columns
+    fn columns(&self) -> [&[Span]; CELLS * CELLS] {
+        std::array::from_fn(|index| match &self.overrides[index] {
+            Some(source) => source.get(),
+            None => self.base.spans(index),
+        })
     }
     fn edges(&self) -> [Vec<mesh::EdgeColumn<'_>>; 4] {
         std::array::from_fn(|side| {
@@ -1051,7 +1338,7 @@ impl MeshInput {
                 .map(|edge| mesh::EdgeColumn {
                     start: edge.start,
                     end: edge.end,
-                    column: edge.column.get(),
+                    spans: edge.column.get(),
                     unknown: edge.unknown,
                 })
                 .collect()
@@ -1060,6 +1347,9 @@ impl MeshInput {
 }
 impl ReducedColumns {
     fn new(columns: Arc<[Column; 256]>) -> Self {
+        Self::from_tile(Arc::new(TileColumns::from_columns(columns.as_slice())))
+    }
+    fn from_tile(columns: Arc<TileColumns>) -> Self {
         Self {
             columns,
             levels: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -1076,7 +1366,7 @@ impl ReducedColumns {
         self
     }
     /// The chunk reduced to cells `2 << level` blocks wide, built once.
-    fn level(&self, level: usize) -> &[Column] {
+    fn level(&self, level: usize) -> &TileColumns {
         let width = 2 << level;
         self.levels[level].get_or_init(|| {
             // Timed on whichever thread first asks for this width, so the
@@ -1084,21 +1374,38 @@ impl ReducedColumns {
             // around it (`Lod::apply_detail` does both).
             crate::spans::time("lod_reduce", || {
                 let columns = &self.columns;
-                (0..16 / width)
-                    .flat_map(|z| {
-                        (0..16 / width)
-                            .map(move |x| Column::reduced(columns, x * width, z * width, width))
-                    })
-                    .collect()
+                let side = 16 / width;
+                let count = side * side;
+                let mut spans = Vec::new();
+                let mut offsets = Vec::with_capacity(count + 1);
+                offsets.push(0u32);
+                let mut events = Vec::new();
+                let mut votes = Vec::new();
+                for z in 0..side {
+                    for x in 0..side {
+                        reduce_spans_into(
+                            |dx, dz| columns.spans(dz * 16 + dx),
+                            x * width,
+                            z * width,
+                            width,
+                            &mut events,
+                            &mut votes,
+                            &mut spans,
+                        );
+                        offsets.push(spans.len() as u32);
+                    }
+                }
+                TileColumns::from_raw(spans, offsets, TileGround::None)
             })
         })
     }
-    fn get(&self, x: usize, z: usize, width: usize) -> &Column {
+    fn get(&self, x: usize, z: usize, width: usize) -> &[Span] {
         if width == 1 {
-            return &self.columns[z * 16 + x];
+            return self.columns.spans(z * 16 + x);
         }
         let level = width.trailing_zeros() as usize - 1;
-        &self.level(level)[(z / width) * (16 / width) + x / width]
+        self.level(level)
+            .spans((z / width) * (16 / width) + x / width)
     }
 }
 enum Job {
@@ -1129,7 +1436,7 @@ enum Done {
     DetailRequested,
     Sample {
         key: TileKey,
-        samples: Vec<Column>,
+        tile: Option<TileColumns>,
         /// Some of it is still on its way (`LodSampler::waited`).
         waited: bool,
     },
@@ -1277,7 +1584,7 @@ pub struct Lod {
     /// Tiles whose sampling failed, and when they may be asked again.
     retry: FxHashMap<TileKey, std::time::Instant>,
     /// Each tile's samples, shared with mesh jobs in flight.
-    ready: FxHashMap<TileKey, Arc<Vec<Column>>>,
+    ready: FxHashMap<TileKey, Arc<TileColumns>>,
     /// Fully covered subtrees, by tile.
     complete: FxHashMap<TileKey, bool>,
     /// Sampled tiles whose source has more since (`refresh`): sampled again,
@@ -1556,13 +1863,9 @@ impl Lod {
                                                 return;
                                             }
                                             let waited = sample.waited();
-                                            if tx
-                                                .send(Done::Sample {
-                                                    key,
-                                                    samples,
-                                                    waited,
-                                                })
-                                                .is_err()
+                                            let tile = (!waited && samples.len() == CELLS * CELLS)
+                                                .then(|| TileColumns::from_columns(&samples));
+                                            if tx.send(Done::Sample { key, tile, waited }).is_err()
                                             {
                                                 return;
                                             }
@@ -1649,11 +1952,9 @@ impl Lod {
                                     let samples =
                                         sampler.grid(x, z, key.size() / CELLS as i32, CELLS);
                                     let waited = sampler.waited();
-                                    Done::Sample {
-                                        key,
-                                        samples,
-                                        waited,
-                                    }
+                                    let tile = (!waited && samples.len() == CELLS * CELLS)
+                                        .then(|| TileColumns::from_columns(&samples));
+                                    Done::Sample { key, tile, waited }
                                 }
                             };
                             if tx.send(done).is_err() {
@@ -1746,8 +2047,7 @@ impl Lod {
             let columns = self.ready.get(&key).filter(|c| c.len() == CELLS * CELLS)?;
             let cell = size / CELLS as i32;
             let (cx, cz) = ((x - key.x * size) / cell, (z - key.z * size) / cell);
-            let surface = columns[cz as usize * CELLS + cx as usize].surface?;
-            Some((surface.height, surface.state))
+            columns.ground(cz as usize * CELLS + cx as usize)
         })
     }
     pub fn stats(&self) -> (usize, usize) {
@@ -2189,19 +2489,19 @@ impl Lod {
             let size = key.size();
             let stride = size / CELLS as i32;
             let [ox, _, oz] = key.origin();
-            stride > 16
-                && (ox..ox + size).contains(&(cx * 16))
-                && (oz..oz + size).contains(&(cz * 16))
-                && samples
-                    .get(
-                        ((cz * 16 - oz) / stride * CELLS as i32 + (cx * 16 - ox) / stride) as usize,
-                    )
-                    .is_some_and(|c| *c == Column::default())
+            if stride <= 16
+                || !(ox..ox + size).contains(&(cx * 16))
+                || !(oz..oz + size).contains(&(cz * 16))
+            {
+                return false;
+            }
+            let cell = ((cz * 16 - oz) / stride * CELLS as i32 + (cx * 16 - ox) / stride) as usize;
+            cell < samples.len() && samples.is_empty_column(cell)
         });
     }
     /// A chunk's own columns as its level-0 tile; the same columns again
     /// (asked again after a `refresh`) mesh nothing.
-    fn apply_fine(&mut self, (cx, cz): (i32, i32), columns: &[Column; 256]) {
+    fn apply_fine(&mut self, (cx, cz): (i32, i32), columns: &Arc<TileColumns>) {
         let fine = TileKey {
             x: cx,
             z: cz,
@@ -2211,17 +2511,10 @@ impl Lod {
             return;
         }
         self.detail_masks.insert(fine, [u64::MAX; 4]);
-        if self
-            .ready
-            .get(&fine)
-            .is_some_and(|old| old[..] == columns[..])
-        {
+        if self.ready.get(&fine).is_some_and(|old| **old == **columns) {
             return;
         }
-        let existed = self
-            .ready
-            .insert(fine, Arc::new(columns.to_vec()))
-            .is_some();
+        let existed = self.ready.insert(fine, Arc::clone(columns)).is_some();
         self.sync_sample(fine);
         self.refresh_ready(fine, existed);
     }
@@ -2229,9 +2522,9 @@ impl Lod {
         self.apply_fine((cx, cz), &columns.columns);
         let mut modified = Vec::new();
         // A single generated chunk cannot describe a larger cell's area
-        // (strides over 16 blocks, levels over 4); at each level up to that,
-        // only the tile holding the chunk overlaps it.
-        for level in 0..=4u8 {
+        // (strides over 16 blocks, levels over 4); level 0 was applied above.
+        // At each level up to 4, only the tile holding the chunk overlaps it.
+        for level in 1..=4u8 {
             let size = 16 << level;
             let key = TileKey {
                 x: (cx * 16).div_euclid(size),
@@ -2244,11 +2537,9 @@ impl Lod {
             let [ox, _, oz] = key.origin();
             let stride = key.size() / 16;
             // What the far terrain thread should have ready next time.
-            if stride > 1 {
-                self.shared
-                    .detail_widths
-                    .fetch_or(1 << (stride.trailing_zeros() - 1), Ordering::Relaxed);
-            }
+            self.shared
+                .detail_widths
+                .fetch_or(1 << (stride.trailing_zeros() - 1), Ordering::Relaxed);
             let x0 = ((cx * 16 - ox + stride - 1).div_euclid(stride)).clamp(0, 16);
             let x1 = (((cx + 1) * 16 - ox + stride - 1).div_euclid(stride)).clamp(0, 16);
             let z0 = ((cz * 16 - oz + stride - 1).div_euclid(stride)).clamp(0, 16);
@@ -2261,20 +2552,33 @@ impl Lod {
             for z in z0..z1 {
                 for x in x0..x1 {
                     let index = (z * 16 + x) as usize;
-                    let column = columns.get(
+                    let col_spans = columns.get(
                         (ox + x * stride).rem_euclid(16) as usize,
                         (oz + z * stride).rem_euclid(16) as usize,
                         stride as usize,
                     );
-                    // Copied (from a mesh job's snapshot) only to change it.
-                    if samples[index] != *column {
-                        Arc::make_mut(samples)[index] = column.clone();
+                    if !samples.column_matches(index, col_spans, None) {
                         changed = true;
                     }
                     mask[index / 64] |= 1 << (index % 64);
                 }
             }
             if changed {
+                let updated = TileColumns::from_cells(CELLS * CELLS, |index| {
+                    let x = (index % 16) as i32;
+                    let z = (index / 16) as i32;
+                    if (x0..x1).contains(&x) && (z0..z1).contains(&z) {
+                        let col_spans = columns.get(
+                            (ox + x * stride).rem_euclid(16) as usize,
+                            (oz + z * stride).rem_euclid(16) as usize,
+                            stride as usize,
+                        );
+                        (col_spans, None)
+                    } else {
+                        (samples.spans(index), samples.ground(index))
+                    }
+                });
+                *samples = Arc::new(updated);
                 modified.push(key);
             }
         }
@@ -2303,16 +2607,21 @@ impl Lod {
     /// A sample in: thrown away when a cell of it is a hole, its data on its
     /// way (`finish_waited`); one whose waiting cells a coarser level stood
     /// in for is drawn (`LodSampler::waited`).
-    fn finish_any_sample(&mut self, key: TileKey, samples: Vec<Column>, waited: bool) {
+    fn finish_any_sample(&mut self, key: TileKey, tile: Option<TileColumns>, waited: bool) {
         if waited {
             self.finish_waited(key);
         } else {
-            self.finish_sample(key, samples);
+            self.finish_tile(key, tile);
         }
     }
+    #[cfg(test)]
     fn finish_sample(&mut self, key: TileKey, samples: Vec<Column>) {
+        let tile = (samples.len() == CELLS * CELLS).then(|| TileColumns::from_columns(&samples));
+        self.finish_tile(key, tile);
+    }
+    fn finish_tile(&mut self, key: TileKey, tile: Option<TileColumns>) {
         self.pending.remove(&key);
-        if samples.len() != CELLS * CELLS {
+        let Some(tile) = tile.filter(|t| t.len() == CELLS * CELLS) else {
             let now = std::time::Instant::now();
             if self.retry.len() > 4096 {
                 self.retry.retain(|_, at| *at > now);
@@ -2320,27 +2629,31 @@ impl Lod {
             self.retry.insert(key, now + RETRY);
             self.restale.remove(&key);
             return;
-        }
+        };
         self.retry.remove(&key);
         if self.plan.nodes.contains(&key) {
-            let mut samples = samples;
-            if let (Some(old), Some(mask)) = (self.ready.get(&key), self.detail_masks.get(&key)) {
-                for i in 0..256 {
-                    if mask[i / 64] & (1 << (i % 64)) != 0 {
-                        samples[i] = old[i].clone();
-                    }
+            let tile = match (self.ready.get(&key), self.detail_masks.get(&key)) {
+                (Some(old), Some(mask)) if mask.iter().any(|&bits| bits != 0) => {
+                    TileColumns::from_cells(CELLS * CELLS, |i| {
+                        if mask[i / 64] & (1 << (i % 64)) != 0 {
+                            (old.spans(i), old.ground(i))
+                        } else {
+                            (tile.spans(i), tile.ground(i))
+                        }
+                    })
                 }
-            }
+                _ => tile,
+            };
             // Refreshed again meanwhile: sampled once more after this.
             if self.restale.remove(&key) {
                 self.wanted_stale = true;
             } else {
                 self.stale.remove(&key);
             }
-            if self.ready.get(&key).is_some_and(|old| **old == samples) {
+            if self.ready.get(&key).is_some_and(|old| **old == tile) {
                 return;
             }
-            let existed = self.ready.insert(key, Arc::new(samples)).is_some();
+            let existed = self.ready.insert(key, Arc::new(tile)).is_some();
             self.sync_sample(key);
             self.refresh_ready(key, existed);
         }
@@ -2618,10 +2931,11 @@ impl Lod {
             .retain(|key, _| self.plan.nodes.contains(key));
         // Complete resident columns need no duplicate noise work.
         let mut standins = Vec::new();
+        let mut empty_standin: Option<Arc<TileColumns>> = None;
         for &key in &self.plan.by_level[0] {
             if self.covered.contains(&(key.x, key.z)) && !self.ready.contains_key(&key) {
-                self.ready
-                    .insert(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+                let standin = empty_standin.get_or_insert_with(TileColumns::empty).clone();
+                self.ready.insert(key, standin);
                 standins.push(key);
             }
         }
@@ -2782,11 +3096,7 @@ impl Lod {
                     started.elapsed() < DETAIL_BUDGET,
                 ),
                 Done::DetailRequested => self.detail_request_pending = false,
-                Done::Sample {
-                    key,
-                    samples,
-                    waited,
-                } => self.finish_any_sample(key, samples, waited),
+                Done::Sample { key, tile, waited } => self.finish_any_sample(key, tile, waited),
                 Done::Mesh {
                     key,
                     version,
@@ -2923,11 +3233,12 @@ impl Lod {
             self.invalidate_chunk(x, z);
         }
         let mut standins = Vec::new();
+        let mut empty_standin: Option<Arc<TileColumns>> = None;
         for &(x, z) in &added {
             let key = TileKey { x, z, level: 0 };
             if self.plan.nodes.contains(&key) && !self.ready.contains_key(&key) {
-                self.ready
-                    .insert(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+                let standin = empty_standin.get_or_insert_with(TileColumns::empty).clone();
+                self.ready.insert(key, standin);
                 standins.push(key);
             }
         }
@@ -3328,7 +3639,7 @@ impl Snapshot {
             .samples
             .get(&key)
             .cloned()
-            .unwrap_or_else(|| Arc::new(vec![Column::default(); CELLS * CELLS]));
+            .unwrap_or_else(TileColumns::empty);
         let overrides = std::array::from_fn(|index| {
             let x = index % CELLS;
             let z = index / CELLS;
@@ -3569,9 +3880,7 @@ mod tests {
         plan.nodes.extend((0..4).map(fine));
         plan.nodes.insert(fine(5));
         let retiring = (0..5).map(|x| (x, 0)).collect();
-        let saved = [((1, 0), Arc::new(std::array::from_fn(|_| Column::default())))]
-            .into_iter()
-            .collect();
+        let saved = [((1, 0), TileColumns::empty())].into_iter().collect();
         let masks = [
             (fine(2), [u64::MAX; 4]),
             (fine(3), [u64::MAX, u64::MAX, u64::MAX, u64::MAX - 1]),
@@ -3927,13 +4236,13 @@ mod tests {
         assert_eq!(Column::reduced(&columns, 0, 0, 1), columns[0]);
         let reduced = ReducedColumns::new(Arc::new(columns));
         assert_eq!(
-            reduced.get(0, 0, 4).spans,
-            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)]
+            reduced.get(0, 0, 4),
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)].as_slice()
         );
-        assert_eq!(reduced.get(4, 8, 4).spans, [span(0, 4, 1)]);
+        assert_eq!(reduced.get(4, 8, 4), [span(0, 4, 1)].as_slice());
         assert_eq!(
-            reduced.get(0, 0, 16).spans,
-            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)],
+            reduced.get(0, 0, 16),
+            [span(0, 4, 1), span(4, 12, 2), span(12, 14, 3)].as_slice(),
             "a crown over one corner of a wide cell still sits on its trunk"
         );
     }
@@ -4093,7 +4402,7 @@ mod tests {
                 z: 0,
                 level: 0,
             },
-            Arc::new(vec![Column::default(); CELLS * CELLS]),
+            TileColumns::empty(),
         );
         lod.apply_detail(chunk, &columns());
         assert_eq!(
@@ -4108,7 +4417,7 @@ mod tests {
                 z: 0,
                 level: 2,
             },
-            Arc::new(vec![Column::default(); CELLS * CELLS]),
+            TileColumns::empty(),
         );
         lod.apply_detail(chunk, &columns());
         assert_eq!(lod.shared.detail_widths.load(Ordering::Relaxed), 0b10);
@@ -4120,15 +4429,12 @@ mod tests {
     #[test]
     fn a_return_takes_kept_tiles_back_coarse_first_instead_of_sampling() {
         let mut lod = Lod::scheduler_for_test();
-        let filled = Arc::new(vec![
-            Column::from_surface(Some(Surface {
-                height: 70,
-                state: BlockStateId(1),
-                water: None,
-                biome: 0,
-            }));
-            CELLS * CELLS
-        ]);
+        let filled = Arc::new(TileColumns::filled(&Column::from_surface(Some(Surface {
+            height: 70,
+            state: BlockStateId(1),
+            water: None,
+            biome: 0,
+        }))));
         lod.replan([0, 0], 2, 64, 0, None);
         let home: Vec<_> = lod.plan.nodes.iter().copied().collect();
         for &key in &home {
@@ -4254,7 +4560,7 @@ mod tests {
                 level,
             }
         };
-        let empty = || Arc::new(vec![Column::default(); CELLS * CELLS]);
+        let empty = TileColumns::empty;
         let filled = || {
             let column = Column {
                 surface: None,
@@ -4267,7 +4573,7 @@ mod tests {
                 }]
                 .into(),
             };
-            Arc::new(vec![column; CELLS * CELLS])
+            Arc::new(TileColumns::filled(&column))
         };
         let mut ready = FxHashMap::default();
         let mut pending = FxHashSet::default();
@@ -4336,7 +4642,10 @@ mod tests {
                     z: 0,
                     level: 0,
                 },
-                &columns.iter().collect::<Vec<_>>(),
+                &columns
+                    .iter()
+                    .map(|c| c.spans.as_slice())
+                    .collect::<Vec<_>>(),
                 &FxHashSet::default(),
                 None,
                 &context,
@@ -4422,7 +4731,10 @@ mod tests {
                         z: 0,
                         level: 0,
                     },
-                    &columns.iter().collect::<Vec<_>>(),
+                    &columns
+                        .iter()
+                        .map(|c| c.spans.as_slice())
+                        .collect::<Vec<_>>(),
                     &FxHashSet::default(),
                     None,
                     &context,
@@ -4461,7 +4773,10 @@ mod tests {
                     z: 0,
                     level: 0,
                 },
-                &columns.iter().collect::<Vec<_>>(),
+                &columns
+                    .iter()
+                    .map(|c| c.spans.as_slice())
+                    .collect::<Vec<_>>(),
                 &FxHashSet::default(),
                 None,
                 &context,
@@ -4541,15 +4856,12 @@ mod tests {
         };
         lod.ready.insert(
             key,
-            Arc::new(vec![
-                Column::from_surface(Some(Surface {
-                    height: 70,
-                    state: stone,
-                    water: Some((80, water)),
-                    biome: biomes.id("minecraft:plains"),
-                }));
-                CELLS * CELLS
-            ]),
+            Arc::new(TileColumns::filled(&Column::from_surface(Some(Surface {
+                height: 70,
+                state: stone,
+                water: Some((80, water)),
+                biome: biomes.id("minecraft:plains"),
+            })))),
         );
         // A chunk covers only one quarter of this parent's 32² cell. Both
         // opaque terrain and water must leave precisely that 16² footprint.
@@ -4689,40 +5001,47 @@ mod tests {
         lod.observe(Arc::new(chunk.clone()), &facts);
         receive_observed(&mut lod);
         let observed = &lod.saved[&(-1, -1)];
-        assert_eq!(observed[0].surface.unwrap().height, 121);
-        assert_eq!(observed[0].surface.unwrap().state, stone);
-        assert_eq!(observed[68].surface.unwrap().height, 55);
-        assert_eq!(observed[68].surface.unwrap().water, Some((64, water)));
-        let chorus_column = &observed[8 * 16 + 8];
-        assert_eq!(chorus_column.surface.unwrap().state, flower);
+        assert_eq!(observed.ground(0), Some((121, stone)));
+        assert_eq!(observed.ground(68), Some((55, stone)));
         assert_eq!(
-            chorus_column
-                .spans
+            observed
+                .spans(68)
+                .last()
+                .map(|s| (i32::from(s.max), s.state)),
+            Some((64, water))
+        );
+        assert_eq!(observed.ground(8 * 16 + 8), Some((74, flower)));
+        assert_eq!(
+            observed
+                .spans(8 * 16 + 8)
                 .iter()
                 .map(|span| (span.min, span.max, span.state))
                 .collect::<Vec<_>>(),
             vec![(70, 71, end_stone), (71, 73, chorus), (73, 74, flower)]
         );
-        let kelp_column = &observed[2 * 16 + 2];
-        assert_eq!(kelp_column.surface.unwrap().height, 55);
-        assert_eq!(kelp_column.surface.unwrap().water, Some((64, water)));
-        assert_eq!(observed[6 * 16 + 6].surface.unwrap().state, powder_snow);
-        assert_eq!(observed[6 * 16 + 6].surface.unwrap().height, 92);
-        assert_eq!(observed[10 * 16 + 10].surface.unwrap().state, stair);
+        assert_eq!(observed.ground(2 * 16 + 2), Some((55, stone)));
+        assert_eq!(
+            observed
+                .spans(2 * 16 + 2)
+                .last()
+                .map(|s| (i32::from(s.max), s.state)),
+            Some((64, water))
+        );
+        assert_eq!(observed.ground(6 * 16 + 6), Some((92, powder_snow)));
+        assert_eq!(observed.ground(10 * 16 + 10), Some((56, stair)));
 
         let fine = TileKey {
             x: -1,
             z: -1,
             level: 0,
         };
-        lod.ready
-            .insert(fine, Arc::new(vec![Column::default(); 256]));
+        lod.ready.insert(fine, TileColumns::empty());
         lod.finish_detail(
             (-1, -1),
             ReducedColumns::new(Arc::new(std::array::from_fn(|_| Column::default()))),
         );
         assert_eq!(
-            lod.ready[&fine][0].surface.unwrap().height,
+            lod.ready[&fine].ground(0).unwrap().0,
             121,
             "late seed generation cannot overwrite a visited build"
         );
@@ -4731,7 +5050,7 @@ mod tests {
         lod.pending.insert(fine);
         lod.finish_sample(fine, vec![Column::default(); 256]);
         assert_eq!(
-            lod.ready[&fine][0].surface.unwrap().height,
+            lod.ready[&fine].ground(0).unwrap().0,
             121,
             "a late coarse sampling job cannot erase completed detail"
         );
@@ -4749,7 +5068,6 @@ mod tests {
                 .visited_source(-16, -16, 2)
                 .unwrap()
                 .get()
-                .spans
                 .iter()
                 .map(|span| (span.min, span.max, span.state))
                 .collect::<Vec<_>>()
@@ -4764,7 +5082,7 @@ mod tests {
         chunk.set(0, 130, 0, stone.0);
         lod.observe(Arc::new(chunk.clone()), &facts);
         receive_observed(&mut lod);
-        assert_eq!(lod.ready[&fine][0].surface.unwrap().height, 131);
+        assert_eq!(lod.ready[&fine].ground(0).unwrap().0, 131);
         assert!(Arc::ptr_eq(
             &lod.reduced[&(-1, -1)].columns,
             &lod.saved[&(-1, -1)]
@@ -4774,8 +5092,8 @@ mod tests {
             vec![(120, 121, stone), (130, 131, stone)]
         );
         // A seed reduction arriving after the edit cannot restore old data.
-        lod.finish_detail((-1, -1), ReducedColumns::new(old));
-        assert_eq!(lod.ready[&fine][0].surface.unwrap().height, 131);
+        lod.finish_detail((-1, -1), ReducedColumns::from_tile(old));
+        assert_eq!(lod.ready[&fine].ground(0).unwrap().0, 131);
         assert_eq!(
             reduced_spans(&lod),
             vec![(120, 121, stone), (130, 131, stone)]
@@ -4832,8 +5150,7 @@ mod tests {
         lod.plan = Plan::default();
         lod.plan.roots.push(covered_fine);
         lod.plan.nodes.insert(covered_fine);
-        lod.ready
-            .insert(covered_fine, Arc::new(vec![Column::default(); 256]));
+        lod.ready.insert(covered_fine, TileColumns::empty());
         lod.covered.insert((-1, -2));
         lod.reselect = true;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -4865,8 +5182,7 @@ mod tests {
         };
         lod.plan.roots = vec![parent];
         lod.ready.clear();
-        lod.ready
-            .insert(parent, Arc::new(vec![Column::default(); 256]));
+        lod.ready.insert(parent, TileColumns::empty());
         lod.active = [parent].into_iter().collect();
         lod.sync_sample(parent);
         lod.sample_jobs = SAMPLE_JOBS;
@@ -4916,8 +5232,7 @@ mod tests {
             lod.plan.nodes.insert(parent);
             lod.plan.split.insert(parent);
             lod.plan.nodes.extend(parent.children());
-            lod.ready
-                .insert(parent, Arc::new(vec![Column::default(); 256]));
+            lod.ready.insert(parent, TileColumns::empty());
         }
         lod.active = [near, far].into_iter().collect();
         lod.wanted_stale = true;
@@ -5171,11 +5486,11 @@ mod tests {
         lod.finish_sample(key, samples(70));
         let previous = lod.mesh_samples.clone();
 
-        let observed: [Column; CELLS * CELLS] = samples(80).try_into().unwrap();
+        let observed = Arc::new(TileColumns::from_columns(&samples(80)));
         lod.apply_fine((0, 0), &observed);
 
-        assert_eq!(previous.get(&key).unwrap()[0].spans[0].max, 70);
-        assert_eq!(lod.mesh_samples.get(&key).unwrap()[0].spans[0].max, 80);
+        assert_eq!(previous.get(&key).unwrap().spans(0)[0].max, 70);
+        assert_eq!(lod.mesh_samples.get(&key).unwrap().spans(0)[0].max, 80);
     }
 
     #[test]
@@ -5188,8 +5503,7 @@ mod tests {
         };
         lod.small = true;
         lod.active.insert(key);
-        lod.ready
-            .insert(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+        lod.ready.insert(key, TileColumns::empty());
         lod.sync_sample(key);
         lod.mark_mesh(key);
         lod.set_near_loading(true);
@@ -5554,12 +5868,8 @@ mod tests {
             level: 0,
         };
         lod.plan.nodes.insert(key);
-        lod.ready
-            .insert(key, Arc::new(vec![Column::default(); 256]));
-        lod.saved.insert(
-            (3, -2),
-            Arc::new(std::array::from_fn(|_| Column::default())),
-        );
+        lod.ready.insert(key, TileColumns::empty());
+        lod.saved.insert((3, -2), TileColumns::empty());
         lod.retiring.insert((3, -2));
         lod.covered.insert((3, -2));
         lod.prune_retiring();
@@ -5587,8 +5897,7 @@ mod tests {
         lod.active.extend(children);
         for child in children {
             lod.plan.nodes.insert(child);
-            lod.ready
-                .insert(child, Arc::new(vec![Column::default(); 256]));
+            lod.ready.insert(child, TileColumns::empty());
             lod.complete.insert(child, true);
         }
         lod.complete.insert(parent, false);
@@ -5843,12 +6152,12 @@ mod tests {
             chunks
                 .filter(|&chunk| {
                     self.drawn(chunk)
-                        .is_none_or(|c| c.spans.last().is_none_or(|s| s.max != 71))
+                        .is_none_or(|spans| spans.last().is_none_or(|s| s.max != 71))
                 })
                 .collect()
         }
-        /// The column the active tiles draw at a chunk's middle.
-        fn drawn(&self, (cx, cz): (i32, i32)) -> Option<Column> {
+        /// The column spans the active tiles draw at a chunk's middle.
+        fn drawn(&self, (cx, cz): (i32, i32)) -> Option<Vec<Span>> {
             let lod = &self.lod;
             let snapshot = lod.snapshot();
             let drawn = |x: i32, z: i32| {
@@ -5861,8 +6170,10 @@ mod tests {
                 let (cx, cz) = ((x - ox) / stride, (z - oz) / stride);
                 let (wx, wz) = (ox + cx * stride, oz + cz * stride);
                 Some(match snapshot.visited_source(wx, wz, stride) {
-                    Some(source) => source.get().clone(),
-                    None => lod.ready[&key][(cz * CELLS as i32 + cx) as usize].clone(),
+                    Some(source) => source.get().to_vec(),
+                    None => lod.ready[&key]
+                        .spans((cz * CELLS as i32 + cx) as usize)
+                        .to_vec(),
                 })
             };
             drawn(cx * 16 + 8, cz * 16 + 8)
@@ -6045,7 +6356,7 @@ mod tests {
             .copied()
             .filter(|&chunk| {
                 far.drawn(chunk)
-                    .is_none_or(|c| c.spans.last().is_none_or(|s| s.state != fine))
+                    .is_none_or(|spans| spans.last().is_none_or(|s| s.state != fine))
             })
             .collect();
         assert!(
@@ -6095,7 +6406,7 @@ mod tests {
         };
         lod.plan.nodes.insert(key);
         assert_eq!(queued(&mut lod), [key]);
-        lod.finish_any_sample(key, vec![Column::default(); CELLS * CELLS], true);
+        lod.finish_any_sample(key, None, true);
         assert!(lod.retry.contains_key(&key) && !lod.ready.contains_key(&key));
         assert!(queued(&mut lod).is_empty(), "it waits for its data");
         lod.refresh(AREA, ALL);
@@ -6104,11 +6415,11 @@ mod tests {
 
         // The data comes while it is being sampled.
         lod.refresh(AREA, ALL);
-        lod.finish_any_sample(key, vec![Column::default(); CELLS * CELLS], true);
+        lod.finish_any_sample(key, None, true);
         assert!(!lod.retry.contains_key(&key));
         assert_eq!(queued(&mut lod), [key], "sampled again at once");
         // Coarser levels stood in for what waited: drawn.
-        lod.finish_any_sample(key, samples(70), false);
+        lod.finish_any_sample(key, Some(TileColumns::from_columns(&samples(70))), false);
         assert!(lod.ready.contains_key(&key) && !lod.stale.contains(&key));
         assert!(queued(&mut lod).is_empty());
         // Refreshed, then sampled with a hole where a tile is still on its
@@ -6117,8 +6428,8 @@ mod tests {
         assert_eq!(queued(&mut lod), [key]);
         let mut holed = samples(80);
         holed[..CELLS].fill(Column::default());
-        lod.finish_any_sample(key, holed, true);
-        assert_eq!(lod.ready[&key][0], samples(70)[0]);
+        lod.finish_any_sample(key, Some(TileColumns::from_columns(&holed)), true);
+        assert_eq!(lod.ready[&key].spans(0), samples(70)[0].spans.as_slice());
         assert!(lod.retry.contains_key(&key));
     }
 
@@ -6135,7 +6446,8 @@ mod tests {
         };
         lod.plan.nodes.insert(key);
         lod.active.insert(key);
-        lod.ready.insert(key, Arc::new(samples(70)));
+        lod.ready
+            .insert(key, Arc::new(TileColumns::from_columns(&samples(70))));
         assert!(queued(&mut lod).is_empty());
         lod.refresh(AREA, ALL);
         assert_eq!(queued(&mut lod), [key]);
@@ -6166,8 +6478,7 @@ mod tests {
             level: 5,
         };
         lod.plan.nodes.insert(key);
-        lod.ready
-            .insert(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+        lod.ready.insert(key, TileColumns::empty());
         let column = samples(70).swap_remove(0);
         let columns: Arc<[Column; 256]> = Arc::new(std::array::from_fn(|_| column.clone()));
         lod.finish_observed((1, 1), ReducedColumns::new(columns));
@@ -6182,7 +6493,8 @@ mod tests {
             let key = TileKey { x: 0, z: 0, level };
             lod.plan.nodes.insert(key);
             lod.active.insert(key);
-            lod.ready.insert(key, Arc::new(samples(70)));
+            lod.ready
+                .insert(key, Arc::new(TileColumns::from_columns(&samples(70))));
             assert!(
                 queued(&mut lod).is_empty(),
                 "level {level}: sampled tile is not asked again"
@@ -6203,5 +6515,68 @@ mod tests {
                 "level {level}: not sampled again on the way back"
             );
         }
+    }
+
+    #[test]
+    fn tile_columns_preserve_spans_ground_and_shrink_heap_bytes() {
+        let columns: Vec<Column> = (0..CELLS * CELLS)
+            .map(|i| {
+                if i % 7 == 0 {
+                    Column::default()
+                } else {
+                    let top = 60 + (i % 15) as i16;
+                    Column {
+                        surface: Some(Surface {
+                            height: i32::from(top),
+                            state: BlockStateId(2),
+                            water: (i % 3 == 0).then_some((64, BlockStateId(9))),
+                            biome: (i % 5) as u16,
+                        }),
+                        spans: vec![
+                            Span {
+                                min: -64,
+                                max: top - 1,
+                                state: BlockStateId(1),
+                                biome: (i % 5) as u16,
+                                light: 0,
+                            },
+                            Span {
+                                min: top - 1,
+                                max: top,
+                                state: BlockStateId(2),
+                                biome: (i % 5) as u16,
+                                light: 240,
+                            },
+                        ]
+                        .into(),
+                    }
+                }
+            })
+            .collect();
+        let tile = TileColumns::from_columns(&columns);
+        assert_eq!(tile.len(), CELLS * CELLS);
+        for (i, col) in columns.iter().enumerate() {
+            assert_eq!(tile.spans(i), col.spans.as_slice());
+            assert_eq!(tile.ground(i), col.surface.map(|s| (s.height, s.state)));
+            assert_eq!(tile.is_empty_column(i), *col == Column::default());
+        }
+        // Flat CSR layout is less than half the size of Vec<Column> (256 * 80 = 20,480 B).
+        assert!(
+            tile.heap_bytes() < std::mem::size_of_val(columns.as_slice()) / 2,
+            "tile bytes {} vs Vec<Column> {}",
+            tile.heap_bytes(),
+            std::mem::size_of_val(columns.as_slice())
+        );
+        // Heights outside i16 fall back to i32 ground storage transparently.
+        let mut extreme = columns.clone();
+        extreme[5].surface = Some(Surface {
+            height: 100_000,
+            state: BlockStateId(7),
+            water: None,
+            biome: 0,
+        });
+        let tile32 = TileColumns::from_columns(&extreme);
+        assert_eq!(tile32.ground(5), Some((100_000, BlockStateId(7))));
+        assert_eq!(tile32.ground(0), None);
     }
 }

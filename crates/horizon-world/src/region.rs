@@ -27,6 +27,13 @@ thread_local! {
     static NBT_DECODE_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Release thread-local decompression scratch retained by region readers.
+pub fn release_scratch() {
+    NBT_DECODE_BUFFER.with_borrow_mut(|bytes| {
+        *bytes = Vec::new();
+    });
+}
+
 #[derive(Clone, Debug)]
 pub struct ChunkRecord {
     pub compression: Compression,
@@ -55,10 +62,17 @@ impl ChunkRecord {
             let decoded = self
                 .compression
                 .decode_into(&self.compressed, limits.max_bytes, bytes);
-            match nbt::read_named(bytes, limits) {
+            let result = match nbt::read_named(bytes, limits) {
                 Ok((root, _)) => Ok(root),
                 Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
+            };
+            // Avoid permanently retaining multi-megabyte buffers after a rare huge chunk.
+            const RETAIN_CAP: usize = 256 << 10;
+            if bytes.capacity() > RETAIN_CAP {
+                bytes.clear();
+                bytes.shrink_to(RETAIN_CAP);
             }
+            result
         })
     }
 }

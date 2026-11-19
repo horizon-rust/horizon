@@ -50,7 +50,9 @@ fn build_one<'a>(
     let (pages_x, pages_y) = (width.div_ceil(PAGE), height.div_ceil(PAGE));
     // Each atlas page's place in the pool, plus one (0: none).
     let mut table = vec![0u32; (pages_x * pages_y) as usize];
-    let mut pool: Vec<Vec<u8>> = Vec::new();
+    let page_bytes = (PAGE * PAGE * 4) as usize;
+    let mut pool: Vec<u8> = Vec::new();
+    let mut page_count = 0usize;
     let blank: Vec<u8> = default.repeat((PAGE * PAGE) as usize);
     for ([x, y, w, h], map) in sprites {
         if w == 0 || h == 0 || map.len() < (w * h * 4) as usize || x + w > width || y + h > height {
@@ -60,10 +62,12 @@ fn build_one<'a>(
             for px in x / PAGE..=(x + w - 1) / PAGE {
                 let entry = &mut table[(py * pages_x + px) as usize];
                 if *entry == 0 {
-                    pool.push(blank.clone());
-                    *entry = pool.len() as u32;
+                    pool.extend_from_slice(&blank);
+                    page_count += 1;
+                    *entry = page_count as u32;
                 }
-                let page = &mut pool[*entry as usize - 1];
+                let page_offset = (*entry as usize - 1) * page_bytes;
+                let page = &mut pool[page_offset..page_offset + page_bytes];
                 // The sprite's texels on this page.
                 let (x0, x1) = (x.max(px * PAGE), (x + w).min((px + 1) * PAGE));
                 let (y0, y1) = (y.max(py * PAGE), (y + h).min((py + 1) * PAGE));
@@ -76,7 +80,7 @@ fn build_one<'a>(
             }
         }
     }
-    if pool.is_empty() || pool.len() >= 1 << 24 {
+    if page_count == 0 || page_count >= 1 << 24 {
         return None;
     }
     let entries = HEADER + pages_x * pages_y;
@@ -87,7 +91,7 @@ fn build_one<'a>(
         .map(|s| {
             let rows = entries.div_ceil(s).next_multiple_of(PAGE);
             let per_row = s / PAGE;
-            (s, rows, rows + (pool.len() as u32).div_ceil(per_row) * PAGE)
+            (s, rows, rows + (page_count as u32).div_ceil(per_row) * PAGE)
         })
         .find(|&(_, _, h)| h <= max_side)?;
     let mut pixels = vec![0u8; (side * map_height * 4) as usize];
@@ -103,8 +107,9 @@ fn build_one<'a>(
         let at = (HEADER as usize + i) * 4;
         pixels[at..at + 4].copy_from_slice(&[k as u8, (k >> 8) as u8, (k >> 16) as u8, 255]);
     }
+    drop(table);
     let per_row = side / PAGE;
-    for (k, page) in pool.iter().enumerate() {
+    for (k, page) in pool.chunks_exact(page_bytes).enumerate() {
         let k = k as u32;
         let (ox, oy) = (k % per_row * PAGE, rows + k / per_row * PAGE);
         for row in 0..PAGE {
@@ -114,6 +119,7 @@ fn build_one<'a>(
                 .copy_from_slice(&page[src..src + (PAGE * 4) as usize]);
         }
     }
+    drop(pool);
     Some(PagedMap {
         width: side,
         height: map_height,

@@ -233,7 +233,12 @@ pub(super) fn ask(
     let block = Some((pos, id));
     if !particle
         && tints.asked == block
-        && let Some(&(_, color)) = tints.asked_colors.iter().find(|(i, _)| *i == index)
+        && let Some(&(_, color)) = tints
+            .storage
+            .get()
+            .asked_colors
+            .iter()
+            .find(|(i, _)| *i == index)
     {
         return color;
     }
@@ -254,11 +259,12 @@ pub(super) fn ask(
         }
     } & 0xFF_FFFF;
     if !particle {
+        let asked_colors = &mut tints.storage.get_mut().asked_colors;
         if tints.asked != block {
             tints.asked = block;
-            tints.asked_colors.clear();
+            asked_colors.clear();
         }
-        tints.asked_colors.push((index, color));
+        asked_colors.push((index, color));
     }
     color
 }
