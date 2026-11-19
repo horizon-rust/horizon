@@ -823,9 +823,13 @@ def start(out: Path) -> None:
 
 def tar_xz(folder: Path, names: list[str], archive: Path) -> None:
     """A tar of `names` (paths under `folder`, folders included) the same on every OS and run: sorted `./` entries,
-    zero times and owners, GNU format, xz-compressed with no timestamp of its own."""
+    zero times and owners, modes without group and other write, GNU format, xz-compressed with no timestamp of its
+    own."""
     def clean(info: tarfile.TarInfo) -> tarfile.TarInfo:
         info.mtime, info.uid, info.gid, info.uname, info.gname = 0, 0, 0, "", ""
+        # The umask's bits otherwise: 0002 (Ubuntu's and Fedora's default) stores 0o775 and 0o664, Windows 0o777 and
+        # 0o666. The Rust reader masks the same way when it unpacks (horizon-mod-package's sdk.rs, `extract`).
+        info.mode &= 0o755
         return info
     with lzma.open(archive, "wb", format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC64, preset=XZ_PRESET) as xz, \
             tarfile.open(fileobj=xz, mode="w", format=tarfile.GNU_FORMAT) as tar:

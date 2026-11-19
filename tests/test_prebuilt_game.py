@@ -441,12 +441,14 @@ class SdkAssetTests(unittest.TestCase):
             self.assertFalse((root / "dist").exists())
 
     def test_the_rust_reader_fixture_is_what_pack_writes(self):
-        # crates/horizon-mod-package/src/sdk/fixture.tar.xz is unpacked by the Rust reader's test: the two agree.
+        # crates/horizon-mod-package/src/sdk/fixture.tar.xz is unpacked by the Rust reader's test: the two agree,
+        # whatever the umask (0002 gives these modes).
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "deps").mkdir()
             (root / "deps/a.rmeta").write_text("metadata")
-            for path in (root / "deps", root / "deps/a.rmeta"):
+            for path, mode in ((root / "deps", 0o775), (root / "deps/a.rmeta", 0o664)):
+                os.chmod(path, mode)
                 os.utime(path, (0, 0))
             prebuilt_game.tar_xz(root, prebuilt_game.tree(root), root / "fixture.tar.xz")
             fixture = prebuilt_game.ROOT / "crates/horizon-mod-package/src/sdk/fixture.tar.xz"
