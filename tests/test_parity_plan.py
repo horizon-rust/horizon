@@ -80,36 +80,91 @@ class PlanTests(unittest.TestCase):
             with self.subTest(spec=spec), self.assertRaises(argparse.ArgumentTypeError):
                 parity_plan.shard_spec(spec)
 
-    def test_the_selection_is_parity_pys_listed_names(self):
+    def test_the_selection_is_parity_pys_listed_names_and_what_it_left_out(self):
         output = "3 files changed: 2 harnesses depend on them, 2 without a pass for their current inputs.\n" \
-                 "not selected (runs when named, and nightly): lan: slow\nfood\nlight\n2 of 9 harnesses would run\n"
+                 "skipped on mini (darwin): save_roundtrip: needs vscreen\n" \
+                 "not selected (runs when named, and nightly): lan: slow: 20 min\nfood\nlight\n2 of 9 harnesses would run\n"
         with mock.patch.object(parity_plan.subprocess, "run",
                                return_value=SimpleNamespace(returncode=0, stdout=output, stderr="")) as run, \
                 mock.patch.object(parity, "harnesses", return_value={"food": 1, "light": 2, "lan": 3}):
-            self.assertEqual(parity_plan.selection(["--changed", "origin/main"]), ["food", "light"])
+            self.assertEqual(parity_plan.selection(["--changed", "origin/main"]),
+                             (["food", "light"], {"save_roundtrip": "skipped on mini (darwin): needs vscreen",
+                                                  "lan": "named only: slow: 20 min"}))
         self.assertEqual(run.call_args.args[0][-3:], ["--changed", "origin/main", "--list"])
+
+    def test_the_left_out_lines_are_parity_pys_own(self):
+        source = Path(parity.__file__).read_text(encoding="utf-8")
+        self.assertIn('print(f"not selected (runs when named, and nightly): {name}: {manual[base_name(name)]}"', source)
+        self.assertIn('print(f"skipped on {HOST} ({sys.platform}): {name}: {skips[base_name(name)]}"', source)
+
+
+class MainTests(unittest.TestCase):
+    def plan(self, names, left_out, needed=None):
+        needs = {"return_value": needed} if needed else {"wraps": parity_plan.shards_needed}
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch.object(parity_plan, "selection", return_value=(names, left_out)), \
+                mock.patch.object(parity, "load_state", return_value={"harnesses": {}}), \
+                mock.patch.object(parity_plan, "artifacts", return_value=[WORLD]), \
+                mock.patch.object(parity_plan, "shards_needed", **needs), mock.patch("builtins.print"):
+            path = Path(temp) / "plan.json"
+            code = parity_plan.main(["--plan", str(path), "--", "--changed", "origin/main"])
+            return code, json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def test_the_plan_lists_what_was_left_out_and_why(self):
+        code, written = self.plan(["food"], {"lan": "named only: slow"})
+        self.assertEqual(code, 0)
+        self.assertEqual(written, {"shards": [{"group": "world", "harnesses": ["food"]}],
+                                   "left_out": {"lan": "named only: slow"}})
+
+    def test_a_plan_beyond_githubs_matrix_limit_is_refused(self):
+        self.assertEqual(self.plan(["food"], {}, needed=parity_plan.MATRIX_LIMIT + 1), (1, None))
 
 
 class ExportTests(unittest.TestCase):
-    def test_only_this_checkouts_own_passes_are_exported(self):
+    def test_a_fresh_runs_passes_are_exported(self):
         records = {
-            "food": {"status": "pass", "host": "mac", "seconds": 3, "hashes": {"tools/lab.py": "x"},
+            "food": {"status": "pass", "host": "runner", "seconds": 3, "hashes": {"tools/lab.py": "x"},
                      "dependencies": ["tools/lab.py", "crates/horizon-world/src/food.rs"], "artifacts": [WORLD]},
-            "light": {"status": "pass", "shared": True, "dependencies": ["tools/lab.py"], "artifacts": [CLIENT]},
             "mace": {"status": "fail", "dependencies": ["tools/lab.py"], "artifacts": [GAME]},
-            "hud": {"status": "pass", "dependencies": [], "artifacts": []},
             "gone": {"status": "pass", "dependencies": ["tools/lab.py"], "artifacts": []},
         }
-        found = {name: None for name in ("food", "light", "mace", "hud", "never_ran")}
+        found = {name: None for name in ("food", "mace", "never_ran")}
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp) / "out"
-            directory.mkdir()
-            (directory / "light.json").write_text("{}")  # an earlier export's, now a shared pass
             self.assertEqual(parity_plan.export_dependencies(records, found, directory), 1)
             self.assertEqual(sorted(path.name for path in directory.iterdir()), ["food.json"])
             self.assertEqual(json.loads((directory / "food.json").read_text(encoding="utf-8")),
                              {"dependencies": ["tools/lab.py", "crates/horizon-world/src/food.rs"],
                               "artifacts": [WORLD]})
+
+    def test_an_incomplete_export_writes_nothing(self):
+        food = {"status": "pass", "dependencies": ["tools/lab.py"], "artifacts": [WORLD]}
+        cases = {
+            "shared": {"light": {"status": "pass", "shared": True, "dependencies": ["tools/lab.py"],
+                                 "artifacts": [CLIENT]}},
+            "no trace": {"hud": {"status": "pass", "dependencies": [], "artifacts": []}},
+            "no probes": {"hud": {"status": "pass", "dependencies": ["tools/lab.py"]}},
+            "not empty": {},
+        }
+        for case, records in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp) / "out"
+                if case == "not empty":
+                    directory.mkdir()
+                    (directory / "old.json").write_text("{}")
+                records = {"food": food, **records}
+                with self.assertRaises(parity_plan.IncompleteExport):
+                    parity_plan.export_dependencies(records, dict.fromkeys(records), directory)
+                self.assertFalse((directory / "food.json").exists())
+
+    def test_a_failed_write_leaves_no_folder(self):
+        records = {"food": {"status": "pass", "dependencies": ["tools/lab.py"], "artifacts": [WORLD]}}
+        with tempfile.TemporaryDirectory() as temp, \
+                mock.patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            directory = Path(temp) / "out"
+            with self.assertRaises(parity_plan.IncompleteExport):
+                parity_plan.export_dependencies(records, dict.fromkeys(records), directory)
+            self.assertFalse(directory.exists())
 
 
 if __name__ == "__main__":

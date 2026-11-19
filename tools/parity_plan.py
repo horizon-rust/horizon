@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Split a parity selection over several runners, and export the dependency lists that let a runner without parity
-state of its own select what a change reaches.
+"""Split a parity selection over several runners, and export the dependency lists a fresh runner's run traced, for
+runners without parity state of their own to select what a change reaches.
 
   python3 tools/parity_plan.py --plan plan.json -- --changed origin/main   # the shards this selection needs
   python3 tools/parity_plan.py --shard 2/5 -- --all                        # the names in shard 2 of 5, one per line
-  python3 tools/parity_plan.py --export-dependencies DIR                   # this checkout's dependency lists
+  python3 tools/parity_plan.py --export-dependencies DIR                   # a fresh runner's dependency lists
 
 The selection is parity.py's own: the arguments after `--` go to `parity.py --list`, so nothing is built or run.
+What parity.py leaves out of it (named only, skipped on this platform) is listed with its reason, as not run.
 Each harness joins the group of the probe it builds (game, client, world, other; from its record here or the shared
 dependency list in PARITY_SHARED), and a shard holds one group, so a runner pays only that group's cold build.
 Runners then run `parity.py <names>`. This file is never imported by parity.py or a harness: a change to it reruns
@@ -16,6 +17,7 @@ import argparse
 import json
 import math
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,17 +34,31 @@ except ImportError:
 GROUPS = ("game", "client", "world", "other")
 SHARD_SIZES = {"game": 50, "client": 100, "world": 150, "other": 50}
 GAME_PACKAGES = {"horizon-game", "horizon-client", "horizon-client-lib"}
+# GitHub starts at most 256 jobs from one matrix.
+MATRIX_LIMIT = 256
+# The lines parity.py --list prints for what it leaves out (a test pins them to parity.py's own wording).
+NAMED_ONLY_LINE = re.compile(r"not selected \(runs when named, and nightly\): ([^\s:]+): (.*)")
+SKIPPED_LINE = re.compile(r"(skipped on .+?): ([^\s:]+): (.*)")
 
 
 def selection(arguments):
-    """The harnesses `parity.py ARGUMENTS --list` would run, in its order. Exits as parity.py does on a bad argument."""
+    """(the harnesses `parity.py ARGUMENTS --list` would run, in its order; {name: reason} for those it left out).
+    Exits as parity.py does on a bad argument."""
     result = subprocess.run([sys.executable, str(Path(parity.__file__)), *arguments, "--list"], cwd=parity.ROOT,
                             capture_output=True, text=True)
     sys.stderr.write(result.stderr)
     if result.returncode:
         sys.exit(result.returncode)
     found = parity.harnesses()
-    return [line for line in result.stdout.splitlines() if line in found]
+    names, left_out = [], {}
+    for line in result.stdout.splitlines():
+        if line in found:
+            names.append(line)
+        elif match := NAMED_ONLY_LINE.fullmatch(line):
+            left_out[match[1]] = f"named only: {match[2]}"
+        elif match := SKIPPED_LINE.fullmatch(line):
+            left_out[match[2]] = f"{match[1]}: {match[3]}"
+    return names, left_out
 
 
 def artifacts(name, records):
@@ -104,24 +120,37 @@ def plan(names, groups, count):
     return [(group, members[group][index::counts[group]]) for group in present for index in range(counts[group])]
 
 
+class IncompleteExport(Exception):
+    pass
+
+
 def export_dependencies(records, found, directory):
-    """Write NAME.json ({"dependencies", "artifacts"}, as parity.py's shared lists) for each harness this checkout
-    itself last passed: never a pass taken from the shared folder (another checkout's, possibly a pull request's),
-    a failed run (its trace may stop early) or a record with no dependencies (a runner would then never select it).
-    The directory holds this export only: lists an earlier export left there are removed. Returns how many."""
+    """Write NAME.json ({"dependencies", "artifacts"}, as parity.py's shared lists) for each harness passed here.
+
+    Only meaningful on a runner that started without parity state and ran parity.py once: every record is then that
+    run's, traced at this commit. Complete or nothing: it raises IncompleteExport, writing nothing, when a record was
+    taken from the shared folder (state this run did not trace), a pass has no dependency or probe list (its trace
+    was lost), or DIR is not empty. A failed harness gets no list (its trace may stop early): a runner without its
+    list counts it as reached by every change. If a write fails, DIR is removed. Returns how many lists."""
+    problems = [f"{name}: its pass was taken from the shared folder, not traced by this run"
+                for name in sorted(found) if (records.get(name) or {}).get("shared")]
+    passed = [name for name in sorted(found) if (records.get(name) or {}).get("status") == "pass"
+              and not records[name].get("shared")]
+    problems += [f"{name}: passed without a dependency or probe list" for name in passed
+                 if not records[name].get("dependencies") or "artifacts" not in records[name]]
+    if directory.exists() and any(directory.iterdir()):
+        problems.append(f"{directory} is not empty")
+    if problems:
+        raise IncompleteExport("; ".join(problems))
     directory.mkdir(parents=True, exist_ok=True)
-    for old in directory.glob("*.json"):
-        old.unlink()
-    count = 0
-    for name in sorted(found):
-        record = records.get(name) or {}
-        if record.get("status") != "pass" or record.get("shared") or not record.get("dependencies") \
-                or "artifacts" not in record:
-            continue
-        data = {"dependencies": record["dependencies"], "artifacts": record["artifacts"]}
-        (directory / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
-        count += 1
-    return count
+    try:
+        for name in passed:
+            data = {"dependencies": records[name]["dependencies"], "artifacts": records[name]["artifacts"]}
+            (directory / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
+    except OSError as error:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise IncompleteExport(f"writing the lists failed ({error}); {directory} removed") from error
+    return len(passed)
 
 
 def shard_spec(text):
@@ -139,24 +168,37 @@ def main(argv=None):
     action.add_argument("--plan", metavar="FILE", help="write the shards the selection needs as JSON, and list them")
     action.add_argument("--shard", type=shard_spec, metavar="I/N", help="print the names in shard I of N")
     action.add_argument("--export-dependencies", metavar="DIR", type=Path,
-                        help="write this checkout's dependency lists into DIR (no selection)")
+                        help="write the dependency lists of the harnesses passed here into DIR (empty or new; no "
+                             "selection). Only meaningful on a runner that started without parity state and ran "
+                             "parity.py once; exits 1, writing nothing, when the export would be incomplete")
     args = parser.parse_args(ours)
     records = parity.load_state()["harnesses"]
     if args.export_dependencies:
-        count = export_dependencies(records, parity.harnesses(), args.export_dependencies)
+        try:
+            count = export_dependencies(records, parity.harnesses(), args.export_dependencies)
+        except IncompleteExport as error:
+            print(f"no dependency lists exported: {error}", file=sys.stderr)
+            return 1
         print(f"{count} dependency lists written to {args.export_dependencies}")
         return 0
-    names = selection(rest)
+    names, left_out = selection(rest)
+    for name, reason in left_out.items():
+        print(f"not run here: {name}: {reason}", file=sys.stderr if args.shard else sys.stdout)
     groups = {name: probe_group(artifacts(name, records)) for name in names}
     if args.shard:
         index, count = args.shard
         for name in plan(names, groups, count)[index - 1][1]:
             print(name)
         return 0
-    shards = plan(names, groups, shards_needed(names, groups)) if names else []
+    count = shards_needed(names, groups)
+    if count > MATRIX_LIMIT:
+        print(f"{len(names)} harnesses need {count} shards, more than the {MATRIX_LIMIT} jobs GitHub starts from one "
+              "matrix: name fewer harnesses", file=sys.stderr)
+        return 1
+    shards = plan(names, groups, count) if names else []
     Path(args.plan).write_text(json.dumps({"shards": [{"group": group, "harnesses": harnesses}
-                                                      for group, harnesses in shards]}, indent=1) + "\n",
-                               encoding="utf-8")
+                                                      for group, harnesses in shards], "left_out": left_out},
+                                          indent=1) + "\n", encoding="utf-8")
     for index, (group, harnesses) in enumerate(shards, 1):
         print(f"shard {index}/{len(shards)} {group}: {len(harnesses)}: {' '.join(harnesses)}")
     print(f"{len(names)} harnesses in {len(shards)} shards: "
