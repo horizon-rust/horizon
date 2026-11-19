@@ -291,7 +291,9 @@ impl Launcher {
                         d.child(index_row(
                             n + 11,
                             tr("Applications menu"),
-                            Some(plain(if self.settings.desktop_entry() {
+                            Some(plain(if horizon_launcher::portable::is_on() {
+                                "You have portable mode on, so Horizon adds no icons to your desktop's menu."
+                            } else if self.settings.desktop_entry() {
                                 "Horizon and its icon are in your desktop's menu."
                             } else {
                                 "Not in your desktop's menu."

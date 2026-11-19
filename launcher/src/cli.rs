@@ -1780,11 +1780,10 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             }
         }
         Cmd::DesktopEntry { remove } => {
-            // Refused before the setting changes: a portable launcher keeps it as it was.
-            if !remove {
-                if let Some(why) = horizon_launcher::portable::host_refusal() {
-                    return Err(why);
-                }
+            // Refused before the setting changes, adding or removing: the entries on this
+            // computer belong to a standalone install, never to a portable launcher.
+            if let Some(why) = horizon_launcher::portable::host_refusal() {
+                return Err(why);
             }
             let mut settings = backend::Settings::load();
             settings.desktop_entry = Some(!remove);

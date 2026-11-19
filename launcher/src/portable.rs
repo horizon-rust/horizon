@@ -128,7 +128,7 @@ pub fn apply() {
 /// desktop shortcuts): a portable one leaves nothing behind on the computers it runs on.
 pub fn host_refusal_for(portable: bool) -> Option<String> {
     portable.then(|| {
-        crate::i18n::tr("This launcher is portable: it doesn't add menu entries, icons or desktop shortcuts to this computer.")
+        crate::i18n::tr("This launcher is portable: it doesn't add or remove menu entries, icons or desktop shortcuts on this computer.")
             .to_string()
     })
 }

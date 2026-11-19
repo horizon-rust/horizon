@@ -250,7 +250,12 @@ pub fn repair(exe: &Path) -> Result<bool, String> {
     install_in(&data, &target(exe)).map_err(|e| format!("{}: {e}", data.display()))
 }
 
+/// Removes the launcher's entry. A portable launcher refuses: the entry there is a standalone
+/// install's on this computer, not its own.
 pub fn remove() -> Result<(), String> {
+    if let Some(why) = crate::portable::host_refusal() {
+        return Err(why);
+    }
     let data = data_home().ok_or("No home folder.")?;
     remove_in(&data).map_err(|e| format!("{}: {e}", data.display()))
 }
