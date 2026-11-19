@@ -76,9 +76,8 @@ fn option_on(constants: &[(String, f64)], id: Option<&String>) -> bool {
 }
 
 /// Whether a stage of the pack reads the world before translucent terrain (`opaque_depth`,
-/// `opaque_color`): only the material stage has them, for `material` and, under
-/// `[displacement]`, `displacement`, and whatever those call.
-fn reads_opaque(stages: &[CheckedStage]) -> bool {
+/// `opaque_color`), including reads through functions called by a stage.
+fn reads_opaque(stages: &[CheckedStage], post_opaque: bool) -> bool {
     let reads = |s: &CheckedStage, function: naga::Handle<naga::Function>| {
         s.module
             .global_variables
@@ -88,12 +87,19 @@ fn reads_opaque(stages: &[CheckedStage]) -> bool {
     };
     stages
         .iter()
-        .filter(|s| s.kind == StageKind::Material)
+        .filter(|s| {
+            s.kind == StageKind::Material
+                || (post_opaque && matches!(s.kind, StageKind::Post | StageKind::Compute))
+        })
         .any(|s| {
             s.module
                 .functions
                 .iter()
-                .filter(|(_, f)| matches!(f.name.as_deref(), Some("material" | "displacement")))
+                .filter(|(_, f)| {
+                    f.name.as_deref() == Some(s.kind.function())
+                        || (s.kind == StageKind::Material
+                            && f.name.as_deref() == Some("displacement"))
+                })
                 .any(|(function, _)| reads(s, function))
         })
 }
@@ -377,7 +383,7 @@ impl NativePack {
             .find(|s| s.kind == StageKind::Material)
             .is_some_and(|s| s.reads("reflection"))
             && option_on(constants, option);
-        frame.reads_opaque = reads_opaque(&report.stages);
+        frame.reads_opaque = reads_opaque(&report.stages, report.manifest.post_opaque);
         let fog = report.material_fog;
         let coverage = report.manifest.material_coverage;
         let keeps = |key: fn(&horizon_shader_api::Stage) -> Option<bool>| {
@@ -557,7 +563,7 @@ impl NativePack {
     }
 
     /// Binds the water mirror the renderer drew this frame, and outside the title screen
-    /// fits the material stage's copies of the world and the surface target to its targets.
+    /// fits the opaque copies and the material stage's surface target to its targets.
     pub fn prepare_world_targets(&mut self, world: WorldTargets<'_>) {
         let WorldTargets {
             device,
@@ -572,8 +578,8 @@ impl NativePack {
         if title {
             return;
         }
-        if self.material.is_some() {
-            self.frame.fit_opaque(device, depth, color);
+        if self.frame.fit_opaque(device, depth, color) {
+            self.post.refresh_opaque(&self.frame);
         }
         let writes = self.material.as_ref().is_some_and(|m| m.writes_surface);
         let size = if writes {
@@ -718,7 +724,10 @@ file = \"material.wgsl\"
             let files = [(MANIFEST, manifest), ("material.wgsl", text.as_str())]
                 .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
                 .into();
-            reads_opaque(&check(&Pack::from_files(files).unwrap()).unwrap().stages)
+            reads_opaque(
+                &check(&Pack::from_files(files).unwrap()).unwrap().stages,
+                false,
+            )
         };
         let plain = "return Surface(input.albedo);";
         let flat = "return 0.0;";
@@ -735,6 +744,23 @@ file = \"material.wgsl\"
             plain,
             "return textureLoad(opaque_depth, vec2<i32>(input.uv), 0);"
         ));
+        let post_reads = |body: &str| {
+            let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
+                            post_opaque = true\n[[post]]\nfile = \"post.wgsl\"\n";
+            let shader = format!(
+                "fn behind() -> f32 {{ return textureLoad(opaque_depth, vec2<i32>(0), 0); }}\n\
+                 fn post(input: PostInput) -> vec4<f32> {{ {body} }}"
+            );
+            let files = [(MANIFEST, manifest), ("post.wgsl", &shader)]
+                .map(|(name, text)| (name.to_owned(), text.as_bytes().to_vec()))
+                .into();
+            reads_opaque(
+                &check(&Pack::from_files(files).unwrap()).unwrap().stages,
+                true,
+            )
+        };
+        assert!(!post_reads("return input.color;"));
+        assert!(post_reads("return vec4<f32>(behind());"));
     }
 
     /// A device with OpenGL's minimum 16 sampled textures per stage refuses a pack whose
