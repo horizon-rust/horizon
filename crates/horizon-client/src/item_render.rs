@@ -28,8 +28,8 @@ use horizon_assets::{
     animation::AnimationMetadata,
     item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model, bake_sprite_layer},
     item_model::{
-        ClientItem, Context, DisplayContext, FoilType, ItemEnv, ItemModels, LayerContent,
-        LevelState, OwnerState, PreparedParts, SpecialModel, StackView,
+        ClientItem, Context, DisplayContext, FoilType, ItemEnv, ItemModelNode, ItemModels,
+        LayerContent, LevelState, OwnerState, PreparedParts, SpecialModel, StackView,
     },
     model::Direction,
     palette::PalettedPermutations,
@@ -39,7 +39,7 @@ use horizon_core::nbt::Tag;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 /// One quad as submitted for drawing: pose-space corners, atlas UVs, the
@@ -863,23 +863,62 @@ impl ItemRenderer {
             cit,
         })
     }
-    /// Bakes ahead every model a pack's own item definitions (outside the `minecraft` namespace) name
-    /// directly, with its corners: vanilla bakes every model when it loads a pack, so the first time
-    /// one shows nothing stops to bake it (a server's large models, its railway's, took seconds).
-    pub fn bake_pack_models(&self) {
-        let names: Vec<String> = self
+    /// The models a pack's own item definitions (outside the `minecraft` namespace) draw, at any
+    /// depth of their composite, condition, select and range nodes.
+    pub fn pack_model_names(&self) -> Vec<String> {
+        fn leaves(node: &ItemModelNode, out: &mut Vec<String>) {
+            match node {
+                ItemModelNode::Model(leaf) => out.push(leaf.model.clone()),
+                ItemModelNode::Composite { models, .. } => {
+                    models.iter().for_each(|m| leaves(m, out))
+                }
+                ItemModelNode::Condition {
+                    on_true, on_false, ..
+                } => {
+                    leaves(on_true, out);
+                    leaves(on_false, out);
+                }
+                ItemModelNode::Select {
+                    cases, fallback, ..
+                } => {
+                    cases.iter().for_each(|c| leaves(&c.model, out));
+                    fallback.iter().for_each(|f| leaves(f, out));
+                }
+                ItemModelNode::RangeDispatch {
+                    entries, fallback, ..
+                } => {
+                    entries.iter().for_each(|(_, m)| leaves(m, out));
+                    fallback.iter().for_each(|f| leaves(f, out));
+                }
+                ItemModelNode::Registered { models, .. } => {
+                    models.iter().for_each(|(_, m)| leaves(m, out))
+                }
+                _ => {}
+            }
+        }
+        let mut names = Vec::new();
+        for (_, item) in self
             .models
             .definitions
             .iter()
             .filter(|(id, _)| !id.starts_with("minecraft:"))
-            .filter_map(|(_, item)| match &item.model {
-                horizon_assets::item_model::ItemModelNode::Model(leaf) => Some(leaf.model.clone()),
-                _ => None,
-            })
-            .collect();
+        {
+            leaves(&item.model, &mut names);
+        }
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+    /// Bakes `names` ahead, with their corners: vanilla bakes every model when it loads a pack, so
+    /// the first time one shows nothing stops to bake it (a server's large models, its railway's,
+    /// took seconds). Stops once the pack's renderer is dropped (the pack unloaded or reloaded).
+    pub fn bake_ahead(renderer: &Weak<Self>, names: Vec<String>) {
         for name in names {
-            let baked = self.bake(&name);
-            self.quad_extents(&name, &baked);
+            let Some(renderer) = renderer.upgrade() else {
+                return;
+            };
+            let baked = renderer.bake(&name);
+            renderer.quad_extents(&name, &baked);
         }
     }
     /// `ModelBakery` item baking, cached per model.
@@ -1443,8 +1482,9 @@ mod tests {
         assert_eq!(models("loadtest:item/b"), ["loadtest:item/b"]);
     }
 
-    /// A pack's own item models are baked with their corners before anything draws them, as
-    /// vanilla bakes every model when it loads the pack; the `minecraft` namespace's aren't.
+    /// A pack's own item models, nested in conditions too, are baked with their corners before
+    /// anything draws them, as vanilla bakes every model when it loads the pack; the `minecraft`
+    /// namespace's aren't.
     #[test]
     fn a_packs_own_item_models_are_baked_ahead() {
         let root = std::env::temp_dir().join(format!("horizon-bake-ahead-{}", std::process::id()));
@@ -1474,14 +1514,28 @@ mod tests {
                 "faces":{"up":{"uv":[0,0,16,16],"texture":"#all"}}}]}"##,
         );
         write(
+            "assets/track/items/signal.json",
+            r#"{"model":{"type":"minecraft:condition","property":"minecraft:using_item",
+                "on_true":{"type":"minecraft:model","model":"track:item/signal_on"},
+                "on_false":{"type":"minecraft:model","model":"track:item/rail"}}}"#,
+        );
+        write(
+            "assets/track/models/item/signal_on.json",
+            r##"{"textures":{"all":"track:item/rail"},"elements":[{"from":[7,0,7],"to":[9,16,9],
+                "faces":{"north":{"uv":[0,0,2,16],"texture":"#all"},
+                "south":{"uv":[0,0,2,16],"texture":"#all"}}}]}"##,
+        );
+        write(
             "assets/minecraft/items/stick.json",
             r#"{"model":{"type":"minecraft:model","model":"minecraft:item/stick"}}"#,
         );
         let data = crate::test_resources::item_data(&root, DataLoadOrigin::ClientPreload).unwrap();
-        let renderer = ItemRenderer::load(&ResourceRoot::directory(root.clone()), &data).unwrap();
-        renderer.bake_pack_models();
+        let renderer =
+            Arc::new(ItemRenderer::load(&ResourceRoot::directory(root.clone()), &data).unwrap());
+        ItemRenderer::bake_ahead(&Arc::downgrade(&renderer), renderer.pack_model_names());
         let baked = renderer.baked.lock().unwrap();
         assert_eq!(baked["track:item/rail"].quads.len(), 1);
+        assert_eq!(baked["track:item/signal_on"].quads.len(), 2);
         assert!(!baked.contains_key("minecraft:item/stick"));
         assert_eq!(renderer.extents.lock().unwrap()["track:item/rail"].len(), 4);
         drop(baked);
