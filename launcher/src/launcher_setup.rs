@@ -4,6 +4,7 @@ use super::*;
 
 impl Launcher {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        horizon_launcher::game_shader_api::draws_here();
         horizon_launcher::storage::eviction::cleanup_after_start();
         let (tx, rx) = channel();
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
@@ -118,6 +119,8 @@ impl Launcher {
             update_install: None,
             instance_install: None,
             install_next: None,
+            stable_install: None,
+            stable_failed: None,
             bar: (0., 0.),
             releases: Load::Loading,
             installed,
@@ -222,6 +225,7 @@ impl Launcher {
             owner_screen_open: false,
             starting_client: None,
             starting_instance: None,
+            pre_launch_stop: None,
             play_when_prepared: None,
             friend_code: line_edit::LineEdit::new(String::new(), 256, 32),
             friend_focused: false,
@@ -256,10 +260,12 @@ impl Launcher {
             mod_preview: Default::default(),
             project_icons: Default::default(),
             play_pressed: None,
+            play_step: Default::default(),
             bench: perf::Bench::from_env(),
             packs: Vec::new(),
             registry_packs: Vec::new(),
             packs_loaded: None,
+            packs_reading: Default::default(),
             pack_open: None,
             pack_filter: None,
             pack_busy: false,
@@ -268,6 +274,8 @@ impl Launcher {
             found_packs: Vec::new(),
             found_scanning: false,
             starting_pack: None,
+            starting_work: None,
+            porting: None,
             mods: mods_page::Mods::new(cx),
             github: github_mods_page::Github::new(cx),
             instances: instances_page::Instances::default(),
@@ -277,6 +285,7 @@ impl Launcher {
             shot_blur: Default::default(),
             pictures: Default::default(),
             game_packs: packs_page::Packs::default(),
+            shader_answers: 0,
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
             launch: None,
@@ -455,11 +464,26 @@ impl Launcher {
         self.account_menu = false;
     }
 
+    /// The periodic check: as at startup, the release list (which Stable reads) is refreshed with
+    /// the updates, but a failed read keeps the list shown.
     pub(crate) fn check_updates(&mut self) {
         self.checked = Some(Instant::now());
         let tx = self.tx.clone();
+        // A failed Stable download is offered again only after a list read from the network.
+        let failed = self.stable_failed.is_some();
         std::thread::spawn(move || {
-            let _ = tx.send(Msg::Updates(backend::check_updates().map(Box::new)));
+            if let Some(list) = failed
+                .then(backend::releases_from_network)
+                .and_then(Result::ok)
+            {
+                let _ = tx.send(Msg::ReleasesFromNetwork(list));
+            }
+            let updates = backend::releases_and_updates(|releases| {
+                if releases.is_ok() {
+                    let _ = tx.send(Msg::Releases(releases));
+                }
+            });
+            let _ = tx.send(Msg::Updates(updates.map(Box::new)));
         });
     }
 

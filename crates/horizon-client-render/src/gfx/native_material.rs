@@ -10,9 +10,11 @@
 
 use horizon_shader_api::{check::CheckedStage, stages::GROUP};
 
-use super::displace::{Displacement, MAX_SECTIONS, Near};
+use super::displace::{Displacement, MAX_SECTIONS};
+use super::external::{DisplacementPrepare, Near, OpaqueCopy, TerrainLayers};
+use super::native_post::kept::StageReads;
 use super::native_post::trace::{TerrainTrace, Traced};
-use super::native_post::{NativeFrame, present_constants};
+use super::native_post::{NativeFrame, NativePost, present_constants};
 use super::wgsl_prefix::{TERRAIN, prefixed, section};
 
 const PREFIX: &str = "horizon_terrain_";
@@ -20,7 +22,7 @@ const PREFIX: &str = "horizon_terrain_";
 /// The entries around the pack's `material`: vanilla's vertex work without the lightmap
 /// product, then the material, the alpha test and fog as `fs_solid` and `fs_translucent` do.
 const ENTRIES: &str = "
-// The manifest's `[material] fog`: false when the pack fogs its surfaces itself.
+// The manifest's `[frame] fog`: false when the pack fogs what it draws itself.
 override horizon_material_fog: bool = true;
 fn horizon_material_fogged(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
     if horizon_material_fog {
@@ -44,17 +46,22 @@ struct HorizonMaterialOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,
+    // rgb the vertex colour (vanilla's product of the tint, the shade and the ambient
+    // occlusion), alpha the corner's ambient occlusion (`horizon_look_ao`).
     @location(2) tint: vec4<f32>,
     @location(3) light: vec2<f32>,
     @location(4) lightmap: vec3<f32>,
     @location(5) position: vec3<f32>,
     @location(6) spherical: f32,
     @location(7) cylindrical: f32,
-    @location(8) @interpolate(flat) face: u32,
-    @location(9) @interpolate(flat) fluid_quad: u32,
-    @location(10) @interpolate(flat) emission: f32,
+    // From the quad's look: bits 0..2 the face, bit 3 a fluid quad, bits 4..6 the shade's code
+    // (0: no look), bits 8..11 the light level the surface gives off; from the vertex, bits 12..14
+    // its light-source code (terrain.wgsl's `emission`, `horizon_material_light_tier`).
+    @location(8) @interpolate(flat) look: u32,
+    // The look's tint, 0xBBGGRR.
+    @location(9) @interpolate(flat) look_tint: u32,
     // How far the section's fade-in is from whole, of 65535 (`horizon_material_faded`).
-    @location(11) @interpolate(flat) fade: u32,
+    @location(10) @interpolate(flat) fade: u32,
     // The point on the flat face (`position` without `[displacement]`'s relief), how much of
     // that relief it has (`MaterialInput.displaced`) and the face's normal (0 when the
     // fragment finds it).
@@ -62,10 +69,13 @@ struct HorizonMaterialOut {
     @location(13) displaced: f32,
     @location(14) @interpolate(flat) normal: vec3<f32>,
 }
+// `slot`: the corner's in the arena page, whose look is its quad's (`horizon_look`).
 fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<u32>, origin: vec4<f32>) -> HorizonMaterialOut {
-    let pos = horizon_material_displace(position + origin.xyz, uv, layer, color, light);
-    var out = horizon_material_out(pos, uv, layer, color, vec2<f32>(light));
+    light: vec2<u32>, origin: vec4<f32>, slot: u32, corner: u32) -> HorizonMaterialOut {
+    let look = horizon_look(slot);
+    let ao = horizon_look_ao(look, corner);
+    let pos = horizon_material_displace(position + origin.xyz, uv, layer, color, light, look, ao);
+    var out = horizon_material_out(pos, uv, layer, color, vec2<f32>(light), look, ao);
     // The section's fade-in (`RenderSection.getVisibility`), as how far it is from whole: 0
     // (whole) where nothing fades. It is the same for the whole section, so the flat varying
     // loses nothing.
@@ -84,14 +94,14 @@ fn horizon_material_faded(in: HorizonMaterialOut, color: vec4<f32>) -> vec4<f32>
     let faded = mix(horizon_terrain_globals.fog_color.rgb, gamma.rgb, visibility);
     return horizon_terrain_frame_stored(vec4(faded, color.a));
 }
-// `light`: sky, block, 16 per level.
+// `light`: sky, block, 16 per level. `look` the quad's, `ao` the point's (`horizon_look_ao`).
 fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<f32>) -> HorizonMaterialOut {
+    light: vec2<f32>, look: vec2<u32>, ao: f32) -> HorizonMaterialOut {
     var out: HorizonMaterialOut;
     out.clip = horizon_terrain_globals.view_proj * vec4(pos, 1.0);
     out.uv = uv;
     out.layer = layer;
-    out.tint = vec4(color.rgb, 1.0);
+    out.tint = vec4(color.rgb, ao);
     let block = max(light.y, horizon_terrain_dynamic_block_light(pos));
     let sky = light.x;
     // 16 per level, 15 levels.
@@ -100,32 +110,28 @@ fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f
     out.position = pos;
     out.spherical = length(pos);
     out.cylindrical = max(length(pos.xz), abs(pos.y));
-    // The colour's alpha byte (mesher.rs's `fluid_face` and `emitting`): a fluid quad's
-    // high nibble is 8 + its face (0..5), every other quad keeps 0xF there; the low nibble
-    // is 15 minus the face's HDR tier. Every corner of a quad carries the same byte, so the
+    // The colour's alpha byte (mesher.rs's `emitting`): bit 3 clear on a fluid quad, the high
+    // nibble 15 minus the light level. Every corner of a quad carries the same byte, so the
     // interpolated value rounds back exactly.
     let flags = u32(round(color.a * 255.0));
-    let high = flags >> 4u;
-    let fluid = high >= 8u && (high & 7u) < 6u;
-    out.face = select(0u, high & 7u, fluid);
-    out.fluid_quad = u32(fluid);
-    // The tier (0 none, 1 low, 2 incandescent, 3 bright, 4 very bright) as how strongly the
-    // face shines: a redstone torch 7/15, a torch 14/15, glowstone 1.
-    let code = 15u - (flags & 15u);
-    // Codes above 4 are the same tiers, shining all over rather than in their bright parts.
-    let tier = select(code, code - 4u, code > 4u);
-    out.emission = select(min(f32(tier) * 7.0 / 15.0, 1.0), 0.0, tier == 0u);
+    let fluid = (flags & 8u) == 0u;
+    let code = (look.x >> 24u) & 7u;
+    let level = 15u - (flags >> 4u);
+    let tier = 7u - (flags & 7u);
+    out.look = ((look.x >> 27u) & 7u) | u32(fluid) << 3u | code << 4u | level << 8u | tier << 12u;
+    out.look_tint = look.x & 0xffffffu;
     out.base = pos;
     out.displaced = 0.0;
     out.normal = vec3(0.0);
     return out;
 }
-@vertex fn horizon_material_vs(
+// A vertex's index is its slot in the arena page, and a quad's four come in order.
+@vertex fn horizon_material_vs(@builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> HorizonMaterialOut {
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
-        color, light, origin);
+        color, light, origin, vertex, vertex & 3u);
 }
 @vertex fn horizon_material_vs_flat(
     @builtin(vertex_index) vertex: u32,
@@ -134,22 +140,23 @@ fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f
 ) -> HorizonMaterialOut {
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[vertex >> 8u]];
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
-        color, light, origin);
+        color, light, origin, vertex, vertex & 3u);
 }
 // Solid draws reading the arena page (`SECTION_CORNER`), in either layout of the solid quads.
-fn horizon_material_corner(c: HorizonCorner, origin: vec4<f32>) -> HorizonMaterialOut {
+fn horizon_material_corner(s: horizon_terrain_SectionCorner, vertex: u32, origin: vec4<f32>)
+    -> HorizonMaterialOut {
+    let c = horizon_terrain_corner_inputs(s.c);
     return horizon_material_vertex(c.position, horizon_terrain_terrain_uv(c.uv, origin.w), c.layer,
-        c.color, c.light, origin);
+        c.color, c.light, origin, s.slot, vertex & 3u);
 }
 @vertex fn horizon_material_vs_section(@builtin(vertex_index) vertex: u32,
     @location(5) origin: vec4<f32>) -> HorizonMaterialOut {
-    let s = horizon_terrain_section_corner(vertex);
-    return horizon_material_corner(horizon_terrain_corner_inputs(s.c), origin);
+    return horizon_material_corner(horizon_terrain_section_corner(vertex), vertex, origin);
 }
 @vertex fn horizon_material_vs_section_flat(@builtin(vertex_index) vertex: u32)
     -> HorizonMaterialOut {
     let s = horizon_terrain_section_corner(vertex);
-    return horizon_material_corner(horizon_terrain_corner_inputs(s.c), horizon_corner_origin(s));
+    return horizon_material_corner(s, vertex, horizon_corner_origin(s));
 }
 // The prelude's `block_texture`: a sprite of the terrain's arrays at a mip level.
 fn horizon_block_size() -> vec2<f32> {
@@ -177,7 +184,11 @@ fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32
     let footprint = max(dot(dpdx(texels), dpdx(texels)), dot(dpdy(texels), dpdy(texels)));
     horizon_block_lod = max(0.5 * log2(max(footprint, 1e-8)), 0.0);
     // Water draws translucent and lava solid, so the pass resolves the fluid kind.
-    let fluid = select(0u, select(2u, 1u, translucent), in.fluid_quad != 0u);
+    let fluid = select(0u, select(2u, 1u, translucent), (in.look & 8u) != 0u);
+    // Without a look the vertex colour is the tint, with its shade and ambient occlusion in it.
+    let code = (in.look >> 4u) & 7u;
+    let tint = select(in.tint.rgb, unpack4x8unorm(in.look_tint).rgb, code != 0u);
+    let horizon_shaded = vec4(horizon_line_in(in.tint.rgb), 1.0);
     // `[displacement]`'s grid hands down its face's normal: its relief is the pack's to shade.
     let normal = select(horizon_material_normal(in.position), in.normal,
         dot(in.normal, in.normal) > 0.5);
@@ -185,12 +196,30 @@ fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32
     horizon_surface = vec4<f32>(0.0);
     let tangent = horizon_material_tangent(in.base, in.uv, normal);
     let out = material(MaterialInput(vec4(horizon_line_in(albedo.rgb), albedo.a),
-        vec4(horizon_line_in(in.tint.rgb), in.tint.a), in.light, horizon_line_in(in.lightmap),
+        vec4(horizon_line_in(tint), 1.0), horizon_line_in(vec3(horizon_look_shade(code))).x,
+        horizon_line_in(vec3(in.tint.a)).x, in.light, horizon_line_in(in.lightmap),
         in.position, in.uv, translucent, horizon_sprite_tags(in.layer & 0x7fffu),
         horizon_sprite_material(in.layer & 0x7fffu), in.clip.xy / frame.resolution,
-        in.face, fluid, in.emission, normal, tangent,
-        horizon_line_in(horizon_terrain_native_colored_light(in.position)), in.displaced)).color;
+        in.look & 7u, fluid, f32((in.look >> 8u) & 15u) / 15.0, normal, tangent,
+        horizon_line_in(horizon_terrain_native_colored_light(in.position)),
+        in.displaced@light_source@@shaded_tint@)).color;
     return vec4(horizon_line_out(out.rgb), out.a);
+}
+// `MaterialInput.light_source_tier` and `light_source_whole` from the vertex's light-source code
+// (`look` bits 12..14), as terrain.wgsl's `solid_finish_at` reads its `emission`: 1..4 a tier,
+// 5..7 tiers 1..3 shining whole.
+fn horizon_material_light_tier(look: u32) -> u32 {
+    let code = (look >> 12u) & 7u;
+    return select(code, code - 4u, code > 4u);
+}
+fn horizon_material_light_whole(look: u32) -> bool {
+    return ((look >> 12u) & 7u) > 4u;
+}
+// `MaterialInput.light_source_threshold`: the sprite's, as `solid_finish_at` reads it.
+fn horizon_material_light_threshold(layer: u32) -> f32 {
+    let l = layer & 0x7fffu;
+    let at = vec2(i32(l % horizon_terrain_SPRITE_SPLIT), i32(l / horizon_terrain_SPRITE_SPLIT));
+    return textureLoad(horizon_terrain_emission_thresholds, at, 0).r;
 }
 var<private> horizon_material_face_normal: vec3<f32>;
 struct HorizonMaterialSolid {
@@ -228,8 +257,23 @@ fn horizon_material_solid(in: HorizonMaterialOut) -> HorizonMaterialSolid {
 
 /// A solid draw's corner read from the arena page, a vertex's words or its quad's compact record
 /// (terrain.wgsl's `section_corner`), decoded by the engine's own `corner_inputs`: the material's
-/// and the shadow pass's solid entries take the engine's inputs from either layout.
-pub(super) const SECTION_CORNER: &str = "
+/// and the shadow pass's solid entries take the engine's inputs from either layout. And what
+/// they take from a quad's look (`horizon_look`, `mesher::QuadLook`), whose shade code is 0
+/// where the quad has none: its shade as a ray hit's (`stages::look_shade`).
+pub(super) fn section_corner() -> String {
+    let shade = horizon_shader_api::stages::look_shade("horizon_look_shade");
+    format!("\n// `mesher::SHADES` by code; 1 for none.\n{shade}{SECTION_CORNER}")
+}
+
+/// `section_corner` after the shade.
+const SECTION_CORNER: &str = "\
+// Corner `corner`'s ambient occlusion, 0..1 as vanilla's vertex colour holds it; 1 without a look.
+fn horizon_look_ao(look: vec2<u32>, corner: u32) -> f32 {
+    if ((look.x >> 24u) & 7u) == 0u {
+        return 1.0;
+    }
+    return f32((look.y >> (8u * corner)) & 255u) / 255.0;
+}
 // `horizon_terrain_corner_inputs` gives a corner's colour as the engine's own terrain converts
 // it (`unorm8x4`), which on some devices (NVIDIA) differs from the vertex fetch by one 1/255
 // step for some bytes: a pack's material and shadow see the engine's colours.
@@ -248,7 +292,7 @@ const DISPLACED_ENTRIES: &str = "
 @vertex fn horizon_material_vs_displaced(@builtin(vertex_index) v: u32,
     @builtin(instance_index) instance: u32) -> HorizonMaterialOut {
     let p = horizon_displace_point(v, instance);
-    var out = horizon_material_out(p.position, p.uv, p.layer, p.color, p.light);
+    var out = horizon_material_out(p.position, p.uv, p.layer, p.color, p.light, p.look, p.ao);
     out.base = p.base;
     out.displaced = p.near;
     out.normal = p.normal;
@@ -300,6 +344,8 @@ pub struct TerrainShape<'a> {
     pub weather_groups: [&'a wgpu::BindGroupLayout; 2],
     /// The resource packs' LabPBR maps (normals, specular), when they ship any.
     pub pbr: Option<&'a [wgpu::Texture; 2]>,
+    /// The arenas' quad looks' group (`looks`), while sections carry them (`looks::wanted`).
+    pub looks: Option<&'a wgpu::BindGroupLayout>,
 }
 
 /// The pack's terrain pipelines: solid (with the cutout test) and translucent, for the
@@ -320,6 +366,8 @@ pub struct NativeMaterial {
     pub(super) scene: Option<TerrainTrace>,
     /// The stage calls `set_surface`: its solid pipelines also write the surface target.
     pub writes_surface: bool,
+    /// `[material] reads`: none without.
+    pub(super) kept: Option<StageReads>,
 }
 
 /// terrain.wgsl's group 0 (`TerrainShape::globals`): its globals, the sprite arrays and their
@@ -386,21 +434,29 @@ pub(super) fn layer_table(name: &str, table: &[(u32, u32)]) -> String {
 /// Where a corner of terrain is drawn without a vertex stage.
 pub(super) const DISPLACE_VANILLA: &str = "
 fn horizon_material_displace(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<u32>) -> vec3<f32> {
+    light: vec2<u32>, look: vec2<u32>, ao: f32) -> vec3<f32> {
     return pos;
 }
 ";
 
-/// The vertex stage's call, with its inputs from terrain's vertex.
+/// The vertex stage's call, with its inputs from terrain's vertex and its quad's `look` (`ao`
+/// the corner's, `horizon_look_ao`). `horizon_material_translucent`: the pipeline draws the
+/// translucent pass, where a fluid is water (lava is solid). `stages::shaded_entries` fills in
+/// `shaded_tint`.
 pub(super) const DISPLACE_PACK: &str = "
+override horizon_material_translucent: bool = false;
 fn horizon_material_displace(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<u32>) -> vec3<f32> {
-    let flags = u32(round(color.a * 255.0));
-    let high = flags >> 4u;
-    let fluid = high >= 8u && (high & 7u) < 6u;
+    light: vec2<u32>, look: vec2<u32>, ao: f32) -> vec3<f32> {
+    let fluid = (u32(round(color.a * 255.0)) & 8u) == 0u;
     let lit = min(vec2(f32(light.y), f32(light.x)) / 240.0, vec2(1.0));
+    let code = (look.x >> 24u) & 7u;
+    let tint = select(color.rgb, unpack4x8unorm(look.x).rgb, code != 0u);
+    let face = (look.x >> 27u) & 7u;
+    let kind = select(0u, select(2u, 1u, horizon_material_translucent), fluid);
+    let horizon_shaded = vec4(horizon_line_in(color.rgb), 1.0);
     return vertex(VertexInput(pos, uv, horizon_sprite_material(layer & 0x7fffu), lit,
-        vec4(horizon_line_in(color.rgb), 1.0), select(0u, high & 7u, fluid), u32(fluid)));
+        vec4(horizon_line_in(tint), 1.0), horizon_line_in(vec3(horizon_look_shade(code))).x,
+        horizon_line_in(vec3(ao)).x, face, kind@shaded_tint@));
 }
 ";
 
@@ -411,29 +467,42 @@ fn horizon_material_displace(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: v
 /// the packed normal's bits exact.
 pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 
+/// What `MaterialInput`'s light-source fields take in a pack that names them
+/// (`CheckedStage::light_source`).
+const LIGHT_SOURCE: &str = ", horizon_material_light_tier(in.look), \
+    horizon_material_light_whole(in.look), horizon_material_light_threshold(in.layer)";
+
 /// The terrain shader for the pack's material stage `source`, with its sprite `tags` and
-/// `materials`, and the vertex stage in its module when `vertex`.
+/// `materials`, the vertex stage in its module when `vertex`, its inputs' `shaded_tint` where
+/// `shaded` (`CheckedStage::shaded_tint`) and their light-source fields where `light`
+/// (`CheckedStage::light_source`).
 fn shader_source(
     source: &str,
     tags: &[(u32, u32)],
     materials: &[(u32, u32)],
-    (vertex, displaced): (bool, bool),
+    (vertex, displaced, shaded, light): (bool, bool, bool, bool),
     linear: bool,
 ) -> String {
+    let shaded = |text: &str| {
+        let text = horizon_shader_api::stages::shaded_entries(text, shaded);
+        horizon_shader_api::stages::light_source_entries(&text, light.then_some(LIGHT_SOURCE))
+    };
     // The LabPBR maps in the frame's group, read by the prelude's `block_normal_map` and its
     // kin, and by a tracing stage's `hit_normal_map`.
     let pbr = horizon_shader_api::stages::PBR_MAPS_TERRAIN;
     format!(
-        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{}{SECTION_CORNER}{ENTRIES}{pbr}{}{}",
+        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{}{}{}{pbr}{}{}",
         vanilla_terrain(),
         super::native_post::line_helpers(linear),
         if vertex {
-            DISPLACE_PACK
+            shaded(DISPLACE_PACK)
         } else {
-            DISPLACE_VANILLA
+            DISPLACE_VANILLA.to_owned()
         },
         layer_table("horizon_sprite_tags", tags),
         layer_table("horizon_sprite_material", materials),
+        section_corner(),
+        shaded(ENTRIES),
         super::displace::RELIEF,
         if displaced {
             super::displace::GRID.to_owned() + DISPLACED_ENTRIES
@@ -449,17 +518,16 @@ fn module(
     (source, file): (&str, &str),
     tags: &[(u32, u32)],
     materials: &[(u32, u32)],
-    vertex: bool,
-    displaced: bool,
+    inputs: (bool, bool, bool, bool),
     linear: bool,
 ) -> Result<naga::Module, String> {
-    let text = shader_source(source, tags, materials, (vertex, displaced), linear);
+    let text = shader_source(source, tags, materials, inputs, linear);
     naga::front::wgsl::parse_str(&text).map_err(|e| format!("{file}: {}", e.emit_to_string(&text)))
 }
 
 impl NativeMaterial {
     /// The pipelines of the pack's material `stage` with the option values `constants`.
-    pub fn new(
+    pub(in crate::gfx) fn new(
         device: &wgpu::Device,
         shape: &TerrainShape<'_>,
         frame: &NativeFrame,
@@ -469,6 +537,7 @@ impl NativeMaterial {
         coverage: horizon_shader_api::Coverage,
         vertex: bool,
         displaced: Option<&DisplacedShape<'_>>,
+        kept: Option<StageReads>,
     ) -> Result<Self, String> {
         let writes_surface = horizon_shader_api::stages::calls_set_surface(&stage.source);
         let linear = frame.linear;
@@ -477,21 +546,49 @@ impl NativeMaterial {
             let terrain = (shape, displaced, constants);
             Self::pipelines(device, terrain, (stage, source), group, flags, linear)
         };
+        let limits = device.limits();
+        if let Some(why) = (kept.as_ref()).and_then(|k| k.over(frame, &terrain_entries(), &limits))
+        {
+            return Err(format!("{}: {why}", stage.file));
+        }
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let built = build(&stage.source, &frame.layout);
+        let built = build(
+            &stage.source,
+            kept.as_ref().map_or(&frame.layout, |k| &k.layout),
+        );
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("{}: {e}", stage.file));
         }
         let pipelines = built?;
         let scene = stage.scene_source.as_deref().and_then(|source| {
-            let terrain = (shape, stage.traces_entities());
-            TerrainTrace::new(device, frame, terrain, |group| build(source, group))
+            let terrain = (shape, (stage.traces_entities(), stage.traces_looks()));
+            let own = kept.as_ref().map_or(&[][..], |k| &k.entries);
+            TerrainTrace::new(device, frame, terrain, own, |group| build(source, group))
         });
         Ok(Self {
             pipelines,
             scene,
             writes_surface,
+            kept,
         })
+    }
+
+    /// Makes the groups the terrain draws with this frame, for the frame's group as it is now,
+    /// `scene`, this frame's, where it traces, and the kept resources of `post` it reads.
+    pub(super) fn bind(
+        &mut self,
+        device: &wgpu::Device,
+        frame: &NativeFrame,
+        scene: Option<&Traced<'_>>,
+        post: &NativePost,
+    ) {
+        if let Some(trace) = &mut self.scene {
+            let reads = self.kept.as_ref().and_then(|k| k.reads(post));
+            trace.bind(device, frame, scene, reads);
+        }
+        if let Some(k) = &mut self.kept {
+            k.bind(device, frame, post);
+        }
     }
 
     /// This frame's `frame.ray_distance` when the terrain traces `scene`.
@@ -500,12 +597,17 @@ impl NativeMaterial {
     }
 
     /// The pipelines and group 3 the terrain draws with this frame: against the scene where
-    /// it traces, else the ones whose `trace` misses with the frame's own `group`.
+    /// it traces, else the ones whose `trace` misses with the frame's own `group`, or with the
+    /// kept resources it reads, this frame's version `parity`.
     pub(super) fn drawn<'a>(
         &'a self,
         group: &'a wgpu::BindGroup,
+        parity: usize,
     ) -> (&'a MaterialPipelines, &'a wgpu::BindGroup) {
-        let traced = self.scene.as_ref().and_then(TerrainTrace::drawn);
+        let traced = self.scene.as_ref().and_then(|t| t.drawn(parity));
+        let group = (self.kept.as_ref())
+            .and_then(|k| k.group(parity))
+            .unwrap_or(group);
         traced.unwrap_or((&self.pipelines, group))
     }
 
@@ -523,12 +625,17 @@ impl NativeMaterial {
         (fog, vertex, writes_surface, coverage): (bool, bool, bool, horizon_shader_api::Coverage),
         linear: bool,
     ) -> Result<MaterialPipelines, String> {
+        let source = &(source.to_owned() + super::looks::wgsl(shape.looks.is_some()));
         let module = module(
             (source, &stage.file),
             shape.sprite_tags,
             shape.sprite_materials,
-            vertex,
-            displaced.is_some(),
+            (
+                vertex,
+                displaced.is_some(),
+                stage.shaded_tint(),
+                stage.light_source(),
+            ),
             linear,
         )?;
         let mut constants = present_constants(&module, constants);
@@ -561,6 +668,7 @@ impl NativeMaterial {
                 Default::default();
             groups[0] = Some(shape.globals);
             groups[1] = flat;
+            groups[super::looks::GROUP as usize] = shape.looks;
             groups[GROUP as usize] = Some(frame_group);
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Native shader pack terrain"),
@@ -580,11 +688,20 @@ impl NativeMaterial {
             attributes: &instance_attributes,
         };
         // As the renderer's terrain pipelines (gfx.rs): back faces culled, reversed depth.
+        let staged = vertex;
         let pipeline = |layout: &wgpu::PipelineLayout,
                         vertex: &str,
                         buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
                         fragment: &str,
                         blend: Option<wgpu::BlendState>| {
+            let mut constants = constants.clone();
+            if staged {
+                let translucent = fragment == "horizon_material_fs_translucent";
+                constants.push((
+                    "horizon_material_translucent",
+                    f64::from(u8::from(translucent)),
+                ));
+            }
             let options = wgpu::PipelineCompilationOptions {
                 constants: &constants,
                 ..Default::default()
@@ -701,42 +818,39 @@ impl NativeMaterial {
     }
 }
 
-/// The pack's terrain layers, which the renderer's terrain passes draw in place of its own
-/// (`NativePack::terrain_layers`).
-#[derive(Clone, Copy)]
-pub struct TerrainLayers<'a> {
-    /// The solid layer (with the cutout test) and the translucent one, for the instanced draws.
-    pub solid: &'a wgpu::RenderPipeline,
-    pub translucent: &'a wgpu::RenderPipeline,
-    /// The solid and translucent layers for the flat draws, where those run.
-    pub flat: Option<&'a (wgpu::RenderPipeline, wgpu::RenderPipeline)>,
-    /// `[displacement]`'s grid of the solid terrain near the camera (gfx/displace.rs).
-    pub displaced: Option<&'a wgpu::RenderPipeline>,
-    /// The solid layers' second target, which they write beside the world's colour.
-    pub surface: Option<&'a wgpu::TextureView>,
-    /// The layers read the world before translucent terrain: the renderer stops there for
-    /// `NativePack::copy_opaque`.
-    pub reads_opaque: bool,
-    /// What the layers read beside the terrain's groups (`bind`).
-    frame: &'a wgpu::BindGroup,
-}
-
-impl TerrainLayers<'_> {
-    /// Binds what the layers read beside the terrain's groups, in each pass that draws them.
-    pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_bind_group(GROUP, self.frame, &[]);
+#[cfg(test)]
+impl NativeMaterial {
+    /// The layout of the group 3 `drawn` gives this frame, where the material reads kept
+    /// resources, for a test's own entry points.
+    pub(in crate::gfx) fn drawn_layout(&self) -> &wgpu::BindGroupLayout {
+        match (
+            self.scene.as_ref().filter(|t| t.drawn(0).is_some()),
+            &self.kept,
+        ) {
+            (Some(t), _) => t.layout(),
+            (None, Some(k)) => &k.layout,
+            (None, None) => unreachable!("the material reads no kept resources"),
+        }
     }
 }
 
-/// What the renderer hands the pack where its world pass stops before translucent terrain
-/// (`NativePack::copy_opaque`).
-pub struct OpaqueCopy<'a> {
-    pub device: &'a wgpu::Device,
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    /// The world's depth, and its colour where it can be copied (the scaled target, not the
-    /// window's own).
-    pub depth: &'a wgpu::Texture,
-    pub color: Option<&'a wgpu::TextureView>,
+/// The terrain shader of a material's composed `source`, for a test's own entry points: no
+/// vertex stage, no displacement, no `shaded_tint` or light-source fields, and the quads' looks
+/// not bound.
+#[cfg(test)]
+pub(in crate::gfx) fn test_shader(source: &str) -> String {
+    let source = source.to_owned() + crate::gfx::looks::NO_LOOK_WGSL;
+    shader_source(&source, &[], &[], (false, false, false, false), false)
+}
+
+/// The terrain shader of a pack's checked material `stage` for a test's own entry points, its
+/// inputs' `shaded_tint` and light-source fields as the renderer builds them: no vertex stage,
+/// no displacement, a frame of vanilla's gamma, and the quads' looks not bound.
+#[cfg(test)]
+pub(in crate::gfx) fn stage_test_shader(stage: &CheckedStage) -> String {
+    let source = stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL;
+    let inputs = (false, false, stage.shaded_tint(), stage.light_source());
+    shader_source(&source, &[], &[], inputs, false)
 }
 
 impl super::native_pack::NativePack {
@@ -749,7 +863,7 @@ impl super::native_pack::NativePack {
             solid: &pipelines.solid,
             translucent: &pipelines.translucent,
             flat: pipelines.flat.as_ref(),
-            displaced: pipelines.displaced.as_ref(),
+            displaced: (pipelines.displaced.as_ref()).filter(|_| self.displacement.is_some()),
             surface: m.writes_surface.then_some(&self.frame.surface_view),
             reads_opaque: self.frame.reads_opaque,
             frame,
@@ -773,12 +887,6 @@ impl super::native_pack::NativePack {
         if let Some(color) = color {
             self.frame.copy_opaque(device, encoder, color);
         }
-    }
-
-    /// Whether `[displacement]`'s grid takes its quads from the frame's visible sections, which
-    /// GPU culling doesn't list.
-    pub fn displaces(&self) -> bool {
-        self.displacement.is_some()
     }
 
     /// Writes out the solid quads of the sections `[displacement]` reaches and picks this
@@ -818,17 +926,6 @@ impl super::native_pack::NativePack {
     }
 }
 
-/// What the renderer hands `[displacement]` once a frame, after the visibility walk
-/// (`NativePack::prepare_displacement`).
-pub struct DisplacementPrepare<'a, I> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    /// The visible sections with solid quads, nearest first.
-    pub sections: I,
-    pub view_proj: glam::Mat4,
-}
-
 /// `[displacement]`'s grid of the solid terrain near the camera and the layer that draws it
 /// (`NativePack::displaced_grid`).
 #[derive(Clone, Copy)]
@@ -864,8 +961,13 @@ pub(super) fn coverage_test_shader(linear: bool) -> String {
         .iter()
         .find(|s| s.kind == StageKind::Material)
         .unwrap();
-    shader_source(&stage.source, &[], &[], (false, true), linear)
-        + r#"
+    shader_source(
+        &(stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL),
+        &[],
+        &[],
+        (false, true, false, false),
+        linear,
+    ) + r#"
 override TEST_TIER: u32 = 0u;
 override TEST_OVERLAY: u32 = 0u;
 @vertex fn test_vertex(@builtin(vertex_index) i: u32) -> HorizonMaterialOut {
@@ -947,12 +1049,12 @@ mod tests {
         let tags = [(7, 1), (3, 1), (9, 2)];
         let materials = [(5, 1000)];
         assert!(layer_table("t", &tags).contains("case 3u, 7u: { return 1u; }"));
+        let source = stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL;
         let module = module(
-            (&stage.source, &stage.file),
+            (&source, &stage.file),
             &tags,
             &materials,
-            false,
-            false,
+            (false, false, false, false),
             false,
         )
         .unwrap();
@@ -965,10 +1067,10 @@ mod tests {
             panic!(
                 "{}",
                 e.emit_to_string(&shader_source(
-                    &stage.source,
+                    &source,
                     &tags,
                     &materials,
-                    (false, false),
+                    (false, false, false, false),
                     false
                 ))
             )
@@ -1017,8 +1119,9 @@ mod tests {
             .iter()
             .find(|s| s.kind == StageKind::Material)
             .unwrap();
-        let source = (stage.source.as_str(), stage.file.as_str());
-        let module = module(source, &[], &[], true, false, false).unwrap();
+        let text = stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL;
+        let source = (text.as_str(), stage.file.as_str());
+        let module = module(source, &[], &[], (true, false, false, false), false).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -1032,7 +1135,7 @@ mod tests {
     /// renderer binds for the fragment stage alone.
     #[test]
     fn a_traced_terrain_reads_the_scene_in_its_fragments_only() {
-        use horizon_shader_api::stages::RAY_SCENE_BINDING;
+        use horizon_shader_api::stages::{RAY_LOOKS_BINDING, RAY_SCENE_BINDING};
         let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
             [material]\nfile = \"material.wgsl\"\n[vertex]\nfile = \"vertex.wgsl\"\n\
             [displacement]\n[ray_tracing]\n";
@@ -1055,8 +1158,9 @@ mod tests {
             .iter()
             .find(|s| s.kind == StageKind::Material)
             .unwrap();
-        let source = (stage.scene_source.as_deref().unwrap(), stage.file.as_str());
-        let module = module(source, &[], &[], true, true, false).unwrap();
+        let text = stage.scene_source.clone().unwrap() + crate::gfx::looks::NO_LOOK_WGSL;
+        let source = (text.as_str(), stage.file.as_str());
+        let module = module(source, &[], &[], (true, true, false, false), false).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -1070,7 +1174,11 @@ mod tests {
             })
             .map(|(handle, _)| handle)
             .collect();
+        // The hit's emission is decoded from the vertex.
         assert_eq!(scene.len(), 12);
+        assert!(scene.iter().all(|&g| {
+            module.global_variables[g].binding.as_ref().unwrap().binding != RAY_LOOKS_BINDING
+        }));
         for (i, entry) in module.entry_points.iter().enumerate() {
             let reads = scene
                 .iter()
@@ -1101,12 +1209,12 @@ mod tests {
         let mut report = check(&Pack::from_files(files).unwrap()).unwrap();
         let stage = report.stages.remove(0);
         let materials = [(5, 1000)];
+        let source = stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL;
         let module = module(
-            (&stage.source, &stage.file),
+            (&source, &stage.file),
             &[],
             &materials,
-            false,
-            true,
+            (false, true, false, false),
             false,
         )
         .unwrap();
@@ -1116,7 +1224,7 @@ mod tests {
         )
         .validate(&module)
         .unwrap_or_else(|e| {
-            let text = shader_source(&stage.source, &[], &materials, (false, true), false);
+            let text = shader_source(&source, &[], &materials, (false, true, false, false), false);
             panic!("{}", e.emit_to_string(&text))
         });
         for entry in [
@@ -1154,7 +1262,7 @@ mod tests {
     let tint = vec4(0.9, 1.0 - 0.5 * c.y, 0.7, 1.0);
     let lightmap = vec3(c.y, 0.8, 1.0 - c.y);
     let out = material(MaterialInput(vec4(horizon_line_in(albedo.rgb), albedo.a),
-        vec4(horizon_line_in(tint.rgb), tint.a), vec2(1.0), horizon_line_in(lightmap),
+        vec4(horizon_line_in(tint.rgb), tint.a), 1.0, 1.0, vec2(1.0), horizon_line_in(lightmap),
         vec3(0.0), vec2(0.0), false, 0u, 0u, vec2(0.0), 0u, 0u, 0.0, vec3(0.0, 1.0, 0.0),
         vec4(1.0, 0.0, 0.0, 1.0), horizon_line_in(vec3(0.0)), 0.0)).color;
     return vec4(horizon_line_out(out.rgb), out.a);
@@ -1254,6 +1362,572 @@ mod tests {
         assert!(worst <= 1, "{worst}");
     }
 
+    /// The vertex colour's alpha byte as the shaders read it back, on every device here: the
+    /// engine's terrain (`terrain_vertex`) its HDR tier, a pack's material
+    /// (`horizon_material_out`, with no quad look) whether its quad is a fluid's, the light
+    /// level it gives off (`MaterialInput.fluid`, `emission`) and the same tier, for each tier a
+    /// block has, each level and both kinds of quad, as mesher.rs writes them.
+    #[test]
+    fn the_vertex_alpha_reads_back_as_the_mesher_writes_it() {
+        use crate::mesher::{WHOLE, as_fluid, emitting, giving_off};
+        // (alpha byte, tier code, fluid, level): the codes are terrain.wgsl's `emission`.
+        let tiers = [0, 1, 2, 3, 1 | WHOLE, 2 | WHOLE, 3 | WHOLE];
+        let mut cases = Vec::new();
+        for (tier, code) in tiers.into_iter().zip([0u32, 1, 2, 3, 5, 6, 7]) {
+            for level in 0..=15u8 {
+                let lit = giving_off(emitting(0xFF80_8080, tier), level);
+                for (color, fluid) in [(lit, false), (as_fluid(lit), true)] {
+                    cases.push((color >> 24, code, fluid, u32::from(level)));
+                }
+            }
+        }
+        let entries = format!(
+            "
+@group(3) @binding(0) var<storage, read_write> test_out: array<vec2<u32>, 256>;
+@vertex fn test_alpha(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {{
+    // As the vertex fetch converts a Unorm8x4 attribute (terrain.wgsl's `unorm8x4`).
+    let color = vec4(0.5, 0.5, 0.5, f32(v) * (1.0 / 255.0));
+    let engine = {PREFIX}terrain_vertex(vec3(0.0), vec2(0.0), 0u, color, vec2(0u), vec3(0.0),
+        1.0);
+    let pack = horizon_material_out(vec3(0.0), vec2(0.0), 0u, color, vec2(0.0), vec2(0u), 1.0);
+    test_out[v] = vec2(engine.emission, pack.look);
+    return vec4(2.0, 2.0, 2.0, 1.0);
+}}
+@fragment fn test_fs() -> @location(0) vec4<f32> {{
+    return vec4(0.0);
+}}
+"
+        );
+        let stage = stage(
+            "override gain: f32 = 1.0;\n\
+             fn material(input: MaterialInput) -> Surface {\n    \
+                 return Surface(input.albedo * input.emission * gain);\n}\n",
+        );
+        let source = stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL;
+        let source =
+            shader_source(&source, &[], &[], (false, false, false, false), false) + &entries;
+        let _gpu = crate::gfx::test_gpu::lock();
+        let instance = crate::gfx::test_gpu::instance();
+        let mut tested = Vec::new();
+        for adapter in pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all())) {
+            let info = adapter.get_info();
+            let device_name = format!("{} ({:?})", info.name, info.backend);
+            let features = wgpu::Features::VERTEX_WRITABLE_STORAGE;
+            if !adapter.features().contains(features) {
+                eprintln!("{device_name}: no vertex storage writes");
+                continue;
+            }
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    required_features: features,
+                    required_limits: adapter.limits(),
+                    ..Default::default()
+                }))
+                .unwrap();
+            let (globals, empty) = super::super::native_pack::tests::terrain_layouts(&device);
+            let outs = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&globals), Some(&empty), Some(&empty), Some(&outs)],
+                ..Default::default()
+            });
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("test_alpha"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::PointList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("test_fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(format.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            // Group 0 of blank resources, as `native_pack`'s looks test binds it.
+            let texture = |layers: u32, usage| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: 4,
+                        height: 4,
+                        depth_or_array_layers: layers,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+            };
+            let sampled = wgpu::TextureUsages::TEXTURE_BINDING;
+            let array = texture(2, sampled).create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            let plain = texture(1, sampled).create_view(&Default::default());
+            let sampler = device.create_sampler(&Default::default());
+            let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 16384,
+                usage: wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: false,
+            });
+            let resource = |binding: u32| match binding {
+                0 => uniform.as_entire_binding(),
+                2 | 4 => wgpu::BindingResource::Sampler(&sampler),
+                3 | 12 => wgpu::BindingResource::TextureView(&plain),
+                _ => wgpu::BindingResource::TextureView(&array),
+            };
+            let entries: Vec<_> = (0..=12)
+                .map(|binding| wgpu::BindGroupEntry {
+                    binding,
+                    resource: resource(binding),
+                })
+                .collect();
+            let terrain = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &globals,
+                entries: &entries,
+            });
+            let none = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &empty,
+                entries: &[],
+            });
+            let size = 256 * 8;
+            let buffer = |usage| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                })
+            };
+            let written = buffer(wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+            let read = buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+            let out_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &outs,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: written.as_entire_binding(),
+                }],
+            });
+            let view =
+                texture(1, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: Default::default(),
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &terrain, &[]);
+            pass.set_bind_group(1, &none, &[]);
+            pass.set_bind_group(2, &none, &[]);
+            pass.set_bind_group(3, &out_group, &[]);
+            pass.draw(0..256, 0..1);
+            drop(pass);
+            encoder.copy_buffer_to_buffer(&written, 0, &read, 0, size);
+            queue.submit([encoder.finish()]);
+            read.slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let got: Vec<[u32; 2]> =
+                bytemuck::pod_collect_to_vec(&read.slice(..).get_mapped_range().unwrap());
+            for &(byte, code, fluid, level) in &cases {
+                // `horizon_material_out`'s `look`: without a look, face 0 and no shade's code;
+                // the light-source code the engine's terrain reads.
+                let look = u32::from(fluid) << 3 | level << 8 | code << 12;
+                assert_eq!(
+                    got[byte as usize],
+                    [code, look],
+                    "{device_name}: alpha {byte:#04x} (tier {code}, fluid {fluid}, level {level})"
+                );
+            }
+            tested.push(device_name);
+        }
+        eprintln!("read back on {tested:?}");
+    }
+
+    /// A pack whose files name the light-source fields and `full_lightmap` reads what the
+    /// engine's terrain reads for its HDR look (terrain.wgsl's `solid_finish_at`): the tier and
+    /// whether the sprite shines whole, from the vertex colour's alpha byte as mesher.rs writes it
+    /// for blocks of each kind (a froglight, lava's surface among them) and as lod/mesh.rs writes
+    /// it for a far tile of glowstone and of a froglight; the
+    /// sprite's threshold, at either array; and the lightmap at full light, which the frame takes
+    /// from the renderer's lightmap (`native_post::full_lightmap`).
+    #[test]
+    fn a_pack_reads_the_light_sources_the_engine_s_look_reads() {
+        use crate::mesher::{WHOLE, as_fluid, emitting, giving_off, hdr_tier};
+        let _gpu = crate::gfx::test_gpu::lock();
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        // The terrain's fragments sample more textures than the default limit allows.
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                required_limits: adapter.limits(),
+                ..Default::default()
+            }))
+        else {
+            return;
+        };
+        // (block, its light level, a fluid's surface, its sprite's layer): 4 layers an array
+        // here, and bit 15 of a layer the opaque leaves' flag.
+        let blocks = [
+            ("stone", 0, false, 0u32),
+            ("ochre_froglight", 15, false, 1),
+            ("torch", 14, false, 2),
+            ("glowstone", 15, false, 3),
+            ("campfire", 15, false, 5),
+            ("redstone_torch", 7, false, 6),
+            ("lava", 15, true, 7 | 0x8000),
+        ];
+        // (alpha byte, layer, tier as mesher.rs gives it).
+        let mut cases: Vec<(u32, u32, u8)> = blocks
+            .iter()
+            .map(|&(name, level, fluid, layer)| {
+                let tier = hdr_tier(name, level);
+                let color = giving_off(emitting(0xFF80_8080, tier), level);
+                let color = if fluid { as_fluid(color) } else { color };
+                (color >> 24, layer, tier)
+            })
+            .collect();
+        // Distant terrain keeps its block's tier and whole flag: far tiles of glowstone and of a
+        // froglight, as the LOD mesher emits them.
+        for (name, layer) in [("glowstone", 4u32), ("pearlescent_froglight", 4)] {
+            let tier = hdr_tier(name, 15);
+            let vertex = crate::lod::far_top_vertex((tier, 15), layer as u16);
+            cases.push((vertex.color >> 24, layer, tier));
+        }
+        let n = cases.len();
+        let list = |f: fn(&(u32, u32, u8)) -> u32| {
+            let items: Vec<String> = cases.iter().map(|c| format!("{}u", f(c))).collect();
+            items.join(", ")
+        };
+        let entries = format!(
+            "
+@vertex fn test_vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
+    return vec4(vec2(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
+}}
+struct TestOut {{
+    @location(0) pack: vec4<f32>,
+    @location(1) engine: vec4<f32>,
+}}
+// Column i of the first row: case i, the pack's light source and the engine's. The second row:
+// the frame's full light and the engine's lightmap at full light.
+@fragment fn test_fs(@builtin(position) p: vec4<f32>) -> TestOut {{
+    var alphas = array<u32, {n}>({alphas});
+    var layers = array<u32, {n}>({layers});
+    let i = min(u32(p.x), {n}u - 1u);
+    let color = vec4(0.5, 0.5, 0.5, f32(alphas[i]) / 255.0);
+    let layer = layers[i];
+    var m = horizon_material_out(vec3(0.0), vec2(0.5), layer, color, vec2(240.0), vec2(0u), 1.0);
+    m.clip = p;
+    m.uv = vec2(f32(p.y > 1.0));
+    let engine = {PREFIX}terrain_vertex(vec3(0.0), vec2(0.0), layer, color, vec2(240u),
+        vec3(0.0), 1.0);
+    let whole = engine.emission > 4u;
+    let tier = select(engine.emission, engine.emission - 4u, whole);
+    let l = layer & 0x7fffu;
+    let t = textureLoad({PREFIX}emission_thresholds,
+        vec2(i32(l % {PREFIX}SPRITE_SPLIT), i32(l / {PREFIX}SPRITE_SPLIT)), 0).r;
+    let full = horizon_line_in({PREFIX}sample_lightmap(15.0, 15.0).rgb);
+    var out: TestOut;
+    out.pack = horizon_material_color(m, false);
+    out.engine = select(vec4(f32(tier), f32(whole), t, 1.0), vec4(full, 1.0), p.y > 1.0);
+    return out;
+}}
+",
+            alphas = list(|c| c.0),
+            layers = list(|c| c.1),
+        );
+        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
+            [material]\nfile = \"material.wgsl\"\n";
+        let material = "fn material(input: MaterialInput) -> Surface {\n    \
+                if input.uv.x > 0.5 {\n        \
+                    return Surface(vec4<f32>(frame.full_lightmap, 1.0));\n    \
+                }\n    \
+                let whole = select(0.0, 1.0, input.light_source_whole);\n    \
+                return Surface(vec4<f32>(f32(input.light_source_tier), whole,\n        \
+                    input.light_source_threshold, 1.0));\n}\n";
+        let files = [(MANIFEST, manifest), ("material.wgsl", material)]
+            .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+            .into();
+        let mut report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let stage = report.stages.remove(0);
+        assert!(stage.light_source());
+        let source = stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL;
+        // A frame of linear light: the material's colour comes out as it returned it.
+        let inputs = (false, false, false, true);
+        let source = shader_source(&source, &[], &[], inputs, true) + &entries;
+        // The renderer's lightmap, distinct at full light.
+        let mut lightmap = [0u8; 16 * 16 * 4];
+        for (i, byte) in lightmap.iter_mut().enumerate() {
+            *byte = (i * 7 % 251) as u8;
+        }
+        lightmap[(15 * 16 + 15) * 4..][..4].copy_from_slice(&[200, 150, 90, 255]);
+        // The thresholds of 2 arrays of 4 layers, each its own.
+        let threshold = |l: u32| 20 + 25 * l as u8;
+        let thresholds: Vec<u8> = (0..8).flat_map(|l| [threshold(l), 9, 7, 255]).collect();
+        let (globals, empty) = super::super::native_pack::tests::terrain_layouts(&device);
+        let mut frame = super::super::native_post::NativeFrame::new(
+            &device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            true,
+        );
+        frame.full_lightmap = super::super::native_post::full_lightmap(&lightmap);
+        let hud = crate::hud::HudBatch::scratch([4, 4]);
+        let renderer = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let display = crate::gfx::output::DisplayValues::SDR;
+        frame.write(&queue, &renderer, [16, 2], display);
+        let texture = |[width, height, layers]: [u32; 3], usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: layers,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: usage | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let sampled = wgpu::TextureUsages::TEXTURE_BINDING;
+        let filled = |size: [u32; 3], bytes: &[u8]| {
+            let t = texture(size, sampled);
+            queue.write_texture(
+                t.as_image_copy(),
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size[0] * 4),
+                    rows_per_image: None,
+                },
+                t.size(),
+            );
+            t.create_view(&Default::default())
+        };
+        let array = texture([4, 4, 2], sampled).create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let lightmap_view = filled([16, 16, 1], &lightmap);
+        let thresholds_view = filled([4, 2, 1], &thresholds);
+        let sampler = device.create_sampler(&Default::default());
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 16384,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+        let resource = |binding: u32| match binding {
+            0 => uniform.as_entire_binding(),
+            2 | 4 => wgpu::BindingResource::Sampler(&sampler),
+            3 => wgpu::BindingResource::TextureView(&lightmap_view),
+            12 => wgpu::BindingResource::TextureView(&thresholds_view),
+            _ => wgpu::BindingResource::TextureView(&array),
+        };
+        let entries: Vec<_> = (0..=12)
+            .map(|binding| wgpu::BindGroupEntry {
+                binding,
+                resource: resource(binding),
+            })
+            .collect();
+        let terrain = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &globals,
+            entries: &entries,
+        });
+        let none = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &empty,
+            entries: &[],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[
+                Some(&globals),
+                Some(&empty),
+                Some(&empty),
+                Some(&frame.layout),
+            ],
+            ..Default::default()
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.as_str().into()),
+        });
+        let constants = [
+            ("horizon_terrain_SPRITE_ARRAYS", 2.0),
+            ("horizon_terrain_SPRITE_SPLIT", 4.0),
+        ];
+        let options = wgpu::PipelineCompilationOptions {
+            constants: &constants,
+            ..Default::default()
+        };
+        let format = wgpu::TextureFormat::Rgba32Float;
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("test_vs"),
+                compilation_options: options.clone(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("test_fs"),
+                compilation_options: options,
+                targets: &[Some(format.into()), Some(format.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        // 16 texels of 16 bytes: a row is the 256 bytes a copy's rows align to.
+        let targets = [0, 1].map(|_| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 16,
+                    height: 2,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
+        let views = targets
+            .each_ref()
+            .map(|t| t.create_view(&Default::default()));
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let attachments = views.each_ref().map(|view| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &attachments,
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &terrain, &[]);
+        pass.set_bind_group(1, &none, &[]);
+        pass.set_bind_group(2, &none, &[]);
+        pass.set_bind_group(3, &frame.group, &[]);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        let reads = targets.each_ref().map(|target| {
+            let read = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 512,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &read,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: None,
+                    },
+                },
+                target.size(),
+            );
+            read
+        });
+        queue.submit([encoder.finish()]);
+        for read in &reads {
+            read.slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let [pack, engine] = reads.map(|read| -> Vec<[f32; 4]> {
+            bytemuck::pod_collect_to_vec(&read.slice(..).get_mapped_range().unwrap())
+        });
+        for (i, &(alpha, layer, tier)) in cases.iter().enumerate() {
+            let l = layer & 0x7fff;
+            let want = [
+                f32::from(tier & !WHOLE),
+                f32::from(u8::from(tier & WHOLE != 0)),
+                f32::from(threshold(l)) / 255.0,
+                1.0,
+            ];
+            let close = |got: [f32; 4]| (0..4).all(|c| (got[c] - want[c]).abs() < 1e-6);
+            let case = format!("alpha {alpha:#04x}, layer {layer:#x}");
+            assert!(
+                close(pack[i]),
+                "{case}: the pack read {:?}, not {want:?}",
+                pack[i]
+            );
+            assert!(close(engine[i]), "{case}: the engine read {:?}", engine[i]);
+        }
+        let full = [200.0f32, 150.0, 90.0].map(|c| (c / 255.0).powf(2.2));
+        for (got, who) in [(pack[16], "the pack"), (engine[16], "the engine")] {
+            let close = (0..3).all(|c| (got[c] - full[c]).abs() < 1e-5);
+            assert!(close, "{who} read the full light {got:?}, not {full:?}");
+        }
+    }
+
     /// A pack's material and shadow pass take their solid corners through the engine's own
     /// section path (terrain.wgsl's `section_corner` and `corner_inputs`, prefixed into the
     /// material's module): for the same compact records and the same wide vertex words, every
@@ -1326,7 +2000,9 @@ mod tests {
             "override gain: f32 = 1.0;\n\
              fn material(input: MaterialInput) -> Surface { return Surface(input.albedo * gain); }\n",
         );
-        let pack = shader_source(&stage.source, &[], &[], (false, false), false) + &entries(PREFIX);
+        let source = stage.source.clone() + crate::gfx::looks::NO_LOOK_WGSL;
+        let pack = shader_source(&source, &[], &[], (false, false, false, false), false)
+            + &entries(PREFIX);
         let instance = crate::gfx::test_gpu::instance();
         let mut tested = Vec::new();
         for adapter in pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all())) {
