@@ -282,19 +282,23 @@ pub fn task_workgroups(meshlet_count: u32) -> u32 {
     meshlet_count.div_ceil(TASK_WORKGROUP_SIZE)
 }
 
-/// Computes `[x, y, z]` task workgroup counts keeping every dimension within `max_per_dim`.
+/// Splits `meshlet_count` into `(meshlet_offset, chunk_meshlets, workgroups)` chunks so every
+/// `draw_mesh_tasks(workgroups, 1, 1)` call respects both per-dimension and total workgroup limits.
 #[allow(dead_code)]
-pub fn task_dispatch_dims(meshlet_count: u32, max_per_dim: u32) -> [u32; 3] {
-    let total = task_workgroups(meshlet_count);
-    if total == 0 {
-        return [0, 0, 0];
-    }
-    let cap = max_per_dim.max(1);
-    if total <= cap {
-        [total, 1, 1]
-    } else {
-        [cap, total.div_ceil(cap), 1]
-    }
+pub fn task_dispatch_chunks(
+    meshlet_count: u32,
+    max_per_dispatch: u32,
+) -> impl Iterator<Item = (u32, u32, u32)> {
+    let total_groups = task_workgroups(meshlet_count);
+    let cap = max_per_dispatch.max(1);
+    let chunks = total_groups.div_ceil(cap);
+    (0..chunks).map(move |chunk_idx| {
+        let wg_offset = chunk_idx * cap;
+        let workgroups = (total_groups - wg_offset).min(cap);
+        let meshlet_offset = wg_offset * TASK_WORKGROUP_SIZE;
+        let chunk_meshlets = (meshlet_count - meshlet_offset).min(workgroups * TASK_WORKGROUP_SIZE);
+        (meshlet_offset, chunk_meshlets, workgroups)
+    })
 }
 
 #[derive(Default)]
@@ -459,23 +463,36 @@ impl MeshletTable {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PreparedChunk {
+    uniform_offset: u32,
+    meshlet_count: u32,
+    workgroups: u32,
+}
+
+struct PreparedPass {
+    revision: u64,
+    chunks: Vec<PreparedChunk>,
+}
+
 struct PageGpu {
     storage: wgpu::Buffer,
     storage_capacity: usize,
     uniform: wgpu::Buffer,
+    uniform_slots: u32,
     bind_group: wgpu::BindGroup,
     uploaded_revision: u64,
-    prepared_passes: [Option<(u64, u32)>; PASS_SLOTS as usize],
+    prepared_passes: [Option<PreparedPass>; PASS_SLOTS as usize],
 }
 
-/// Prepared immutable GPU draw handle for a `(page, pass_kind)` pair inside a `RenderPass`.
+/// Prepared immutable GPU draw handle for a single task-dispatch chunk of a `(page, pass_kind)` pair.
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(in crate::gfx) struct MeshPageDraw<'a> {
     pub bind_group: &'a wgpu::BindGroup,
     pub uniform_offset: u32,
     pub meshlet_count: u32,
-    pub dispatch: [u32; 3],
+    pub workgroups: u32,
 }
 
 /// GPU store managing independent per-page [`GpuMeshlet`] storage buffers and dynamic multi-pass
@@ -493,7 +510,7 @@ pub(in crate::gfx) struct MeshSectionStore {
 impl MeshSectionStore {
     fn invalidate_page_passes(&mut self, page: u32) {
         if let Some(pg) = self.gpu_pages.get_mut(&page) {
-            pg.prepared_passes = [None; PASS_SLOTS as usize];
+            pg.prepared_passes = [const { None }; PASS_SLOTS as usize];
         }
     }
 
@@ -584,50 +601,82 @@ impl MeshSectionStore {
             return 0;
         }
 
-        let needs_alloc = self
+        let total_groups = task_workgroups(count);
+        let chunk_count = total_groups.div_ceil(self.max_task_workgroups.max(1));
+        let required_uniform_slots = PASS_SLOTS * chunk_count;
+
+        let needs_storage_alloc = self
             .gpu_pages
             .get(&page)
             .is_none_or(|pg| staged.len() > pg.storage_capacity);
+        let needs_uniform_alloc = self
+            .gpu_pages
+            .get(&page)
+            .is_none_or(|pg| required_uniform_slots > pg.uniform_slots);
 
-        if needs_alloc {
-            let cap = staged.len().next_power_of_two().max(64);
-            let storage = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Terrain meshlet storage"),
-                size: (cap * std::mem::size_of::<GpuMeshlet>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+        if needs_storage_alloc || needs_uniform_alloc {
+            let cap = self
+                .gpu_pages
+                .get(&page)
+                .map_or(0, |pg| pg.storage_capacity)
+                .max(staged.len().next_power_of_two().max(64));
+            let storage = needs_storage_alloc.then(|| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Terrain meshlet storage"),
+                    size: (cap * std::mem::size_of::<GpuMeshlet>()) as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            });
+            let uniform_slots = self
+                .gpu_pages
+                .get(&page)
+                .map_or(PASS_SLOTS, |pg| pg.uniform_slots)
+                .max(required_uniform_slots)
+                .next_power_of_two()
+                .max(PASS_SLOTS);
+            let uniform = needs_uniform_alloc.then(|| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Terrain meshlet cull uniform"),
+                    size: u64::from(uniform_slots) * u64::from(self.uniform_stride),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
             });
             match self.gpu_pages.entry(page) {
                 std::collections::btree_map::Entry::Vacant(slot) => {
-                    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Terrain meshlet cull uniform"),
-                        size: u64::from(PASS_SLOTS) * u64::from(self.uniform_stride),
-                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
+                    let storage = storage.expect("new page must allocate storage");
+                    let uniform = uniform.expect("new page must allocate uniform");
                     let bind_group =
                         create_page_bind_group(device, &self.bind_group_layout, &storage, &uniform);
                     slot.insert(PageGpu {
                         storage,
                         storage_capacity: cap,
                         uniform,
+                        uniform_slots,
                         bind_group,
                         uploaded_revision: 0,
-                        prepared_passes: [None; PASS_SLOTS as usize],
+                        prepared_passes: [const { None }; PASS_SLOTS as usize],
                     });
                 }
                 std::collections::btree_map::Entry::Occupied(mut slot) => {
                     let pg = slot.get_mut();
+                    if let Some(storage) = storage {
+                        pg.storage = storage;
+                        pg.storage_capacity = cap;
+                        pg.uploaded_revision = 0;
+                    }
+                    if let Some(uniform) = uniform {
+                        pg.uniform = uniform;
+                        pg.uniform_slots = uniform_slots;
+                    }
                     pg.bind_group = create_page_bind_group(
                         device,
                         &self.bind_group_layout,
-                        &storage,
+                        &pg.storage,
                         &pg.uniform,
                     );
-                    pg.storage = storage;
-                    pg.storage_capacity = cap;
-                    pg.uploaded_revision = 0;
-                    pg.prepared_passes = [None; PASS_SLOTS as usize];
+                    pg.prepared_passes = [const { None }; PASS_SLOTS as usize];
                 }
             }
         }
@@ -636,44 +685,65 @@ impl MeshSectionStore {
             .gpu_pages
             .get_mut(&page)
             .expect("page GPU storage must exist after allocation");
-        if rebuilt || needs_alloc || pg.uploaded_revision != revision {
+        if rebuilt || needs_storage_alloc || pg.uploaded_revision != revision {
             queue.write_buffer(&pg.storage, 0, bytemuck::cast_slice(staged));
             pg.uploaded_revision = revision;
-            pg.prepared_passes = [None; PASS_SLOTS as usize];
+            pg.prepared_passes = [const { None }; PASS_SLOTS as usize];
         }
 
-        let dispatch = task_dispatch_dims(count, self.max_task_workgroups);
-        let mut updated = *params;
-        updated.counts[0] = count;
-        updated.counts[3] = dispatch[0];
-        queue.write_buffer(
-            &pg.uniform,
-            u64::from(pass_slot) * u64::from(self.uniform_stride),
-            bytemuck::bytes_of(&updated),
-        );
-        pg.prepared_passes[pass_slot as usize] = Some((revision, count));
+        let mut chunks = Vec::with_capacity(chunk_count as usize);
+        for (chunk_idx, (meshlet_offset, chunk_meshlets, workgroups)) in
+            task_dispatch_chunks(count, self.max_task_workgroups).enumerate()
+        {
+            let slot = pass_slot + (chunk_idx as u32) * PASS_SLOTS;
+            let uniform_offset = slot * self.uniform_stride;
+            let mut updated = *params;
+            updated.counts[0] = count;
+            updated.counts[3] = meshlet_offset;
+            queue.write_buffer(
+                &pg.uniform,
+                u64::from(uniform_offset),
+                bytemuck::bytes_of(&updated),
+            );
+            chunks.push(PreparedChunk {
+                uniform_offset,
+                meshlet_count: chunk_meshlets,
+                workgroups,
+            });
+        }
+        pg.prepared_passes[pass_slot as usize] = Some(PreparedPass { revision, chunks });
         count
     }
 
-    /// Returns the prepared immutable draw handle for `(page, pass_kind)` if that pass was prepared
-    /// against the current uploaded page revision, or `None` otherwise.
-    pub fn page_draw(&self, page: u32, pass_kind: u32) -> Option<MeshPageDraw<'_>> {
-        if pass_kind >= PASS_SLOTS {
-            return None;
-        }
-        let current_rev = self.table.page_revision(page)?;
-        let pg = self.gpu_pages.get(&page)?;
-        let (prepared_rev, meshlet_count) = pg.prepared_passes[pass_kind as usize]?;
-        if prepared_rev != current_rev || pg.uploaded_revision != current_rev || meshlet_count == 0
-        {
-            return None;
-        }
-        Some(MeshPageDraw {
-            bind_group: &pg.bind_group,
-            uniform_offset: pass_kind * self.uniform_stride,
-            meshlet_count,
-            dispatch: task_dispatch_dims(meshlet_count, self.max_task_workgroups),
+    /// Yields every prepared dispatch chunk for `(page, pass_kind)` if that pass was prepared
+    /// against the current uploaded page revision, or an empty iterator otherwise.
+    pub fn page_draws(&self, page: u32, pass_kind: u32) -> impl Iterator<Item = MeshPageDraw<'_>> {
+        let prepared = if pass_kind < PASS_SLOTS {
+            self.table.page_revision(page).and_then(|current_rev| {
+                let pg = self.gpu_pages.get(&page)?;
+                let pass = pg.prepared_passes[pass_kind as usize].as_ref()?;
+                (pass.revision == current_rev && pg.uploaded_revision == current_rev)
+                    .then_some((&pg.bind_group, pass.chunks.as_slice()))
+            })
+        } else {
+            None
+        };
+        let (bind_group, chunks) = match prepared {
+            Some((bg, chunks)) => (Some(bg), chunks),
+            None => (None, &[][..]),
+        };
+        chunks.iter().map(move |chunk| MeshPageDraw {
+            bind_group: bind_group.expect("non-empty chunks always have bind_group"),
+            uniform_offset: chunk.uniform_offset,
+            meshlet_count: chunk.meshlet_count,
+            workgroups: chunk.workgroups,
         })
+    }
+
+    /// Returns the first prepared immutable draw handle for `(page, pass_kind)` if that pass was
+    /// prepared against the current uploaded page revision, or `None` otherwise.
+    pub fn page_draw(&self, page: u32, pass_kind: u32) -> Option<MeshPageDraw<'_>> {
+        self.page_draws(page, pass_kind).next()
     }
 
     /// Number of staged/pending meshlets on `page`.
@@ -720,9 +790,13 @@ pub(in crate::gfx) fn new_store(device: &wgpu::Device) -> Option<MeshSectionStor
     if !on(device) {
         return None;
     }
-    let align = device.limits().min_uniform_buffer_offset_alignment.max(1);
+    let limits = device.limits();
+    let align = limits.min_uniform_buffer_offset_alignment.max(1);
     let uniform_stride = (std::mem::size_of::<MeshCullParams>() as u32).next_multiple_of(align);
-    let max_task_workgroups = device.limits().max_task_workgroups_per_dimension.max(1);
+    let max_task_workgroups = limits
+        .max_task_workgroups_per_dimension
+        .min(limits.max_task_workgroup_total_count)
+        .max(1);
     Some(MeshSectionStore {
         table: MeshletTable::new(),
         gpu_pages: std::collections::BTreeMap::new(),
@@ -800,7 +874,7 @@ pub(in crate::gfx) fn draw_mesh_page<'a>(
         pass.set_pipeline(pipeline);
         pass.set_bind_group(1, group1, &[]);
         pass.set_bind_group(2, draw.bind_group, &[draw.uniform_offset]);
-        pass.draw_mesh_tasks(draw.dispatch[0], draw.dispatch[1], draw.dispatch[2]);
+        pass.draw_mesh_tasks(draw.workgroups, 1, 1);
     }
 }
 
@@ -905,7 +979,7 @@ impl MeshTerrain {
                     &pg.storage,
                     &pg.uniform,
                 );
-                pg.prepared_passes = [None; PASS_SLOTS as usize];
+                pg.prepared_passes = [const { None }; PASS_SLOTS as usize];
             }
         }
     }
@@ -948,7 +1022,7 @@ impl MeshTerrain {
                     counts: [0, pass_kind, skip_facing, 0],
                 };
                 if self.store.prepare_page(device, queue, page, &params) > 0 {
-                    dispatches += 1;
+                    dispatches += self.store.page_draws(page, pass_kind).count();
                 }
             }
         }
@@ -976,10 +1050,10 @@ impl MeshTerrain {
         };
         for (pass_kind, pipeline) in [(PASS_OPAQUE, opaque_pipe), (PASS_CUTOUT, cutout_pipe)] {
             for &page in &page_list {
-                if let (Some(group1), Some(draw)) =
-                    (flat.page_group(page), self.store.page_draw(page, pass_kind))
-                {
-                    draw_mesh_page(pass, pipeline, group1, draw);
+                if let Some(group1) = flat.page_group(page) {
+                    for draw in self.store.page_draws(page, pass_kind) {
+                        draw_mesh_page(pass, pipeline, group1, draw);
+                    }
                 }
             }
         }
@@ -1099,11 +1173,17 @@ mod tests {
         assert_eq!(task_workgroups(1), 1);
         assert_eq!(task_workgroups(32), 1);
         assert_eq!(task_workgroups(33), 2);
-        assert_eq!(task_dispatch_dims(0, 1024), [0, 0, 0]);
-        assert_eq!(task_dispatch_dims(32_768, 1024), [1024, 1, 1]);
-        assert_eq!(task_dispatch_dims(32_769, 1024), [1024, 2, 1]);
-        assert_eq!(task_dispatch_dims(65_536, 1024), [1024, 2, 1]);
-        assert_eq!(task_dispatch_dims(65_537, 1024), [1024, 3, 1]);
+        let chunks_0: Vec<_> = task_dispatch_chunks(0, 1024).collect();
+        assert!(chunks_0.is_empty());
+        let chunks_fit: Vec<_> = task_dispatch_chunks(32_768, 1024).collect();
+        assert_eq!(chunks_fit, vec![(0, 32_768, 1024)]);
+        let chunks_split: Vec<_> = task_dispatch_chunks(32_769, 1024).collect();
+        assert_eq!(chunks_split, vec![(0, 32_768, 1024), (32_768, 1, 1)]);
+        let chunks_three: Vec<_> = task_dispatch_chunks(65_537, 1024).collect();
+        assert_eq!(
+            chunks_three,
+            vec![(0, 32_768, 1024), (32_768, 32_768, 1024), (65_536, 1, 1)]
+        );
     }
 
     #[test]
@@ -1886,10 +1966,12 @@ mod tests {
                     });
                     pass.set_bind_group(0, &group0, &[]);
                     for &(page, pass_kind, pipe, g1) in draws {
-                        let draw = store
-                            .page_draw(page, pass_kind)
-                            .expect("page draw must be prepared");
-                        draw_mesh_page(&mut pass, pipe, g1, draw);
+                        let mut any = false;
+                        for draw in store.page_draws(page, pass_kind) {
+                            any = true;
+                            draw_mesh_page(&mut pass, pipe, g1, draw);
+                        }
+                        assert!(any, "page draw must be prepared");
                     }
                 }
                 encoder.copy_texture_to_buffer(
@@ -2035,16 +2117,20 @@ mod tests {
         assert!(px(&wrapper_pixels, 8, 32)[0] > 200);
         assert!(px(&wrapper_pixels, 56, 24)[2] > 200);
 
-        // Case 6: Capped max_task_workgroups dispatches 2D [1, 2, 1] and still draws meshlets at wg.y == 1.
+        // Case 6: Capped max_task_workgroups splits the page into multiple 1-workgroup dispatches
+        // respecting both per-dimension and total workgroup limits, drawing meshlets in chunk 1.
         terrain.store.max_task_workgroups = 1;
         let mut capped_meshlets = vec![MeshletDesc::new(0, 0, 2, 0, 0, [0, 0, 0, 1, 1, 1]); 32];
         capped_meshlets.extend_from_slice(&p0_meshlets);
         terrain
             .store
             .insert_section(0, PACKED_BASE, &capped_meshlets);
-        terrain.prepare_frame(&device, &queue, [0], box_planes, eye_above, false);
-        let capped_draw = terrain.store.page_draw(0, PASS_OPAQUE).unwrap();
-        assert_eq!(capped_draw.dispatch, [1, 2, 1]);
+        let split_dispatches =
+            terrain.prepare_frame(&device, &queue, [0], box_planes, eye_above, false);
+        assert_eq!(split_dispatches, 4);
+        let capped_draws: Vec<_> = terrain.store.page_draws(0, PASS_OPAQUE).collect();
+        assert_eq!(capped_draws.len(), 2);
+        assert!(capped_draws.iter().all(|d| d.workgroups == 1));
         let capped_pixels = render_and_readback(
             &terrain.store,
             &[(0, PASS_OPAQUE, &terrain.opaque_plain, &_p0_bufs.3)],
