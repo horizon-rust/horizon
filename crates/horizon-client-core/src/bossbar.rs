@@ -4,7 +4,7 @@ use crate::{
     scoreboard::{Comp, bracketed, comp_text, json_to_tag, literal, tag_to_json},
     text::{self, Style, Text},
 };
-use horizon_world::nbt::{Compound, Tag};
+use horizon_core::nbt::{Compound, Tag};
 
 pub const COLORS: [&str; 7] = ["pink", "blue", "red", "green", "yellow", "purple", "white"];
 pub const STYLES: [&str; 5] = [
@@ -78,7 +78,7 @@ impl BossBar {
     pub fn display_name(&self) -> Text {
         let style = Style {
             color: Some(color_rgb(&self.color)),
-            hover: Some(Box::new(Text::literal(self.id.clone()))),
+            hover: Some(std::sync::Arc::new(Text::literal(self.id.clone()))),
             insertion: Some(self.id.clone()),
             ..Style::default()
         };
@@ -86,9 +86,10 @@ impl BossBar {
         // brackets take the colour too.
         bracketed(comp_text(&self.name)).with_style(&style)
     }
-    /// The filled fraction of the bar (`BossEvent.getProgress`).
+    /// The filled fraction of the bar: `Mth.clamp(value / max, 0, 1)` as
+    /// `CustomBossEvent.setValue` computes it (a 0 of 0 bar reads 0).
     pub fn progress(&self) -> f32 {
-        (self.value as f32 / self.max.max(1) as f32).clamp(0.0, 1.0)
+        (self.value as f32 / self.max as f32).clamp(0.0, 1.0)
     }
 }
 
@@ -215,6 +216,27 @@ mod tests {
         assert_eq!(color_rgb("purple"), text::named_color("dark_blue").unwrap());
         b.remove("test:x");
         assert!(b.bars.is_empty());
+    }
+
+    /// `CustomBossEvent.setValue`/`setMax`: the progress is `value / max`
+    /// clamped, divided by the stored max and not by a max raised to one.
+    #[test]
+    fn progress_divides_by_the_stored_max() {
+        let mut bar = BossBar::new("test:x", literal("Hello"));
+        bar.value = 50;
+        bar.max = 10;
+        assert_eq!(bar.progress(), 1.0);
+        bar.max = 100;
+        assert_eq!(bar.progress(), 0.5);
+        // 50 / -5 is negative, so the clamp floors it.
+        bar.max = -5;
+        assert_eq!(bar.progress(), 0.0);
+        // 50 / 0 is infinite, so the clamp caps it.
+        bar.max = 0;
+        assert_eq!(bar.progress(), 1.0);
+        // 0 / 0 is NaN, as Java's `(float)value / max` is.
+        bar.value = 0;
+        assert!(bar.progress().is_nan());
     }
 
     /// `CustomBossEvent.getDisplayName`: `withInsertion(customId)`, so a
