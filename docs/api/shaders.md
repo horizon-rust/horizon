@@ -297,6 +297,11 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 
 ## Changelog
 
+- 2026-11-19: API 0.2 (change, preview): under a pack without `[[post]]` whose frame holds gamma light and whose
+  `[tonemap]`, if it has one, never reads `previous`, TAA upscaling and its sharpening apply too (#16126 step 7): the
+  world draws smaller, `frame.resolution` stays its size, `previous` is the size TAA rebuilt it at, and the sharpening
+  runs before the decode and the tone curve. A `[tonemap]` that reads `previous` keeps TAA at the world's size. With
+  TAA or upscaling off nothing changes.
 - 2026-11-19: API 0.2 (change, preview): a pack without `[[post]]` whose frame holds gamma light also gets the
   player's TAA, at the world's size (#16126 step 7); `frame.jitter` and `frame.previous_jitter` then carry its offset.
   TAA upscaling and its sharpening stay off, and under any other pack TAA is off. With TAA off nothing changes. A pack
