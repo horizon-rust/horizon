@@ -108,8 +108,10 @@ def export_dependencies(records, found, directory):
     """Write NAME.json ({"dependencies", "artifacts"}, as parity.py's shared lists) for each harness this checkout
     itself last passed: never a pass taken from the shared folder (another checkout's, possibly a pull request's),
     a failed run (its trace may stop early) or a record with no dependencies (a runner would then never select it).
-    Returns how many."""
+    The directory holds this export only: lists an earlier export left there are removed. Returns how many."""
     directory.mkdir(parents=True, exist_ok=True)
+    for old in directory.glob("*.json"):
+        old.unlink()
     count = 0
     for name in sorted(found):
         record = records.get(name) or {}

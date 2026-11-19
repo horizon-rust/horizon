@@ -103,6 +103,8 @@ class ExportTests(unittest.TestCase):
         found = {name: None for name in ("food", "light", "mace", "hud", "never_ran")}
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp) / "out"
+            directory.mkdir()
+            (directory / "light.json").write_text("{}")  # an earlier export's, now a shared pass
             self.assertEqual(parity_plan.export_dependencies(records, found, directory), 1)
             self.assertEqual(sorted(path.name for path in directory.iterdir()), ["food.json"])
             self.assertEqual(json.loads((directory / "food.json").read_text(encoding="utf-8")),
