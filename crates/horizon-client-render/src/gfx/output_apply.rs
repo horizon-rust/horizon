@@ -851,7 +851,9 @@ mod tests {
         let since = Some(at(5100));
         let (during, offered_after) = (hand.clone(), Some(Some(ScRgb)));
         let offered = move || {
-            during.send((lost, Some(None), Instant::now())).unwrap();
+            // Strictly before the cutoff taken after this returns: two `Instant::now()` can be equal.
+            let started = Instant::now() - Duration::from_nanos(1);
+            during.send((lost, Some(None), started)).unwrap();
             offered_after
         };
         let ended = poll_display(
