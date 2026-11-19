@@ -206,12 +206,22 @@ fn poll_display(
     let Some(read) = watch.poll(*reading, now, read) else {
         return over;
     };
+    let offered = offer_fresh(Some(watch), offer);
+    observe(reading, caps, read, offered) || over
+}
+
+/// What the surface offers now (`offer`), read on the render thread after any display read
+/// there. A reading the reader thread started before this returns may hold the old offer, and
+/// is dropped (`DisplayReader::read_fresh`).
+fn offer_fresh(
+    watch: Option<&mut DisplayWatch>,
+    offer: impl FnOnce() -> Option<Option<hdr::Output>>,
+) -> Option<Option<hdr::Output>> {
     let offered = offer();
-    if let Some(reader) = &mut watch.reader {
-        // Once the offer is read too: a read the thread starts before then may see the old one.
+    if let Some(reader) = watch.and_then(|watch| watch.reader.as_mut()) {
         reader.read_fresh(Instant::now());
     }
-    observe(reading, caps, read, offered) || over
+    offered
 }
 
 /// What a [`DisplayReader`] hands over at each read: the display's report, the surface's
@@ -417,7 +427,8 @@ impl Renderer {
         if presented.is_none() {
             return;
         }
-        let offered = offer(self.surface.as_deref(), &self.adapter);
+        let (surface, adapter) = (self.surface.as_deref(), &self.adapter);
+        let offered = offer_fresh(self.display.as_mut(), || offer(surface, adapter));
         if offered.is_none_or(|offered| offered == presented) {
             return;
         }
@@ -863,6 +874,42 @@ mod tests {
         hand.send((lost, Some(None), Instant::now())).unwrap();
         assert!(poll(&mut watch, &mut reading, &mut caps, at(5640)));
         assert_eq!((reading, caps.hdr), (lost, None));
+    }
+
+    /// A configure refused after a display move reads the offer at once (`surface_refused`):
+    /// a reading the thread started before that, handed over after it, would put the old
+    /// offer back, so it is dropped.
+    #[test]
+    fn a_reading_from_before_a_refused_configure_is_dropped() {
+        let (mut caps, mut reading) = window(Some(Pq), Some(true));
+        let (hand, handed) = mpsc::channel();
+        let mut watch = DisplayWatch {
+            #[cfg(target_os = "linux")]
+            wayland: None,
+            polled: Some(Instant::now()),
+            reader: Some(DisplayReader {
+                handed,
+                stop: None,
+                thread: None,
+                fresh: None,
+            }),
+        };
+        let before = Instant::now();
+        let offered = offer_fresh(Some(&mut watch), || Some(None));
+        caps.hdr = offered.flatten();
+        hand.send((reading, Some(Some(Pq)), before)).unwrap();
+        let now = Instant::now();
+        let polled = poll_display(
+            Some(&mut watch),
+            &mut reading,
+            &mut caps,
+            None,
+            now,
+            || unreachable!(),
+            || unreachable!(),
+        );
+        assert!(!polled);
+        assert_eq!(caps.hdr, None);
     }
 
     /// The display's luminance, the UI brightness or Color Boost change on the same output: the values
