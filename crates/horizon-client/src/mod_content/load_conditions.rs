@@ -298,7 +298,12 @@ pub fn build_with_conditions(
     // A tag naming an id nobody registers fails as a whole in vanilla, and
     // carried-over mods name blocks left out or other mods' ids: such
     // entries are dropped instead, so the rest of the tag holds.
-    let known = Known::new(base, &plan, &tags)?;
+    let mut known = Known::new(base, &plan, &tags)?;
+    // The mods' own biomes join the bundle below, so their tags may name them.
+    if base.join(BIOMES).exists() {
+        let ids = worldgen.get(BIOMES).into_iter().flatten();
+        known.biomes.extend(ids.map(|(id, _)| id.clone()));
+    }
     for (file, merge) in &mut tags {
         for (values, _) in &mut merge.layers {
             values.retain(|v| known.keeps(file, v));
@@ -366,7 +371,7 @@ pub fn build_with_conditions(
     // Structures and the pools, sets, processors and features they use, then
     // what mods add to sets, pools and lists, by priority, then in mod and
     // file order.
-    let mut placed_doc = None;
+    let (mut placed_doc, mut biome_doc) = (None, None);
     for (bundle, entries) in &worldgen {
         if !base.join(bundle).exists() {
             continue;
@@ -381,6 +386,8 @@ pub fn build_with_conditions(
         overlay.write(bundle, &serde_json::to_vec(&doc)?)?;
         if *bundle == PLACED_FEATURES {
             placed_doc = Some(doc);
+        } else if *bundle == BIOMES {
+            biome_doc = Some(doc);
         }
     }
     if !modifiers.is_empty() || (!mods.is_empty() && base.join(BIOMES).exists()) {
@@ -389,6 +396,7 @@ pub fn build_with_conditions(
             &overlay,
             &modifiers,
             inventory.server_ids().map(str::to_owned).collect(),
+            biome_doc,
             biome_tag_doc,
             placed_doc,
             &tags,
@@ -399,7 +407,7 @@ pub fn build_with_conditions(
         structures::apply(base, &overlay, &structure_modifiers, &tags, &mut warnings)?;
     }
     // The commands suggest ids from `command-registries.json`: add the
-    // structures, pools, sets and features the mods bring.
+    // biomes, structures, pools, sets and features the mods bring.
     let registries = out_path(&overlay, "command-registries.json");
     if let Ok(mut doc) = read_json(&registries) {
         // Registry names hold `/`, so each key is looked up by itself.
@@ -545,6 +553,9 @@ pub fn resource_root_with_conditions(
     }
     let roots = cache.join("mod-content");
     let out = roots.join(&stamp[..ROOT_NAME]);
+    // Pin before examining the root. If a prune already admitted the old generation, this
+    // waits for it to move that generation aside before looking for its stamp.
+    let _preparing = retain_root(&out);
     if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes())
         && fs::read(out.join(horizon_mod_package::enabled::MARKER)).is_ok_and(|bytes| {
             serde_json::from_slice::<horizon_mod_package::enabled::EnabledMods>(&bytes)
@@ -556,7 +567,7 @@ pub fn resource_root_with_conditions(
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
         // Used again: kept another day. Marked beside the root, not in it: the pack overlay
         // laid over the root reads its files, and a rewritten one would rebuild it (#12403).
-        let _ = fs::write(used_path(&out), b"");
+        super::root_lifetime::renew_root(&out);
         return Ok(out);
     }
     if has_content {
@@ -575,6 +586,14 @@ pub fn resource_root_with_conditions(
         overlay.write(GENERATED_FILES, b"[]")?;
     }
     fs::write(out.join(STAMP), stamp)?;
-    prune_roots(&roots, &out, KEEP_ROOTS);
+    // Old roots go on a thread of their own: removing one linked file by file takes seconds, and
+    // the start would wait for each.
+    let current = out.clone();
+    let spawned = std::thread::Builder::new()
+        .name("mod-content-prune".into())
+        .spawn(move || prune_roots(&roots, &current, KEEP_ROOTS));
+    if spawned.is_err() {
+        log::warn!("Horizon: old mod content roots are left for the next start");
+    }
     Ok(out)
 }

@@ -310,7 +310,8 @@ impl Instance {
     }
 
     /// The installed version this instance plays: its pinned one, else `requested` (the
-    /// command line's `--version`) or the launcher's (`backend::resolve_version`).
+    /// command line's `--version`), else on Stable its channel's ([`crate::nightly::stable_latest`],
+    /// as Home's), else the launcher's (`backend::resolve_version`).
     pub fn resolve_version(&self, requested: Option<&str>) -> Result<String, String> {
         self.horizon()?;
         match (requested, &self.version) {
@@ -321,6 +322,11 @@ impl Instance {
                     self.name, self.name
                 )
             }),
+            (None, None) if self.channel == Channel::Stable => {
+                let selected = backend::Settings::load().selected;
+                crate::nightly::stable_latest(&backend::installed(), selected.as_deref())
+                    .map_or_else(|| backend::resolve_version(None), Ok)
+            }
             _ => backend::resolve_version(requested),
         }
     }
@@ -366,11 +372,11 @@ fn list_in(game_home: &Path, data: &Path) -> Vec<Instance> {
         let dir = game_home.join(OWN).join(&slug);
         found.push((slug.clone(), slug, Kind::Own, dir.clone(), dir));
     }
-    for p in modpacks::list_in(&game_home.join("ports")) {
+    for p in modpacks::listed_in(&game_home.join("ports")) {
         let home = modpacks::profile_home(&p.work);
         found.push((
             format!("port:{}", p.slug),
-            p.title().into(),
+            p.title,
             Kind::Port,
             p.work,
             home,
