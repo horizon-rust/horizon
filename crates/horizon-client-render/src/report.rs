@@ -226,7 +226,16 @@ pub fn send_report(request: &AbuseReportRequest) -> Result<(), String> {
         .set("Content-Type", "application/json; charset=utf-8")
         .send_string(&body)
     {
-        Ok(_) => Ok(()),
+        Ok(response) => {
+            // ureq answers below 400 as Ok — including a 307/308 the POST's
+            // redirect never followed (unit.rs breaks the loop and returns the
+            // answer). Vanilla's MinecraftClient throws on anything but 2xx.
+            if (200..300).contains(&response.status()) {
+                Ok(())
+            } else {
+                Err(format!("the report service answered {}", response.status()))
+            }
+        }
         Err(ureq::Error::Status(status, response)) => {
             let message = response
                 .into_string()
