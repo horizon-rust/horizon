@@ -150,5 +150,25 @@ class OwnRunnerTests(unittest.TestCase):
         self.assertIn('if [ "$head" != "${GITHUB_REPOSITORY:-}" ]', script)  # refuses unless HORIZON_RUNNER_POOL=checks
 
 
+class TryRunTests(unittest.TestCase):
+    """A maintainer's hand-started `checks` run of a branch (docs/ci-runners.md#try-runs) saves no sticky disk, no
+    Rust cache, and holds no secret: only main's pushes and the merge queue write what pull requests start from."""
+
+    def test_only_mains_pushes_and_the_merge_queue_save_a_build_disk(self):
+        text = (WORKFLOWS / "ci.yml").read_text()
+        # Every disk's `commit:` is this variable (tests/test_ci_source_mtimes.py).
+        self.assertIn("  SAVE_BUILD_DISK: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || "
+                      "github.event_name == 'merge_group') && 'true' || 'false' }}\n", text)
+        self.assertNotIn("secrets.", text)
+
+    def test_the_windows_build_runs_by_hand_and_saves_no_cache(self):
+        block = dict(jobs((WORKFLOWS / "ci.yml").read_text()))["windows-x64"]
+        self.assertIn("    if: github.event_name == 'workflow_dispatch' && inputs.windows\n", block)
+        self.assertGreaterEqual(block.count("Swatinem/rust-cache@"), 1)
+        self.assertEqual(block.count("Swatinem/rust-cache@"), block.count("save-if: false"))
+        self.assertIn("persist-credentials: false", block)
+        self.assertIn("retention-days: 3", block)
+
+
 if __name__ == "__main__":
     unittest.main()
