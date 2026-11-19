@@ -26,6 +26,7 @@ use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
+use winit::keyboard::KeyCode;
 
 /// How long each of an ingredient's items shows before the next ("Any Planks" cycling): vanilla's
 /// recipe book swaps its ghost items every 30 ticks.
@@ -136,10 +137,7 @@ impl Game<'_> {
             self.screen = Screen::Inventory;
             self.capture(false);
         } else {
-            self.key_pressed(
-                winit::keyboard::KeyCode::KeyE,
-                winit::keyboard::KeyCode::KeyE,
-            )?;
+            self.key_pressed(KeyCode::KeyE, KeyCode::KeyE)?;
         }
         if self.legacy_fits_menu() {
             self.legacy_start();
@@ -461,22 +459,65 @@ impl Game<'_> {
         self.direct_craft_stop();
     }
 
-    /// Vanilla's click on an inventory slot, as the pointer over it would make it: A's take or
-    /// put, X's half or one, Y's quick move. Always the screen's press.
+    /// Vanilla's click on an inventory slot: A's take or put, X's half or one, Y's quick move
+    /// (`shift`). The menu's own op, so a Shift the player holds never turns a pickup into a
+    /// quick move. Always the screen's press.
     pub(in crate::game) fn legacy_slot_click(
         &mut self,
         slot: usize,
         right: bool,
         shift: bool,
     ) -> bool {
+        use horizon_client::menu::Input;
+        let input = if shift {
+            Input::QuickMove
+        } else {
+            Input::Pickup
+        };
+        if self.click_open_inventory(Some(slot), i32::from(right), input) {
+            if let Some(key) = self.container {
+                self.container_changed(key);
+            }
+            return true;
+        }
+        // A click the menu leaves to the screen: the pointer's, with Shift exactly as asked.
         let Ok((ox, oy)) = self.gui_origin() else {
             return true;
         };
         let (sx, sy) = self.slot_position(slot);
+        let modifiers = self.modifiers;
+        let shifts = [KeyCode::ShiftLeft, KeyCode::ShiftRight];
+        let held: Vec<KeyCode> = shifts
+            .into_iter()
+            .filter(|k| self.physical_keys.remove(k))
+            .collect();
+        self.modifiers
+            .remove(winit::keyboard::ModifiersState::SHIFT);
         self.pad.legacy.passthrough = true;
         self.click_at(ox + sx + 8.0, oy + sy + 8.0, right, shift);
         self.pad.legacy.passthrough = false;
+        self.physical_keys.extend(held);
+        self.modifiers = modifiers;
         true
+    }
+
+    /// The slot a key over the screen (Q, a digit, F, pick) works on while this screen shows:
+    /// the visible inventory slot under the pointer, `Some(None)` over anything else or while a
+    /// run clicks (the hidden vanilla slots under it aren't the player's to touch). `None` when
+    /// the screen isn't showing: vanilla's geometry decides.
+    pub(in crate::game) fn legacy_key_slot(&self) -> Option<Option<usize>> {
+        if !self.legacy_showing() || self.pad.legacy.passthrough {
+            return None;
+        }
+        if self.legacy_busy() {
+            return Some(None);
+        }
+        let at = (self.cursor.0 as i32, self.cursor.1 as i32);
+        let hit = self.pad.legacy.layout.as_ref().and_then(|l| hit_at(l, at));
+        Some(match hit {
+            Some(Hit::Inventory(slot)) => Some(slot),
+            _ => None,
+        })
     }
 
     /// The screen shows its recipe row: B from another area goes back to it.
@@ -496,10 +537,13 @@ impl Game<'_> {
         let (sx, sy) = self.slot_position(slot);
         let saved = self.cursor;
         self.cursor = (ox + sx + 8.0, oy + sy + 8.0);
-        let key = winit::keyboard::KeyCode::KeyQ;
+        let key = KeyCode::KeyQ;
+        // The press is the pad's, on this slot: vanilla's geometry finds it.
+        self.pad.legacy.passthrough = true;
         if let Err(e) = self.key_pressed(key, key) {
             log::warn!("Horizon: crafting screen throw: {e}");
         }
+        self.pad.legacy.passthrough = false;
         self.cursor = saved;
         true
     }
@@ -925,12 +969,20 @@ impl Game<'_> {
             "typing": state.typing,
             "only_craftable": state.only_craftable,
             "compact": state.layout.as_ref().is_some_and(|l| l.compact),
-            // Where the mouse finds the row, its variants, the grid and the result (GUI pixels).
+            // Where the mouse finds the row, its variants, the grid, the result and the inventory
+            // (GUI pixels).
             "hits": state.layout.as_ref().map_or_else(Vec::new, |l| {
                 l.hits
                     .iter()
                     .filter(|(_, h)| {
-                        matches!(h, Hit::Row(_) | Hit::Variant(_) | Hit::Cell(_) | Hit::Result)
+                        matches!(
+                            h,
+                            Hit::Row(_)
+                                | Hit::Variant(_)
+                                | Hit::Cell(_)
+                                | Hit::Result
+                                | Hit::Inventory(_)
+                        )
                     })
                     .map(|(r, h)| serde_json::json!({ "hit": format!("{h:?}"), "rect": r }))
                     .collect()

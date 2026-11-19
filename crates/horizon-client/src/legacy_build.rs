@@ -64,6 +64,9 @@ pub struct Role {
     pub accepts: Ingredient,
     /// The recipe makes something with the cell empty.
     pub optional: bool,
+    /// Whether the cell's banner or shield must carry patterns (`Some(true)`, a copy's source),
+    /// must be blank (`Some(false)`, a copy's target, a shield to decorate), or either.
+    pub patterned: Option<bool>,
 }
 
 /// One special recipe as the builder stages it.
@@ -108,6 +111,15 @@ fn required(accepts: &Ingredient) -> Role {
     Role {
         accepts: accepts.clone(),
         optional: false,
+        patterned: None,
+    }
+}
+
+/// A required cell whose stack must carry patterns, or must be blank.
+fn patterned(accepts: &Ingredient, patterns: bool) -> Role {
+    Role {
+        patterned: Some(patterns),
+        ..required(accepts)
     }
 }
 
@@ -115,6 +127,7 @@ fn optional(accepts: &Ingredient) -> Role {
     Role {
         accepts: accepts.clone(),
         optional: true,
+        patterned: None,
     }
 }
 
@@ -270,7 +283,8 @@ pub fn templates(recipes: &Recipes) -> Vec<Template> {
             } => (
                 Kind::Banners,
                 result(made, banner),
-                shapeless(vec![required(banner), required(banner)]),
+                // `BannerDuplicateRecipe`: one patterned banner to copy, one blank to take it.
+                shapeless(vec![patterned(banner, true), patterned(banner, false)]),
                 false,
             ),
             Special::ShieldDecoration {
@@ -280,7 +294,8 @@ pub fn templates(recipes: &Recipes) -> Vec<Template> {
             } => (
                 Kind::Banners,
                 result(made, target),
-                shapeless(vec![required(banner), required(target)]),
+                // `ShieldDecorationRecipe`: the shield must be blank.
+                shapeless(vec![required(banner), patterned(target, false)]),
                 false,
             ),
             Special::DecoratedPot {
@@ -383,7 +398,12 @@ pub fn candidates(
     role: &Role,
     inventory: &[Option<ItemStack>],
 ) -> Vec<ItemStack> {
-    held_kinds(inventory, |s| role.accepts.test_in(context, s))
+    held_kinds(inventory, |s| {
+        role.accepts.test_in(context, s)
+            && role
+                .patterned
+                .is_none_or(|p| p == !crate::banner::layers(s).is_empty())
+    })
 }
 
 /// The choice after (or before) `now` among `choices`, round the ends; the first when `now` isn't
@@ -531,16 +551,20 @@ mod tests {
         crate::test_resources::server_loop_context()
     }
 
-    fn recipes() -> Option<Recipes> {
+    /// The real recipes. Asked for, the prepared resources must be there: a daily test fails
+    /// without them rather than passing untried.
+    fn recipes() -> Recipes {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         let root: PathBuf = std::env::var_os("HORIZON_TEST_RESOURCES")
             .map(PathBuf::from)
             .unwrap_or(root);
-        if !root.join("registries.json").exists() {
-            return None;
-        }
+        assert!(
+            root.join("registries.json").exists(),
+            "no prepared resources at {} (HORIZON_TEST_RESOURCES): run horizon-prepare",
+            root.display()
+        );
         let none = &horizon_world::loot::PackOverlay::NONE;
         let items = Items::catalog(
             &root,
@@ -548,10 +572,7 @@ mod tests {
             &horizon_world::item_defaults::read(&root).expect("item defaults"),
         )
         .expect("items");
-        Some(
-            Recipes::load(&root, &items, none, &crate::test_resources::server_load())
-                .expect("recipes"),
-        )
+        Recipes::load(&root, &items, none, &crate::test_resources::server_load()).expect("recipes")
     }
 
     fn stacks(items: &[(&str, u32)]) -> Vec<Option<ItemStack>> {
@@ -592,10 +613,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn every_builder_has_a_template_from_the_real_recipes() {
-        let Some(recipes) = recipes() else {
-            return;
-        };
+        let recipes = recipes();
         let all = templates(&recipes);
         for kind in Kind::ALL {
             assert!(all.iter().any(|t| t.kind == kind), "no {kind:?} template");
@@ -605,10 +625,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn colour_recipes_of_one_thing_share_a_row_entry() {
-        let Some(recipes) = recipes() else {
-            return;
-        };
+        let recipes = recipes();
         let all = templates(&recipes);
         let groups = groups(&all);
         let dyeing: Vec<&Vec<usize>> = groups
@@ -642,10 +661,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_required_cell_emptied_while_its_stack_was_away_fills_again() {
-        let Some(recipes) = recipes() else {
-            return;
-        };
+        let recipes = recipes();
         let all = templates(&recipes);
         let rocket = all
             .iter()
@@ -678,10 +696,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_staged_rocket_makes_what_the_game_would() {
-        let Some(recipes) = recipes() else {
-            return;
-        };
+        let recipes = recipes();
         let all = templates(&recipes);
         let rocket = all
             .iter()
@@ -699,10 +716,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn staging_never_uses_more_than_the_inventory_holds() {
-        let Some(recipes) = recipes() else {
-            return;
-        };
+        let recipes = recipes();
         let all = templates(&recipes);
         let copy = all
             .iter()
@@ -718,10 +734,45 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
+    fn a_banner_copy_stages_the_patterned_banner_and_a_blank_one() {
+        let recipes = recipes();
+        let all = templates(&recipes);
+        let copy = all
+            .iter()
+            .find(|t| {
+                t.kind == Kind::Banners
+                    && t.cells.iter().all(|(_, r)| {
+                        r.accepts
+                            .order
+                            .iter()
+                            .any(|i| i == "minecraft:white_banner")
+                    })
+            })
+            .expect("the white banner copy");
+        // Two blank banners first in the inventory, the patterned one after them.
+        let blank = ItemStack::new("minecraft:white_banner", 1);
+        let striped = crate::banner::loom_result(&blank, "red", "minecraft:stripe_bottom");
+        let inventory = vec![Some(blank.clone()), Some(blank), Some(striped.clone())];
+        let staged = stage(ctx(), copy, &inventory);
+        assert_eq!(staged.iter().flatten().count(), 2, "{staged:?}");
+        assert!(
+            staged.iter().flatten().any(|s| *s == striped),
+            "the patterned banner is staged: {staged:?}"
+        );
+        let grid = layout(copy, &staged, 2).unwrap();
+        let made = recipes.craft(ctx(), &grid, 2).expect("a copy");
+        assert_eq!(&*made.item, "minecraft:white_banner");
+        assert_eq!(
+            crate::banner::layers(&made),
+            crate::banner::layers(&striped)
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn a_shaped_template_has_no_place_in_a_small_grid() {
-        let Some(recipes) = recipes() else {
-            return;
-        };
+        let recipes = recipes();
         let all = templates(&recipes);
         let pot = all.iter().find(|t| t.kind == Kind::Pottery).unwrap();
         let staged = vec![Some(ItemStack::new("minecraft:brick", 1)); 4];

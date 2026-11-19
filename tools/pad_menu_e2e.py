@@ -124,13 +124,17 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_builder_room: a builder's result that would only partly fit stays out of the inventory, nothing dropped.
 - legacy_builder_cancel: B at any point of a builder's run leaves nothing in hand or in the grid and loses nothing.
 - legacy_builder_mouse: a mouse click in a builder selects its entry and crafts from the row or the result.
+- legacy_keys_hidden: Q, digits and F over the screen's controls reach none of vanilla's hidden slots; Q over a
+  shown inventory slot throws from it.
+- legacy_builder_shift: a held Shift changes nothing of a builder's clicks, its craft or B's cleanup.
 - legacy_hold_switch: a stack in hand stays there through the left stick's switch to vanilla's screen and back, and LB/RB.
 - legacy_back_closes: B closes the crafting screen with nothing to make there, from any area.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
   row, then closes.
-- legacy_table: a crafting table the pad player opens shows as the crafting screen, and A makes a 3x3 recipe.
+- legacy_table: a crafting table the pad player opens shows as the crafting screen, and A makes 3x3 recipes: a chest
+  and a white banner.
 - legacy_tabs_search: search first, no empty tabs; RB and LB turn the tabs; View opens the search's keyboard and
   typing narrows the row; X shows only what can be made.
 - radial_status_rows: survival with armour and absorption, shot at 427x240 and 320x180: the dial clear of the rows.
@@ -4796,7 +4800,8 @@ def legacy_craft(game, check):
 
 @legacy_case
 def legacy_table(game, check):
-    legacy_known(game, 'minecraft:chest', gives=['oak_planks 8'])
+    legacy_known(game, 'minecraft:chest', 'minecraft:white_banner',
+                 gives=['oak_planks 8', 'white_wool 6', 'stick 1'])
     x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
     game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
     game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:crafting_table')
@@ -4816,6 +4821,13 @@ def legacy_table(game, check):
     craft_ended(game)
     have = counts(game)
     check(have.get('minecraft:chest') == 1 and not have.get('minecraft:oak_planks'), f'3x3: {have}')
+    # A banner: six wool and a stick fill the whole 3x3.
+    check(legacy_find(game, 'minecraft:white_banner'), f'no white banner in {legacy(game)}')
+    game.pad('south')
+    craft_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:white_banner') == 1 and not have.get('minecraft:white_wool')
+          and not have.get('minecraft:stick'), f'banner: {have}')
 
 
 @legacy_case
@@ -5186,6 +5198,87 @@ def legacy_builder_mouse(game, check):
     check(counts(game).get('minecraft:firework_rocket', 0) == rockets + 3, f'the row click made no rocket: {counts(game)}')
 
 
+def legacy_hover(game, rect):
+    """The pointer to the middle of a GUI rect, no click (the wheel at it, zero steps)."""
+    x, y, w, h = rect
+    game.ctl('scroll-at', x + w / 2, y + h / 2, 0)
+
+
+def screen_slots(game):
+    return sorted((s['slot'], s['item'], s['count']) for s in game.ctl('screen')['slots'] if s['item'])
+
+
+@legacy_case
+def legacy_keys_hidden(game, check):
+    """Q, a digit and F over the screen's controls touch none of vanilla's hidden slots under them; Q over a
+    shown inventory slot throws from it."""
+    legacy_known(game, gives=['oak_planks 8'])
+    command = lambda line: game.ctl('command', line)
+    # Every slot holds something: a key reaching a hidden slot would throw or swap it.
+    for slot in range(36):
+        command(f'item replace entity @s container.{slot} with {"cobblestone" if slot % 2 else "dirt"} {slot + 1}')
+    time.sleep(1)
+    game.pad('west')
+    if legacy(game) is None:
+        check(False, 'X did not open the crafting screen')
+        return
+    hits = legacy(game)['hits']
+    before = screen_slots(game)
+    for h in hits:
+        if h['hit'].startswith('Inventory('):
+            continue
+        legacy_hover(game, h['rect'])
+        for key in ('q', '1', 'f'):
+            game.ctl('key', key, 'tap')
+        time.sleep(0.05)
+    time.sleep(SETTLE)
+    check(screen_slots(game) == before, f'keys over the controls changed slots: {before} -> {screen_slots(game)}')
+    check(legacy(game) is not None, 'the keys closed the crafting screen')
+    shown = next((h for h in hits if h['hit'] == 'Inventory(9)'), None)
+    check(shown is not None, f'no inventory slot 9 on screen: {hits}')
+    if shown is None:
+        return
+    total = sum(counts(game).values())
+    legacy_hover(game, shown['rect'])
+    game.ctl('key', 'q', 'tap')
+    time.sleep(SETTLE)
+    check(sum(counts(game).values()) == total - 1, f'Q over a shown slot: {total} -> {counts(game)}')
+
+
+@legacy_case
+def legacy_builder_shift(game, check):
+    """A Shift the player holds changes nothing of a builder's clicks: the craft goes through, and B while one
+    runs ends it with nothing in hand."""
+    legacy_known(game, gives=['paper 16', 'gunpowder 16'])
+    if not legacy_open_fireworks(game, check):
+        return
+    game.ctl('key', 'shift', 'down')
+    try:
+        game.pad('south')
+        legacy_build_ended(game)
+        have = counts(game)
+        check(have.get('minecraft:firework_rocket') == 3 and have.get('minecraft:paper') == 15,
+              f'a craft with Shift held: {have}')
+        check(not grid(game), f'Shift left {grid(game)} in the grid')
+        cancelled = 0
+        for wait in (0, 0.02, 0.05, 0.1):
+            game.pad('north')
+            time.sleep(wait)
+            if legacy(game)['building']:
+                game.pad('east')
+                cancelled += 1
+            legacy_build_ended(game)
+            check(not game.ctl('menu').get('carried'), f"B after {wait}s with Shift left {game.ctl('menu').get('carried')}")
+            check(not grid(game), f'B after {wait}s with Shift left {grid(game)} in the grid')
+        check(cancelled > 0, 'no B landed while a run went: nothing was tested')
+        have = counts(game)
+        made = have.get('minecraft:firework_rocket', 0) // 3
+        check(have.get('minecraft:paper', 0) + made == 16 and have.get('minecraft:gunpowder', 0) + made == 16,
+              f'Shift and B lost something: {have}')
+    finally:
+        game.ctl('key', 'shift', 'up')
+
+
 def legacy_open_station(game, block):
     """A station block in front of the player, opened by a pad player."""
     x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
@@ -5328,6 +5421,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
          'legacy_builders': legacy_builders, 'legacy_builder_room': legacy_builder_room,
          'legacy_builder_cancel': legacy_builder_cancel, 'legacy_builder_mouse': legacy_builder_mouse,
+         'legacy_keys_hidden': legacy_keys_hidden, 'legacy_builder_shift': legacy_builder_shift,
          'legacy_view_memory': legacy_view_memory,
          'legacy_back_closes': legacy_back_closes,
          'legacy_hold_switch': legacy_hold_switch,

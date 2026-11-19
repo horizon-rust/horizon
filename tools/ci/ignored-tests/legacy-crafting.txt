@@ -1,0 +1,14 @@
+# The controller crafting screen's tests over the real recipes, creative tabs and recipe book.
+horizon-client-lib legacy_craft::tests::every_banner_colour_is_on_a_crafting_table_tab_and_not_in_the_inventory lib daily resources
+horizon-client-lib legacy_craft::tests::every_known_recipe_that_fits_is_in_exactly_one_tab lib daily resources
+horizon-client-lib legacy_craft::tests::grouped_tiers_put_every_pickaxe_in_one_column_in_creative_order lib daily resources
+horizon-client-lib legacy_craft::tests::results_land_in_their_creative_tab_in_creative_order lib daily resources
+horizon-client-lib legacy_craft::tests::search_matches_every_word_of_the_shown_name lib daily resources
+horizon-client-lib legacy_craft::tests::the_inventory_grid_leaves_out_recipes_bigger_than_two_by_two lib daily resources
+horizon-client-lib legacy_build::tests::a_required_cell_emptied_while_its_stack_was_away_fills_again lib daily resources
+horizon-client-lib legacy_build::tests::a_shaped_template_has_no_place_in_a_small_grid lib daily resources
+horizon-client-lib legacy_build::tests::a_staged_rocket_makes_what_the_game_would lib daily resources
+horizon-client-lib legacy_build::tests::colour_recipes_of_one_thing_share_a_row_entry lib daily resources
+horizon-client-lib legacy_build::tests::every_builder_has_a_template_from_the_real_recipes lib daily resources
+horizon-client-lib legacy_build::tests::staging_never_uses_more_than_the_inventory_holds lib daily resources
+horizon-client-lib legacy_build::tests::a_banner_copy_stages_the_patterned_banner_and_a_blank_one lib daily resources

@@ -315,10 +315,11 @@ impl Game<'_> {
         };
         let role = &template.cells[i].1;
         let inventory = &self.inventory[..36];
-        let mut choices: Vec<Option<ItemStack>> = legacy_build::candidates(&self.loop_context, role, inventory)
-            .into_iter()
-            .map(Some)
-            .collect();
+        let mut choices: Vec<Option<ItemStack>> =
+            legacy_build::candidates(&self.loop_context, role, inventory)
+                .into_iter()
+                .map(Some)
+                .collect();
         if role.optional {
             choices.insert(0, None);
         }
@@ -530,7 +531,17 @@ impl Game<'_> {
                         Some(slot) => {
                             self.legacy_slot_click(slot, false, false);
                             run.next_at = now + gap;
-                            run.steps.push_front(Step::Clear);
+                            // Again only if the click put some down: one that didn't would
+                            // repeat for ever, the run never ending.
+                            let less = self.carried.as_ref().is_none_or(|now| {
+                                !now.same_item_same_components(&carried)
+                                    || now.count < carried.count
+                            });
+                            if less {
+                                run.steps.push_front(Step::Clear);
+                            } else {
+                                run.steps.clear();
+                            }
                         }
                         None => run.steps.clear(),
                     }

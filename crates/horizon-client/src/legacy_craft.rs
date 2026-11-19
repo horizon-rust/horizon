@@ -224,7 +224,9 @@ mod tests {
     use crate::{crafting::Recipes, items::Items, recipe_book::RecipeIndex};
     use std::path::{Path, PathBuf};
 
-    fn root() -> Option<PathBuf> {
+    /// The prepared resources. Asked for, they must be there: a daily test fails without them
+    /// rather than passing untried.
+    fn root() -> PathBuf {
         let root = std::env::var_os("HORIZON_TEST_RESOURCES")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -232,12 +234,17 @@ mod tests {
                     .join("../../.local/horizon-client")
                     .join(horizon_core::VANILLA_VERSION)
             });
-        root.join("registries.json").exists().then_some(root)
+        assert!(
+            root.join("registries.json").exists(),
+            "no prepared resources at {} (HORIZON_TEST_RESOURCES): run horizon-prepare",
+            root.display()
+        );
+        root
     }
 
     /// The real book with every recipe known, and the real creative tabs.
-    fn vanilla() -> Option<(Book, ClientBook, creative::Creative)> {
-        let root = root()?;
+    fn vanilla() -> (Book, ClientBook, creative::Creative) {
+        let root = root();
         let none = &horizon_world::loot::PackOverlay::NONE;
         // With the data here, failing to read it is a failure, not a skip.
         let items = Items::catalog(
@@ -257,7 +264,7 @@ mod tests {
             }
         }
         let creative = creative::Creative::load(&root).expect("creative tabs");
-        Some((book, client, creative))
+        (book, client, creative)
     }
 
     fn entries_of(tab: &CraftTab) -> Vec<usize> {
@@ -265,10 +272,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn every_known_recipe_that_fits_is_in_exactly_one_tab() {
-        let Some((book, client, creative)) = vanilla() else {
-            return;
-        };
+        let (book, client, creative) = vanilla();
         for grid in [2, 3] {
             let tabs = tabs(&book, &client, &creative.tabs, grid, &HashMap::new());
             let mut seen: Vec<usize> = tabs[1..].iter().flat_map(entries_of).collect();
@@ -301,10 +307,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn results_land_in_their_creative_tab_in_creative_order() {
-        let Some((book, client, creative)) = vanilla() else {
-            return;
-        };
+        let (book, client, creative) = vanilla();
         let tabs = tabs(&book, &client, &creative.tabs, 3, &HashMap::new());
         let tab_of = |item: &str| {
             tabs[1..]
@@ -350,10 +355,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn the_inventory_grid_leaves_out_recipes_bigger_than_two_by_two() {
-        let Some((book, client, creative)) = vanilla() else {
-            return;
-        };
+        let (book, client, creative) = vanilla();
         let small = tabs(&book, &client, &creative.tabs, 2, &HashMap::new());
         let has = |item: &str| {
             entries_of(&small[0])
@@ -365,10 +369,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn every_banner_colour_is_on_a_crafting_table_tab_and_not_in_the_inventory() {
-        let Some((book, client, creative)) = vanilla() else {
-            return;
-        };
+        let (book, client, creative) = vanilla();
         let on_tabs = |grid: usize, item: &str| {
             tabs(&book, &client, &creative.tabs, grid, &HashMap::new())[1..]
                 .iter()
@@ -401,11 +404,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn grouped_tiers_put_every_pickaxe_in_one_column_in_creative_order() {
-        let Some((book, client, creative)) = vanilla() else {
-            return;
-        };
-        let root = root().unwrap();
+        let (book, client, creative) = vanilla();
+        let root = root();
         let none = &horizon_world::loot::PackOverlay::NONE;
         let items = Items::catalog(
             &root,
@@ -445,10 +447,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn search_matches_every_word_of_the_shown_name() {
-        let Some((book, client, creative)) = vanilla() else {
-            return;
-        };
+        let (book, client, creative) = vanilla();
         let tabs = tabs(&book, &client, &creative.tabs, 3, &HashMap::new());
         let name = |s: &ItemStack| s.item.trim_start_matches("minecraft:").replace('_', " ");
         let found = search(&book, &tabs[0].groups, "OAK  stairs", &name);
