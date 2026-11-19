@@ -694,10 +694,6 @@ fn idn_to_ascii(host: &str) -> Option<String> {
     if host.chars().any(is_unassigned_unicode_3_2) {
         return None;
     }
-    // Nameprep removes these characters, but Java rejects them in a hostname.
-    if host.contains(['\u{200c}', '\u{200d}']) {
-        return None;
-    }
     if host.is_ascii() {
         return idn_accepts(host).then(|| host.to_owned());
     }
@@ -726,6 +722,9 @@ fn idn_to_ascii(host: &str) -> Option<String> {
             let mut nameprep = String::with_capacity(label.len());
             for c in label.chars() {
                 match c {
+                    // Nameprep's map-to-nothing step removes joiners before
+                    // the label is checked and encoded.
+                    '\u{200c}' | '\u{200d}' => {}
                     'ß' | 'ẞ' => nameprep.push_str("ss"),
                     'ς' => nameprep.push('σ'),
                     c => nameprep.push(c),
@@ -793,16 +792,12 @@ fn nameprep_bidi_is_valid(label: &str, adapter: &idna_adapter::Adapter) -> bool 
     {
         return false;
     }
-    label
-        .chars()
-        .rev()
-        .find(|c| !adapter.bidi_class(*c).is_nonspacing_mark())
-        .is_some_and(|last| {
-            adapter
-                .bidi_class(last)
-                .to_mask()
-                .intersects(idna_adapter::RTL_MASK)
-        })
+    label.chars().last().is_some_and(|last| {
+        adapter
+            .bidi_class(last)
+            .to_mask()
+            .intersects(idna_adapter::RTL_MASK)
+    })
 }
 
 /// HostAndPort uses the default for an empty port, refuses a leading plus,
@@ -985,7 +980,12 @@ mod tests {
             assert_eq!(parse_address(input), Some((host.into(), 25565)), "{input}");
         }
         assert!(!is_valid_address("\u{200d}.invalid"));
+        assert_eq!(
+            parse_address("a\u{200d}b.example"),
+            Some(("ab.example".into(), 25565))
+        );
         assert!(!is_valid_address("א1.example"));
+        assert!(!is_valid_address("א1א\u{0301}.example"));
         assert!(!is_valid_address("\u{1c80}.example"));
         assert!(!is_valid_address("\u{1e9e}.example"));
         let long_unicode_label = "é".repeat(64);
