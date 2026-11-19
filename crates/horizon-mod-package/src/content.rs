@@ -74,16 +74,24 @@ pub(crate) fn check_namespace(name: &str, manifest: &Manifest) -> Result<(), Str
     // tags and atlases, and to the convention tags mods share.
     let shared = matches!(namespace, "minecraft" | "c");
     let atlas = top == "assets" && namespace == "minecraft" && rest.starts_with("atlases/");
-    // The blocks each job's villagers also work at, which the villager brain reads; the rest
-    // of the `horizon` namespace stays the game's.
+    // The blocks each job's villagers also work at, which the villager brain reads: one
+    // `<job>.json` per job, nothing deeper; the rest of the `horizon` namespace stays the game's.
     let villager_poi = top == "data"
         && namespace == "horizon"
-        && rest.starts_with("tags/block/villager_secondary_poi/");
+        && rest
+            .strip_prefix("tags/block/villager_secondary_poi/")
+            .and_then(|file| file.strip_suffix(".json"))
+            .is_some_and(|job| {
+                !job.is_empty()
+                    && job
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            });
     let allowed =
         owned || (top == "data" && shared && rest.starts_with("tags/")) || atlas || villager_poi;
     if !allowed {
         return Err(format!(
-            "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, to the villagers' work-block tags (data/horizon/tags/block/villager_secondary_poi/), or to vanilla's atlases"
+            "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, to the villagers' work-block tags (data/horizon/tags/block/villager_secondary_poi/<job>.json, <job> of [a-z0-9_]), or to vanilla's atlases"
         ));
     }
 
@@ -3382,10 +3390,24 @@ capabilities = ["registries"]
             "data/horizon/tags/item/villager_secondary_poi/farmer.json",
             "data/horizon/recipe/stone.json",
             "assets/horizon/tags/block/villager_secondary_poi/farmer.json",
+            "data/horizon/tags/block/villager_secondary_poi/nested/farmer.json",
+            "data/horizon/tags/block/villager_secondary_poi/farmer.txt",
+            "data/horizon/tags/block/villager_secondary_poi/farmer.json.",
+            "data/horizon/tags/block/villager_secondary_poi/.json",
+            "data/horizon/tags/block/villager_secondary_poi/far.mer.json",
         ] {
             let e = hmod("horizon-ns", MANIFEST_TEXT, &[(name, farmer)]).unwrap_err();
             assert!(e.contains("own namespaces"), "{name}: {e}");
         }
+        // A mod can't take the game's namespace as its id to step past the fence.
+        let as_horizon = MANIFEST_TEXT.replacen("id = \"ruby\"", "id = \"horizon\"", 1);
+        let e = hmod(
+            "horizon-id",
+            &as_horizon,
+            &[("data/horizon/recipe/stone.json", b"{}")],
+        )
+        .unwrap_err();
+        assert!(e.contains("no mod may claim"), "{e}");
     }
 
     #[test]
