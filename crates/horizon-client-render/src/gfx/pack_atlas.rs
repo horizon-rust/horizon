@@ -744,7 +744,7 @@ impl PackAtlas {
                  layout(set = 3, binding = 2) readonly buffer HzTerrainTables { int hz_tables[]; };\n",
             );
             declarations.push_str(CORNER_FN);
-            "hz_slot_origins[hz_block_slots[hz_slot >> 8u]]"
+            "hz_slot_origins[hz_block_slots[hz_slot >> 6u]]"
         } else {
             declarations.push_str("layout(location = 5) in vec4 hz_v_origin;\n");
             "hz_v_origin"

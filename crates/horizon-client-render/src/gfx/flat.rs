@@ -159,6 +159,10 @@ pub struct Flat {
     /// Frames with fewer sections in view keep the per-section draws.
     pub min_sections: usize,
     range_align: u64,
+    /// The block ids written into a page's block table by `place`, reused across uploads.
+    scratch_ids: Vec<u32>,
+    /// Per-source scratch buckets reused by `plan`.
+    plan_scratch: Vec<(Source, Vec<Range>)>,
     /// Phase 2's calls draw their page key as their first instance, as `draw_paged` does:
     /// the visibility buffer's ID pass (`visbuffer`) reads it. The other flat pipelines
     /// have no instance-rate inputs.
@@ -335,15 +339,18 @@ fn plan(
     calls: &mut Vec<Call>,
     ranges: &mut Vec<Range>,
     segments: &mut Vec<(Source, u64, u64)>,
+    by_source: &mut Vec<(Source, Vec<Range>)>,
 ) -> Plan {
     calls.clear();
     ranges.clear();
     segments.clear();
+    for (_, bucket) in by_source.iter_mut() {
+        bucket.clear();
+    }
     let (mut phase1_calls, mut solid_calls) = (None, None);
     let mut mark_calls = [None; MARKS];
     let mut pass_calls = [None; 3];
     let mut total = 0u64;
-    let mut by_source: Vec<(Source, Vec<Range>)> = Vec::new();
     for (i, (d, &(page, sorted))) in draws.iter().zip(pages).enumerate() {
         if i == phase1_draws {
             phase1_calls.get_or_insert(calls.len());
@@ -391,9 +398,12 @@ fn plan(
         }
         total += u64::from(d[0]);
     }
-    for (source, list) in by_source {
-        segments.push((source, ranges.len() as u64, list.len() as u64));
-        ranges.extend(list);
+    for (source, list) in by_source.iter() {
+        if list.is_empty() {
+            continue;
+        }
+        segments.push((*source, ranges.len() as u64, list.len() as u64));
+        ranges.extend_from_slice(list);
         let padded = (ranges.len() as u64).next_multiple_of(align);
         ranges.resize(padded as usize, [0; 4]);
     }
@@ -605,6 +615,8 @@ impl Flat {
             min_sections,
             range_align: (u64::from(device.limits().min_storage_buffer_offset_alignment) / 16)
                 .max(1),
+            scratch_ids: Vec::new(),
+            plan_scratch: Vec::new(),
             page_instances: false,
         }
     }
@@ -661,12 +673,14 @@ impl Flat {
             arena: None,
         });
         let first = start / GRAIN;
-        let ids = vec![id; vertices.div_ceil(GRAIN) as usize];
+        let count = vertices.div_ceil(GRAIN) as usize;
+        self.scratch_ids.clear();
+        self.scratch_ids.resize(count, id);
         uploads.buffer(
             encoder,
             &table.blocks,
             first * 4,
-            bytemuck::cast_slice(&ids),
+            bytemuck::cast_slice(&self.scratch_ids),
         );
     }
     /// The block table of the page keyed `page`, for tests that read it back.
@@ -798,6 +812,7 @@ impl Flat {
             &mut self.calls,
             &mut self.range_data,
             &mut self.segments,
+            &mut self.plan_scratch,
         );
         self.phase1_calls = phase1_calls;
         self.solid_calls = solid_calls;
@@ -1314,7 +1329,8 @@ mod tests {
     #[test]
     fn plan_draws_runs_of_a_page_in_order() {
         let (draws, pages, solid) = sample();
-        let (mut calls, mut ranges, mut segments) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut calls, mut ranges, mut segments, mut scratch) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let Plan {
             phase1_calls,
             solid_calls,
@@ -1332,6 +1348,7 @@ mod tests {
             &mut calls,
             &mut ranges,
             &mut segments,
+            &mut scratch,
         );
         assert_eq!(total, 6 * 13);
         assert_eq!(phase1_calls, solid_calls);
@@ -1368,7 +1385,8 @@ mod tests {
     #[test]
     fn plan_splits_calls_where_the_solid_passes_end_and_begin() {
         let (draws, pages, solid) = sample();
-        let (mut calls, mut ranges, mut segments) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut calls, mut ranges, mut segments, mut scratch) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let plan = plan(
             &draws,
             &pages,
@@ -1381,6 +1399,7 @@ mod tests {
             &mut calls,
             &mut ranges,
             &mut segments,
+            &mut scratch,
         );
         assert_eq!((plan.pass_calls, plan.solid_calls), ([3, 1, 4], 4));
         let call = |page, first, count| Call { page, first, count };
@@ -1405,7 +1424,8 @@ mod tests {
         draws.extend([[6, 1, 0, 40, 6], [6 * 2, 1, 0, 64, 7], [6, 1, 6, 80, 7]]);
         draws.extend([[6, 1, 0, 88, 8], [6, 1, 12, 90, 8]]);
         pages.extend([(0, None), (0, None), (0, Some(0)), (0, None), (0, Some(0))]);
-        let (mut calls, mut ranges, mut segments) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut calls, mut ranges, mut segments, mut scratch) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut marks = [usize::MAX; MARKS];
         marks[..4].copy_from_slice(&[camera, camera + 2, camera + 3, camera + 4]);
         let plan = plan(
@@ -1420,6 +1440,7 @@ mod tests {
             &mut calls,
             &mut ranges,
             &mut segments,
+            &mut scratch,
         );
         assert_eq!(plan.solid_calls, 3);
         // the views not asked for start at the end
@@ -1447,7 +1468,8 @@ mod tests {
     #[test]
     fn plan_gives_phase_2_calls_of_its_own() {
         let (draws, pages, solid) = sample();
-        let (mut calls, mut ranges, mut segments) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut calls, mut ranges, mut segments, mut scratch) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let plan = plan(
             &draws,
             &pages,
@@ -1460,6 +1482,7 @@ mod tests {
             &mut calls,
             &mut ranges,
             &mut segments,
+            &mut scratch,
         );
         assert_eq!(
             plan,
@@ -1566,7 +1589,8 @@ mod tests {
         // Without culling, then with the third and fourth draws in phase 2,
         // of which the test saw only the fourth.
         for phase1 in [solid, 2] {
-            let (mut calls, mut ranges, mut segments) = (Vec::new(), Vec::new(), Vec::new());
+            let (mut calls, mut ranges, mut segments, mut scratch) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
             let plan = plan(
                 &draws,
                 &pages,
@@ -1579,6 +1603,7 @@ mod tests {
                 &mut calls,
                 &mut ranges,
                 &mut segments,
+                &mut scratch,
             );
             // Phase 2's draws as the test leaves them: instance counts of 0,
             // 1 where it saw the section.
