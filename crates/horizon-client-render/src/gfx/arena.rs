@@ -83,7 +83,7 @@ impl FreeList {
 }
 
 /// Bytes of one slot's `mesher::QuadLook`.
-pub(super) const LOOK_BYTES: u64 = 12;
+pub(super) const LOOK_BYTES: u64 = 8;
 
 /// One vertex buffer of the arena; only the newest page grows.
 struct Page {
@@ -1155,6 +1155,7 @@ mod tests {
             fading: None,
             leaving: None,
             animated_layers: Box::new([]),
+            ray_looks: Default::default(),
         };
         for split in [true, false] {
             let mut arena = Arena::new(&device, stride, 4 * GRAIN, false);
@@ -1312,6 +1313,7 @@ mod tests {
             super::super::SolidPipeline {
                 plain: pipeline(layout, label, "", "", None, None, true),
                 hdr: None,
+                msaa: None,
             }
         };
         let mut flat = flat::Flat::new(
@@ -1369,6 +1371,7 @@ mod tests {
             fading: None,
             leaving: None,
             animated_layers: Box::new([]),
+            ray_looks: Default::default(),
         };
         translucent.close(0);
         let mut budget = u64::MAX;
@@ -1606,6 +1609,7 @@ mod tests {
                 fading: None,
                 leaving: None,
                 animated_layers: Box::new([]),
+                ray_looks: Default::default(),
             };
             let mut uploads = super::super::upload::Uploads::new(&device);
             let mut encoder = device.create_command_encoder(&Default::default());
@@ -1937,7 +1941,7 @@ mod tests {
         let mut ranges = Vec::new();
         for i in 0..12u32 {
             let (page, start) = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
-            let looks = vec![QuadLook([0x0400_0000 | i, i, i % 16]); GRAIN as usize];
+            let looks = vec![QuadLook([0x0400_0000 | i, i]); GRAIN as usize];
             arena.write_looks(&mut encoder, &mut uploads, page, start, GRAIN, &looks);
             ranges.push((page, start, looks[0]));
         }

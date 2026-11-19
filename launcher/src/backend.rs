@@ -652,10 +652,19 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
 /// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
-    Ok(crate::github::json_optional(&format!(
-        "https://api.github.com/repos/{REPO}/releases?per_page=100"
-    ))?
-    .unwrap_or_else(|| serde_json::json!([])))
+    Ok(crate::github::json_optional(&release_list_url())?.unwrap_or_else(|| serde_json::json!([])))
+}
+
+fn release_list_url() -> String {
+    format!("https://api.github.com/repos/{REPO}/releases?per_page=100")
+}
+
+/// The game's builds as GitHub (or its mirror) lists them now, never from a copy kept on disk.
+pub fn releases_from_network() -> Result<Vec<Release>, String> {
+    let list = crate::github::json_from_network(&release_list_url())?;
+    Ok(game_releases(
+        &list.unwrap_or_else(|| serde_json::json!([])),
+    ))
 }
 
 /// The releases in `list` whose tag passes `keep`, newest first, with the asset named `asset`.
@@ -1019,7 +1028,7 @@ pub fn version_dir(tag: &str) -> PathBuf {
     versions_dir().join(tag)
 }
 
-const COMPLETE: &str = ".installed";
+pub(crate) const COMPLETE: &str = ".installed";
 
 /// Installed versions, newest tag first.
 pub fn installed() -> Vec<String> {
@@ -1228,9 +1237,23 @@ pub use developer_play::client_as;
 mod installation;
 pub(crate) use installation::install_as;
 
+/// Removes the installed version `tag` unless a program runs from it or a native build takes its
+/// resources. A build that predates runtime leases takes none, so no lease can ever prove its
+/// folder unused: the check [`in_use`] makes here is that proof, and it stands beside the removal
+/// it justifies. Both vetoes belong to this path, so every caller inherits them; the dependency
+/// one runs inside the removal's exclusive publication lock, so an install that finishes in
+/// between cannot lose the base it started from.
 pub fn remove(tag: &str) -> Result<(), String> {
+    if in_use(tag) {
+        return Err(format!("{tag} is running. Quit it first."));
+    }
     let dir = version_dir(tag);
-    crate::cache_cleanup::delete_game_unit(&dir).map_err(crate::native_mods::cache_error)?;
+    let veto = || match crate::native_mods::resource_dependent(tag) {
+        Some(build) => Err(crate::native_cache::Error::Dependent(build)),
+        None => Ok(()),
+    };
+    crate::cache_cleanup::delete_unleased_game_unit(&dir, veto)
+        .map_err(crate::native_mods::cache_error)?;
     forget_prepared();
     Ok(())
 }
@@ -1834,14 +1857,7 @@ fn refill_own_store(tag: &str) {
     else {
         return;
     };
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     if let Err(e) = download_for_owner(&pins, &own, &fetch, &|line| eprintln!("{line}")) {
         eprintln!("{tag}: the missing assets were not downloaded: {e}");
     }
@@ -2014,14 +2030,7 @@ pub fn download_version_for_owner(
     log: &dyn Fn(String),
 ) -> Result<PathBuf, String> {
     let dir = data_dir().join("minecraft");
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     let pins = sources::Pins::for_version(id, manifest_sha1);
     download_for_owner(&pins, &dir, &fetch, log)
         .map_err(|e| e.trim_start_matches("\n  • ").to_string())?;
@@ -2148,7 +2157,7 @@ fn download_for(
                 sources::Os::MacOs => "osx",
                 sources::Os::Windows => "windows",
             };
-            mojang::download(pins, dir, os, 8, fetch, &mojang::CANCEL, log).map_err(|e| {
+            mojang::download_http(pins, dir, os, mojang::JOBS, fetch, &mojang::CANCEL, log).map_err(|e| {
                 format!("\n  • Horizon tried to download {v} from Mojang for {name}, but: {e}")
             })
         }
@@ -2162,11 +2171,20 @@ fn download_for(
             "\n  • No signed-in account owns Minecraft: Java Edition, so Horizon can't download it."
                 .into(),
         ),
-        Err(_) => Err(format!(
-            "\n  • Or sign in with the Microsoft account that owns Minecraft: Horizon then \
-             downloads {v} from Mojang itself."
+        Err(_) => Err(crate::i18n::trf(
+            "\n  • Sign in with a Microsoft account that owns Minecraft: Java Edition to download \
+             {version} from Mojang.",
+            &[("version", v)],
         )),
     }
+}
+
+/// The folder of the Microsoft Store's Minecraft Launcher (the one Windows offers, and the Xbox
+/// app's) under `local`, `%LOCALAPPDATA%`. Its game files are in `%APPDATA%\.minecraft` like the
+/// other launcher's, but the Java it downloads is in this folder's `runtime`, so a preparation
+/// found none and downloaded the same runtime from Mojang again (411 files, 100 MB for 26.3).
+fn store_launcher_folder(local: &Path) -> PathBuf {
+    local.join(r"Packages\Microsoft.4297127D64EC6_8wekyb3d8bbwe\LocalCache\Local")
 }
 
 /// The Java home for this version: a runtime for precompiled exporters, a JDK for older
@@ -2211,16 +2229,9 @@ fn java(
             "{missing}\n  • Minecraft's own Java from Mojang needs glibc ({GLIBC_LOADER} is missing; on NixOS, enable programs.nix-ld), so install compatible Java instead."
         ));
     }
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     let runtime = data_dir().join("minecraft").join("runtime");
-    let home = mojang::java_runtime(&component, &runtime, 8, &fetch, &mojang::CANCEL, log)
+    let home = mojang::java_runtime_http(&component, &runtime, mojang::JOBS, &fetch, &mojang::CANCEL, log)
         .map_err(|e| {
         format!("{missing}\n  • Horizon also tried to download Minecraft's own Java from Mojang, but: {e}")
     })?;
@@ -2348,14 +2359,7 @@ pub fn preparer(
                 .map(|f| sources::known_folders(sources::Os::current(), &f))
                 .unwrap_or_default(),
         );
-        let fetch = |url: &str| -> Result<Vec<u8>, String> {
-            let mut body = Vec::new();
-            get(url)?
-                .into_reader()
-                .read_to_end(&mut body)
-                .map_err(|e| e.to_string())?;
-            Ok(body)
-        };
+        let fetch = crate::downloads::install_metadata;
         let linked = data_dir().join("linked-minecraft");
         if from == MinecraftFrom::Mojang {
             // Straight from Mojang (what is already there and whole is kept), for an owner only.
@@ -2403,6 +2407,9 @@ pub fn preparer(
             .into_iter()
             .map(|(_, dir)| dir),
     );
+    if cfg!(windows) {
+        games.extend(dirs::data_local_dir().map(|local| store_launcher_folder(&local)));
+    }
     set_prepare_step(PrepareStep::Java);
     let java_home = java(
         major,
@@ -2414,25 +2421,28 @@ pub fn preparer(
     let jar = data_dir()
         .join("server-jars")
         .join(format!("{version}.jar"));
-    if !reused && !jar.exists() {
-        let json: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&manifest).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        let url = json["downloads"]["server"]["url"]
-            .as_str()
-            .ok_or_else(|| format!("{} has no server download", manifest.display()))?;
-        log(format!("Downloading the {version} server jar from Mojang"));
-        fs::create_dir_all(jar.parent().unwrap()).map_err(|e| e.to_string())?;
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        let partial = jar.with_extension("partial");
-        fs::write(&partial, body)
-            .and_then(|_| fs::rename(&partial, &jar))
-            .map_err(|e| e.to_string())?;
+    if !reused {
+        let json = crate::java_launch::read(&manifest)?;
+        let server = &json["downloads"]["server"];
+        let artifact = crate::downloads::Artifact {
+            url: server["url"]
+                .as_str()
+                .ok_or_else(|| format!("{} has no server download", manifest.display()))?
+                .into(),
+            sha1: server["sha1"]
+                .as_str()
+                .ok_or("The server download has no SHA-1")?
+                .into(),
+            size: server["size"].as_u64(),
+            path: jar.clone(),
+        };
+        log(format!(
+            "Checking and downloading the {version} server jar from Mojang"
+        ));
+        let http = crate::downloads::shared()?.session();
+        crate::downloads::run(http.download(&artifact, &mojang::CANCEL))?;
     }
+
     if let Some(binary) = binary {
         if prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
             == Some(prepare::SOURCES_SHA256)
@@ -2893,22 +2903,11 @@ pub fn no_version_installed() -> String {
 }
 
 /// Removes an installed version, unless a program runs from it, and moves the selection to the
-/// newest one left if needed.
+/// newest one left if needed. [`remove`] refuses a version a native build takes its resources
+/// from, under the exclusive publication lock a check here could not hold.
 pub fn remove_version(tag: &str) -> Result<(), String> {
     if !installed().iter().any(|t| t == tag) {
         return Err(format!("{tag} is not installed."));
-    }
-    if let Some(build) = installed()
-        .into_iter()
-        .find(|version| crate::native_mods::about(version).is_some_and(|about| about.base == tag))
-    {
-        return Err(crate::i18n::trf(
-            "This version supplies resources to native build {build}. Remove that build first.",
-            &[("build", &build)],
-        ));
-    }
-    if in_use(tag) {
-        return Err(format!("{tag} is running. Quit it first."));
     }
     remove(tag)?;
     crate::storage::eviction::request_cleanup();
@@ -2968,15 +2967,23 @@ fn stale_versions(
 
 /// Whether a running program was started from the version's folder: the game and a server take
 /// their program and `--resources` from it. Windows refuses to delete a running program's files,
-/// so there the delete itself fails. With no answer from `ps` the version counts as running.
+/// so there the delete itself fails. A listing we cannot read — `ps` missing, failing, or
+/// answering something else — counts as running: a removal is the wrong place to guess.
 #[cfg(unix)]
 pub(crate) fn in_use(tag: &str) -> bool {
-    let dir = format!("{}/", version_dir(tag).display());
+    let folder = format!("{}/", version_dir(tag).display());
+    // A client started as `./horizon-client` from its own folder names no absolute path, and its
+    // relative `--resources` names the folder by its last component only (#18393 review).
+    let named = format!("{tag}/");
     Command::new("ps")
         .args(["-A", "-ww", "-o", "args="])
         .output()
         .ok()
-        .is_none_or(|out| String::from_utf8_lossy(&out.stdout).contains(&dir))
+        .filter(|out| out.status.success())
+        .is_none_or(|out| {
+            let listing = String::from_utf8_lossy(&out.stdout);
+            listing.contains(&folder) || listing.contains(&named)
+        })
 }
 
 #[cfg(windows)]
@@ -4507,6 +4514,166 @@ mod tests {
         assert!(!dir.exists());
     }
 
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): a client from before the
+    /// capability marker takes no runtime lease and never can, so nothing but the process check
+    /// can prove its folder unused — and a shared cache, which any installed build reads without
+    /// a lease, stays refused.
+    #[test]
+    fn a_version_whose_client_predates_runtime_leases_is_removed() {
+        let Some(root) = std::env::var_os("LEGACY_REMOVE_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_version_whose_client_predates_runtime_leases_is_removed"
+                ])
+                .env("LEGACY_REMOVE_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let dir = versions.join("v0.1.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), b"").unwrap();
+        fs::write(dir.join(CLIENT), b"pre-holder game").unwrap();
+        assert_eq!(installed_in(&versions), vec!["v0.1.0".to_owned()]);
+        // Shared units are read by any installed build, this one included: no proof can free
+        // one while a build without leases is installed.
+        let cache = root.join("cache/github");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("pack.hpack"), b"whole pack").unwrap();
+        assert!(matches!(
+            crate::cache_cleanup::delete_game_unit(&cache),
+            Err(crate::native_cache::Error::UnprovenExclusion)
+        ));
+        assert_eq!(fs::read(cache.join("pack.hpack")).unwrap(), b"whole pack");
+        remove_version("v0.1.0").unwrap();
+        assert!(!dir.exists());
+        assert!(installed_in(&versions).is_empty());
+    }
+
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): the proof is the check that
+    /// nothing runs from the version, so a version somebody still runs is refused whole — the
+    /// completion marker stays and the folder stays listed — and the same call removes it once
+    /// that program is gone.
+    #[test]
+    #[cfg(windows)]
+    fn a_running_legacy_version_is_refused_whole_and_removed_once_it_closes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let Some(root) = std::env::var_os("OPEN_LEGACY_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_running_legacy_version_is_refused_whole_and_removed_once_it_closes"
+                ])
+                .env("OPEN_LEGACY_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let dir = versions.join("v0.1.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), b"").unwrap();
+        fs::write(dir.join(CLIENT), b"pre-holder game").unwrap();
+        // A running image refuses writes the way the loader's own handle does, which is what the
+        // check standing in for the missing lease looks at.
+        let running = fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(dir.join(CLIENT))
+            .unwrap();
+        assert!(remove_version("v0.1.0").is_err());
+        assert!(
+            dir.join(COMPLETE).exists(),
+            "the version stays whole for the retry"
+        );
+        assert_eq!(installed_in(&versions), vec!["v0.1.0".to_owned()]);
+        drop(running);
+        remove_version("v0.1.0").unwrap();
+        assert!(!dir.exists());
+        assert!(installed_in(&versions).is_empty());
+    }
+
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): the dependency veto belongs
+    /// to the one removal path, so an automatic cleanup stops at a base an installed native build
+    /// takes its resources from as well — not only a removal a player asks for.
+    #[test]
+    fn a_version_a_native_build_takes_its_resources_from_is_kept() {
+        let Some(root) = std::env::var_os("DEPENDENT_BASE_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_version_a_native_build_takes_its_resources_from_is_kept"
+                ])
+                .env("DEPENDENT_BASE_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let base = versions.join("nightly-2026-11-13-9f42064");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join(COMPLETE), b"").unwrap();
+        fs::write(base.join(CLIENT), b"pre-holder game").unwrap();
+        let build = versions.join("native-phone");
+        fs::create_dir_all(&build).unwrap();
+        fs::write(build.join(COMPLETE), b"").unwrap();
+        fs::write(
+            build.join("native-mods.json"),
+            format!(
+                r#"{{"base":"nightly-2026-11-13-9f42064","horizon":"{}","target":"client","left_out":[]}}"#,
+                "0".repeat(40)
+            ),
+        )
+        .unwrap();
+        let refused = remove_version("nightly-2026-11-13-9f42064").unwrap_err();
+        assert!(refused.contains("native-phone"), "{refused}");
+        assert!(
+            base.join(CLIENT).exists(),
+            "the base stays while it is needed"
+        );
+        remove_version("native-phone").unwrap();
+        remove_version("nightly-2026-11-13-9f42064").unwrap();
+        assert!(!base.exists());
+    }
+
     /// A canonical path loses Windows' verbatim prefix on a drive (horizon-mixins' output
     /// check stats `\\?\C:`, the volume itself, which Windows refuses, os error 1), and keeps
     /// it where there is no drive form.
@@ -4605,9 +4772,29 @@ mod tests {
             Err("no network in tests".into())
         };
         let log = |_: String| {};
+        let refused = download_for(
+            &pins,
+            &dir,
+            Err(account::NoOwner::default()),
+            false,
+            &fetch,
+            &log,
+        )
+        .unwrap_err();
+        // Ordinary prepare appends the refusal to the missing-Minecraft diagnostic.
+        let diagnostic = sources::not_found(&pins.version, &[], Path::new("chosen")) + &refused;
+        let (_, remedies) = diagnostic.split_once("\nTo fix it:").unwrap();
+        assert_eq!(
+            remedies,
+            "\n  • Play 26.3 once in the official Minecraft launcher, or in Prism Launcher, \
+             MultiMC, the Modrinth App, ATLauncher, GDLauncher or Dawn Client, then prepare again.\
+             \n  • Or choose the folder where your launcher keeps Minecraft 26.3 (Minecraft \
+             folder › Choose… in the launcher, --minecraft on the command line).\
+             \n  • Sign in with a Microsoft account that owns Minecraft: Java Edition to download \
+             26.3 from Mojang."
+        );
         let no_owner = || Ok(account::Launch::default());
         for (pass, signed_in) in [
-            (Err(account::NoOwner::default()), false),
             (Err(account::NoOwner::default()), true),
             (no_owner(), false),
             (no_owner(), true),
@@ -4671,7 +4858,7 @@ mod tests {
             .iter()
             .filter(|(_, tests, _)| !tests)
             .flat_map(|(name, _, text)| {
-                text.matches("mojang::download(")
+                text.matches("mojang::download_http(")
                     .map(move |_| name.as_str())
             })
             .collect();
@@ -4681,7 +4868,7 @@ mod tests {
             let start = backend.find(&format!("\nfn {f}(")).unwrap();
             &backend[start..start + backend[start + 1..].find("\n}\n").unwrap()]
         };
-        assert!(body("download_for").contains("mojang::download("));
+        assert!(body("download_for").contains("mojang::download_http("));
         assert!(body("download_for_owner").contains("account::launch("));
         assert!(!body("download_for_owner").contains("launch_for_game("));
         // `download_for` is defined once and called once, by `download_for_owner`.

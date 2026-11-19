@@ -28,8 +28,8 @@ struct HorizonShadowOut {
     // the camera).
     @location(4) base: vec3<f32>,
 }
-// `color` is the vertex colour: the tint, and the fluid flag in its alpha's high nibble
-// (mesher.rs's `fluid_face`). What the light passes through is that colour, whether or not the
+// `color` is the vertex colour: the tint, and the fluid flag in its alpha's bit 3 (mesher.rs's
+// `FLUID_BIT`, clear on a fluid). What the light passes through is that colour, whether or not the
 // sections carry their quads' looks: a pack's `shadow_color` doesn't depend on its other inputs.
 fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>)
     -> HorizonShadowOut {
@@ -40,8 +40,7 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
     out.uv = uv;
     out.layer = layer;
     out.tint = color.rgb;
-    let high = u32(round(color.a * 255.0)) >> 4u;
-    out.fluid = u32(high >= 8u && (high & 7u) < 6u);
+    out.fluid = u32((u32(round(color.a * 255.0)) & 8u) == 0u);
     out.base = pos;
     return out;
 }
@@ -402,7 +401,7 @@ pub struct NativeShadow {
 fn entity_source() -> String {
     format!(
         "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}{ENTITY_ENTRIES}",
-        FrameInputs::declared_wgsl(true, true, false),
+        FrameInputs::declared_wgsl(true, true, false, false),
         horizon_shader_api::stages::SHADOW_HELPERS,
     )
 }
@@ -503,7 +502,9 @@ fn shader_source(
                 "{material}{}{table}{}{}{GRID_ENTRIES}",
                 horizon_shader_api::stages::PBR_STUB,
                 super::displace::RELIEF,
-                super::displace::GRID,
+                // The grid's lit colour is the material's (`lit_tint`); the shadow map has no
+                // use for it.
+                super::native_material::lit_marks(super::displace::GRID, false),
             ),
             if vertex.is_some() {
                 super::native_material::DISPLACE_PACK
@@ -518,7 +519,7 @@ fn shader_source(
         (None, None) => (
             format!(
                 "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}{UNTAKEN}",
-                FrameInputs::declared_wgsl(true, true, false),
+                FrameInputs::declared_wgsl(true, true, false, false),
                 horizon_shader_api::stages::SHADOW_HELPERS,
             ),
             super::native_material::DISPLACE_VANILLA,
@@ -532,7 +533,7 @@ fn shader_source(
             PREFIX
         ),
         super::native_post::line_helpers(false),
-        super::native_material::SECTION_CORNER,
+        super::native_material::section_corner(),
     )
 }
 
@@ -898,7 +899,7 @@ mod tests {
     #[test]
     fn the_shadow_shaders_declare_the_frame_as_before() {
         use sha2::{Digest, Sha256};
-        let frame = FrameInputs::declared_wgsl(true, true, false);
+        let frame = FrameInputs::declared_wgsl(true, true, false, false);
         assert_eq!(
             format!("{:x}", Sha256::digest(&frame)),
             "88afec7c6709091383bffd26f431131ac68e2f6fd5d1079dd7febb591209211a"

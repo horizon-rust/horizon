@@ -181,6 +181,8 @@ pub struct Capabilities {
     pub entities: bool,
     /// Its rays read the scene's entity layer, which the engine then builds.
     pub ray_entities: bool,
+    /// Its rays read the terrain's quad looks in the ray scene, so sections keep them.
+    pub ray_looks: bool,
     /// Its terrain pipelines bind the arenas' quad looks (`looks::wanted`): sections carry them.
     pub looks: bool,
 }
@@ -224,6 +226,8 @@ pub struct FrameStart<'a> {
     pub sky_visible: bool,
     /// The ray scene, when the game traces rays (`ExternalPipeline::start_frame`).
     pub scene: Option<&'a RayScene>,
+    /// This frame's lightmap, RGBA rows of sky level by block level (`Renderer::lightmap_pixels`).
+    pub lightmap: &'a [u8; 16 * 16 * 4],
 }
 
 /// What the renderer hands the pack after the water mirror (`ExternalPipeline::prepare_world_targets`).
@@ -292,6 +296,8 @@ pub struct TerrainLayers<'a> {
     /// The layer of its grid of the solid terrain near the camera, where it draws one
     /// (`ExternalPipeline::draw_displaced`).
     pub displaced: Option<&'a wgpu::RenderPipeline>,
+    /// The solid layers for 4x MSAA (instanced, then flat draws), when the pack's material got them.
+    pub msaa: Option<&'a (wgpu::RenderPipeline, Option<wgpu::RenderPipeline>)>,
     /// The solid layers' second target, which they write beside the world's colour.
     pub surface: Option<&'a wgpu::TextureView>,
     /// The layers read the world before translucent terrain: the renderer stops there for

@@ -194,6 +194,9 @@ pub struct Guest {
     /// A disconnect was started ([`Guest::begin_disconnect`]); the connection closes when the
     /// server next polls it, and until then no other disconnect is sent.
     pub disconnect_pending: bool,
+    /// A mod's personal sidebar is on this client (`Game::native_sidebar`); it is gone with the
+    /// connection.
+    pub personal_sidebar: bool,
     pub uuid: u128,
     pub name: String,
     /// The profile's properties, for the player list (skins).
@@ -445,6 +448,10 @@ pub struct Guest {
     pub glide_end_unsent: bool,
     /// Pose last delivered to this player's own entity data, initially Standing.
     pub sent_pose: Pose,
+    /// The skin parts (Avatar.DATA_PLAYER_MODE_CUSTOMISATION) last delivered to
+    /// this player's own entity data, initially 0: the bits the client's own model
+    /// shows, which its player starts at (no layer) until the server sends them.
+    pub sent_skin: u8,
     /// The shoulder parrots (Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT) the
     /// player's client was last sent about itself.
     pub sent_shoulders: [Option<i32>; 2],
@@ -707,6 +714,7 @@ impl Guest {
             left_reason: String::new(),
             pending_move: None,
             disconnect_pending: false,
+            personal_sidebar: false,
             uuid: j.uuid,
             name: j.name,
             properties: j.properties,
@@ -826,6 +834,7 @@ impl Guest {
             sent_shared: 0,
             glide_end_unsent: false,
             sent_pose: Pose::Standing,
+            sent_skin: 0,
             sent_shoulders: [None; 2],
             sent_stuck: (0, 0),
             last_death: None,
@@ -1041,6 +1050,18 @@ impl Guest {
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
     }
+    /// Whether handlePlayerPositionChange's moved-wrongly check applies (the
+    /// spectators and sleepers aside): not in creative, and not in the
+    /// server body's `LivingEntity.isInPostImpulseGraceTime` (the 40 ticks
+    /// after a wind charge's push, `ServerPlayer.onExplosionHit`, or a mace's
+    /// smash).
+    pub fn checks_wrong_moves(&self) -> bool {
+        !self.creative()
+            && !self
+                .motion
+                .as_ref()
+                .is_some_and(|m| m.impulse.is_in_grace_time())
+    }
     /// Its client's `minecraft:brand` is Horizon's: it reads the protocol's
     /// extensions, such as a native mod's particle (`Particle::horizon_only`).
     pub fn is_horizon(&self) -> bool {
@@ -1169,17 +1190,22 @@ impl Guest {
     }
     /// The inventory menu's 46 slots (ServerPlayer.inventoryMenu): 0 crafting
     /// result, 1..=4 crafting grid, 5..=8 armor, 9..=35 main, 36..=44 hotbar,
-    /// 45 off hand.
-    pub fn menu_slot(&self, slot: usize) -> Option<ItemStack> {
+    /// 45 off hand. The stack where it lies, for comparing against what the
+    /// client was last sent without copying it.
+    pub fn menu_slot_ref(&self, slot: usize) -> Option<&ItemStack> {
         match slot {
-            0 => self.craft_result.clone(),
-            1..=4 => self.craft_grid[slot - 1].clone(),
-            5..=8 => self.armor[slot - 5].clone(),
-            9..=35 => self.inventory.get(slot).cloned().flatten(),
-            36..=44 => self.inventory.get(slot - 36).cloned().flatten(),
-            45 => self.offhand.clone(),
+            0 => self.craft_result.as_ref(),
+            1..=4 => self.craft_grid[slot - 1].as_ref(),
+            5..=8 => self.armor[slot - 5].as_ref(),
+            9..=35 => self.inventory.get(slot).and_then(|s| s.as_ref()),
+            36..=44 => self.inventory.get(slot - 36).and_then(|s| s.as_ref()),
+            45 => self.offhand.as_ref(),
             _ => None,
         }
+    }
+    /// [`Self::menu_slot_ref`], copied: the slot's stack as it is now.
+    pub fn menu_slot(&self, slot: usize) -> Option<ItemStack> {
+        self.menu_slot_ref(slot).cloned()
     }
     /// The open menu's packets told the client every inventory slot: the
     /// inventory menu's own sync has nothing to add. Sent again, it could land
