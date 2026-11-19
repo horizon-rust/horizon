@@ -247,6 +247,9 @@ Show the launcher's settings, or set one (the Settings page): selected-version T
 - `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, game-architecture, proxy, while-playing, language, accent, background, cache-limit-gib)
 - `VALUE`: The new value (with KEY)
 
+In the launcher's glass Settings UI, the Proxy field uses the available width
+for the address and scrolls horizontally to keep the caret visible when needed.
+
 MCP: `settings`.
 
 ## `horizon-launcher game-args`
