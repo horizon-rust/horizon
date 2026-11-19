@@ -64,8 +64,9 @@ pub struct Role {
     pub accepts: Ingredient,
     /// The recipe makes something with the cell empty.
     pub optional: bool,
-    /// Whether the cell's banner or shield must carry patterns (`Some(true)`, a copy's source),
-    /// must be blank (`Some(false)`, a copy's target, a shield to decorate), or either.
+    /// Whether the cell's banner or shield must carry patterns (`Some(true)`, a copy's source:
+    /// at most `banner::MAX_LAYERS` of them, as `BannerDuplicateRecipe` takes), must be blank
+    /// (`Some(false)`, a copy's target, a shield to decorate), or either.
     pub patterned: Option<bool>,
 }
 
@@ -400,9 +401,15 @@ pub fn candidates(
 ) -> Vec<ItemStack> {
     held_kinds(inventory, |s| {
         role.accepts.test_in(context, s)
-            && role
-                .patterned
-                .is_none_or(|p| p == !crate::banner::layers(s).is_empty())
+            && role.patterned.is_none_or(|patterned| {
+                let layers = crate::banner::layers(s).len();
+                if patterned {
+                    // An ominous banner's eight layers are more than a copy takes.
+                    (1..=crate::banner::MAX_LAYERS).contains(&layers)
+                } else {
+                    layers == 0
+                }
+            })
     })
 }
 
@@ -735,7 +742,7 @@ mod tests {
 
     #[test]
     #[ignore = "daily"]
-    fn a_banner_copy_stages_the_patterned_banner_and_a_blank_one() {
+    fn a_banner_copy_stages_a_copyable_patterned_banner_and_a_blank_one() {
         let recipes = recipes();
         let all = templates(&recipes);
         let copy = all
@@ -753,7 +760,16 @@ mod tests {
         // Two blank banners first in the inventory, the patterned one after them.
         let blank = ItemStack::new("minecraft:white_banner", 1);
         let striped = crate::banner::loom_result(&blank, "red", "minecraft:stripe_bottom");
-        let inventory = vec![Some(blank.clone()), Some(blank), Some(striped.clone())];
+        // More layers than a copy takes (an ominous banner has eight), first of the patterned.
+        let crowded = (0..=crate::banner::MAX_LAYERS).fold(blank.clone(), |b, _| {
+            crate::banner::loom_result(&b, "black", "minecraft:stripe_top")
+        });
+        let inventory = vec![
+            Some(blank.clone()),
+            Some(blank),
+            Some(crowded),
+            Some(striped.clone()),
+        ];
         let staged = stage(ctx(), copy, &inventory);
         assert_eq!(staged.iter().flatten().count(), 2, "{staged:?}");
         assert!(

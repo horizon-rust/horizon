@@ -5238,11 +5238,19 @@ def legacy_keys_hidden(game, check):
     check(shown is not None, f'no inventory slot 9 on screen: {hits}')
     if shown is None:
         return
-    total = sum(counts(game).values())
+    # container.9 holds 10 dirt or cobblestone; Q throws one of those and nothing else.
+    def slots():
+        held = game.ctl('inventory')
+        return {s['slot']: (s['item'], s['count']) for s in held['hotbar'] + held['main'] if s.get('item')}
+    before = slots()
     legacy_hover(game, shown['rect'])
     game.ctl('key', 'q', 'tap')
     time.sleep(SETTLE)
-    check(sum(counts(game).values()) == total - 1, f'Q over a shown slot: {total} -> {counts(game)}')
+    after = slots()
+    item, count = before[9]
+    check(after.get(9) == (item, count - 1), f'Q over shown slot 9: {before.get(9)} -> {after.get(9)}')
+    check({k: v for k, v in after.items() if k != 9} == {k: v for k, v in before.items() if k != 9},
+          f'Q over slot 9 changed other slots: {before} -> {after}')
 
 
 @legacy_case
