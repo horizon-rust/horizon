@@ -373,6 +373,8 @@ pub struct NativeFrame {
     /// `frame.ray_distance` while the pack traces this frame's scene (`NativePack::write`),
     /// set before `write`: `frame.has_ray_tracing` is 1 then.
     pub(super) ray_distance: Option<f32>,
+    /// `frame.full_lightmap`, set before `write` from this frame's lightmap (`full_lightmap`).
+    pub(super) full_lightmap: [f32; 3],
     /// A pack with kept resources: their epochs (`NativePack::carry` moves them on).
     pub(super) epochs: Option<kept::Epochs>,
     start: std::time::Instant,
@@ -604,6 +606,7 @@ impl NativeFrame {
             last: None,
             eye: [f32::NAN; 4],
             ray_distance: None,
+            full_lightmap: [0.0; 3],
             epochs: None,
             start: std::time::Instant::now(),
             frames: 0,
@@ -846,6 +849,7 @@ impl NativeFrame {
         self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
         let mut inputs = frame_inputs(frame, size, seconds, index, self.shadow_camera.as_ref());
         inputs.wetness = self.wetness.0;
+        inputs.full_lightmap = self.full_lightmap;
         if let Some(distance) = self.ray_distance {
             (inputs.has_ray_tracing, inputs.ray_distance) = (1, distance);
         }
@@ -1368,10 +1372,13 @@ impl NativePost {
             }
             // The passes built against the scene read it too; the tonemap has no `trace`.
             entries.extend(kept::entries(&self.kept, pass, parity));
-            let with_scene = traced.and_then(|(t, scene)| Some((t.layout(pass?)?, t, scene)));
+            let with_scene = traced.and_then(|(t, scene)| {
+                let pass = pass?;
+                Some((t.layout(pass)?, t, scene, pass))
+            });
             let layout = match with_scene {
-                Some((layout, trace, scene)) => {
-                    entries.extend(trace.entries(scene));
+                Some((layout, trace, scene, pass)) => {
+                    entries.extend(trace.entries(pass, scene));
                     layout
                 }
                 None => kept::pass(&self.kept, pass).map_or(&self.layout, |p| &p.layout),
@@ -1615,7 +1622,19 @@ pub fn frame_inputs(
         fog_render: [fog[2], fog[3]],
         moon_phase: frame.sky.moon_phase,
         padding: [0; 1],
+        // `NativeFrame::write` sets it from the renderer's lightmap.
+        full_lightmap: [0.0; 3],
+        full_lightmap_padding: [0; 1],
     }
+}
+
+/// `frame.full_lightmap` from `lightmap`, the renderer's lightmap as it uploads it
+/// (`Renderer::lightmap_pixels`: RGBA rows of sky level by block level, in vanilla's gamma):
+/// its texel at block and sky light 15, which terrain.wgsl's `sample_lightmap(15.0, 15.0)` reads,
+/// decoded as the stages' `lightmap` is.
+pub(super) fn full_lightmap(lightmap: &[u8; 16 * 16 * 4]) -> [f32; 3] {
+    let at = (15 * 16 + 15) * 4;
+    decoded([0, 1, 2].map(|i| f32::from(lightmap[at + i]) / 255.0))
 }
 
 /// The pack's `[[textures]]` (`check::Image`s), uploaded with samplers as the manifest says.

@@ -792,6 +792,10 @@ struct SectionGpu {
     leaving: Option<std::time::Instant>,
     /// Animated sprite layers present in this section.
     animated_layers: Box<[u16]>,
+    /// Its solid then its translucent quads' looks, one a quad, when it was uploaded while the
+    /// ray scene keeps them (`Renderer::ray_looks`): the scene writes them with a part's BLAS.
+    /// Replaced only by its next mesh.
+    ray_looks: [Box<[crate::mesher::QuadLook]>; 2],
 }
 /// Extracts the animated sprite layers present in a section mesh. Meshing
 /// records the distinct layers, so uploading does not rescan every vertex.
@@ -1388,6 +1392,10 @@ pub struct Renderer {
     /// The running 0.2 pack's terrain pipelines take the quads' looks (`looks::wanted`):
     /// sections upload them (`follow_terrain_looks`).
     terrain_looks: bool,
+    /// The running pack's rays read the terrain's looks (`NativePack::traces_looks`): sections
+    /// uploaded keep a copy of theirs for the ray scene (`SectionGpu::ray_looks`). Follows the
+    /// pack as `terrain_looks` does.
+    ray_looks: bool,
     /// Their groups, while they are on, and the layout the pack's terrain pipelines read them
     /// with (`looks`), made for the first pack that takes them.
     look_groups: Option<looks::LookGroups>,
@@ -4343,6 +4351,7 @@ impl Renderer {
             flat_on: flat.is_some(),
             packed_quads,
             terrain_looks: false,
+            ray_looks: false,
             look_groups: None,
             world_held: false,
             packed_on: packed_wanted(),
@@ -5117,7 +5126,10 @@ impl Renderer {
         }
         let facts = MeshFacts::of(mesh);
         let fading = self.before_mesh(key, &facts);
-        let section = self.upload_mesh(mesh);
+        let mut section = self.upload_mesh(mesh);
+        if let Some(s) = section.as_mut().filter(|_| self.ray_looks) {
+            s.ray_looks = [&mesh.solid_looks, &mesh.translucent_looks].map(|l| l[..].into());
+        }
         let drawn = section.is_some() || facts.empty;
         if drawn {
             self.upload_retries.uploaded(key);
@@ -5366,6 +5378,7 @@ impl Renderer {
             fading: None,
             leaving: None,
             animated_layers,
+            ray_looks: Default::default(),
         })
     }
     /// The section copies recorded since the last submission, closed.
@@ -6372,6 +6385,29 @@ impl Renderer {
         if want != self.terrain_looks {
             self.set_terrain_looks(want);
         }
+        let rays = self.ray_scene.is_some() && self.executor.is_some_and(|c| c.ray_looks);
+        if rays != self.ray_looks {
+            // Off: the sections' copies go now, not each with its next mesh.
+            let mut dropped = 0;
+            for (_, s, _) in self.sections.iter_mut().filter(|_| !rays) {
+                dropped += s.ray_looks.iter().map(|l| size_of_val(&**l)).sum::<usize>();
+                s.ray_looks = Default::default();
+            }
+            log::info!(
+                "Horizon renderer: ray scene looks {}",
+                if rays {
+                    "on".to_owned()
+                } else {
+                    format!("off, {dropped} bytes of section copies dropped")
+                }
+            );
+            self.ray_looks = rays;
+        }
+    }
+    /// Whether the ray scene keeps the terrain's looks (`ray_looks`): the game meshes the world
+    /// again when it changes, as for `terrain_looks`.
+    pub fn ray_looks(&self) -> bool {
+        self.ray_looks
     }
     /// Sections uploaded from now on carry their quads' looks (`on`), or none; the arenas'
     /// pages get or lose their buffers of looks. The game meshes the world again. Where an
@@ -9278,6 +9314,7 @@ impl Renderer {
                 light_revision: self.light_revision,
                 sky_visible,
                 scene: self.ray_scene.as_ref(),
+                lightmap: &self.lightmap_pixels,
             });
         }
         // One of Horizon's own packs: its shadow passes, from the shadow camera's lists.
@@ -12763,7 +12800,7 @@ mod tests {
     }
     /// A section as `Renderer::upload_mesh` makes one, with `solid` and
     /// `translucent` quads, fading in over far terrain since `fading`.
-    fn section(
+    pub(super) fn section(
         solid: u32,
         translucent: u32,
         fading: Option<std::time::Instant>,
@@ -12786,6 +12823,7 @@ mod tests {
             fading,
             leaving: None,
             animated_layers: Box::new([]),
+            ray_looks: Default::default(),
         }
     }
     /// A section's fade (`SectionGpu::drawn_faded`) only ends as time goes on,
@@ -13295,9 +13333,16 @@ impl DisplayReading {
         let hdr = info.coarse.and_then(|coarse| coarse.high_dynamic_range);
         Self {
             luminance: os_reported(info),
+            primaries: os_primaries(info),
             hdr,
+            compositor: false,
         }
     }
+}
+/// The display's primaries as the OS reports them (Windows: DXGI's output description).
+fn os_primaries(info: &wgpu::DisplayHdrInfo) -> Option<hdr::Primaries> {
+    let c = info.chromaticity.as_ref()?;
+    hdr::reported_primaries([c.red?, c.green?, c.blue?])
 }
 /// Potential EDR is fixed for a screen; current EDR follows brightness and must not
 /// repeatedly switch HDR output as the player adjusts the desktop's brightness.
@@ -13455,8 +13500,13 @@ fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported>
 /// PQ's top, so the metadata never ends below the black level.
 #[cfg(target_os = "linux")]
 fn wayland_reading(now: Option<horizon_hdr::wayland::Luminances>) -> DisplayReading {
-    now.map_or_else(DisplayReading::default, |l| DisplayReading {
+    let compositor = DisplayReading {
+        compositor: true,
+        ..DisplayReading::default()
+    };
+    now.map_or(compositor, |l| DisplayReading {
         luminance: Some(reported(l)),
+        primaries: l.target_primaries.and_then(hdr::reported_primaries),
         // The preferred target's headroom is the compositor's live report, not the
         // swapchain's supported formats. Invalid or absent readings stay unknown.
         hdr: (l.reference.is_finite()
@@ -13464,6 +13514,7 @@ fn wayland_reading(now: Option<horizon_hdr::wayland::Luminances>) -> DisplayRead
             && l.target_max.is_finite()
             && l.target_max > 0.0)
             .then_some(l.target_max > l.reference),
+        ..compositor
     })
 }
 #[cfg(target_os = "linux")]

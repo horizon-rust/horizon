@@ -137,6 +137,7 @@ impl Game<'_> {
         };
         if let Some(source) = source {
             let lod = horizon_client::lod::Lod::new(source, self.worker_context());
+            // Far tiles are never in the ray scene: the arenas' looks alone.
             lod.set_looks(self.streaming.looks, self.streaming.nether_shading);
             lod.set_shader_pack(self.streaming.shader_pack);
             self.lod = Some(lod);
@@ -159,7 +160,9 @@ impl Game<'_> {
             .as_mut()
             .is_some_and(Renderer::take_dropped_sections)
         {
-            self.streaming.looks = self.renderer.as_ref().is_some_and(|r| r.terrain_looks());
+            let r = self.renderer.as_ref();
+            self.streaming.looks = r.is_some_and(|r| r.terrain_looks());
+            self.streaming.ray_looks = r.is_some_and(|r| r.ray_looks());
             self.clear_lod();
             self.all_sections_changed();
         }
@@ -290,9 +293,8 @@ impl Game<'_> {
             let _span = horizon_client::spans::guard("unload_block_entities");
             let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
                 unloaded.iter().map(|c| (c.x, c.z)).collect();
-            self.world
-                .block_entities
-                .unload(|p| gone.contains(&(p.0 >> 4, p.2 >> 4)));
+            let gone_chunks: Vec<(i32, i32)> = gone.iter().copied().collect();
+            self.world.block_entities.unload_chunks(&gone_chunks);
             self.world
                 .block_names
                 .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
