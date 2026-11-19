@@ -963,17 +963,82 @@ pub fn tint(m: &Mob, partial: f32) -> u32 {
     0xFF00_0000 | c << 16 | c << 8 | c
 }
 /// `Wolf.getTexture`.
-pub fn texture(m: &Mob) -> String {
-    let file = WOLF_VARIANTS[(m.extra.variant as usize).min(8)].1;
-    let state = if m.extra.tame {
-        "_tame"
-    } else if angry(m) {
-        "_angry"
-    } else {
-        ""
-    };
-    let baby = if m.is_baby() { "_baby" } else { "" };
-    format!("entity/wolf/{file}{state}{baby}")
+pub fn texture(m: &Mob) -> &'static str {
+    const WILD: [&str; 9] = [
+        "entity/wolf/wolf",
+        "entity/wolf/wolf_spotted",
+        "entity/wolf/wolf_snowy",
+        "entity/wolf/wolf_black",
+        "entity/wolf/wolf_ashen",
+        "entity/wolf/wolf_rusty",
+        "entity/wolf/wolf_woods",
+        "entity/wolf/wolf_chestnut",
+        "entity/wolf/wolf_striped",
+    ];
+    const TAME: [&str; 9] = [
+        "entity/wolf/wolf_tame",
+        "entity/wolf/wolf_spotted_tame",
+        "entity/wolf/wolf_snowy_tame",
+        "entity/wolf/wolf_black_tame",
+        "entity/wolf/wolf_ashen_tame",
+        "entity/wolf/wolf_rusty_tame",
+        "entity/wolf/wolf_woods_tame",
+        "entity/wolf/wolf_chestnut_tame",
+        "entity/wolf/wolf_striped_tame",
+    ];
+    const ANGRY: [&str; 9] = [
+        "entity/wolf/wolf_angry",
+        "entity/wolf/wolf_spotted_angry",
+        "entity/wolf/wolf_snowy_angry",
+        "entity/wolf/wolf_black_angry",
+        "entity/wolf/wolf_ashen_angry",
+        "entity/wolf/wolf_rusty_angry",
+        "entity/wolf/wolf_woods_angry",
+        "entity/wolf/wolf_chestnut_angry",
+        "entity/wolf/wolf_striped_angry",
+    ];
+    const WILD_BABY: [&str; 9] = [
+        "entity/wolf/wolf_baby",
+        "entity/wolf/wolf_spotted_baby",
+        "entity/wolf/wolf_snowy_baby",
+        "entity/wolf/wolf_black_baby",
+        "entity/wolf/wolf_ashen_baby",
+        "entity/wolf/wolf_rusty_baby",
+        "entity/wolf/wolf_woods_baby",
+        "entity/wolf/wolf_chestnut_baby",
+        "entity/wolf/wolf_striped_baby",
+    ];
+    const TAME_BABY: [&str; 9] = [
+        "entity/wolf/wolf_tame_baby",
+        "entity/wolf/wolf_spotted_tame_baby",
+        "entity/wolf/wolf_snowy_tame_baby",
+        "entity/wolf/wolf_black_tame_baby",
+        "entity/wolf/wolf_ashen_tame_baby",
+        "entity/wolf/wolf_rusty_tame_baby",
+        "entity/wolf/wolf_woods_tame_baby",
+        "entity/wolf/wolf_chestnut_tame_baby",
+        "entity/wolf/wolf_striped_tame_baby",
+    ];
+    const ANGRY_BABY: [&str; 9] = [
+        "entity/wolf/wolf_angry_baby",
+        "entity/wolf/wolf_spotted_angry_baby",
+        "entity/wolf/wolf_snowy_angry_baby",
+        "entity/wolf/wolf_black_angry_baby",
+        "entity/wolf/wolf_ashen_angry_baby",
+        "entity/wolf/wolf_rusty_angry_baby",
+        "entity/wolf/wolf_woods_angry_baby",
+        "entity/wolf/wolf_chestnut_angry_baby",
+        "entity/wolf/wolf_striped_angry_baby",
+    ];
+    let i = (m.extra.variant as usize).min(8);
+    match (m.extra.tame, angry(m), m.is_baby()) {
+        (true, _, true) => TAME_BABY[i],
+        (true, _, false) => TAME[i],
+        (false, true, true) => ANGRY_BABY[i],
+        (false, true, false) => ANGRY[i],
+        (false, false, true) => WILD_BABY[i],
+        (false, false, false) => WILD[i],
+    }
 }
 
 /// Cat variants (`CatVariants`): registry name, texture file.
@@ -1635,10 +1700,35 @@ pub fn cat_variant(w_moon_full: bool, r: &mut impl RandomSource) -> u8 {
     let n = if w_moon_full { 11 } else { 10 };
     r.next_int_bound(n).unwrap_or(0) as u8
 }
-pub fn cat_texture(m: &Mob) -> String {
-    let v = CAT_VARIANTS[(m.extra.variant as usize).min(10)];
-    let baby = if m.is_baby() { "_baby" } else { "" };
-    format!("entity/cat/cat_{v}{baby}")
+pub fn cat_texture(m: &Mob) -> &'static str {
+    const ADULT: [&str; 11] = [
+        "entity/cat/cat_tabby",
+        "entity/cat/cat_black",
+        "entity/cat/cat_red",
+        "entity/cat/cat_siamese",
+        "entity/cat/cat_british_shorthair",
+        "entity/cat/cat_calico",
+        "entity/cat/cat_persian",
+        "entity/cat/cat_ragdoll",
+        "entity/cat/cat_white",
+        "entity/cat/cat_jellie",
+        "entity/cat/cat_all_black",
+    ];
+    const BABY: [&str; 11] = [
+        "entity/cat/cat_tabby_baby",
+        "entity/cat/cat_black_baby",
+        "entity/cat/cat_red_baby",
+        "entity/cat/cat_siamese_baby",
+        "entity/cat/cat_british_shorthair_baby",
+        "entity/cat/cat_calico_baby",
+        "entity/cat/cat_persian_baby",
+        "entity/cat/cat_ragdoll_baby",
+        "entity/cat/cat_white_baby",
+        "entity/cat/cat_jellie_baby",
+        "entity/cat/cat_all_black_baby",
+    ];
+    let i = (m.extra.variant as usize).min(10);
+    if m.is_baby() { BABY[i] } else { ADULT[i] }
 }
 /// `CatRenderer.setupRotations`: lying cats roll onto their side.
 pub fn cat_rotations(m: &Mob, partial: f32) -> glam::Mat4 {

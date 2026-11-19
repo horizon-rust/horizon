@@ -5518,37 +5518,48 @@ impl Game<'_> {
                     v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
                 })
             };
-            let camera_list: Vec<&([i32; 3], u32)> = r
-                .visible_block_entities_in_frustum(
-                    self.settings.chunk_fade,
-                    camera,
-                    view,
-                    Some(&reach),
-                )
-                .filter(|(block, section_inside)| {
-                    let (pos, state) = **block;
-                    self.live_block_entity_render(pos, state)
-                        && (off_screen(state) || *section_inside || in_view(&pos))
-                })
-                .map(|(block, _)| block)
-                .collect();
-            // A shader pack's shadow pass draws the block entities of every section it draws,
-            // in the view or not (`Renderer::shadow_pass_block_entities`, #8464): those the
-            // view leaves out go in hidden from the camera.
-            let shadow_only: Vec<&([i32; 3], u32)> =
-                if self.pack_ids.is_some() && self.occlusion.shadow_casters.0 {
-                    let listed: HashSet<[i32; 3]> = camera_list.iter().map(|b| b.0).collect();
-                    r.shadow_pass_block_entities(camera)
-                        .filter(|(pos, state)| {
-                            !listed.contains(pos) && self.live_block_entity_render(*pos, *state)
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-            let shadow_only_at: HashSet<[i32; 3]> = shadow_only.iter().map(|b| b.0).collect();
+            let has_pack = self.pack_ids.is_some();
+            let need_shadow_only = has_pack && self.occlusion.shadow_casters.0;
+            // In the non-pack GPU cache path, stream visible block entities straight into
+            // `render_with_gpu_cache_options` without collecting a per-frame `Vec` or `HashSet`.
+            let shadow_only: Vec<&([i32; 3], u32)>;
+            let shadow_only_at: HashSet<[i32; 3]>;
+            let camera_list: Vec<&([i32; 3], u32)>;
+            if need_shadow_only {
+                camera_list = r
+                    .visible_block_entities_in_frustum(
+                        self.settings.chunk_fade,
+                        camera,
+                        view,
+                        Some(&reach),
+                    )
+                    .filter(|(block, section_inside)| {
+                        let (pos, state) = **block;
+                        self.live_block_entity_render(pos, state)
+                            && (off_screen(state) || *section_inside || in_view(&pos))
+                    })
+                    .map(|(block, _)| block)
+                    .collect();
+                // A shader pack's shadow pass draws the block entities of every section it draws,
+                // in the view or not (`Renderer::shadow_pass_block_entities`, #8464): those the
+                // view leaves out go in hidden from the camera.
+                let listed: HashSet<[i32; 3]> = camera_list.iter().map(|b| b.0).collect();
+                shadow_only = r
+                    .shadow_pass_block_entities(camera)
+                    .filter(|(pos, state)| {
+                        !listed.contains(pos) && self.live_block_entity_render(*pos, *state)
+                    })
+                    .collect();
+                shadow_only_at = shadow_only.iter().map(|b| b.0).collect();
+            } else {
+                camera_list = Vec::new();
+                shadow_only = Vec::new();
+                shadow_only_at = HashSet::new();
+            }
             let dynamic_visible = |pos: [i32; 3], state: u32, lo: glam::DVec3, hi: glam::DVec3| {
-                if off_screen(state) || shadow_only_at.contains(&pos) {
+                if off_screen(state)
+                    || (!shadow_only_at.is_empty() && shadow_only_at.contains(&pos))
+                {
                     return true;
                 }
                 if let Some(view) = view
@@ -5604,7 +5615,6 @@ impl Game<'_> {
                 font: Some(&self.gui.atlas.font),
                 dynamic_visible: Some(&dynamic_visible),
             };
-            let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
             let block_entity_cache = CacheOptions {
                 shulker_boxes: self.settings.horizon.cache_shulker_boxes,
                 signs: self.settings.horizon.cache_signs,
@@ -5620,29 +5630,73 @@ impl Game<'_> {
             // and disables their per-section GPU cache. Shader packs still need
             // per-entity span marks, so they keep the callback path.
             let block_entities = out.len();
-            if self.pack_ids.is_some() {
+            if has_pack {
                 let section_revision = |pos| r.block_entity_section_revision(pos);
-                static_block_entity_stats = self
-                    .res
-                    .block_entity_render()
-                    .render_with_cache_options_and_callbacks(
-                        &scene,
-                        visible,
-                        block_entity_cache,
-                        r.block_entity_revision(),
-                        Some(&section_revision),
-                        &mut out,
-                        |pos, state, start| {
-                            self.mark_block_entity(start, state);
-                            self.mark_motion(start, motion_block_entity(pos));
-                        },
-                        |pos, _, start, out| {
-                            if shadow_only_at.contains(&pos) {
-                                self.hide_spans_from(start, out.len());
-                            }
-                        },
-                    );
+                let visible_from_frustum = r
+                    .visible_block_entities_in_frustum(
+                        self.settings.chunk_fade,
+                        camera,
+                        view,
+                        Some(&reach),
+                    )
+                    .filter(|(block, section_inside)| {
+                        let (pos, state) = **block;
+                        self.live_block_entity_render(pos, state)
+                            && (off_screen(state) || *section_inside || in_view(&pos))
+                    })
+                    .map(|(block, _)| block);
+                static_block_entity_stats = if need_shadow_only {
+                    let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
+                    self.res
+                        .block_entity_render()
+                        .render_with_cache_options_and_callbacks(
+                            &scene,
+                            visible,
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            Some(&section_revision),
+                            &mut out,
+                            |pos, state, start| {
+                                self.mark_block_entity(start, state);
+                                self.mark_motion(start, motion_block_entity(pos));
+                            },
+                            |pos, _, start, out| {
+                                if shadow_only_at.contains(&pos) {
+                                    self.hide_spans_from(start, out.len());
+                                }
+                            },
+                        )
+                } else {
+                    self.res
+                        .block_entity_render()
+                        .render_with_cache_options_and_callbacks(
+                            &scene,
+                            visible_from_frustum,
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            Some(&section_revision),
+                            &mut out,
+                            |pos, state, start| {
+                                self.mark_block_entity(start, state);
+                                self.mark_motion(start, motion_block_entity(pos));
+                            },
+                            |_, _, _, _| {},
+                        )
+                };
             } else {
+                let visible = r
+                    .visible_block_entities_in_frustum(
+                        self.settings.chunk_fade,
+                        camera,
+                        view,
+                        Some(&reach),
+                    )
+                    .filter(|(block, section_inside)| {
+                        let (pos, state) = **block;
+                        self.live_block_entity_render(pos, state)
+                            && (off_screen(state) || *section_inside || in_view(&pos))
+                    })
+                    .map(|(block, _)| block);
                 let cache_candidates = r
                     .visible_block_entities_in_frustum(self.settings.chunk_fade, camera, None, None)
                     .filter(|(block, _)| self.live_block_entity_render(block.0, block.1))

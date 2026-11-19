@@ -767,10 +767,10 @@ pub(super) struct Remote {
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
-    /// Received events a frame left for the next one, in order, and when
-    /// the oldest of them first waited (`poll_remote`).
-    backlog: VecDeque<Received>,
-    backlog_since: Option<Instant>,
+    /// Received events a frame left for the next one, in order, with each
+    /// item's arrival time so `BACKLOG_LIMIT` tracks the front item's age
+    /// instead of staying overdue for an entire continuous chunk stream.
+    backlog: VecDeque<(Received, Instant)>,
     /// `ClientboundTransferPacket`'s target: when the connection ends the
     /// game connects here, the stored cookies carried over (`TransferState`).
     transfer: Option<String>,
@@ -1265,7 +1265,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             debug_query: Default::default(),
             transfer: None,
@@ -1507,7 +1506,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             debug_query: Default::default(),
             transfer: None,

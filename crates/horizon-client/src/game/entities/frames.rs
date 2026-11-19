@@ -498,9 +498,7 @@ impl Game<'_> {
             self.frame_output_changed(f.pos);
         }
         self.drop_frame_items(&mut f, with_frame, by_player, creative);
-        if !with_frame
-            && let Some(now) = self.item_frames.iter().position(|g| g.id == entity_id)
-        {
+        if !with_frame && let Some(now) = self.item_frames.iter().position(|g| g.id == entity_id) {
             self.item_frames[now].random = f.random.clone();
         }
         // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
@@ -701,6 +699,9 @@ impl Game<'_> {
     }
     /// ItemFrameRenderer: the frame model, then the item half size on its face.
     pub(super) fn frame_geometry(&mut self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        if self.item_frames.is_empty() {
+            return;
+        }
         let sprites = &self.gui.atlas.sprites;
         // Each with its frame's type: a pack tells a glow frame and what it holds apart by its
         // `entityId` (`glow_item_frame` in entity.properties), the item drawn within its frame.
