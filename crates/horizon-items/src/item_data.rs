@@ -1249,7 +1249,7 @@ fn template_from(tag: &Tag) -> Option<ItemStack> {
             if !(1..=99).contains(&count) {
                 return None;
             }
-            let (damage, extra) = decode_components_for_item(&id, tag.get("components"));
+            let (damage, extra) = decode_components_for_item(&id, None, tag.get("components"));
             Some(ItemStack {
                 item: Arc::from(id.as_str()),
                 count: count as u32,
@@ -1929,14 +1929,18 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
 
 /// `decode_components` with the item id known, so a component value equal to
 /// the item's prototype is left out the way `PatchedDataComponentMap.applyPatch`
-/// leaves it out of the patch.
+/// leaves it out of the patch. `prototype` is the loaded item, when the caller has it.
 pub fn decode_components_for_item(
     item: &str,
+    prototype: Option<&ItemInfo>,
     components: Option<&Tag>,
 ) -> (u32, Option<Box<StackData>>) {
     let (damage, mut extra) = decode_components(components);
     if let Some(data) = extra.as_deref_mut() {
         elide_prototype_fireworks(item, data);
+        if let Some(info) = prototype {
+            elide_prototype_durability(info, damage, data);
+        }
         if data.is_empty() {
             extra = None;
         }
@@ -1951,6 +1955,27 @@ pub fn decode_components_for_item(
 pub(crate) fn elide_prototype_fireworks(item: &str, data: &mut StackData) {
     if item == "minecraft:firework_rocket" && data.fireworks == Some((1, Vec::new())) {
         data.fireworks = None;
+    }
+}
+
+/// A durable prototype (`Item.Properties.durability`) carries its MAX_DAMAGE
+/// and its DAMAGE (0 unless a pack changed it), so `PatchedDataComponentMap.set`
+/// keeps neither value in the patch.
+fn elide_prototype_durability(info: &ItemInfo, damage: u32, data: &mut StackData) {
+    if info.max_damage == 0 {
+        return;
+    }
+    if data
+        .other("minecraft:max_damage")
+        .and_then(crate::properties::component_int)
+        == Some(info.max_damage as i32)
+    {
+        data.set_other("minecraft:max_damage", None);
+    }
+    // shortcut: only a prototype damage of 0 is elided; a damaged prototype keeps its patch.
+    if damage == 0 && info.damage == 0 {
+        data.damage_set = false;
+        data.explicit_zero_damage = false;
     }
 }
 
@@ -3406,6 +3431,47 @@ mod tests {
 #[cfg(test)]
 mod carried_component_tests {
     use super::*;
+
+    /// `diamond_pickaxe[damage=-0.5f,...]` truncates to the prototype's DAMAGE 0 and
+    /// `max_damage=1561` is its MAX_DAMAGE: vanilla's `/data` shows only `custom_data`.
+    /// A stick's prototype has no DAMAGE, so its explicit zero stays.
+    #[test]
+    fn prototype_equal_durability_is_not_a_stack_component() {
+        let pickaxe = ItemInfo {
+            max_damage: 1561,
+            ..Default::default()
+        };
+        let saved = |id: &str, info: &ItemInfo, text: &str| {
+            let tag = command_components(text).unwrap();
+            let (damage, extra) = decode_components_for_item(id, Some(info), Some(&tag));
+            let mut stack = ItemStack::new(id, 1);
+            stack.damage = damage;
+            stack.extra = extra;
+            encode_components(&stack)
+        };
+        let keep = Tag::compound([(
+            "minecraft:custom_data",
+            Tag::compound([("keep", Tag::Int(87))]),
+        )]);
+        for text in [
+            "[damage=-0.5f,custom_data={keep:87}]",
+            "[damage=0,max_damage=1561,custom_data={keep:87}]",
+        ] {
+            assert_eq!(
+                saved("minecraft:diamond_pickaxe", &pickaxe, text),
+                Some(keep.clone()),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            saved("minecraft:diamond_pickaxe", &pickaxe, "[max_damage=100]"),
+            Some(Tag::compound([("minecraft:max_damage", Tag::Int(100))]))
+        );
+        assert_eq!(
+            saved("minecraft:stick", &ItemInfo::default(), "[damage=0]"),
+            Some(Tag::compound([("minecraft:damage", Tag::Int(0))]))
+        );
+    }
 
     #[test]
     fn invalid_payload_replacements_leave_existing_component_unchanged() {

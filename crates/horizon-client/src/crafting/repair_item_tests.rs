@@ -88,8 +88,19 @@ fn repair_plain_pickaxes() {
         false,
     )
     .unwrap();
-    assert_eq!(out.max_damage(None), 1561);
-    assert_eq!(out.damage, 561);
+    // MAX_DAMAGE 1561 is the prototype's, so the result's patch has only its damage.
+    assert_eq!(
+        crate::item_data::encode_components(&out),
+        Some(Tag::compound([("minecraft:damage", Tag::Int(561))]))
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn repair_to_full_durability_patches_nothing() {
+    // remaining = 1560 + 1560 + 78 passes at the maximum: damage 0 and MAX_DAMAGE are the prototype's.
+    let out = run("minecraft:diamond_pickaxe", [None, None], [1, 1], false).unwrap();
+    assert_eq!(crate::item_data::encode_components(&out), None);
 }
 
 #[test]

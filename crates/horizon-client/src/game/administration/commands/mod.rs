@@ -1284,7 +1284,11 @@ impl Game<'_> {
             .map(horizon_client::item_data::command_components)
         {
             Some(Ok(tag)) => {
-                horizon_client::item_data::decode_components_for_item(&id, Some(&tag))
+                horizon_client::item_data::decode_components_for_item(
+                    &id,
+                    self.items().get(&id),
+                    Some(&tag),
+                )
             }
             Some(Err(e)) => return Err(CommandError::new(Text::literal(e))),
             None => (0, None),

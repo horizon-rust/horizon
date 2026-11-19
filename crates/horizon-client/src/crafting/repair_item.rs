@@ -60,11 +60,17 @@ pub(super) fn assemble(ctx: &Context, stacks: &[&ItemStack]) -> Option<ItemStack
     let remaining =
         (max(first) - damage(first)) + (max(second) - damage(second)) + durability * 5 / 100;
     let mut out = ItemStack::new(&first.item, 1);
-    out.data_mut()
-        .set_other("minecraft:max_damage", Some(Tag::Int(durability as i32)));
+    // `PatchedDataComponentMap.set` keeps no value equal to the prototype's.
+    let prototype_max = info(first).map_or(0, |i| i64::from(i.max_damage));
+    if durability != prototype_max {
+        out.data_mut()
+            .set_other("minecraft:max_damage", Some(Tag::Int(durability as i32)));
+    }
     out.damage = (durability - remaining).max(0) as u32;
-    // `setDamageValue(0)` still stores `minecraft:damage`: without it the result stops being damageable.
-    if out.damage == 0 {
+    // `setDamageValue(0)` still stores `minecraft:damage` unless the prototype's is 0:
+    // without it a prototype with no damage stops being damageable.
+    let zero_is_prototype = info(first).is_some_and(|i| i.max_damage > 0 && i.damage == 0);
+    if out.damage == 0 && !zero_is_prototype {
         out.data_mut().explicit_zero_damage = true;
     }
     // Only the curses of both survive, at the higher level.
