@@ -750,9 +750,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.spread_to_sides(kind, pos, fluid, state);
         }
     }
-    /// `FlowingFluid.tick` for the fluid at `pos`. True when it didn't run because the block's
-    /// template is suppressed after the fluid tick hook let it through: the tick is still owed.
-    pub(crate) fn fluid_tick(&mut self, pos: BlockPos) -> bool {
+    /// `FlowingFluid.tick` for the fluid at `pos`.
+    pub(crate) fn fluid_tick(&mut self, pos: BlockPos) {
         let mut state = self.state(pos);
         // Asked before the fluid tick hook as well as after it, as in `tick_due_block`: the hook
         // is dispatched and may cancel either way.
@@ -763,13 +762,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             FluidKind::Water | FluidKind::FlowingWater => "water",
             FluidKind::Lava | FluidKind::FlowingLava => "lava",
             FluidKind::Mod(_) | FluidKind::ModFlowing(_) => kind.name(),
-            FluidKind::Empty => return false,
+            FluidKind::Empty => return,
         };
-        if !self.level.allow_fluid_tick(pos, name) {
-            return false;
-        }
-        if suppressed || self.level.template_suppressed(state) {
-            return true;
+        if !self.level.allow_fluid_tick(pos, name)
+            || suppressed
+            || self.level.template_suppressed(state)
+        {
+            return;
         }
         if !fluid.is_source() {
             let new_fluid = self.new_liquid(kind, pos, state);
@@ -782,7 +781,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     i32::from(new_fluid.amount()),
                 )
             {
-                return false;
+                return;
             }
             if new_fluid.kind() == FluidKind::Empty {
                 fluid = new_fluid;
@@ -796,7 +795,6 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
         self.spread(kind, pos, state, fluid);
-        false
     }
     fn spread_delay(
         &mut self,

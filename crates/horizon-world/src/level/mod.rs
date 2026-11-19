@@ -700,10 +700,6 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn template_suppressed(&self, _state: BlockStateId) -> bool {
         false
     }
-    /// A due tick at `pos` went back in the queue with a later deadline, as its block's template
-    /// is suppressed. A level that saves its chunks marks `pos`'s chunk changed, so the save
-    /// keeps the new deadline. The default does nothing.
-    fn tick_requeued(&mut self, _pos: BlockPos) {}
     /// `BlockState.randomTick` from `ServerLevel.tickChunk`, before the block
     /// handles it. The level may change the block (`Behaviours::set_block`
     /// with `ticks`); setting `handled` skips the block's own random tick. A
