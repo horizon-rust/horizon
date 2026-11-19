@@ -851,6 +851,10 @@ pub struct Links {
     /// The addresses it had before: a list holding one moves to `official_server`. A move appends
     /// the old address here.
     pub official_server_previous: Vec<String>,
+    /// The oldest launcher that may stay in use; an older one updates at once (`min_launcher`).
+    /// Unset unless a release is broken. Launchers from before it ignore the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_launcher: Option<String>,
 }
 
 impl Default for Links {
@@ -879,6 +883,10 @@ impl Links {
                     *slot = url.trim().to_string();
                 }
             }
+            links.min_launcher = map
+                .get("min_launcher")
+                .and_then(|v| v.as_str())
+                .and_then(crate::min_launcher::version_in);
             // A list of addresses; anything else keeps the built-in one.
             if let Some(serde_json::Value::Array(previous)) = map.get("official_server_previous") {
                 if previous.iter().all(serde_json::Value::is_string) {
@@ -6490,6 +6498,17 @@ pub fn {f}("
         assert_eq!(Links::parse("<html>404</html>"), defaults);
         assert_eq!(Links::parse("[1]"), defaults);
         assert_eq!(Links::parse(r#"{"discord": 5}"#), defaults);
+        // No minimum launcher unless the file names a version.
+        assert_eq!(defaults.min_launcher, None);
+        for unset in [r#"{"min_launcher": ""}"#, r#"{"min_launcher": 80}"#] {
+            assert_eq!(Links::parse(unset), defaults);
+        }
+        assert_eq!(
+            Links::parse(r#"{"min_launcher": "0.2.80"}"#)
+                .min_launcher
+                .as_deref(),
+            Some("0.2.80")
+        );
         // A key that is missing keeps its default; a new address replaces it; empty hides it.
         assert_eq!(
             Links::parse(r#"{"discord": "https://x.y/z"}"#),

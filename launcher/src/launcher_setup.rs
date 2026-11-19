@@ -562,6 +562,21 @@ impl Launcher {
         }
     }
 
+    /// A launcher older than links.json's `min_launcher` installs its downloaded update and restarts
+    /// as soon as it is ready, unless a game it started runs (`min_launcher`).
+    pub(crate) fn follow_min_launcher(&mut self, cx: &mut App) {
+        let busy = self.client.is_some() || self.starting_client.is_some() || self.preparing;
+        if horizon_launcher::min_launcher::installs_now(
+            backend::VERSION,
+            self.links.min_launcher.as_deref(),
+            backend::self_update_allowed(),
+            matches!(self.self_update, SelfUpdate::Ready(_)),
+            busy,
+        ) {
+            self.apply_launcher_update(cx);
+        }
+    }
+
     /// Installs the Horizon version the last check found, keeping the player's choice of
     /// version unless they were on the newest one.
     pub(crate) fn install_update(&mut self) {
