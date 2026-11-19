@@ -66,6 +66,8 @@ const RAY_RESTART: &str = "Ray tracing: %s Until then the pack draws without it.
 const RAY_UNSUPPORTED: &str =
     "This GPU or graphics API has no ray tracing: the pack draws without it.";
 const RAY_OFF: &str = "Ray tracing is off: HORIZON_RAY_TRACING is set to something other than 1.";
+/// The row's short tag while the pack waits for a restart to trace rays.
+const RAY_RESTART_TAG: &str = "Restart needed";
 /// Screens this many links from the main one, or fewer, are in the page list.
 const LISTED_DEPTH: u8 = 1;
 
@@ -420,7 +422,7 @@ fn pack_sheet(s: &Settings) -> Sheet<Tab, Item> {
 }
 
 /// The picked pack's name, over its screens in the page list.
-fn pack_name(s: &Settings) -> &str {
+pub(crate) fn pack_name(s: &Settings) -> &str {
     match native(s) {
         Some((_, pack)) => pack.title.as_str(),
         None => (s.horizon.shader_pack)
@@ -441,13 +443,17 @@ fn ray_note(s: &Settings, rays: Option<RayStatus>, sheets: &mut [Sheet<Tab, Item
         Some(RayStatus::Unsupported) => lang::get(RAY_UNSUPPORTED),
         Some(RayStatus::Off) => lang::get(RAY_OFF),
     };
+    let tag = matches!(rays, Some(RayStatus::Restart)).then(|| lang::get(RAY_RESTART_TAG));
     for sheet in sheets.iter_mut() {
         if matches!(sheet.id, Tab::Packs | Tab::Screen(0)) {
-            sheet.about = format!("{} {note}", sheet.about);
+            // A line of its own above the description: a long description must not push the
+            // reason the pack draws without rays out of the strip.
+            sheet.warning = Some(note.clone());
         }
         let rows = sheet.groups.iter_mut().flat_map(|g| &mut g.rows);
         for row in rows.filter(|r| r.id == Item::Pack(i as u16)) {
-            row.about = format!("{} {note}", row.about);
+            row.warning = Some(note.clone());
+            row.tag = tag.clone();
         }
     }
 }
@@ -716,7 +722,10 @@ mod tests {
     const CHANGED: Output = Output::Event(Event::Changed);
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            "/nonexistent/horizon-test-assets".into(),
+        ))
+        .unwrap()
     }
 
     fn entry(file: &str, kind: Kind) -> Entry {
@@ -867,11 +876,27 @@ mod tests {
         let s = many_screens(12);
         let mut shell = shell_at(Tab::Screen(4));
         // 427x480 GUI px: tall enough for the pack list, the pack's line and its 13 screens.
-        let mut batch = HudBatch::new([854, 960]);
-        shell.draw(&s, &mut batch, &atlas(), (0.0, 0.0), false, None);
+        let mut batch = HudBatch::scratch([854, 960]);
+        shell.draw_test_frame(
+            &s,
+            &mut batch,
+            &atlas(),
+            (0.0, 0.0),
+            false,
+            None,
+            &mut |_, _| {},
+        );
         assert_eq!(shell.page_places().len(), 1 + 13);
-        let mut batch = HudBatch::new([854, 480]);
-        shell.draw(&s, &mut batch, &atlas(), (0.0, 0.0), false, None);
+        let mut batch = HudBatch::scratch([854, 480]);
+        shell.draw_test_frame(
+            &s,
+            &mut batch,
+            &atlas(),
+            (0.0, 0.0),
+            false,
+            None,
+            &mut |_, _| {},
+        );
         let parts: Vec<(Tab, Part)> = shell.page_places().iter().map(|p| (p.0, p.2)).collect();
         assert_eq!(
             parts,
@@ -941,8 +966,16 @@ mod tests {
         press(&mut shell, &mut s, Item::Link(1));
         press(&mut shell, &mut s, Item::Link(2));
         assert_eq!(shell.open_page(), Some(Tab::Screen(2)));
-        let mut batch = HudBatch::new([1708, 960]);
-        shell.draw(&s, &mut batch, &atlas(), (0.0, 0.0), false, None);
+        let mut batch = HudBatch::scratch([1708, 960]);
+        shell.draw_test_frame(
+            &s,
+            &mut batch,
+            &atlas(),
+            (0.0, 0.0),
+            false,
+            None,
+            &mut |_, _| {},
+        );
         assert_eq!(shell.lit_page(), Some(Tab::Screen(1)));
         assert!(shell.key(&mut s, K::Escape, None, false, SIZE).is_empty());
         assert_eq!(shell.open_page(), Some(Tab::Screen(1)));
