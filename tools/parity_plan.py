@@ -32,7 +32,6 @@ except ImportError:
 GROUPS = ("game", "client", "world", "other")
 SHARD_SIZES = {"game": 50, "client": 100, "world": 150, "other": 50}
 GAME_PACKAGES = {"horizon-game", "horizon-client", "horizon-client-lib"}
-GAME_BINARIES = {"horizon-client", "horizon-ctl"}
 
 
 def selection(arguments):
@@ -60,7 +59,8 @@ def probe_group(built):
     def packages(artifact):
         chosen = artifact[3] if len(artifact) > 3 else []
         return {value for flag, value in zip(chosen, chosen[1:]) if flag == "-p"}
-    if any(artifact[0] in ("bin", "bins") and (artifact[1] in GAME_BINARIES or packages(artifact) & GAME_PACKAGES)
+    # A binary built with no -p may be any workspace crate's: counted as the game.
+    if any(artifact[0] in ("bin", "bins") and (packages(artifact) & GAME_PACKAGES or not packages(artifact))
            for artifact in built):
         return "game"
     names = {artifact[1] for artifact in built}
