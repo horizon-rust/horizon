@@ -59,6 +59,8 @@ pub(crate) struct TestLevel {
     pub suppressed: HashSet<BlockStateId>,
     /// How many times `allow_fluid_tick` was asked.
     pub fluid_asks: std::cell::Cell<u32>,
+    /// Every `tick_requeued`, in order.
+    pub requeued: Vec<BlockPos>,
     /// What `adjust_signal` answers at a position: the weak and direct signal,
     /// and the only direction they go in, if any.
     pub signals: HashMap<BlockPos, (i32, i32, Option<Direction>)>,
@@ -140,6 +142,7 @@ impl TestLevel {
             guarded: HashSet::new(),
             suppressed: HashSet::new(),
             fluid_asks: Default::default(),
+            requeued: Vec::new(),
             fire_asks: Default::default(),
             source_asks: Default::default(),
             lava_asks: Default::default(),
@@ -304,6 +307,9 @@ impl LevelAccess for TestLevel {
     }
     fn template_suppressed(&self, state: BlockStateId) -> bool {
         self.suppressed.contains(&state)
+    }
+    fn tick_requeued(&mut self, pos: BlockPos) {
+        self.requeued.push(pos);
     }
     fn allow_spread(&self, _kind: Spread, _from: BlockPos, to: BlockPos) -> bool {
         !self.guarded.contains(&to)

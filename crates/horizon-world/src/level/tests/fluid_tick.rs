@@ -72,3 +72,46 @@ fn a_suppressed_fluid_tick_still_asks_its_hook() {
     assert_eq!(w.get(pos), flowing, "a lone flowing water would dry");
     assert_eq!(w.ticks.fluids.count(), 0);
 }
+
+/// A due tick an off mod's block owes goes back in the queue 20 ticks on with its own priority;
+/// a fluid tick its hook cancels is gone, as for any block (#18519).
+#[test]
+fn a_suppressed_due_tick_waits_with_its_own_priority() {
+    use horizon_core::ticks::TickPriority;
+    let mut w = world!();
+    let at = BlockPos::new(0, 5, 0);
+    let sand = w.id("sand", &[]);
+    w.put(at, sand);
+    w.level.suppressed.insert(sand);
+    let block = w.b().block(sand);
+    w.ticks
+        .schedule_block(0, at, block, 1, TickPriority::VeryHigh);
+    w.tick();
+    assert_eq!(w.get(at), sand, "it doesn't fall");
+    let queued = w.ticks.blocks.chunk(ChunkPos::new(0, 0)).unwrap().queued();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        (queued[0].trigger_tick, queued[0].priority),
+        (21, TickPriority::VeryHigh)
+    );
+    assert_eq!(w.level.requeued, [at]);
+
+    let pool = BlockPos::new(4, 1, 0);
+    let flowing = w.id("water", &[("level", "3")]);
+    let kind = w.b().fluid(flowing).kind();
+    w.put(pool, flowing);
+    w.level.suppressed.insert(flowing);
+    w.level.guarded.insert(pool);
+    let time = w.level.time;
+    w.ticks.schedule_fluid(time, pool, kind, 1);
+    w.tick();
+    assert_eq!(w.level.fluid_asks.get(), 1);
+    assert_eq!(w.ticks.fluids.count(), 0, "the hook's cancel consumes it");
+    w.level.guarded.clear();
+    let time = w.level.time;
+    w.ticks.schedule_fluid(time, pool, kind, 1);
+    w.tick();
+    assert_eq!(w.get(pool), flowing);
+    assert_eq!(w.ticks.fluids.count(), 1, "owed, it waits");
+    assert_eq!(w.level.requeued, [at, pool]);
+}
