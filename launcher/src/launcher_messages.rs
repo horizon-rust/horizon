@@ -394,10 +394,14 @@ impl Launcher {
                         Job::Prepare => {
                             self.preparing = false;
                             // Play pressed before the version was prepared plays now.
+                            let mut error = error;
                             if let Some((tag, instance)) = self.play_when_prepared.take() {
                                 if error.is_none() && backend::check_prepared(&tag) {
                                     self.starting_pack = None;
                                     self.start_client(tag, Some(instance));
+                                } else if error.is_none() {
+                                    // Without this the button just reads "Prepare & play" again.
+                                    error = Some(not_prepared_after(&tag));
                                 }
                             }
                             if let (None, Some(started)) = (&error, self.prepare_started.take()) {
@@ -521,4 +525,13 @@ impl Launcher {
             cx.notify();
         }
     }
+}
+
+/// What Home says when Prepare & play's preparation ended without an error but `tag` still isn't
+/// prepared: the game can't start, and the button alone would only offer the same step again.
+fn not_prepared_after(tag: &str) -> String {
+    crate::i18n::trf(
+        "The preparation of {version} ended, but its files are still not ready, so the game can't start. Open the log for its last lines, or prepare it again from Versions.",
+        &[("version", tag)],
+    )
 }

@@ -174,6 +174,13 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                 let package =
                     horizon_platform::mod_package::manifest::Package::read(&home.join(&e.file));
                 let icon = mod_icons::load(package.as_ref().map(|p| p.icon.as_ref()));
+                // An old-format native mod says what it needs, not the package reader's refusal.
+                let error = icon.error.map(|error| {
+                    match native_status::legacy_format(&home.join(&e.file)) {
+                        true => native_status::legacy_note().to_owned(),
+                        false => error,
+                    }
+                });
                 ModRow {
                     file: e.file.clone(),
                     name: e.title.clone(),
@@ -181,7 +188,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                     on: horizon::mod_id(&e).is_some_and(|id| java::is_enabled(home, id)),
                     entry: Some(e),
                     icon: icon.image,
-                    error: icon.error.filter(|_| !missing),
+                    error: error.filter(|_| !missing),
                     missing,
                     native: None,
                     internals: package
