@@ -56,13 +56,16 @@ fn frogs_piglins_hoglins_and_zoglins_do_not_float() {
                     "{id}: spawned under the surface"
                 );
                 let start = m.position.y;
-                let mut lr = crate::mobs::world::level_random(0);
+                let mut test_level = crate::health::TestLevel::new(0);
                 let mut goals = std::mem::take(&mut m.ai.goals);
                 for _ in 0..40 {
+                    // `LivingEntity.baseTick`: the fluids, then the air supply
+                    // and drowning (`base_tick` owns both now).
+                    super::base_tick(&mut m, w, &mut test_level.level(), &mut events);
                     {
                         let mut cx = Cx {
                             w,
-                            lr: &mut lr,
+                            level: &mut test_level.level(),
                             events: &mut events,
                         };
                         goals.tick(&mut m, &mut cx);
@@ -71,9 +74,8 @@ fn frogs_piglins_hoglins_and_zoglins_do_not_float() {
                     // flag, JumpControl, `jumpInLiquid`, then travel.
                     m.jump_control_tick();
                     m.handle_jumping(w);
-                    m.travel(w, Vec3::ZERO, &mut events);
+                    m.travel(w, &mut test_level.level(), Vec3::ZERO, &mut events);
                     m.update_fluids(w, &mut events);
-                    super::tick_air(&mut m, w, &mut events);
                 }
                 m.ai.goals = goals;
                 if species == Species::Frog {
