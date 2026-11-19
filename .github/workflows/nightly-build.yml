@@ -243,8 +243,10 @@ jobs:
           else echo "::warning::horizon-linux-musl-x86_64.tar.gz is missing: SHA256SUMS goes out without it"; fi
           intel=(); if [[ -f dist/horizon-macos-x64.zip ]]; then intel=(dist/horizon-macos-x64.zip)
           else echo "::warning::horizon-macos-x64.zip is missing: SHA256SUMS goes out without it"; fi
+          serverarm=(); if [[ -f dist/horizon-server-linux-arm64.tar.gz ]]; then serverarm=(dist/horizon-server-linux-arm64.tar.gz)
+          else echo "::warning::horizon-server-linux-arm64.tar.gz is missing: SHA256SUMS goes out without it"; fi
           bash tools/ci/sign_release.sh nightly dist/horizon-linux-x86_64.tar.gz dist/horizon-windows-x64.zip \
-            ${arm64[@]+"${arm64[@]}"} ${musl[@]+"${musl[@]}"} \
+            ${arm64[@]+"${arm64[@]}"} ${musl[@]+"${musl[@]}"} ${serverarm[@]+"${serverarm[@]}"} \
             dist/horizon-macos-arm64.zip ${intel[@]+"${intel[@]}"} dist/horizon-server-linux-x86_64.tar.gz \
             dist/horizon-source.tar.gz dist/sdk.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -348,6 +350,12 @@ jobs:
           else
             echo "::warning::horizon-linux-musl-x86_64.tar.gz is missing: the Nightly goes out without it"
           fi
+          serverarm=()
+          if [[ -f dist/horizon-server-linux-arm64.tar.gz ]]; then
+            serverarm=("dist/horizon-server-linux-arm64.tar.gz#Nightly dedicated server for Linux on ARM64 (horizon-server-linux-arm64.tar.gz)")
+          else
+            echo "::warning::horizon-server-linux-arm64.tar.gz is missing: the Nightly goes out without it"
+          fi
           # Intel macOS only when its build succeeded. Intel launchers have no fallback archive: they find no build of
           # theirs in this Nightly and keep the one they have.
           intel=()
@@ -363,6 +371,7 @@ jobs:
             --title "Nightly $DATE · ${SHA:0:7}" --notes-file dist/nightly-notes.md \
             "dist/horizon-linux-x86_64.tar.gz#Game files the launcher installs (Nightly): Linux (horizon-linux-x86_64.tar.gz)" \
             ${musl[@]+"${musl[@]}"} \
+            ${serverarm[@]+"${serverarm[@]}"} \
             "dist/horizon-windows-x64.zip#Game files the launcher installs (Nightly): Windows (horizon-windows-x64.zip)" \
             ${arm64[@]+"${arm64[@]}"} \
             "dist/horizon-macos-arm64.zip#Game files the launcher installs (Nightly): macOS on Apple Silicon (horizon-macos-arm64.zip)" \

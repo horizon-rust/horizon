@@ -8,9 +8,10 @@ import unittest
 from tools import check_imports
 
 
-def elf(interpreter, libraries, runpath=None):
+def elf(interpreter, libraries, runpath=None, machine=0):
     data = bytearray(4096)
     data[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<H", data, 18, machine)
     struct.pack_into("<Q", data, 32, 64)
     struct.pack_into("<HH", data, 54, 56, 3 if interpreter else 2)
     struct.pack_into("<IIQQQQQQ", data, 64, 1, 4, 0, 0x400000, 0, len(data), len(data), 4096)
@@ -33,10 +34,10 @@ def elf(interpreter, libraries, runpath=None):
 
 
 class LinuxImportsTests(unittest.TestCase):
-    def check_binary(self, interpreter, libraries, *, runpath=None, **options):
+    def check_binary(self, interpreter, libraries, *, runpath=None, machine=0, **options):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "program"
-            path.write_bytes(elf(interpreter, libraries, runpath))
+            path.write_bytes(elf(interpreter, libraries, runpath, machine))
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 return check_imports.check(path, **options)
 
@@ -58,6 +59,12 @@ class LinuxImportsTests(unittest.TestCase):
     def test_glibc_policy_still_rejects_musl(self):
         self.assertTrue(self.check_binary("/lib64/ld-linux-x86-64.so.2", ["libc.so.6", "libasound.so.2"]))
         self.assertFalse(self.check_binary("/lib/ld-musl-x86_64.so.1", ["libc.musl-x86_64.so.1"]))
+
+    def test_arm64_server_build_uses_the_arm64_glibc_loader(self):
+        arm64 = dict(machine=check_imports.EM_AARCH64, server=True)
+        self.assertTrue(self.check_binary("/lib/ld-linux-aarch64.so.1", ["libc.so.6", "libgcc_s.so.1"], **arm64))
+        self.assertFalse(self.check_binary("/lib64/ld-linux-x86-64.so.2", ["libc.so.6"], **arm64))
+        self.assertFalse(self.check_binary("/lib/ld-linux-aarch64.so.1", ["libasound.so.2"], **arm64))
 
     def test_server_and_runpath_checks_apply_to_both_abis(self):
         for musl, loader in ((False, "/lib64/ld-linux-x86-64.so.2"), (True, "/lib/ld-musl-x86_64.so.1")):
