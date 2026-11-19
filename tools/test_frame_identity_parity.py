@@ -924,7 +924,9 @@ def hud_boxes(width, height):
     """Where the crosshair and the hotbar are, x0, y0, x1, y1, at the GUI scale Auto picks for the shot's size (the
     window's, scaled by the desktop's)."""
     scale = max(1, min(width // 320, height // 240))
-    x, y = width // 2, height // 2
+    # 🤖 Agent: The HUD centres in GUI pixels, the window's size divided by the scale and rounded up: at an odd GUI
+    # width (854 wide at 2 is 427) the hotbar and its selected slot start a pixel left of the shot's middle.
+    x, y = (-(-size // scale) // 2 * scale for size in (width, height))
     return ((x - 9 * scale, y - 9 * scale, x + 9 * scale, y + 9 * scale),
             (x - 92 * scale, height - 24 * scale, x + 92 * scale, height))
 

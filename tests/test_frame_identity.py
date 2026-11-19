@@ -456,6 +456,12 @@ class LookGateTests(unittest.TestCase):
     def gate(self):
         return identity.look_gates(self.dir, ['float_hdr', 'horizon_hdr'])
 
+    def test_the_hotbar_box_covers_the_selected_slot_at_an_odd_gui_width(self):
+        # 🤖 Agent: 854x480 is scale 2 and 427 GUI pixels wide: the hotbar centres on GUI pixel 213, and its selected
+        # slot's frame starts a GUI pixel before the bar, (213 - 91 - 1) * 2 = 242, and ends at 610.
+        self.assertEqual(identity.hud_boxes(854, 480)[1], (242, 432, 610, 480))
+        self.assertEqual(identity.hud_boxes(1068, 600)[1], (350, 552, 718, 600))
+
     def test_the_pack_must_have_run_every_stage(self):
         self.shots()
         self.assertEqual(self.gate(), [])
