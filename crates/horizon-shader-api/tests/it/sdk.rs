@@ -28,19 +28,25 @@ fn the_example_pack_passes() {
 }
 
 #[test]
-fn the_example_pack_s_0_2_port_passes() {
-    let dir = Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/packs/golden_hour_0_2"
-    ));
-    let report = check(&Pack::read(dir).unwrap()).unwrap();
-    assert_eq!(report.manifest.api, horizon_shader_api::Api::V0_2);
-    let labels: Vec<_> = report.stages.iter().map(|s| s.label.as_str()).collect();
-    assert_eq!(labels, ["Warm horizon", "Glow", "Colour grade"]);
+fn the_traced_examples_pass_without_the_scene_and_with_it() {
+    for (pack, label) in [
+        ("traced_shadows", "Sun shadows"),
+        ("traced_water", "Reflecting water"),
+    ] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("packs")
+            .join(pack);
+        let report = check(&Pack::read(&dir).unwrap()).unwrap();
+        assert!(report.manifest.ray_tracing.is_some());
+        let labels: Vec<_> = report.stages.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, [label]);
+        assert!(report.stages[0].scene.is_some(), "{pack}");
+    }
 }
 
 #[test]
-fn the_tool_checks_a_0_2_pack() {
+#[ignore = "daily"]
+fn the_tool_checks_a_pack_with_a_tonemap_stage() {
     let dir = scratch("api-0-2");
     let files = [
         (
@@ -70,6 +76,7 @@ fn the_tool_checks_a_0_2_pack() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn every_template_makes_a_pack_that_passes() {
     let root = scratch("templates");
     for template in ["post", "sky", "material"] {
@@ -94,6 +101,7 @@ fn every_template_makes_a_pack_that_passes() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn packs_and_checks_the_package() {
     let root = scratch("pack");
     let dir = root.join("glow");

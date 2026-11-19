@@ -89,7 +89,8 @@ fn name(encoding: Option<hdr::Output>) -> &'static str {
 }
 
 /// The swapchain's configuration for `encoding`: `config` (what every pipeline draws in), or
-/// HDR10 or scRGB.
+/// HDR10 or scRGB, which HDR output's last pass draws, or frame generation's present thread
+/// copies to where the surface takes copies.
 pub(super) fn surface_config(
     config: &wgpu::SurfaceConfiguration,
     encoding: Option<hdr::Output>,
@@ -99,7 +100,8 @@ pub(super) fn surface_config(
         config.format = output.format();
         config.view_formats = vec![output.format()];
         config.color_space = output.color_space();
-        config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        config.usage =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | config.usage & wgpu::TextureUsages::COPY_DST;
     }
     config
 }
@@ -156,7 +158,9 @@ fn graced(
     match since {
         Some(_) => DisplayReading {
             luminance: applied.reported,
+            primaries: applied.primaries,
             hdr: Some(true),
+            ..raw
         },
         None => raw,
     }
@@ -235,17 +239,19 @@ impl Present for Applying<'_> {
             _ => None,
         };
         if let Some(surface) = &r.surface {
-            r.frame_gen.stop();
+            r.frame_gen.stop_to_configure();
             // The submit thread may still present to the old swapchain.
             r.queue.wait();
             let hdr = built.as_ref().or(r.hdr.as_ref());
-            Renderer::configure(
+            let configured = Renderer::configure(
                 &r.device,
                 surface,
                 &surface_config(&r.config, output.encoding),
                 hdr.filter(|_| output.encoding.is_some()),
                 &r.device_lost,
-            )?;
+            );
+            r.frame_gen.refused = configured.is_err();
+            configured?;
             r.surface_unconfigured = false;
         }
         if output.encoding.is_none() {
@@ -261,7 +267,7 @@ impl Present for Applying<'_> {
         r.hdr = None;
         r.mark_hdr_start(false, self.marker);
         if let Some(surface) = &r.surface {
-            r.frame_gen.stop();
+            r.frame_gen.stop_to_configure();
             r.queue.wait();
             r.surface_unconfigured =
                 Renderer::configure(&r.device, surface, &r.config, None, &r.device_lost).is_err();
@@ -300,7 +306,9 @@ impl Renderer {
         }
         // The metadata the swapchain's configuration sends.
         [hdr.paper_white, hdr.peak, hdr.black] = output.nits;
+        hdr.reference_80 = self.hdr_reference_80();
         hdr.ui = output.ui_brightness;
+        hdr.gamut = output.boost();
         Ok(hdr)
     }
 
@@ -359,6 +367,7 @@ impl Renderer {
         }
         if let Some(hdr) = &mut self.hdr {
             hdr.ui = next.ui_brightness;
+            hdr.gamut = next.boost();
             if (hdr.paper_white, hdr.peak, hdr.black) != (paper_white, peak, black) {
                 (hdr.paper_white, hdr.peak, hdr.black) = (paper_white, peak, black);
                 self.send_hdr_metadata();
@@ -374,6 +383,7 @@ impl Renderer {
             self.display = None;
             self.display_fresh = false;
             self.reading.stop_watching();
+            self.follow_reference_80();
         } else if self.display.is_none() {
             let (watch, now) =
                 DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter);
@@ -382,12 +392,33 @@ impl Renderer {
             self.output_caps.hdr = offer.unwrap_or(self.output_caps.hdr);
             self.reading = now;
             self.display_fresh = true;
+            self.follow_reference_80();
+        }
+    }
+
+    /// Whether an scRGB swapchain's reference white is 80 nits (`hdr::surface_scale`): on
+    /// Wayland, for the drivers that set no luminances (`hdr::scrgb_reference_80`).
+    fn hdr_reference_80(&self) -> bool {
+        self.display.as_ref().is_some_and(DisplayWatch::wayland) && {
+            let info = self.adapter.get_info();
+            hdr::scrgb_reference_80(info.vendor, &info.driver)
+        }
+    }
+    /// Keeps HDR output's `reference_80` right when the watch starts or stops, and sends the
+    /// metadata again on its scale.
+    fn follow_reference_80(&mut self) {
+        let reference_80 = self.hdr_reference_80();
+        if let Some(hdr) = &mut self.hdr
+            && hdr.reference_80 != reference_80
+        {
+            hdr.reference_80 = reference_80;
+            self.send_hdr_metadata();
         }
     }
 
     /// Whether this renderer's frame is the one a renderer made now would draw in
-    /// (`requested_frame`). Under `HORIZON_HDR_FRAME=float` the game makes the renderer again
-    /// when it isn't (docs/design/hdr-linear-light.md, "When it changes"), and the new one
+    /// (`requested_frame`). The game makes the renderer again when it
+    /// isn't (docs/design/hdr-linear-light.md, "When it changes"), and the new one
     /// takes this one's world (`take_world`).
     pub fn frame_follows(
         &self,
@@ -488,7 +519,8 @@ mod tests {
     const NO_PACK: FrameRequest = FrameRequest {
         linear_pack: false,
         linear_blend: false,
-        hdr_float: true,
+        ray_tracing: false,
+        shaders_pack: false,
     };
     fn on() -> Graphics {
         Graphics {
@@ -567,7 +599,7 @@ mod tests {
         );
     }
 
-    /// The display's luminance or the UI brightness change on the same output: the values
+    /// The display's luminance, the UI brightness or Color Boost change on the same output: the values
     /// follow, and nothing is built or configured again.
     #[test]
     fn new_nits_on_the_same_output_build_nothing() {
@@ -581,13 +613,42 @@ mod tests {
         });
         // 150 nits under the reported paper white of 250: 0.6 of it.
         settings.hdr_ui_nits = 150;
+        // Color Boost too: a new matrix on the same output.
+        settings.hdr_color_boost = 50;
         let mut swapchain = Swapchain::default();
         let next = candidate(&settings, caps, reading, &applied);
         let published = commit(&mut swapchain, &applied, next, caps, &mut None);
         assert_eq!(published, next);
         assert_eq!(published.nits, [250.0, 600.0, 0.0]);
         assert_eq!(published.ui_brightness, 0.6);
+        assert!(applied.gamut.is_none() && published.gamut.is_some());
         assert!(swapchain.asked.is_empty());
+    }
+
+    /// On Wayland, Color Boost follows the encoding presented: kept on PQ when the move to
+    /// scRGB fails, left to the compositor once scRGB presents.
+    #[test]
+    fn color_boost_follows_the_encoding_presented_on_wayland() {
+        let settings = Graphics {
+            hdr_color_boost: 50,
+            ..on()
+        };
+        let (mut caps, mut reading) = window(Some(Pq), Some(true));
+        reading.compositor = true;
+        let pq = snapshot(&settings, NO_PACK, caps, reading);
+        assert!(pq.boost().is_some());
+        caps.hdr = Some(ScRgb);
+        let next = candidate(&settings, caps, reading, &pq);
+        let mut failing = Swapchain {
+            fails: vec![Some(ScRgb)],
+            ..Default::default()
+        };
+        let kept = commit(&mut failing, &pq, next, caps, &mut None);
+        assert_eq!(kept.encoding, Some(Pq));
+        assert!(kept.boost().is_some() && !kept.compositor_stretches());
+        let scrgb = commit(&mut Swapchain::default(), &pq, next, caps, &mut None);
+        assert_eq!(scrgb.encoding, Some(ScRgb));
+        assert!(scrgb.boost().is_none() && scrgb.compositor_stretches());
     }
 
     /// An encoding that fails is never the snapshot's: the output applied stays where it
@@ -691,7 +752,7 @@ mod tests {
         /// What the system reports when it is read, and when (ms) it was.
         report: DisplayReading,
         reads: Vec<u64>,
-        /// The game follows the frame (`HORIZON_HDR_FRAME=float`): the frames it made the
+        /// The game follows the frame: the frames it made the
         /// renderer again for. `None`: the renderer keeps the frame it was made with.
         made: Option<Vec<output::FrameConfiguration>>,
     }
@@ -765,7 +826,9 @@ mod tests {
                     peak: 800,
                     peak_guessed: false,
                 }),
+                primaries: None,
                 hdr,
+                compositor: false,
             };
             self.caps.hdr = offer;
         }
