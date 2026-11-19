@@ -60,27 +60,6 @@ jobs:
           echo "Merges since ${BASE_SHA}:"
           git log --first-parent --format='  %h %s' "$BASE_SHA..HEAD"
           python3 tools/parity.py --changed "$BASE_SHA" --timeout 2400
-      # What each harness this checkout passed depends on (repository paths) and builds (probe names), for runners
-      # that keep no parity state: with them a hosted runner selects what a change reaches (tools/parity_plan.py).
-      # Only this checkout's own passes: its runner takes nothing but parity-main, while the shared folder beside the
-      # vanilla data also holds pull requests' passes. Only after the harnesses ran (else the lists may be older
-      # than this commit); never fails the run: a step that stalls stops after 5 minutes, as a failure
-      # continue-on-error absorbs, instead of spending the job's 240 and failing it (releases need a passed run).
-      - name: Dependency lists for hosted parity
-        if: ${{ !cancelled() && steps.harnesses.outcome != 'skipped' }}
-        continue-on-error: true
-        timeout-minutes: 5
-        run: python3 tools/parity_plan.py --export-dependencies "$RUNNER_TEMP/parity-dependencies"
-      - name: Upload the dependency lists
-        if: ${{ !cancelled() && steps.harnesses.outcome != 'skipped' }}
-        continue-on-error: true
-        timeout-minutes: 5
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: parity-dependencies
-          path: ${{ runner.temp }}/parity-dependencies/
-          if-no-files-found: warn
-          retention-days: 14
       - name: Preserve the initial failure logs
         if: steps.harnesses.outcome == 'failure'
         run: |
