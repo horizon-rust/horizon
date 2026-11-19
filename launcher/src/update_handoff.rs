@@ -237,13 +237,27 @@ fn wait_for_window(limit: Duration) {
 }
 
 fn install(staged: &Staged) -> Result<(), String> {
-    let installed = backend::installed_launcher_version(&backend::update_target());
-    install_over(
-        installed.as_deref(),
+    let target = backend::update_target();
+    install_locked(
+        &backend::update_lock_file(&target),
+        || backend::installed_launcher_version(&target),
         staged,
         &backend::update_work_dir(),
         backend::place_staged,
     )
+}
+
+/// [`install_over`] under the update lock ([`backend::lock_update`]), with the version in place
+/// read only once it is held: an installer that waited for another one sees what that one put in.
+fn install_locked(
+    lock: &Path,
+    installed: impl FnOnce() -> Option<String>,
+    staged: &Staged,
+    work: &Path,
+    place: impl FnOnce(&Staged) -> Result<(), String>,
+) -> Result<(), String> {
+    let _lock = backend::lock_update(lock)?;
+    install_over(installed().as_deref(), staged, work, place)
 }
 
 /// `installed` is the version of the launcher in place, which may have changed since this update
@@ -545,6 +559,69 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(placed.as_deref(), Some(NEW_LAUNCHER));
         let _ = fs::remove_dir_all(work);
+    }
+
+    /// Two windows staged the same release and closed: their installers go one after the other,
+    /// and the second, which reads nothing before it has the lock, sees the first one's launcher
+    /// and changes nothing.
+    #[test]
+    fn a_second_installer_waits_and_then_changes_nothing() {
+        let (work, _, staged) = stage("two-installers");
+        let lock = work.join("horizon-launcher.lock");
+        let in_place = std::sync::Arc::new(Mutex::new(OLD.map(str::to_owned)));
+        let held = backend::lock_update(&lock).unwrap();
+        let second = std::thread::spawn({
+            let (lock, work, staged, in_place) =
+                (lock.clone(), work.clone(), staged.clone(), in_place.clone());
+            move || {
+                let placed = std::cell::Cell::new(false);
+                let result = install_locked(
+                    &lock,
+                    || in_place.lock().unwrap().clone(),
+                    &staged,
+                    &work,
+                    |_| {
+                        placed.set(true);
+                        Ok(())
+                    },
+                );
+                (result, placed.get())
+            }
+        });
+        // The first installer, holding the lock, puts the release in.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !second.is_finished(),
+            "the second installer waits for the lock"
+        );
+        *in_place.lock().unwrap() = Some("0.2.41".into());
+        drop(held);
+        assert_eq!(second.join().unwrap(), (Ok(()), false));
+        let _ = fs::remove_dir_all(work);
+    }
+
+    /// The startup cleanup leaves an installer's files alone while it holds the lock, and removes
+    /// what is left once no installer does.
+    #[test]
+    fn the_cleanup_waits_for_an_installer() {
+        let dir = std::env::temp_dir().join(format!("horizon-cleanup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let name = "horizon-launcher.exe";
+        let lock = backend::update_lock_file(&dir.join(name));
+        let aside = [format!("{name}.old-7-0"), format!("{name}.update-7")];
+        for file in &aside {
+            fs::write(dir.join(file), b"x").unwrap();
+        }
+        fs::write(dir.join(name), b"the launcher").unwrap();
+        let held = backend::lock_update(&lock).unwrap();
+        assert!(!backend::remove_replaced_once(&dir, name, 1, &lock));
+        assert!(aside.iter().all(|file| dir.join(file).exists()));
+        drop(held);
+        assert!(backend::remove_replaced_once(&dir, name, 1, &lock));
+        assert!(aside.iter().all(|file| !dir.join(file).exists()));
+        assert!(dir.join(name).exists() && lock.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// A window from before stage folders hands the installer its old command line, with no SHA-256
