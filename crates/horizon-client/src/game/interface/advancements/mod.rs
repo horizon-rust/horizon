@@ -26,6 +26,7 @@ use std::{
     time::Instant,
 };
 
+mod location_memo;
 #[cfg(test)]
 mod progress_tests;
 
@@ -1405,16 +1406,7 @@ impl Game<'_> {
         }
         self.tick_marks();
         if self.ticks.is_multiple_of(20) {
-            let me = self.player_entity_for("minecraft:location");
-            self.trigger("minecraft:location", |c, w| {
-                let ctx = adv::Entities {
-                    this: Some(&me),
-                    origin: me.position,
-                    tool: None,
-                    block_pos: None,
-                };
-                adv::conditions(&c["player"], &ctx, w)
-            });
+            self.tick_location();
         }
     }
     /// A player condition plus one entity (`player`, `entity` keys).
@@ -2607,6 +2599,7 @@ impl Game<'_> {
         }
         for id in &p.removed {
             self.adv.progress.criteria.remove(id);
+            self.adv.progress.memo = None;
         }
         for a in p.added {
             list.retain(|o| o.id != a.id);
@@ -2664,6 +2657,7 @@ impl Game<'_> {
                 .map(|(name, _)| (name, String::new()))
                 .collect();
             self.adv.progress.criteria.insert(id, obtained);
+            self.adv.progress.memo = None;
             let a = &tree.list[i];
             if !p.reset
                 && p.show
