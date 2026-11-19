@@ -59,8 +59,9 @@ checkout dates every file now; the script gives each file whose Git object is th
 job's date back (`tools/ci/source_mtimes.py`), so Cargo rebuilds only what changed, and empties a disk past 50 GB
 (`MAX_TARGET_GB`). A failed or cancelled job leaves its disk as it found it. Only main's pushes and the merge queue
 ask to save the disks (`SAVE_BUILD_DISK` in `ci.yml`); pull requests and [try runs](#try-runs) say `commit: false`,
-build on main's latest and discard what they add. The organisation's branch-protected caches setting also refuses a
-pull request's save on Blacksmith's side ("commit denied ... not a trusted trigger" in their logs). So a pull request's disks are warm only once main has pushed since the job's disk was created, and
+build on main's latest and discard what they add. The organisation's branch-protected caches setting also refuses,
+on Blacksmith's side, a pull request's save ("... not a trusted trigger" in its logs) and that of a run on any branch
+but main ("... is not the default branch"). So a pull request's disks are warm only once main has pushed since the job's disk was created, and
 a fork's copy of the workflow cannot write this repository's disks. Forks' pull requests mount main's disks as well:
 until 2026-11-17 they had a set of their own that nothing could save, so each built the whole workspace (7-10 minutes
 per Rust part, against ~2 for a branch here).
@@ -92,8 +93,10 @@ git push origin --delete try/<name>                           # when done
   (`--resources`). Then the launcher's tests. It builds from scratch, with no Rust cache read or saved.
 - `-f arm64=true` adds the Windows ARM64 job (about 90 minutes) and `-f jfr=true` the JFR analysis on the Linux game
   runner; every hand-started run ran both before the inputs existed.
-- No job of a try run holds a secret, and none saves a disk or a cache (`tests/test_ci_runners.py`). Runs of one commit
-  share a concurrency group: a second waits for the first.
+- No job of a try run holds a secret; verify's parts and the Windows x64 job save no disk or cache
+  (`tests/test_ci_runners.py`). Runs of one commit share a concurrency group: a second waits for the first.
+- The run uses the branch's own copy of `ci.yml`: a branch from before 2026-11-19 has no inputs and always starts the
+  ARM64 and JFR jobs. Rebase it on main first.
 
 ## Which jobs, and when
 
