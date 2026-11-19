@@ -150,5 +150,50 @@ class OwnRunnerTests(unittest.TestCase):
         self.assertIn('if [ "$head" != "${GITHUB_REPOSITORY:-}" ]', script)  # refuses unless HORIZON_RUNNER_POOL=checks
 
 
+class HostedParityTests(unittest.TestCase):
+    """parity-hosted.yml fetches the maintainers' encrypted vanilla data onto Blacksmith's runners: the secrets reach
+    one step, and nothing of the data or what is built from it may outlive the runner (a fork's pull request can
+    mount this repository's sticky disks and caches)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        sys.path.insert(0, str(ROOT / "tools/ci/vendor/pyyaml-6.0.3.zip"))
+        import yaml
+        cls.text = (WORKFLOWS / "parity-hosted.yml").read_text()
+        cls.workflow = yaml.safe_load(cls.text)
+
+    def test_secret_values_reach_only_the_fetch_step(self):
+        holders = []
+        for job, body in self.workflow["jobs"].items():
+            self.assertNotIn("secrets.", repr({k: v for k, v in body.items() if k != "steps"}), job)
+            for step in body["steps"]:
+                if "secrets." in repr(step):
+                    holders.append((job, step.get("name"), step.get("env", {})))
+        values = [(job, name) for job, name, env in holders if any(
+            re.fullmatch(r"\$\{\{ secrets\.\w+ \}\}", str(value)) for value in env.values())]
+        self.assertEqual(values, [("run", "Fetch the vanilla data")])
+        # The plan learns only whether they are set.
+        others = [(job, name) for job, name, _ in holders if (job, name) not in values]
+        self.assertEqual(others, [("plan", "Access to the vanilla data")])
+
+    def test_nothing_is_cached_or_kept(self):
+        steps = [step for body in self.workflow["jobs"].values() for step in body["steps"]]
+        for step in steps:
+            uses = step.get("uses", "")
+            self.assertFalse(re.search(r"cache|sticky|useblacksmith/", uses), uses)
+            self.assertEqual([key for key in step.get("with", {}) if "cache" in key], [], uses or step.get("name"))
+        self.assertEqual(self.workflow["jobs"]["run"]["env"]["HORIZON_NO_SCCACHE"], "1")
+        uploads = [step["with"]["path"] for step in steps if "upload-artifact" in step.get("uses", "")]
+        self.assertEqual(uploads, [".local/parity-runner/logs/"])
+
+    def test_no_required_check_waits_for_it(self):
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            if path.name != "parity-hosted.yml":
+                self.assertNotIn("parity-hosted", path.read_text(), path.name)
+        verify = dict(jobs((WORKFLOWS / "ci.yml").read_text()))["verify"]
+        self.assertNotIn("hosted", verify)
+
+
 if __name__ == "__main__":
     unittest.main()

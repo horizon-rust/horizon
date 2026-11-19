@@ -104,6 +104,17 @@ def plan(names, groups, count):
     return [(group, members[group][index::counts[group]]) for group in present for index in range(counts[group])]
 
 
+def hosted_left_out(names, config):
+    """{name: reason} for the selected harnesses hosted runners don't run: those the "hosted" entry of
+    tools/parity_hosts.json excludes (data their runners lack), left out as playhorizon's excludes are there, and
+    the known failing and named-only ones."""
+    reasons = {**{name: f"named only: {why}" for name, why in parity.named_only(config).items()},
+               **{name: f"known failing: {why}" for name, why in parity.known_failing(config).items()},
+               **parity.platform_skips(config, "hosted")}
+    return {name: reasons.get(name) or reasons[parity.base_name(name)] for name in names
+            if name in reasons or parity.base_name(name) in reasons}
+
+
 def export_dependencies(records, found, directory):
     """Write NAME.json ({"dependencies", "artifacts"}, as parity.py's shared lists) for each harness this checkout
     itself last passed: never a pass taken from the shared folder (another checkout's, possibly a pull request's),
@@ -140,6 +151,8 @@ def main(argv=None):
     action.add_argument("--shard", type=shard_spec, metavar="I/N", help="print the names in shard I of N")
     action.add_argument("--export-dependencies", metavar="DIR", type=Path,
                         help="write this checkout's dependency lists into DIR (no selection)")
+    parser.add_argument("--hosted", action="store_true",
+                        help="leave out what hosted runners don't run (hosted_left_out), and list it")
     args = parser.parse_args(ours)
     records = parity.load_state()["harnesses"]
     if args.export_dependencies:
@@ -147,6 +160,10 @@ def main(argv=None):
         print(f"{count} dependency lists written to {args.export_dependencies}")
         return 0
     names = selection(rest)
+    left_out = hosted_left_out(names, parity.host_config()) if args.hosted else {}
+    for name, reason in left_out.items():
+        print(f"not run on hosted runners: {name}: {reason}", file=sys.stderr if args.shard else sys.stdout)
+    names = [name for name in names if name not in left_out]
     groups = {name: probe_group(artifacts(name, records)) for name in names}
     if args.shard:
         index, count = args.shard
@@ -155,8 +172,8 @@ def main(argv=None):
         return 0
     shards = plan(names, groups, shards_needed(names, groups)) if names else []
     Path(args.plan).write_text(json.dumps({"shards": [{"group": group, "harnesses": harnesses}
-                                                      for group, harnesses in shards]}, indent=1) + "\n",
-                               encoding="utf-8")
+                                                      for group, harnesses in shards], "left_out": left_out},
+                                          indent=1) + "\n", encoding="utf-8")
     for index, (group, harnesses) in enumerate(shards, 1):
         print(f"shard {index}/{len(shards)} {group}: {len(harnesses)}: {' '.join(harnesses)}")
     print(f"{len(names)} harnesses in {len(shards)} shards: "

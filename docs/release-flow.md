@@ -73,6 +73,12 @@ alone, with a warning. The check is still reported on the head.
 
 Failed harnesses' logs are uploaded as the `parity-logs` artifact.
 
+**Hosted parity.** A maintainer can also run harnesses on Blacksmith's runners, away from the Mac mini:
+`gh workflow run parity-hosted.yml --ref <branch> -f harnesses="..."`, or `-f base=<commit>` for what the branch's
+changes reach. The data comes encrypted from the maintainers' private `horizon-rust/vanilla-data`, and nothing of it
+leaves the runner ([ci-runners.md](ci-runners.md#hosted-parity)). Its result is advisory; this job is still the
+check.
+
 **Platform-specific harnesses.** A harness listed under `linux_only` in `tools/parity_hosts.json` gives
 different results on macOS for a reason that is not a Horizon bug (the reason is printed). `parity.py` skips it on
 other platforms unless it is named on the command line. Today it holds only `save_roundtrip` (it needs `vscreen`):
@@ -174,6 +180,9 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   a broken or flaky harness holds only what landed after the last green run, never the whole Nightly (before
   2026-11-03, any later failure held every Nightly until a run passed again: 30 h without one). `release.yml`
   also starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
+- After the harnesses, it uploads the dependency lists of the harnesses its own checkout passed: repository paths and
+  probe names, `tools/parity_plan.py --export-dependencies`. The artifact is `parity-dependencies`, kept 14 days.
+  Hosted parity selects with them. Those steps never fail the run.
 - A harness that keeps failing on main while its issue is open goes on `known_failing` in
   `tools/parity_hosts.json` ([parity-workflow.md](parity-workflow.md)): it still runs and reports, but no longer
   fails parity-main, so main's last green commit moves on and later merges are checked and bisected on their own.

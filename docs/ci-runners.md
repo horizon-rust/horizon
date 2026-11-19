@@ -65,6 +65,48 @@ a fork's copy of the workflow cannot write this repository's disks. Forks' pull 
 until 2026-11-17 they had a set of their own that nothing could save, so each built the whole workspace (7-10 minutes
 per Rust part, against ~2 for a branch here).
 
+## Hosted parity
+
+`.github/workflows/parity-hosted.yml` runs vanilla harnesses on Blacksmith's 16-vCPU runners, outside the Mac mini.
+For now a maintainer starts it by hand. It is advisory: no required check waits for it, and its jobs are named
+`hosted parity …` so nobody mistakes them for the Mac's `parity / parity`.
+
+```sh
+gh workflow run parity-hosted.yml --ref <branch> -f harnesses="food light spawn_loot"   # these, by name
+gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>                       # what the branch's changes reach
+```
+
+- **The game's data.** Horizon's code never downloads the game. The data comes from `horizon-rust/vanilla-data`, a
+  private repository of the maintainers' own Minecraft files.
+  - It holds them encrypted (AES-256, zstd) in datasets made with `lab.py prepare`. Today there is one,
+    `26.3-linux-x64`: the jars and libraries, without sources, sounds or other languages.
+  - A read-only deploy key (`VANILLA_DATA_DEPLOY_KEY`) clones it, and `VANILLA_DATA_PASSPHRASE` decrypts it.
+  - Those two secrets reach one step, `tools/ci/fetch-vanilla-data.sh`. The script writes them to a private folder,
+    removes that folder before it ends, and prints only sizes, counts and timings.
+  - A run without them (a fork's, Dependabot's) plans nothing, says so in a notice, and shows no result.
+- **What never leaves the runner.** The data, what is prepared from it, `target/` and `.local/` are never put on a
+  sticky disk, in a cache (no `actions/cache`, no sccache) or in an artifact: a fork's pull request can mount this
+  repository's disks and caches. Everything is built cold and thrown away with the runner. The only upload is the
+  failed harnesses' logs, as from `parity.yml` (`.local/parity-runner/logs/`, 3 days). They hold compared values, log
+  tails and names, as public runs already do. `tests/test_ci_runners.py` pins all of this.
+- **Plan, shards, result.** A `plan` job, with no secret and no data:
+  - takes the dependency lists of main's newest `parity-main` (its `parity-dependencies` artifact; [release-flow.md](release-flow.md#parity-on-main));
+  - selects with `tools/parity.py`;
+  - splits the selection with `tools/parity_plan.py` into shards by the probe each harness builds (world, client,
+    game, other), so a runner pays only that group's cold build.
+
+  Without the lists every harness counts as reached; it says so, and the full set is planned. Each shard runs on a
+  `run` runner with Xvfb and Mesa's software Vulkan (lavapipe), as playhorizon has. The head is tested merged into
+  main, as in `parity.yml`. `hosted parity (advisory)` states the result and lists what was not run.
+- **Not run on hosted runners.** These are listed, never counted as passed:
+  - the harnesses the `hosted` entry of `tools/parity_hosts.json` excludes: sounds, other languages, sources, older
+    servers' worlds, the network;
+  - `known_failing` and `named_only` ones.
+- **Cost, measured 2026-11-19.**
+  - About a minute of setup and data per runner.
+  - Cold probe builds: world 40 s; client 530 s (two profiles); the game 480 s.
+  - Then 3-10 s of runner time per harness, 8 at a time, most of it in the vanilla oracle.
+
 ## Which jobs, and when
 
 The repository variable `SELF_HOSTED_CI` decides, from the next job queued (queued jobs keep the runner they asked

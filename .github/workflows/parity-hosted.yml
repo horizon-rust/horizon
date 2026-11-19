@@ -1,0 +1,278 @@
+name: parity-hosted
+# The vanilla harnesses on Blacksmith's runners instead of the Mac mini (docs/ci-runners.md#hosted-parity): the vanilla
+# data comes encrypted from the maintainers' private repository horizon-rust/vanilla-data; Horizon's code still never
+# downloads the game. Advisory for now: nothing waits for it, and its result is not the Mac's `parity / parity`.
+# Started by hand: gh workflow run parity-hosted.yml --ref <branch> -f harnesses="food light" (or -f base=<commit>).
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: The base commit (the harnesses the changes since then can affect)
+        type: string
+        required: true
+      head:
+        description: The commit to check out and test
+        type: string
+        required: true
+      harnesses:
+        description: Harnesses to run by name, space-separated, instead of what the changes can affect
+        type: string
+        default: ''
+    secrets:
+      VANILLA_DATA_DEPLOY_KEY:
+        required: false
+      VANILLA_DATA_PASSPHRASE:
+        required: false
+  workflow_dispatch:
+    inputs:
+      harnesses:
+        description: Harnesses to run by name, space-separated
+        type: string
+        default: ''
+      base:
+        description: Or a base commit (usually main's) for the harnesses the branch's changes since then can affect
+        type: string
+        default: ''
+permissions:
+  contents: read
+  # The newest parity-main's dependency lists (an artifact of repository paths and probe names).
+  actions: read
+env:
+  # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
+  HORIZON_TELEMETRY_URL: "off"
+
+jobs:
+  # Which harnesses, on how many runners: no secret and no game data here.
+  plan:
+    name: hosted parity plan
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    outputs:
+      data: ${{ steps.access.outputs.data }}
+      main: ${{ steps.merge.outputs.main }}
+      dependencies: ${{ steps.dependencies.outputs.run }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
+      left_out: ${{ steps.plan.outputs.left_out }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.head || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # As parity.yml: the head merged into main's current tip, what merging it would land; selection then compares
+      # with that main. A head that conflicts with main is tested alone. The run jobs merge the same main commit.
+      - name: The head merged into main (what merging it would land)
+        id: merge
+        env:
+          BASE_SHA: ${{ inputs.base }}
+          HEAD_SHA: ${{ inputs.head || github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          main=$(git rev-parse origin/main)
+          if git -c user.name=parity -c user.email=parity@localhost merge -q --no-edit --no-ff "$main" >/dev/null 2>&1; then
+            { echo "base=$main"; echo "main=$main"; } >> "$GITHUB_OUTPUT"
+            echo "Tested: head ${HEAD_SHA:0:9} merged into main ${main:0:9}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            git merge --abort
+            { echo "base=$BASE_SHA"; echo "main="; } >> "$GITHUB_OUTPUT"
+            echo "::warning::head ${HEAD_SHA:0:9} conflicts with main ${main:0:9}: tested alone, without main's fixes"
+            echo "Tested: head ${HEAD_SHA:0:9} alone (it conflicts with main ${main:0:9})" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+      # A run without the data's secrets (a fork's, Dependabot's) runs nothing and passes nothing: only whether they
+      # are set reaches this job, never their values.
+      - name: Access to the vanilla data
+        id: access
+        env:
+          SET: ${{ secrets.VANILLA_DATA_DEPLOY_KEY != '' && secrets.VANILLA_DATA_PASSPHRASE != '' }}
+        run: |
+          echo "data=$SET" >> "$GITHUB_OUTPUT"
+          if [ "$SET" != true ]; then
+            echo "::notice::Hosted parity skipped: this run has no access to the vanilla data (a fork's or Dependabot's run). No harness ran."
+            echo "Hosted parity skipped: no access to the vanilla data. No harness ran." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.access.outputs.data == 'true'
+        with:
+          python-version: '3.13'
+      # What each harness depends on and builds, as main's last parity-main runs recorded them. Without them every
+      # harness counts as reached.
+      - name: The dependency lists of main's parity-main
+        id: dependencies
+        if: steps.access.outputs.data == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "PARITY_SHARED=$RUNNER_TEMP/parity-shared" >> "$GITHUB_ENV"
+          folder="$RUNNER_TEMP/parity-shared/dependencies"
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow parity-main.yml --branch main --limit 20 \
+              --json databaseId,status --jq '.[] | select(.status == "completed") | .databaseId'); do
+            rm -rf "$folder"
+            if gh run download "$id" -R "$GITHUB_REPOSITORY" -n parity-dependencies -D "$folder" 2>/dev/null; then
+              echo "run=$id" >> "$GITHUB_OUTPUT"
+              echo "Dependency lists: $(find "$folder" -name '*.json' | wc -l) from parity-main run $id" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          rm -rf "$folder"
+          echo "::warning::No parity-dependencies artifact from parity-main's recent runs: every harness counts as reached, so the full set is planned"
+          echo "**No dependency lists from parity-main: the full set is planned.**" >> "$GITHUB_STEP_SUMMARY"
+      - name: The harnesses, in shards by probe
+        id: plan
+        if: steps.access.outputs.data == 'true'
+        env:
+          BASE_SHA: ${{ steps.merge.outputs.base }}
+          HARNESSES: ${{ inputs.harnesses }}
+        run: |
+          set -euo pipefail
+          if [ -n "$HARNESSES" ]; then
+            read -ra selection <<< "$HARNESSES"
+          elif [ -n "$BASE_SHA" ]; then
+            selection=(--changed "$BASE_SHA")
+          else
+            echo "::error::name harnesses (-f harnesses=...) or a base commit (-f base=...)"
+            exit 1
+          fi
+          python3 tools/parity_plan.py --hosted --plan "$RUNNER_TEMP/plan.json" -- "${selection[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 - <<'EOF'
+          import json, os
+          plan = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "plan.json")))
+          shards = [shard for shard in plan["shards"] if shard["harnesses"]]
+          include = [{"shard": index, "of": len(shards), "group": shard["group"], "harnesses": " ".join(shard["harnesses"])}
+                     for index, shard in enumerate(shards, 1)]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"matrix={json.dumps({'include': include})}\n")
+              output.write(f"shards={len(shards)}\n")
+              output.write(f"left_out={json.dumps(plan['left_out'])}\n")
+          EOF
+
+  # One shard: the data, the shard's probes and its harnesses, on a 16-vCPU runner with no GPU (Xvfb and Mesa's
+  # software Vulkan for the harnesses that start the game). Cold every time: nothing of it is cached or kept.
+  run:
+    name: hosted parity ${{ matrix.shard }}/${{ matrix.of }} (${{ matrix.group }})
+    needs: plan
+    if: needs.plan.outputs.data == 'true' && needs.plan.outputs.shards != '0'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      # No compiler cache: no cache may hold what this job builds from the game's data.
+      HORIZON_NO_SCCACHE: "1"
+      CARGO_BUILD_JOBS: "16"
+      PARITY_LOCAL_JOBS: "8"
+      PARITY_MACHINE_JOBS: "8"
+      PARITY_HOSTS: ''
+    steps:
+      - name: Folders for the data, outside the checkout
+        run: |
+          {
+            echo "HORIZON_SHARED_SOURCE=$RUNNER_TEMP/vanilla/shared-local"
+            echo "HORIZON_PREPARED_CACHE=$RUNNER_TEMP/vanilla/prepared"
+            echo "PARITY_SHARED=$RUNNER_TEMP/vanilla/parity-shared"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.head || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The head merged into the plan's main
+        env:
+          MAIN_SHA: ${{ needs.plan.outputs.main }}
+        run: |
+          set -euo pipefail
+          if [ -n "$MAIN_SHA" ]; then
+            git fetch -q --no-tags origin "$MAIN_SHA"
+            git -c user.name=parity -c user.email=parity@localhost merge -q --no-edit --no-ff "$MAIN_SHA"
+          fi
+      - name: The JDK research-lock.json pins
+        id: lock
+        run: |
+          echo "java=$(sed -n 's/.*"java_major": *\([0-9]*\).*/\1/p' research-lock.json | head -1)" >> "$GITHUB_OUTPUT"
+      # What tools/ci/linux-runner.sh installs on Ubuntu, the screen included (Xvfb, Mesa's lavapipe), less sccache.
+      - name: Build and screen packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends build-essential pkg-config cmake libasound2-dev libudev-dev \
+            mesa-vulkan-drivers libvulkan1 xvfb libx11-6 libxcursor1 libxrandr2 libxi6 libxinerama1 libxkbcommon0 \
+            libxkbcommon-x11-0 libgl1 libegl1 > /dev/null
+      - name: A virtual screen with software Vulkan
+        run: |
+          Xvfb :90 -screen 0 1280x720x24 -nolisten tcp > /dev/null 2>&1 &
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          [ -n "$icd" ] || { echo "::error::no lavapipe driver file"; exit 1; }
+          { echo "DISPLAY=:90"; echo "VK_DRIVER_FILES=$icd"; } >> "$GITHUB_ENV"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ steps.lock.outputs.java }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
+        with:
+          toolchain: stable
+      - name: Tools from the runner
+        run: bash tools/ci/runner-env.sh
+      # The only step with the secrets. The script writes them to a private folder and removes it, key and passphrase
+      # with it, before it ends; it prints sizes, counts and timings only.
+      - name: Fetch the vanilla data
+        env:
+          VANILLA_DATA_DEPLOY_KEY: ${{ secrets.VANILLA_DATA_DEPLOY_KEY }}
+          VANILLA_DATA_PASSPHRASE: ${{ secrets.VANILLA_DATA_PASSPHRASE }}
+        run: bash tools/ci/fetch-vanilla-data.sh "$HORIZON_SHARED_SOURCE" 26.3-linux-x64
+      # The plan's dependency lists: parity.py prebuilds the probes they name before the harnesses start.
+      - name: The dependency lists the plan used
+        if: needs.plan.outputs.dependencies != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.plan.outputs.dependencies }}
+        run: gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n parity-dependencies -D "$PARITY_SHARED/dependencies"
+      - name: Vanilla data, and resources prepared by this preparer
+        run: bash tools/ci/vanilla-data.sh
+      - name: The shard's harnesses
+        env:
+          HARNESSES: ${{ matrix.harnesses }}
+        run: |
+          read -ra names <<< "$HARNESSES"
+          python3 tools/parity.py --timeout 2400 "${names[@]}"
+      # As parity.yml: the failed harnesses' logs (compared values, log tails, names), kept 3 days. Nothing else of
+      # .local/ or the data leaves the runner.
+      - name: Logs of the failed harnesses
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: parity-hosted-logs-${{ matrix.shard }}
+          path: .local/parity-runner/logs/
+          if-no-files-found: ignore
+          retention-days: 3
+
+  result:
+    name: hosted parity (advisory)
+    needs: [plan, run]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.data == 'true' }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - name: Passed or failed, and what was not run here
+        env:
+          RUN: ${{ needs.run.result }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
+          LEFT_OUT: ${{ needs.plan.outputs.left_out }}
+        run: |
+          {
+            case "$RUN" in
+              success) echo "Hosted parity passed: $SHARDS shards." ;;
+              skipped) echo "Hosted parity: nothing to run." ;;
+              *) echo "Hosted parity failed ($RUN): see the shards' jobs." ;;
+            esac
+            python3 -c 'import json, os
+          left = json.loads(os.environ["LEFT_OUT"] or "{}")
+          if left:
+              print(f"\nNot run on hosted runners ({len(left)}), so not passed here:\n")
+              for name, why in left.items():
+                  print(f"- {name}: {why}")'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$RUN" = success ] || [ "$RUN" = skipped ]
