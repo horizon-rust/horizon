@@ -607,6 +607,8 @@
   "horizon.tailcat.stopped": "Stopped sharing over Tailcat.",
   "horizon.tailcat.failed": "The Tailcat helper stopped before it was ready.",
   "horizon.tailcat.share_failed": "Couldn't share the world: %s",
+  "horizon.tailcat.world": "Tailcat world",
+  "horizon.tailcat.bad_address": "the Tailcat helper gave a bad address: %s",
   "horizon.friends.short_code_changed": "Someone kept trying a wrong short code, so it changed.",
   "horizon.friends.wrong_code": "Someone tried a wrong code.",
   "horizon.friends.relay_stopped": "Too many wrong short codes, so the relay is off until you share again. Friends can still join with the full code.",

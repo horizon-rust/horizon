@@ -20,11 +20,12 @@
 //! ([`horizon_addresses`](crate)), handed in with [`set_assets`].
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, Command, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Every invitation starts with this (`tailcat-for-minecraft`'s format).
@@ -35,6 +36,8 @@ pub const ADDRESS_PREFIX: &str = "tailcat:";
 pub const PORT: u16 = 25565;
 /// How long a helper may take to pick a DERP region and start listening.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long a helper download may take, including DNS and the response body.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// The `tailcat-for-minecraft` commit the helper binary is downloaded from.
 const MCLINK_COMMIT: &str = "c561a896f3e48c98bde36b0a810b29f560b074a5";
 /// The digest marker written beside a published helper, so a cache entry carries its own proof.
@@ -43,6 +46,7 @@ const CHECKSUM_FILE: &str = "checksum.txt";
 const DEV_CLONE_VAR: &str = "HORIZON_TAILCAT_DEV_CLONE";
 
 static ASSETS: OnceLock<&'static str> = OnceLock::new();
+static PUBLISH_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
 /// Names the helper's download base (`crates/horizon-addresses`). The first call wins: a later
 /// one is a second registration, not a change.
@@ -347,9 +351,37 @@ fn install(cache_dir: &Path) -> Result<PathBuf, String> {
             "the downloaded Tailcat helper did not match its checksum (expected {expected}, got {actual})"
         ));
     }
-    let path = publish_cache(cache_dir, platform, &bytes, &expected)?;
+    let path = publish_verified_cache(cache_dir, platform, &bytes, &expected)?;
     log::info!("Downloaded the Tailcat helper to {}", path.display());
     Ok(path)
+}
+
+/// Publish only after taking this cache entry's lock and checking it again: two
+/// callers that missed the first check must not download and rename over each other.
+fn publish_verified_cache(
+    cache_dir: &Path,
+    platform: &str,
+    bytes: &[u8],
+    expected: &str,
+) -> Result<PathBuf, String> {
+    let final_dir = cached_dir(cache_dir, platform);
+    let lock = publish_lock(&final_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| "the Tailcat helper cache lock was poisoned".to_owned())?;
+    if let Some(cached) = verified_cached_helper(cache_dir, platform)? {
+        return Ok(cached);
+    }
+    publish_cache(cache_dir, platform, bytes, expected)
+}
+
+fn publish_lock(final_dir: &Path) -> Arc<Mutex<()>> {
+    let locks = PUBLISH_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap_or_else(|e| e.into_inner());
+    locks
+        .entry(final_dir.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 /// Write the helper and its digest into a staging directory, then rename the directory into its
@@ -416,13 +448,14 @@ fn checksum_for(json: &str, key: &str) -> Result<String, String> {
 fn get(url: &str) -> Result<Vec<u8>, String> {
     let response = ureq::get(url)
         .set("User-Agent", "horizon-tailcat")
+        .timeout(DOWNLOAD_TIMEOUT)
         .call()
         .map_err(|e| format!("download {url}: {e}"))?;
     let mut bytes = Vec::new();
     response
         .into_reader()
         .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("download {url}: {e}"))?;
     Ok(bytes)
 }
 
@@ -503,6 +536,36 @@ mod tests {
             "an interrupted installation has no marker"
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_publishes_reuse_one_cache_entry() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-tailcat-concurrent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let platform = platform().unwrap();
+        let bytes = b"a helper".to_vec();
+        let digest = hex(Sha256::digest(&bytes).as_slice());
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let root = root.clone();
+                let bytes = bytes.clone();
+                let digest = digest.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    publish_verified_cache(&root, platform, &bytes, &digest).unwrap()
+                })
+            })
+            .collect();
+        let expected = cached_helper(&root, platform);
+        for handle in handles {
+            assert_eq!(handle.join().unwrap(), expected);
+        }
+        assert_eq!(std::fs::read(&expected).unwrap(), bytes);
+        assert!(verified_cached_helper(&root, platform).unwrap().is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

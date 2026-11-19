@@ -736,7 +736,7 @@ thread_local! {
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
     if address.starts_with(TAILCAT) {
-        return "Tailcat world".to_owned();
+        return crate::lang::get_or("horizon.tailcat.world", "Tailcat world");
     }
     match address.strip_prefix(FRIEND) {
         Some(code) => match horizon_hooks::engine::tunnel().and_then(|r| r.nameplate(code)) {
@@ -981,9 +981,8 @@ fn run(
             status(send, &tr(lang, "connect.connecting"));
             let cache = crate::logging::game_home().join("tailcat");
             let (helper, loopback) = crate::tailcat::join(invite, &cache).map_err(Reason::plain)?;
-            let (host, port) = parse_address(&loopback).ok_or_else(|| {
-                Reason::plain(format!("the Tailcat helper gave a bad address: {loopback}"))
-            })?;
+            let (host, port) = parse_address(&loopback)
+                .ok_or_else(|| Reason::keyed_arg("horizon.tailcat.bad_address", lang, &loopback))?;
             tailcat_guard = Some(helper);
             (host, port, Vec::new())
         } else {

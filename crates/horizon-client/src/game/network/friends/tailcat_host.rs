@@ -132,6 +132,7 @@ impl TailcatShare {
             invite: self.invite.clone(),
             status,
             error: self.error.clone(),
+            opened_lan: self.opened_lan,
             copied: self
                 .copied
                 .is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
@@ -152,6 +153,8 @@ pub struct TailcatView {
     pub invite: Option<String>,
     pub status: String,
     pub error: Option<String>,
+    /// Sharing opened the world to LAN, so Stop Sharing must stay reachable after a failure.
+    pub opened_lan: bool,
     pub copied: bool,
 }
 
@@ -445,17 +448,37 @@ fn layout(
             WHITE,
             &mut y,
         );
-        buttons.push(Button {
-            x: cx - 100.0,
-            y: y + 8.0,
-            w: 200.0,
-            label: tr("horizon.tailcat.start_sharing", "Start Sharing"),
-            action: Action::Share,
-            active: view.shown,
-        });
+        let button_y = y + 8.0;
+        if view.opened_lan {
+            buttons.push(Button {
+                x: cx - 154.0,
+                y: button_y,
+                w: 150.0,
+                label: tr("horizon.friends.stop_sharing", "Stop Sharing"),
+                action: Action::Stop,
+                active: true,
+            });
+            buttons.push(Button {
+                x: cx + 4.0,
+                y: button_y,
+                w: 150.0,
+                label: tr("horizon.tailcat.start_sharing", "Start Sharing"),
+                action: Action::Share,
+                active: view.shown,
+            });
+        } else {
+            buttons.push(Button {
+                x: cx - 100.0,
+                y: button_y,
+                w: 200.0,
+                label: tr("horizon.tailcat.start_sharing", "Start Sharing"),
+                action: Action::Share,
+                active: view.shown,
+            });
+        }
         if let Some(error) = &view.error {
-            y += 8.0;
-            add(&mut lines, error, WHITE, &mut y);
+            let mut error_y = button_y + 24.0;
+            add(&mut lines, error, WHITE, &mut error_y);
         }
     }
     buttons.push(Button {
@@ -596,7 +619,17 @@ mod tests {
         assert!(!start_blocked(Some(&failed)));
         let view = failed.view();
         assert!(!view.sharing);
+        assert!(view.opened_lan);
         assert_eq!(view.error.as_deref(), Some("the helper failed"));
+        let (lines, buttons) = layout(&atlas(), (427.0, 240.0), &view);
+        let stop = buttons.iter().find(|b| b.action == Action::Stop).unwrap();
+        assert!(stop.active);
+        let error_y = lines
+            .iter()
+            .find(|(line, _, _)| line == "the helper failed")
+            .map(|(_, _, y)| *y)
+            .unwrap();
+        assert!(error_y >= stop.y + 20.0, "the error is below the buttons");
 
         let (tx, rx) = mpsc::channel();
         let mut retry = TailcatShare::new(rx, failed.opened_lan);

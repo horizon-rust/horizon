@@ -551,10 +551,7 @@ impl Game<'_> {
             3 => self.open_stats(),
             4 => self.open_advancements(true),
             9 => self.open_world_options(),
-            10 => {
-                self.tailcat_stop();
-                self.set_screen(Screen::Friends);
-            }
+            10 => self.set_screen(Screen::Friends),
             31 => {
                 let _ = self.tailcat_start();
                 self.set_screen(Screen::Friends);

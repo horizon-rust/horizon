@@ -151,7 +151,7 @@ controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-duals
 horizon-extras = ["friends"]
 # Play with Friends: sharing a world behind an invite code (game/friends.rs). Joining one is
 # horizon-friends' `game` side, which horizon-official registers (`horizon_hooks::tunnel`).
-friends = ["dep:horizon-friends"]
+friends = ["dep:horizon-friends", "horizon-client-lib/friends"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace", "horizon-client-lib/rng-trace"]
 # Rust's allocations go to the system heap instead of mimalloc, where heap profilers that replace

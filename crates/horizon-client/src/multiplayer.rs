@@ -661,7 +661,11 @@ impl Screen {
                 let x = ((w - 308.0) / 2.0).floor();
                 let saved = selected.is_some_and(|i| i < servers.len());
                 let label = |key: &str, fallback: &str| crate::lang::get_or(key, fallback);
-                vec![
+                #[cfg(feature = "friends")]
+                let (bottom_x, bottom_w, bottom_step, back_i) = (x + 1.0, 58.0, 62.0, 4.0);
+                #[cfg(not(feature = "friends"))]
+                let (bottom_x, bottom_w, bottom_step, back_i) = (x, 74.0, 78.0, 3.0);
+                let mut buttons = vec![
                     b(
                         x,
                         h - 52.0,
@@ -686,47 +690,49 @@ impl Screen {
                         true,
                         42,
                     ),
-                    b(
-                        x + 1.0,
-                        h - 28.0,
-                        58.0,
-                        &label("selectServer.edit", "Edit"),
-                        saved,
-                        43,
-                    ),
-                    b(
-                        x + 63.0,
-                        h - 28.0,
-                        58.0,
-                        &label("selectServer.delete", "Delete"),
-                        saved,
-                        44,
-                    ),
-                    b(
-                        x + 125.0,
-                        h - 28.0,
-                        58.0,
-                        &label("selectServer.refresh", "Refresh"),
-                        true,
-                        45,
-                    ),
-                    b(
-                        x + 187.0,
-                        h - 28.0,
-                        58.0,
-                        &label("multiplayer.tailcat", "Tailcat"),
-                        true,
-                        48,
-                    ),
-                    b(
-                        x + 249.0,
-                        h - 28.0,
-                        58.0,
-                        &label("gui.back", "Back"),
-                        true,
-                        46,
-                    ),
-                ]
+                ];
+                buttons.push(b(
+                    bottom_x,
+                    h - 28.0,
+                    bottom_w,
+                    &label("selectServer.edit", "Edit"),
+                    saved,
+                    43,
+                ));
+                buttons.push(b(
+                    bottom_x + bottom_step,
+                    h - 28.0,
+                    bottom_w,
+                    &label("selectServer.delete", "Delete"),
+                    saved,
+                    44,
+                ));
+                buttons.push(b(
+                    bottom_x + bottom_step * 2.0,
+                    h - 28.0,
+                    bottom_w,
+                    &label("selectServer.refresh", "Refresh"),
+                    true,
+                    45,
+                ));
+                #[cfg(feature = "friends")]
+                buttons.push(b(
+                    bottom_x + bottom_step * 3.0,
+                    h - 28.0,
+                    bottom_w,
+                    &label("multiplayer.tailcat", "Tailcat"),
+                    true,
+                    48,
+                ));
+                buttons.push(b(
+                    bottom_x + bottom_step * back_i,
+                    h - 28.0,
+                    bottom_w,
+                    &label("gui.back", "Back"),
+                    true,
+                    46,
+                ));
+                buttons
             }
             Self::Tailcat { invite, .. } => {
                 let join = is_tailcat_invite(invite);
@@ -1630,6 +1636,7 @@ impl Screen {
             }
             (Self::List { .. }, Some(45)) => return Outcome::Open(Box::new(Self::list(saves))),
             (Self::List { .. }, Some(46)) => return Outcome::Back,
+            #[cfg(feature = "friends")]
             (Self::List { .. }, Some(48)) => {
                 *self = Self::Tailcat {
                     invite: String::new(),
@@ -1947,7 +1954,8 @@ impl Screen {
             Self::Friend { focus: 0, .. } => 64.0,
             Self::Friend { focus: 1, .. } => 105.0,
             Self::Friend { .. } => return None,
-            Self::Tailcat { .. } => 64.0,
+            Self::Tailcat { focus: 0, .. } => 64.0,
+            Self::Tailcat { .. } => return None,
             Self::Page(form) => return form.focused_box(),
             _ => return None,
         };
@@ -1974,7 +1982,10 @@ impl Screen {
                 1 => Some(relay),
                 _ => None,
             },
-            Self::Tailcat { invite, .. } => Some(invite),
+            Self::Tailcat {
+                invite, focus: 0, ..
+            } => Some(invite),
+            Self::Tailcat { .. } => None,
             _ => None,
         }
     }
@@ -2053,7 +2064,8 @@ impl Screen {
             Self::Direct { .. } => SERVER_DIRECT,
             Self::Friend { focus: 0, .. } => FRIEND_CODE,
             Self::Friend { .. } => FRIEND_RELAY,
-            Self::Tailcat { .. } => TAILCAT_INVITE,
+            Self::Tailcat { focus: 0, .. } => TAILCAT_INVITE,
+            Self::Tailcat { .. } => return None,
             _ => return None,
         };
         let max = self.max_length();
@@ -2280,6 +2292,46 @@ mod tests {
             }
             outcome => outcome,
         }
+    }
+
+    #[test]
+    fn tailcat_footer_and_focus_follow_the_friends_feature() {
+        let screen = Screen::List {
+            servers: Vec::new(),
+            selected: None,
+            pings: Arc::default(),
+            icons: Arc::default(),
+            lan: Scanner::for_tests(Vec::new()),
+            scroll: Default::default(),
+            held: None,
+        };
+        let buttons = screen.buttons(640.0, 480.0);
+        let bottom: Vec<_> = buttons.iter().filter(|b| b.1 == 452.0).collect();
+        #[cfg(feature = "friends")]
+        {
+            assert_eq!(bottom.len(), 5);
+            assert!(bottom.iter().all(|b| b.2 == 58.0));
+            assert!(bottom.iter().any(|b| b.5 == 48));
+        }
+        #[cfg(not(feature = "friends"))]
+        {
+            assert_eq!(bottom.len(), 4);
+            assert!(bottom.iter().all(|b| b.2 == 74.0));
+            assert!(bottom.iter().all(|b| b.5 != 48));
+        }
+
+        let mut tailcat = Screen::Tailcat {
+            invite: "mcl1_abc".into(),
+            focus: 1,
+        };
+        assert!(tailcat.focused_box((640.0, 480.0)).is_none());
+        assert!(tailcat.focused_text().is_none());
+        tailcat = Screen::Tailcat {
+            invite: "mcl1_abc".into(),
+            focus: 0,
+        };
+        assert!(tailcat.focused_box((640.0, 480.0)).is_some());
+        assert!(tailcat.focused_text().is_some());
     }
 
     #[test]

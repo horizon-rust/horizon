@@ -15,7 +15,7 @@ impl Launcher {
     }
 
     pub(crate) fn join_friend(&mut self) {
-        if horizon_friends::invite::parse(self.friend_code.text()).is_none() {
+        if !backend::invite_is_valid(self.friend_code.text()) {
             return;
         }
         self.joining = Some(self.friend_code.text().to_string());
