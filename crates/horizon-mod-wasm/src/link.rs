@@ -476,14 +476,21 @@ impl<T: 'static> Group<T> {
             {
                 continue;
             }
-            let words = match instance.get_typed_func::<(), u32>(&mut group.store, "horizon_group_words") {
-                Err(_) => None,
-                Ok(words) => Some(words.call(&mut group.store, ()).map_err(|e| LinkError::Call {
-                    member: name.clone(),
-                    function: "horizon_group_words".into(),
-                    why: format!("{e:#}"),
-                })?),
-            };
+            let words =
+                match instance.get_typed_func::<(), u32>(&mut group.store, "horizon_group_words") {
+                    Err(_) => None,
+                    Ok(words) => {
+                        Some(
+                            words
+                                .call(&mut group.store, ())
+                                .map_err(|e| LinkError::Call {
+                                    member: name.clone(),
+                                    function: "horizon_group_words".into(),
+                                    why: format!("{e:#}"),
+                                })?,
+                        )
+                    }
+                };
             if words.is_none_or(|words| words as usize != mod_api::wire::GROUP_WORDS) {
                 return Err(LinkError::Std {
                     member: name.clone(),

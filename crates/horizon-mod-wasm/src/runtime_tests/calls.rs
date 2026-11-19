@@ -250,14 +250,14 @@ fn a_changed_transport_value_refuses_the_mod() {
 #[test]
 fn a_std_with_another_group_state_is_refused() {
     crate::test_stack::on_guest_stack(|| {
-        // A constructor touching the group state, which must not run for a refused std.
-        let std = |words: &str| {
+        // A refused std's constructor traps: the refusal must come before it runs.
+        let std = |ctor: &str, words: &str| {
             wat::parse_str(format!(
                 r#"(module
               (@custom "dylink.0" "\01\04\00\00\00\00")
               (import "env" "memory" (memory 1))
               (global (export "horizon_group_state") i32 (i32.const 0))
-              (func (export "__wasm_call_ctors") i32.const 0 i32.const 7 i32.store)
+              (func (export "__wasm_call_ctors") {ctor})
               {words})"#
             ))
             .unwrap()
@@ -272,8 +272,12 @@ fn a_std_with_another_group_state_is_refused() {
             Ok(_) => panic!("loaded"),
         };
         let right = mod_api::wire::GROUP_WORDS;
-        assert!(load(&[("libstd.so", &std(&words(right))), ("test", &mod_)]).is_ok());
-        assert!(refused(&std(&words(right + 1))).contains(&format!("holds {} group-state words", right + 1)));
-        assert!(refused(&std("")).contains("doesn't say how much group state"));
+        let stores = "i32.const 0 i32.const 7 i32.store";
+        assert!(load(&[("libstd.so", &std(stores, &words(right))), ("test", &mod_)]).is_ok());
+        assert!(
+            refused(&std("unreachable", &words(right + 1)))
+                .contains(&format!("holds {} group-state words", right + 1))
+        );
+        assert!(refused(&std("unreachable", "")).contains("doesn't say how much group state"));
     })
 }

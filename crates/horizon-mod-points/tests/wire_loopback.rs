@@ -124,7 +124,10 @@ fn head_and_return_share_the_hook_arena_and_native_listener_list() {
     for ((place, name, identity, inject), (id, want)) in listed.iter().zip(expected) {
         let (point_name, point_identity) = mod_points::point_identity(id);
         assert_eq!(*place, id as u32);
-        assert_eq!((name.as_str(), *identity, inject.as_str()), (point_name, point_identity, want));
+        assert_eq!(
+            (name.as_str(), *identity, inject.as_str()),
+            (point_name, point_identity, want)
+        );
         assert_eq!(mod_points::point_by_name(point_name), Some(id));
     }
     assert_ne!(listed[0].1, listed[1].1);
