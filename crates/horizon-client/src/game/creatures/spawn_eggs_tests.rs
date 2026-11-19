@@ -1,7 +1,7 @@
 //! A spawn egg's own effects: `EntityType.spawn` plays the new mob's ambient
 //! sound, and an egg used on a mob of its own kind gives the baby the
 //! tameness `getBreedOffspring` gives it.
-use super::super::super::*;
+use super::super::*;
 use horizon_client::{items::ItemStack, mobs::Species, motion::PlayerMotion};
 use horizon_core::geometry::Vec3;
 
