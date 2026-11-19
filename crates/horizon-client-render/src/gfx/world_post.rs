@@ -21,8 +21,9 @@ struct WorldTarget {
     depth: wgpu::TextureView,
     group: wgpu::BindGroup,
     taa: Option<History>,
-    /// The world anti-aliased at its own size, made on first use (`resolved`).
-    resolved: Option<wgpu::TextureView>,
+    /// The world anti-aliased at its own size, made on first use (`resolved`); `Some(None)`
+    /// where there was no video memory for it, until the target is made again.
+    resolved: Option<Option<wgpu::TextureView>>,
 }
 
 /// TAA's two history textures at the output size (the world's, times the upscale), written
@@ -635,13 +636,18 @@ impl Post {
 
     /// A target of the world's size and format for `finish` to draw onto, where something
     /// after it reads the world at its own size (a native pack without a post chain, #16126).
-    /// Made on first use, and dropped with the world's target.
+    /// Made on first use, and dropped with the world's target. None where there is no video
+    /// memory for it: the pack then reads the world without FXAA.
     pub(super) fn resolved(&mut self, device: &wgpu::Device) -> Option<wgpu::TextureView> {
         let format = self.format;
         let target = self.target.as_mut()?;
         let size = target.size;
         let view = target.resolved.get_or_insert_with(|| {
-            device
+            // As the world's own target: an error raised is fatal, so catch running out of
+            // memory, and the failed texture's view failing validation.
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let view = device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some("Resolved world"),
                     size: wgpu::Extent3d {
@@ -657,9 +663,17 @@ impl Post {
                         | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 })
-                .create_view(&Default::default())
+                .create_view(&Default::default());
+            let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
+            if let Some(error) = error {
+                log::warn!(
+                    "Horizon renderer: no video memory for the shader pack's FXAA at {size:?}; drawing it without ({error})"
+                );
+                return None;
+            }
+            Some(view)
         });
-        Some(view.clone())
+        view.clone()
     }
 
     /// The size of the world's own target, when it has one.

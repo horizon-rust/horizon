@@ -51,5 +51,5 @@ differ in SDR.
   lifts: a material stage isn't handed them.
 - **Screenshots and world icons in HDR.** They are taken from the frame after `[tonemap]`, so they carry its curve,
   and light above white clips channel by channel under a pack, where Horizon's look keeps its hue.
-- **What any running pack turns off**: anti-aliasing (TAA, FXAA, TAA upscaling), Improved Transparency and frame
-  generation. A pack without `[[post]]`, this one among them, keeps the player's FXAA.
+- **What any running pack turns off**: anti-aliasing (TAA, TAA upscaling, and FXAA under a pack with `[[post]]`;
+  this pack has none, so it keeps the player's FXAA), Improved Transparency and frame generation.
