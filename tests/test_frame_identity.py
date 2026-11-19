@@ -9,6 +9,7 @@ import unittest
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from tools import test_frame_identity_parity as identity
 
@@ -226,6 +227,26 @@ class SessionCheckTests(unittest.TestCase):
         self.assertEqual(identity.build_checks(self.dir, ['visbuffer']),
                          ["change: visbuffer: the visibility buffer didn't run"])
 
+    def test_each_build_is_held_to_the_load_line_of_its_own_pack(self):
+        # 🤖 Agent: the base draws its own version of a pack where it has one (pack_dir), and its log names that one.
+        change = identity.pack_dir('frame_identity_terrain')
+        base_packs = self.dir / 'base-packs'
+        folder = base_packs / change.relative_to(identity.ROOT)
+        folder.mkdir(parents=True)
+        manifest = (change / 'horizon-shaders.toml').read_text(encoding='utf-8')
+        version = tomllib.loads(manifest)['version']
+        (folder / 'horizon-shaders.toml').write_text(
+            manifest.replace(f'version = "{version}"', 'version = "0.9.0"'), encoding='utf-8')
+        for label, drawn in (('base', '0.9.0'), ('change', version)):
+            (self.dir / label).mkdir()
+            for scene in identity.SESSIONS['terrain_pack'][2]:
+                encode(self.dir / label / f'terrain_pack.{scene}.png', 4, 4, 8, self.rows, 0)
+            (self.dir / label / 'terrain_pack.log').write_text(
+                'INFO Horizon: LabPBR maps at 16 px, 900 layers\n'
+                f'INFO shader pack frame_identity_terrain {drawn}: Terrain, Colour in 40 ms\n')
+        with mock.patch.object(identity, 'BASE_PACKS', base_packs):
+            self.assertEqual(identity.build_checks(self.dir, ['terrain_pack']), [])
+
     def test_improved_transparency_beside_a_missing_reference_shot_reports_the_missing_shot(self):
         missing, *rest = identity.SESSIONS['vanilla'][2]
         self.assertIn(missing, identity.SESSIONS['oit'][2])
@@ -348,7 +369,7 @@ class HdrGateTests(unittest.TestCase):
             [4.0] * 3 if (x, y) in sun else [(v / 255) ** 2.2 for v in row[3 * x:3 * x + 3]], 203))
             for y, row in enumerate(rows)]
 
-    def test_hdr_lighting_off_must_be_sdr(self):
+    def test_the_vanilla_look_must_be_sdr(self):
         self.vanilla = picture(4, 4, 8)
         self.assertEqual(self.unlit(self.vanilla, self.hdr(self.vanilla)), [])
         # 🤖 Agent: A step of rounding apart is the float frame's.
