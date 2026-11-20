@@ -366,7 +366,7 @@ impl GuestList {
         let Some(m) = g.motion.as_ref() else {
             return;
         };
-        super::attributes::syncable_into(&m.attributes, &mut g.syncable_attrs_cache.1);
+        g.syncable_attrs_cache.1 = super::attributes::syncable(&m.attributes);
     }
 
     /// Record vanished tracked entity positions on a guest's replay history.
