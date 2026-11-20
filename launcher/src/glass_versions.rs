@@ -74,6 +74,27 @@ impl Launcher {
         }
     }
 
+    /// Whether Use on Versions changes the launcher's version, which Nightly instances on Latest
+    /// play: when the instance Play starts plays it too. Otherwise Use changes only that one.
+    pub(crate) fn use_sets_selection(&self) -> bool {
+        self.selected_instance().is_none_or(|i| {
+            i.java.is_some() || (i.version.is_none() && i.channel == instances::Channel::Nightly)
+        })
+    }
+
+    /// How a player gets Latest following each new Nightly again, once Versions holds an older
+    /// one: Use on the newest there, after setting the instance Play starts to Latest on Nightly
+    /// when Use would change only that one.
+    pub(crate) fn follow_again_hint(&self) -> String {
+        match self.selected_instance().filter(|_| !self.use_sets_selection()) {
+            Some(i) => trf(
+                "Set {instance} to Latest on Nightly, then press Use on the newest on Versions to follow new ones",
+                &[("instance", &i.name)],
+            ),
+            None => tr("Press Use on the newest on Versions to follow new ones").to_string(),
+        }
+    }
+
     /// The launcher's version when Use picked one older than the newest installed: what an
     /// instance set to Latest on Nightly plays then, named so "Latest" never says otherwise.
     pub(crate) fn held_version(&self) -> Option<&String> {
@@ -563,10 +584,7 @@ impl Launcher {
         }
         if !selected {
             // Use changes what the selected instance plays; its label says whom that moves.
-            let follows = self.selected_instance().is_none_or(|i| {
-                i.java.is_some()
-                    || (i.version.is_none() && i.channel == instances::Channel::Nightly)
-            });
+            let follows = self.use_sets_selection();
             let tip = match (follows, self.selected_instance()) {
                 (false, Some(i)) => trf(
                     "Play this version only in {instance}. To go back to the latest, choose Latest in its settings, Installation.",

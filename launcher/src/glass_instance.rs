@@ -1098,11 +1098,15 @@ impl Launcher {
                 .child(match (channel, held.as_ref().filter(|_| pin.is_none())) {
                 (Channel::Stable, _) => tr("One build a week, fewer surprises").to_string(),
                 (Channel::Nightly, None) => tr("Every day's build: newest, may break").to_string(),
-                (Channel::Nightly, Some(_)) => tr(
+                (Channel::Nightly, Some(_)) if self.use_sets_selection() => tr(
                     "Every day's build. Another version was picked on Versions: press Use on the \
                      newest there to follow new ones again.",
                 )
                 .to_string(),
+                (Channel::Nightly, Some(_)) => trf(
+                    "Every day's build. Another version was picked on Versions. {how}.",
+                    &[("how", &self.follow_again_hint())],
+                ),
             });
         let current = match (&pin, &held) {
             (None, Some(held)) => trf("{version} (picked on Versions)", &[("version", held)]),
@@ -1158,7 +1162,7 @@ impl Launcher {
         let (title, details) = match &held {
             Some(held) => (
                 trf("{version} (picked on Versions)", &[("version", held)]),
-                tr("Press Use on the newest on Versions to follow new ones").to_string(),
+                self.follow_again_hint(),
             ),
             None => (
                 tr("Latest").to_string(),

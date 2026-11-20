@@ -106,6 +106,17 @@ pub fn published(version: &str) -> Option<(String, Option<String>)> {
     ))
 }
 
+/// When Nightly `version` came out, `YYYY-MM-DD HH:MM` UTC (the day alone when the list gave no
+/// time), if a release list said; for ordering two of one day.
+pub fn published_at(version: &str) -> Option<String> {
+    PUBLISHED
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(tag, ..)| tag == version)
+        .map(|(_, date, time)| format!("{date} {time}").trim_end().to_owned())
+}
+
 /// When Nightly `version` came out, `HH:MM` UTC, if another came out the same day.
 pub fn same_day_time(version: &str) -> Option<String> {
     published(version)?.1

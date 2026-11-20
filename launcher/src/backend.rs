@@ -1075,8 +1075,42 @@ fn installed_in(versions: &Path) -> Vec<String> {
         .filter(|e| e.path().join(COMPLETE).exists())
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
-    tags.sort_by(|a, b| compare_versions(b, a));
+    // Read once: a later release list notes the times itself.
+    static READ_KEPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !newest_first(&mut tags, crate::nightly::published_at)
+        && !READ_KEPT.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        // Two Nightlies of one day before a release list was read: when they came out is in the
+        // copy of the list kept on disk.
+        if let Some(list) = crate::github::kept(&release_list_url()) {
+            crate::nightly::note_published(&game_releases(&list));
+        }
+        newest_first(&mut tags, crate::nightly::published_at);
+    }
     tags
+}
+
+/// Sorts `tags` newest first: by [`release_order`], then Nightlies of one day by when they came
+/// out (`published`, `YYYY-MM-DD HH:MM` UTC), then by the tag, so the order never depends on the
+/// folder listing. False when two Nightlies of one day had no time to tell them apart.
+fn newest_first(tags: &mut [String], published: impl Fn(&str) -> Option<String>) -> bool {
+    let mut keyed: Vec<_> = tags
+        .iter()
+        .map(|t| {
+            let when = crate::nightly::date_of(t).and_then(|_| published(t));
+            (release_order(t), when, t.clone())
+        })
+        .collect();
+    keyed.sort_by(|a, b| b.cmp(a));
+    let told_apart = keyed.windows(2).all(|w| {
+        !(matches!(w[0].0, ReleaseOrder::Nightly(_))
+            && w[0].0 == w[1].0
+            && (w[0].1.is_none() || w[1].1.is_none()))
+    });
+    for (slot, (_, _, tag)) in tags.iter_mut().zip(keyed) {
+        *slot = tag;
+    }
+    told_apart
 }
 
 /// A small release file (its checksums or their signature), whole; None when it has none.
@@ -3457,7 +3491,7 @@ pub fn check_updates() -> Result<Updates, String> {
 }
 
 mod update_selection;
-pub use update_selection::{select_after_instance_install, select_after_update};
+pub use update_selection::{select_after_update, selection_after_install, InstallCause};
 
 /// Installs `tag` (or with "latest" the newest release, pre-releases left out), then updates the selection as
 /// `select_after_update` says when `as_update`, or always selects it otherwise.
@@ -3488,10 +3522,24 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
     }
     let mut settings = Settings::load();
     // An older Nightly is a deliberate rollback: installed, but an update never moves the selection back.
-    let select = !as_update
-        || (downgrade.is_none() && select_after_update(settings.selected.as_deref(), &before));
-    if select {
+    let select = match (as_update, &downgrade) {
+        (false, _) => Some(false),
+        (true, Some(_)) => None,
+        (true, None) => selection_after_install(
+            settings.selected.as_deref(),
+            settings.following.as_deref(),
+            &release.tag,
+            &before,
+            &installed(),
+            InstallCause {
+                update: true,
+                instance: None,
+            },
+        ),
+    };
+    if let Some(follow) = select {
         settings.selected = Some(release.tag.clone());
+        settings.following = follow.then(|| release.tag.clone());
         settings.save()?;
     }
     if as_update && release.nightly.is_some() {
@@ -4422,6 +4470,12 @@ impl WhilePlaying {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub selected: Option<String>,
+    /// The version the launcher itself selected (an update, or a newer Nightly installed for an
+    /// instance): while `selected` is this one, it follows each newer Nightly. A person's pick
+    /// leaves it behind, and a settings file from before it has none: neither follows
+    /// ([`selection_after_install`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub following: Option<String>,
     /// Game asset architecture. Auto preserves the launcher's process-architecture behavior.
     #[serde(default)]
     pub game_architecture: GameArchitecture,
@@ -4537,6 +4591,13 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Takes the selection (`selected`, `following`) as `saved` has it: what the command line,
+    /// or another window, saved meanwhile.
+    pub fn selection_from(&mut self, saved: &Settings) {
+        self.selected = saved.selected.clone();
+        self.following = saved.following.clone();
+    }
+
     /// Remember an explicit approval; merely finding an installed toolchain never grants it.
     pub fn allow_native_mods(&mut self) -> Result<(), String> {
         self.native_mods_allowed_at = Some(
@@ -6676,30 +6737,167 @@ pub fn {f}("
             "nightly-2026-11-20-0a875da",
         );
         let list = |tags: &[&str]| tags.iter().map(|t| t.to_string()).collect::<Vec<_>>();
-        // Following the newest (n18), an instance pinned to n19 installs it: the selection
+        let pinned = |nightly| InstallCause {
+            update: false,
+            instance: Some(nightly),
+        };
+        let update = InstallCause {
+            update: true,
+            instance: None,
+        };
+        // A follower on n18; an instance pinned to n19 on Nightly installs it: the selection
         // follows, and the next update moves it on again.
-        assert!(select_after_instance_install(
-            Some(n18),
-            &list(&[n18]),
-            &list(&[n19, n18]),
-            n19
-        ));
-        assert!(select_after_update(Some(n19), &list(&[n19, n18])));
-        // Use picked n18 over the newer n19: neither an instance's n20 nor the update moves it.
-        assert!(!select_after_instance_install(
-            Some(n18),
-            &list(&[n19, n18]),
-            &list(&[n20, n19, n18]),
-            n20
-        ));
-        assert!(!select_after_update(Some(n18), &list(&[n19, n18])));
+        let (before, now) = (list(&[n18]), list(&[n19, n18]));
+        assert_eq!(
+            selection_after_install(Some(n18), Some(n18), n19, &before, &now, pinned(true)),
+            Some(true)
+        );
+        let (before, now) = (list(&[n19, n18]), list(&[n20, n19, n18]));
+        assert_eq!(
+            selection_after_install(Some(n19), Some(n19), n20, &before, &now, update),
+            Some(true)
+        );
+        // Use on the older n18 over n19: neither an instance's n20 nor the update moves it.
+        assert_eq!(
+            selection_after_install(Some(n18), Some(n19), n20, &before, &now, pinned(true)),
+            None
+        );
+        assert_eq!(
+            selection_after_install(Some(n18), Some(n19), n20, &before, &now, update),
+            None
+        );
+        // n19 installed by hand while it was the newest (or a settings file from before
+        // `following`): a pick, which an instance's n20 leaves. An update still moves it, as
+        // before, and from then on it follows.
+        assert_eq!(
+            selection_after_install(Some(n19), None, n20, &before, &now, pinned(true)),
+            None
+        );
+        assert_eq!(
+            selection_after_install(Some(n19), None, n20, &before, &now, update),
+            Some(true)
+        );
+        // Use on the newest, the way back the picker names: the next update follows on.
+        assert_eq!(
+            selection_after_install(Some(n19), Some(n18), n20, &before, &now, update),
+            Some(true)
+        );
+        // Home's Stable update, or a Stable instance: never moves a selection the launcher has.
+        assert_eq!(
+            selection_after_install(Some(n19), Some(n19), n20, &before, &now, pinned(false)),
+            None
+        );
         // An older build for an instance never moves the selection back.
-        assert!(!select_after_instance_install(
-            Some(n19),
-            &list(&[n19]),
-            &list(&[n19, n18]),
-            n18
-        ));
+        let (before, now) = (list(&[n20, n19]), list(&[n20, n19, n18]));
+        assert_eq!(
+            selection_after_install(Some(n20), Some(n20), n18, &before, &now, pinned(true)),
+            None
+        );
+        // Installed by hand: selected as a pick, never followed.
+        let by_hand = InstallCause {
+            update: false,
+            instance: None,
+        };
+        assert_eq!(
+            selection_after_install(Some(n20), Some(n20), n18, &before, &now, by_hand),
+            Some(false)
+        );
+        // A launcher without a selection takes what an instance installed, as before.
+        assert_eq!(
+            selection_after_install(None, None, n18, &[], &list(&[n18]), pinned(false)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_selection_set_on_the_command_line_during_a_download_stays() {
+        let (n17, n18, n19) = (
+            "nightly-2026-11-17-1234567",
+            "nightly-2026-11-18-dd67b76",
+            "nightly-2026-11-19-f00125f",
+        );
+        // The window saw a follower on n18. While n19 downloaded for a pinned instance,
+        // `settings selected-version` saved n17.
+        let window = Settings {
+            selected: Some(n18.into()),
+            following: Some(n18.into()),
+            ..Settings::default()
+        };
+        // The command saves only `selected`.
+        let mut saved = Settings::parse(&serde_json::to_string(&window).unwrap());
+        saved.selected = Some(n17.into());
+        let mut window = window;
+        window.selection_from(&saved);
+        let installed = [n19.to_string(), n18.to_string(), n17.to_string()];
+        let cause = InstallCause {
+            update: false,
+            instance: Some(true),
+        };
+        assert_eq!(
+            selection_after_install(
+                window.selected.as_deref(),
+                window.following.as_deref(),
+                n19,
+                &installed[1..],
+                &installed,
+                cause
+            ),
+            None
+        );
+        assert_eq!(window.selected.as_deref(), Some(n17));
+    }
+
+    #[test]
+    fn nightlies_of_one_day_are_ordered_by_when_they_came_out() {
+        let (a, b, c) = (
+            "nightly-2026-11-19-5ef7734",
+            "nightly-2026-11-19-f00125f",
+            "nightly-2026-11-20-0a875da",
+        );
+        let published = |t: &str| {
+            match t {
+                "nightly-2026-11-19-5ef7734" => Some("2026-11-20 02:32"),
+                "nightly-2026-11-19-f00125f" => Some("2026-11-19 15:33"),
+                "nightly-2026-11-20-0a875da" => Some("2026-11-20 11:18"),
+                _ => None,
+            }
+            .map(str::to_owned)
+        };
+        for listing in [[a, b, c], [b, a, c], [c, b, a]] {
+            let mut tags: Vec<String> = listing.iter().map(|t| t.to_string()).collect();
+            assert!(newest_first(&mut tags, published));
+            assert_eq!(tags, [c, a, b]);
+        }
+        // Not known yet: still one order whatever the folder listing, and said so.
+        for listing in [[a, b], [b, a]] {
+            let mut tags: Vec<String> = listing.iter().map(|t| t.to_string()).collect();
+            assert!(!newest_first(&mut tags, |_| None));
+            assert_eq!(tags, [b, a]);
+        }
+    }
+
+    #[test]
+    fn a_nightly_reads_when_it_came_out_from_the_release_list() {
+        let list = serde_json::json!([{
+            "tag_name": "nightly-2026-11-19",
+            "name": "Nightly 2026-11-19 · 5ef7734",
+            "published_at": "2026-11-20T02:32:23Z",
+            "prerelease": true,
+            "assets": [],
+        }]);
+        let r = &parse_releases(&list, None, |_| true)[0];
+        assert_eq!((r.date.as_str(), r.time.as_str()), ("2026-11-20", "02:32"));
+        let nightly = Release {
+            nightly: Some(r.tag.clone()),
+            tag: crate::nightly::version_of(r),
+            ..r.clone()
+        };
+        assert_eq!(nightly.tag, "nightly-2026-11-19-5ef7734");
+        crate::nightly::note_published(&[nightly]);
+        assert_eq!(
+            crate::nightly::published_at("nightly-2026-11-19-5ef7734").as_deref(),
+            Some("2026-11-20 02:32")
+        );
     }
 
     /// The Nightly is the only build Horizon ships (docs/release-flow.md): every launcher takes the

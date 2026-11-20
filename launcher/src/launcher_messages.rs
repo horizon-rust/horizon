@@ -206,28 +206,43 @@ impl Launcher {
                             if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
                                 self.updates.horizon = None;
                             }
-                            // An instance's own version leaves the other instances on theirs,
-                            // unless it is the newest and the selection was following the newest.
-                            // Judged now, not when the download started: a version picked on
-                            // Versions meanwhile stays picked.
+                            // Judged on the selection as saved now, not when the download
+                            // started: a version picked on Versions or with `settings
+                            // selected-version` meanwhile stays picked.
+                            if self.settings_save_error.is_none() {
+                                self.settings.selection_from(&Settings::load());
+                            }
                             let before: Vec<String> = self
                                 .installed
                                 .iter()
                                 .filter(|t| **t != tag)
                                 .cloned()
                                 .collect();
-                            let selected = self.settings.selected.as_deref();
-                            let select = as_update
-                                .is_none_or(|_| backend::select_after_update(selected, &before))
-                                && (!for_instance
-                                    || self.launcher_version().is_none()
-                                    || backend::select_after_instance_install(
-                                        selected,
-                                        &before,
-                                        &self.installed,
-                                        &tag,
-                                    ));
-                            if select {
+                            // An instance's own version leaves the selection where it is, unless
+                            // an instance on the Nightly channel is pinned to it and the
+                            // selection follows the newest. Home's Stable update never moves it.
+                            let instance = (for_instance || stable.is_some()).then(|| {
+                                stable.is_none()
+                                    && horizon_launcher::instances::list().iter().any(|i| {
+                                        i.java.is_none()
+                                            && i.channel
+                                                == horizon_launcher::instances::Channel::Nightly
+                                            && i.version.as_deref() == Some(tag.as_str())
+                                    })
+                            });
+                            let select = backend::selection_after_install(
+                                self.settings.selected.as_deref(),
+                                self.settings.following.as_deref(),
+                                &tag,
+                                &before,
+                                &self.installed,
+                                backend::InstallCause {
+                                    update: as_update.is_some(),
+                                    instance,
+                                },
+                            );
+                            if let Some(follow) = select {
+                                self.settings.following = follow.then(|| tag.clone());
                                 self.settings.selected = Some(tag);
                             }
                             // Pruning reads settings from disk: protect the selection only once
