@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -547,11 +548,17 @@ class SnapshotStoreTests(unittest.TestCase):
                 gate.store_snapshot(self.store, out, self.key, "/work/main")
         self.assertEqual(list(self.store.iterdir()), [])
 
-    def check(self, base_points):
+    def check(self, base_points, base_files=None, checkout_files=None):
         """main() comparing a working tree of [tick] with the base `self.key` names, the stored snapshot (if any)
         holding [tick] as well: (status, the sides built, the output). Git and the generator are stand-ins; a built
-        base writes `base_points`."""
-        sides = []
+        base writes `base_points`. `base_files` are the base commit's files ({name: text}) and `checkout_files` those
+        written into the checkout."""
+        sides, base_files = [], base_files or {}
+        checkout = self.tmp / "checkout"
+        shutil.rmtree(checkout, ignore_errors=True)
+        checkout.mkdir()
+        for name, text in (checkout_files or {}).items():
+            (checkout / name).write_text(text)
 
         def snapshot(root, out, target_dir, side):
             sides.append(side)
@@ -564,6 +571,10 @@ class SnapshotStoreTests(unittest.TestCase):
         def git(*args, cwd=gate.ROOT):
             if args[0] == "rev-parse":
                 return self.key["commit"]
+            if args[0] == "ls-tree":
+                return args[-1] if args[-1] in base_files else ""
+            if args[0] == "show":
+                return base_files[args[1].split(":", 1)[1]].strip()
             self.assertEqual(args[:2], ("worktree", "add"))
             Path(args[-2]).mkdir(parents=True)
             return ""
@@ -572,6 +583,7 @@ class SnapshotStoreTests(unittest.TestCase):
         listed = gate.subprocess.CompletedProcess([], 0, "", "")
         with mock.patch.object(gate, "snapshot", snapshot), mock.patch.object(gate, "git", git), \
                 mock.patch.object(gate, "toolchain", lambda root: self.RUSTC), \
+                mock.patch.object(gate, "ROOT", checkout), \
                 mock.patch.object(gate.subprocess, "run", return_value=listed), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             status = gate.main(["--base", "HEAD", "--snapshots", str(self.store), "--target-dir", str(self.tmp)])
@@ -599,6 +611,53 @@ class SnapshotStoreTests(unittest.TestCase):
                 self.assertEqual((status, sides), (1, ["base", "working tree"]), out)
                 self.assertIn(f"Mod points base snapshot: {route}; base 3 s (compile 1 s, generator 2 s)", out)
                 self.assertIn("Points removed and failing (1):", out)
+
+    def test_a_toolchain_only_the_change_selects_never_hits(self):
+        # The probe runs in the checkout, so a pin there could match a snapshot the base's compiler never made.
+        self.key = gate.snapshot_key("c0ffee", self.RUSTC)
+        pin = '[toolchain]\nchannel = "1.99.0"\n'
+        for name, base_files, checkout_files in (
+                ("added", {}, {"rust-toolchain.toml": pin}),
+                ("changed", {"rust-toolchain": "1.98.0"}, {"rust-toolchain": "1.99.0"}),
+                ("removed", {"rust-toolchain.toml": pin}, {})):
+            with self.subTest(name):
+                shutil.rmtree(self.store, ignore_errors=True)
+                shutil.rmtree(self.tmp / "main-out", ignore_errors=True)
+                self.stored()
+                status, sides, out = self.check([point("tick"), point("gone")], base_files, checkout_files)
+                self.assertEqual((status, sides), (1, ["base", "working tree"]), out)
+                self.assertIn("Mod points base snapshot: miss: the change selects another toolchain;", out)
+        with self.subTest("the same pin"):
+            status, sides, out = self.check([point("tick")], {"rust-toolchain.toml": pin}, {"rust-toolchain.toml": pin})
+            self.assertEqual((status, sides), (0, ["working tree"]), out)
+
+
+class ToolchainFilesTests(unittest.TestCase):
+    """selects_base_toolchain on a real repository: the checkout's toolchain files against a commit's."""
+
+    def test_a_file_the_change_adds_edits_or_removes_selects_another_toolchain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def commit(message):
+                for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                                             "commit", "-q", "--allow-empty", "-m", message]):
+                    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+                return gate.git("rev-parse", "HEAD", cwd=root)
+
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "lib.rs").write_text("")
+            plain = commit("no pin")
+            self.assertTrue(gate.selects_base_toolchain(plain, root))
+            (root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.99.0"\n')
+            self.assertFalse(gate.selects_base_toolchain(plain, root), "untracked pin")
+            pinned = commit("pin")
+            self.assertTrue(gate.selects_base_toolchain(pinned, root))
+            self.assertFalse(gate.selects_base_toolchain(plain, root), "committed pin")
+            (root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.98.0"\n')
+            self.assertFalse(gate.selects_base_toolchain(pinned, root), "edited pin")
+            (root / "rust-toolchain.toml").unlink()
+            self.assertFalse(gate.selects_base_toolchain(pinned, root), "removed pin")
 
 
 if __name__ == "__main__":

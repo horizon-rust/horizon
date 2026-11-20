@@ -480,13 +480,31 @@ STAGED_STAMP = ".horizon-source-staged"
 
 def toolchain(root):
     """`rustc -vV` of the compiler Cargo uses in the checkout at `root` (`RUSTC`, else rustup's choice there, a
-    directory override included), or None when it cannot run. The base worktree has the commit's own toolchain file, so
-    a toolchain the pull request changes only makes a miss."""
+    directory override included), or None when it cannot run. It is the base's compiler only when the checkout selects
+    the toolchain as the base does (selects_base_toolchain)."""
     try:
         result = subprocess.run([os.environ.get("RUSTC") or "rustc", "-vV"], cwd=root, capture_output=True, text=True)
     except OSError:
         return None
     return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+# The files in a directory that rustup reads to choose its toolchain.
+TOOLCHAIN_FILES = ("rust-toolchain", "rust-toolchain.toml")
+
+
+def selects_base_toolchain(base, root=ROOT):
+    """Whether the checkout at `root` has the base's toolchain files (the same text, or both without the file), so the
+    compiler probed in the checkout is the one a build of the base would get. A file the change adds, edits or removes,
+    tracked or not, makes this False."""
+    for name in TOOLCHAIN_FILES:
+        in_base = git("show", f"{base}:{name}", cwd=root) if git("ls-tree", "--name-only", base, "--", name,
+                                                                   cwd=root) else None
+        path = Path(root) / name
+        here = path.read_text(encoding="utf-8", errors="replace").strip() if path.is_file() else None
+        if in_base != here:
+            return False
+    return True
 
 
 def snapshot_key(commit, rustc, env=None):
@@ -656,9 +674,17 @@ def main(argv=None):
         print(f"Base {base[:12]}, build folder {target}")
         base_dir, base_root, route = None, None, "built: no snapshot folder given"
         if args.snapshots:
-            rustc = toolchain(ROOT)
-            route = "miss: rustc -vV failed"
-            if rustc is not None:
+            try:
+                same_toolchain = selects_base_toolchain(base, ROOT)
+            except (RuntimeError, OSError):
+                same_toolchain = None
+            if same_toolchain is None:
+                route = "miss: the toolchain files could not be read"
+            elif not same_toolchain:
+                route = "miss: the change selects another toolchain"
+            elif (rustc := toolchain(ROOT)) is None:
+                route = "miss: rustc -vV failed"
+            else:
                 base_dir, base_root, route = find_snapshot(args.snapshots, snapshot_key(base, rustc))
         if base_dir is None:
             git("worktree", "add", "--detach", "--quiet", str(worktree), base)
