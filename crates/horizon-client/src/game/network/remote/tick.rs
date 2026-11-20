@@ -210,7 +210,8 @@ impl Game<'_> {
         // trying again a tick before the server's entry ends.
         self.cooldowns.tick();
         // Player.tick's sleep counter (the darkening and the wake-up fade).
-        self.sleep_timer = super::super::tick_sleep_timer(self.sleep_timer, self.sleeping.is_some());
+        self.sleep_timer =
+            super::super::tick_sleep_timer(self.sleep_timer, self.sleeping.is_some());
         let stick = self.pad_move();
         if self.player.is_none() {
             return Ok(());

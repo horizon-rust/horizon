@@ -26,7 +26,9 @@ impl Game<'_> {
     }
 
     /// This player's account: a splitscreen player's own, else the game's (P1's).
-    pub(in crate::game) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
+    pub(in crate::game) fn auth(
+        &self,
+    ) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
         match self.options.split_guest {
             true => self.split_auth.clone(),
             false => horizon_client::auth::current(),

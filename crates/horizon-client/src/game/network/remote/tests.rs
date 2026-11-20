@@ -196,8 +196,7 @@ fn stopping_a_retained_client_dig_aborts_only_once() {
             game.connect_local(client, "MiningTest").unwrap();
             let pos = [0, 64, 0];
             game.set_mode_id(0);
-            game.player =
-                Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 3.5)).unwrap());
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 3.5)).unwrap());
             game.world
                 .chunks
                 .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
@@ -276,12 +275,8 @@ fn remote_player_use_animation_dispatches_once() {
             remote.entity_id = 42;
             remote.level_players.insert(66, 789);
             let kind = remote.player_type.as_ref().unwrap().clone();
-            let mut mob = horizon_client::mobs::Mob::new(
-                66,
-                kind,
-                horizon_core::geometry::Vec3::ZERO,
-                0.0,
-            );
+            let mut mob =
+                horizon_client::mobs::Mob::new(66, kind, horizon_core::geometry::Vec3::ZERO, 0.0);
             mob.extra.using_item = 1;
             mob.extra.set_slot_stack(
                 horizon_items::equipment::MAINHAND,
@@ -716,11 +711,8 @@ fn a_mod_chat_line_shows_locally_and_sends_nothing() {
             .set_read_timeout(Some(std::time::Duration::from_secs(1)))
             .unwrap();
         while reader.recv().is_ok() {}
-        mod_api::prelude::NetworkClientHost::chat_line(
-            game,
-            mod_api::Text::literal("local only"),
-        )
-        .unwrap();
+        mod_api::prelude::NetworkClientHost::chat_line(game, mod_api::Text::literal("local only"))
+            .unwrap();
         let history: Vec<_> = game
             .remote
             .as_ref()
@@ -1099,11 +1091,7 @@ fn dimension_transition_screen_is_selected_at_entry_drawn_and_dropped() {
                 let tracker = game.remote.as_ref().unwrap().level_load;
                 assert!(tracker.transition_screen().is_some());
                 let mut batch = HudBatch::scratch([320, 240]);
-                assert!(game.draw_dimension_transition_screen(
-                    &mut batch,
-                    &tracker,
-                    Some(0.25)
-                ));
+                assert!(game.draw_dimension_transition_screen(&mut batch, &tracker, Some(0.25)));
                 assert!(!batch.vertices.is_empty());
                 game.remote.as_mut().unwrap().level_load.finish();
                 let tracker = game.remote.as_ref().unwrap().level_load;
@@ -1216,8 +1204,7 @@ fn client_menu_reads_follow_packets_and_lifetimes() {
         game.remote.as_mut().unwrap().state_id = 17;
         assert!(menu.click(game, &[pickup(36)]));
         let (id, body) = reader.recv().unwrap();
-        let play::Serverbound::ContainerClick(sent) =
-            play::Serverbound::decode(id, &body).unwrap()
+        let play::Serverbound::ContainerClick(sent) = play::Serverbound::decode(id, &body).unwrap()
         else {
             panic!("expected the first valid click, not a refused request");
         };
@@ -1725,8 +1712,7 @@ fn client_handles_reach_a_custom_level() {
             assert_eq!(level.dimension_type(game).unwrap().ambient_light, ambient);
         }
         // Disconnect drops the connection-owned table; the server table is untouched.
-        let lifetime =
-            Arc::downgrade(game.remote.as_ref().unwrap().level_facts.as_ref().unwrap());
+        let lifetime = Arc::downgrade(game.remote.as_ref().unwrap().level_facts.as_ref().unwrap());
         game.leave_server(None).unwrap();
         assert!(
             lifetime.upgrade().is_none(),
@@ -2774,8 +2760,8 @@ use super::{
 #[ignore = "daily"]
 fn tracking_emitters_follow_the_packet_target() {
     use crate::game::{
-        Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole,
-        load_resources, totem::TOTEM_EVENT,
+        Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        totem::TOTEM_EVENT,
     };
     use horizon_client::{motion::PlayerMotion, particles::ParticleType, pose::Pose};
     use horizon_core::geometry::Vec3;
@@ -2977,10 +2963,8 @@ fn block_alias_survival_consumption_and_client_prediction() {
         content,
         jars: Vec::new(),
     }];
-    let inventory = horizon_mod_package::enabled::EnabledMods::new([(
-        "ruby".to_owned(),
-        mod_api::Side::Both,
-    )]);
+    let inventory =
+        horizon_mod_package::enabled::EnabledMods::new([("ruby".to_owned(), mod_api::Side::Both)]);
     build(&base, std::path::Path::new(""), &mods, &root, &inventory).unwrap();
     let (registry, _) = horizon_world::level::data::load_registry_with_flags(&root).unwrap();
     crate::game::api_values::register_game_keys((0..registry.len()).map(|id| {
@@ -3099,8 +3083,8 @@ fn a_servers_client_takes_its_speed_from_the_attributes_not_the_effect() {
     use horizon_client::motion::PlayerMotion;
     use horizon_core::geometry::Vec3;
     use horizon_protocol::packets::play::{
-        AttributeModifier, AttributeSnapshot, Clientbound as C, RemoveMobEffect,
-        UpdateAttributes, UpdateMobEffect,
+        AttributeModifier, AttributeSnapshot, Clientbound as C, RemoveMobEffect, UpdateAttributes,
+        UpdateMobEffect,
     };
     let root = std::path::PathBuf::from(
         std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
@@ -3287,11 +3271,8 @@ fn mod_open_chat_fills_the_box_only_over_the_world() {
     assert!(game.open_chat("/tp ").is_err());
     assert!(game.ui.chat_screen.is_none());
     game.player = Some(
-        horizon_client::motion::PlayerMotion::new(
-            game.motion,
-            horizon_core::geometry::Vec3::ZERO,
-        )
-        .unwrap(),
+        horizon_client::motion::PlayerMotion::new(game.motion, horizon_core::geometry::Vec3::ZERO)
+            .unwrap(),
     );
     game.screen = Screen::Paused;
     assert!(game.open_chat("/tp ").is_err());
@@ -4177,15 +4158,13 @@ fn a_dragon_sound_uses_live_movement_without_losing_mob_metadata() {
     let tracked = std::collections::HashMap::new();
     for position in [[24.0, 80.0, -16.0], [25.5, 81.0, -18.0]] {
         let state =
-            super::entity_sound_state(7, None, Some(stale), &tracked, Some((7, position)))
-                .unwrap();
+            super::entity_sound_state(7, None, Some(stale), &tracked, Some((7, position))).unwrap();
         assert_eq!(state.position, position);
         assert!(state.silent);
         assert!(!state.removed);
     }
     let unrelated =
-        super::entity_sound_state(7, None, Some(stale), &tracked, Some((8, [99.0; 3])))
-            .unwrap();
+        super::entity_sound_state(7, None, Some(stale), &tracked, Some((8, [99.0; 3]))).unwrap();
     assert_eq!(unrelated.position, stale.position);
     assert!(super::entity_sound_state(7, None, None, &tracked, Some((7, [99.0; 3]))).is_none());
 }
@@ -4250,15 +4229,13 @@ fn a_predicted_throw_from_a_slot_swings_the_hand() {
     };
     // The first hotbar slot of InventoryMenu.
     menu.set_slot(&env, 36, Some(cobblestone));
-    let (sent, threw) =
-        super::predict_clicks(&mut menu, &env, &[(36, 0, Input::Throw)]).unwrap();
+    let (sent, threw) = super::predict_clicks(&mut menu, &env, &[(36, 0, Input::Throw)]).unwrap();
     assert!(threw, "Q over a slot drops one and swings");
     assert_eq!(menu.slot(36).map(|s| s.count), Some(15));
     assert_eq!(sent.len(), 1);
     let (_, threw) = super::predict_clicks(&mut menu, &env, &[(36, 0, Input::Pickup)]).unwrap();
     assert!(!threw, "picking the stack up drops nothing");
-    let (_, threw) =
-        super::predict_clicks(&mut menu, &env, &[(-999, 1, Input::Pickup)]).unwrap();
+    let (_, threw) = super::predict_clicks(&mut menu, &env, &[(-999, 1, Input::Pickup)]).unwrap();
     assert!(threw, "one of the carried stack outside the window");
 }
 
@@ -4267,9 +4244,7 @@ fn placement_preview_checks_obstruction_without_changing_the_level() {
     use super::DryLevel;
     use horizon_core::{position::BlockPos, random::LegacyRandom};
     use horizon_world::{
-        level::{
-            Behaviours, LevelAccess, PlaceContext, PlaceOutcome, Ticks, data::load_registry,
-        },
+        level::{Behaviours, LevelAccess, PlaceContext, PlaceOutcome, Ticks, data::load_registry},
         registry::BlockStateId,
     };
 

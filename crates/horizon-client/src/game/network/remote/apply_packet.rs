@@ -928,7 +928,10 @@ impl Game<'_> {
                     super::super::pickups::Collector::Mob(p.player as u32)
                 };
                 if let Some(item) = self.dropped.iter().find(|d| d.id == p.item as u32).cloned() {
-                    self.add_pickup(super::super::pickups::Taken::Item(Box::new(item)), collector);
+                    self.add_pickup(
+                        super::super::pickups::Taken::Item(Box::new(item)),
+                        collector,
+                    );
                 } else if let Some(orb) = self.orbs.iter().find(|o| o.id == p.item as u32).cloned()
                 {
                     self.add_pickup(super::super::pickups::Taken::Orb(Box::new(orb)), collector);
@@ -940,11 +943,17 @@ impl Game<'_> {
                     .cloned()
                 {
                     // An arrow flies to its collector too, then goes.
-                    self.add_pickup(super::super::pickups::Taken::Arrow(Box::new(shot)), collector);
+                    self.add_pickup(
+                        super::super::pickups::Taken::Arrow(Box::new(shot)),
+                        collector,
+                    );
                 } else if let Some(i) = self.tridents.iter().position(|t| t.id == p.item as u32) {
                     // So does a trident: a server's client keeps them apart.
                     let trident = self.tridents.remove(i);
-                    self.add_pickup(super::super::pickups::Taken::Trident(Box::new(trident)), collector);
+                    self.add_pickup(
+                        super::super::pickups::Taken::Trident(Box::new(trident)),
+                        collector,
+                    );
                 }
                 // An orb stays: the server may still hold merged ones in it.
                 if !orb {

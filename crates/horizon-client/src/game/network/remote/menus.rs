@@ -147,7 +147,11 @@ impl Game<'_> {
     /// A click outside a server's window (slot -999): predicted like
     /// `MultiPlayerGameMode.handleContainerInput` (the carried stack after
     /// `doClick`; the server drops the stack and swings the hand).
-    pub(in crate::game) fn remote_throw(&mut self, right: bool, input: horizon_client::menu::Input) {
+    pub(in crate::game) fn remote_throw(
+        &mut self,
+        right: bool,
+        input: horizon_client::menu::Input,
+    ) {
         use horizon_client::menu::Input;
         let container = self
             .remote

@@ -233,7 +233,12 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|r| in_storage_range(r.view_distance, r.chunk_center, x, z))
     }
-    pub(super) fn chunk_inside_remote_range(center: (i32, i32), distance: i32, x: i32, z: i32) -> bool {
+    pub(super) fn chunk_inside_remote_range(
+        center: (i32, i32),
+        distance: i32,
+        x: i32,
+        z: i32,
+    ) -> bool {
         in_storage_range(distance, center, x, z)
     }
     /// The columns a moved or resized storage no longer holds. Returns the

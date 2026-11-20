@@ -12,7 +12,11 @@ impl Game<'_> {
 
     /// Whether a main-hand right click with `held` would end on the block hit, for the gameplay
     /// guide: what `remote_block_reacts` answers on its dry level.
-    pub(in crate::game) fn block_takes_click(&mut self, hit: &super::super::Hit, held: Option<&ItemStack>) -> bool {
+    pub(in crate::game) fn block_takes_click(
+        &mut self,
+        hit: &super::super::Hit,
+        held: Option<&ItemStack>,
+    ) -> bool {
         self.remote_block_reacts(hit, held).0.consumes_action()
     }
     /// `InteractionResult.CONSUME` for this click: the block keeps it and does nothing, so the

@@ -363,7 +363,11 @@ impl Game<'_> {
 
     /// `BoneMealItem.useOn` with the acting hand's `stack` on this client's
     /// level (a copy: nothing grows here): whether it succeeds.
-    pub(super) fn remote_bone_meal_succeeds(&mut self, hit: &super::super::Hit, stack: &ItemStack) -> bool {
+    pub(super) fn remote_bone_meal_succeeds(
+        &mut self,
+        hit: &super::super::Hit,
+        stack: &ItemStack,
+    ) -> bool {
         let pos = horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
         let face = horizon_core::geometry::Direction::ALL[face_direction(hit.face) as usize];
         let (ask, _) = self.held_bonemeal(pos, stack);

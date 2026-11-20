@@ -819,26 +819,26 @@ fn number_format(f: &play::NumberFormat) -> horizon_client::scoreboard::NumberFo
     }
 }
 
-mod connection;
-mod wire;
-mod chat;
-mod polling;
-mod level_state;
-mod blocks;
-mod entities;
-mod menu_slots;
 mod apply_packet;
-mod scoreboard;
-mod skins;
+mod blocks;
+mod chat;
+mod connection;
+mod entities;
 mod entity_updates;
+mod input;
+mod level_state;
+mod menu_slots;
+mod menus;
+mod mining;
+mod player_state;
+mod polling;
+mod scoreboard;
+mod screens;
+mod skins;
 mod tick;
 mod tick_entities;
-mod player_state;
-mod mining;
 mod use_prediction;
-mod input;
-mod menus;
-mod screens;
+mod wire;
 
 /// `Entity.lookAt`'s rotation from `from` towards `to`, as (yaw, pitch).
 fn look_at_rotation(from: [f64; 3], to: [f64; 3]) -> (f32, f32) {
