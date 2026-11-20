@@ -430,18 +430,29 @@ impl RegionFile {
         chunk: ChunkPos,
         directory: &Path,
     ) -> io::Result<Option<ChunkRecord>> {
-        let i = slot(self.position, chunk)?;
-        let offset = self.offsets[i];
-        if offset == 0 {
+        if !self.is_external(chunk)? {
             return Ok(None);
+        }
+        let i = slot(self.position, chunk)?;
+        read_record(
+            &mut self.file,
+            directory,
+            chunk,
+            self.offsets[i],
+            self.timestamps[i],
+        )
+    }
+
+    /// Whether the chunk's stub marks it as stored in its own `c.X.Z.mcc`.
+    pub fn is_external(&mut self, chunk: ChunkPos) -> io::Result<bool> {
+        let offset = self.offsets[slot(self.position, chunk)?];
+        if offset == 0 {
+            return Ok(false);
         }
         self.file
             .seek(SeekFrom::Start(u64::from(offset >> 8) * SECTOR as u64))?;
         let mut header = [0; 5];
-        if self.file.read(&mut header)? < header.len() || header[4] & 128 == 0 {
-            return Ok(None);
-        }
-        read_record(&mut self.file, directory, chunk, offset, self.timestamps[i])
+        Ok(self.file.read(&mut header)? == header.len() && header[4] & 128 != 0)
     }
 
     /// Export all chunks, preserving untouched compressed bytes and timestamps.

@@ -8,7 +8,17 @@ use std::path::Path;
 /// only as durable as NTFS's journal makes it.
 pub fn sync_dir(folder: &Path) -> io::Result<()> {
     #[cfg(unix)]
-    std::fs::File::open(folder)?.sync_all()?;
+    match std::fs::File::open(folder)?.sync_all() {
+        // Some filesystems (network and FUSE ones among them) refuse to sync
+        // a directory. A rename there is as durable as they make it; failing
+        // every upgrade and new world over it would be worse.
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
+            ) => {}
+        result => result?,
+    }
     #[cfg(not(unix))]
     let _ = folder;
     Ok(())
