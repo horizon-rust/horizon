@@ -72,6 +72,8 @@ impl Launcher {
             .is_none_or(|s| !installed.contains(s))
         {
             settings.selected = installed.first().cloned();
+            // The newest, chosen by the launcher: it follows new ones.
+            settings.following = settings.selected.clone();
         }
         // Pin the window's chrome (macOS title bar) to the choice before the theme reads
         // `window.appearance()`, so both draw the same look.

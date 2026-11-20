@@ -3080,6 +3080,8 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
     let mut settings = Settings::load();
     if settings.selected.as_deref() == Some(tag) {
         settings.selected = installed().first().cloned();
+        // The newest, chosen by the launcher: it follows new ones.
+        settings.following = settings.selected.clone();
         settings.save()?;
     }
     Ok(())
@@ -4596,6 +4598,13 @@ impl Settings {
     pub fn selection_from(&mut self, saved: &Settings) {
         self.selected = saved.selected.clone();
         self.following = saved.following.clone();
+    }
+
+    /// A person picks `tag` (Use, an import, the command line): it stays until a person picks
+    /// another, or an update finds it the newest ([`selection_after_install`]).
+    pub fn pick(&mut self, tag: String) {
+        self.selected = Some(tag);
+        self.following = None;
     }
 
     /// Remember an explicit approval; merely finding an installed toolchain never grants it.
@@ -6845,6 +6854,43 @@ pub fn {f}("
             None
         );
         assert_eq!(window.selected.as_deref(), Some(n17));
+    }
+
+    #[test]
+    fn a_followed_build_picked_again_stays_picked() {
+        let (n18, n19, n20, n21) = (
+            "nightly-2026-11-18-dd67b76",
+            "nightly-2026-11-19-f00125f",
+            "nightly-2026-11-20-0a875da",
+            "nightly-2026-11-21-1111111",
+        );
+        // A follower on n19 picks n18, n20 arrives, then it picks n19 again, now older.
+        let mut settings = Settings {
+            selected: Some(n19.into()),
+            following: Some(n19.into()),
+            ..Settings::default()
+        };
+        settings.pick(n18.into());
+        settings.pick(n19.into());
+        let now = [n21, n20, n19, n18].map(String::from);
+        for instance in [None, Some(true)] {
+            let cause = InstallCause {
+                update: instance.is_none(),
+                instance,
+            };
+            assert_eq!(
+                selection_after_install(
+                    settings.selected.as_deref(),
+                    settings.following.as_deref(),
+                    n21,
+                    &now[1..],
+                    &now,
+                    cause
+                ),
+                None,
+                "{cause:?}"
+            );
+        }
     }
 
     #[test]
