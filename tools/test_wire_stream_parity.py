@@ -177,8 +177,10 @@ SCENARIOS = {
     # Movement: the moves, flags and inputs a client sends where the ground isn't flat and open.
     # A 20-block fall from a teleport: every falling move, then the landing's on-ground flag. `phase`: the
     # moves after the teleport compare from the tick each client applied it (wire_stream.compare_phased); a
-    # fixed destination makes that state the same whenever the server answered.
-    'fall': dict(ticks=60, phase='accept_teleportation', steps={0: [f'command tp @s 0.5 {FLOOR + 21} 0.5']}),
+    # fixed destination makes that state the same whenever the server answered. `falls`: each client's moves
+    # from its answer on must fall and land, so a teleport answered too late to fall can't pass.
+    'fall': dict(ticks=60, phase='accept_teleportation', falls=True,
+                 steps={0: [f'command tp @s 0.5 {FLOOR + 21} 0.5']}),
     # Sprinting into a wall (horizontal collision, the sprint it stops), then sliding along it.
     'wall': dict(
         setup=[f'fill -3 {FLOOR + 1} 4 3 {FLOOR + 3} 4 minecraft:stone'],
@@ -200,7 +202,8 @@ SCENARIOS = {
         ticks=70, steps={0: ['key ctrl down', 'key w down'], 5: ['key space down'],
                          30: ['key space up', 'key w up', 'key ctrl up']}),
     # A server teleport while walking: its acceptance, then the moves from the new place with the key still held.
-    # The phase ends at the release (tick 40), which stays on the script's clock: walk compares a release.
+    # Answered in different ticks, the phase ends at the release (tick 40), which stays on the script's clock
+    # (walk compares a release); answered in the same tick, the release and the stop after it compare too.
     'teleport_moving': dict(ticks=60, phase='accept_teleportation',
                             steps={0: ['key w down'], 15: [f'command tp @s 0.5 {FLOOR + 1} 8.5'], 40: ['key w up']}),
     # An elytra: walking off a pillar 30 blocks up (the setup's teleport puts the player on it and the harness
@@ -494,7 +497,7 @@ def anchored_diffs(v, h, spec, problems, names=('vanilla', 'Horizon')):
     if 'phase' not in spec:
         return wire_stream.compare_answered(v, h, ticks, av, ah)
     until = phase_end(spec)
-    if max(av, ah) >= until:
+    if av != ah and max(av, ah) >= until:
         problems.append(f'  {anchor} after the script\'s next step (tick {until}): {names[0]} at tick {av}, '
                         f'{names[1]} at tick {ah}')
         return wire_stream.compare(v, h, min(av, ah) - 1)
@@ -536,6 +539,11 @@ def compare(captures, scenarios):
         if spec.get('expect') and not any(f.get('action') == spec['expect']
                                           for t in v[:ticks + 1] for _, f in t['packets']):
             problems.append(f'  {ref_name} never sent {spec["expect"]}')
+        # A fall from the teleport: each client's moves from its own answer on leave the ground and land.
+        for who, run in ((ref_name, v), (new_name, h)) if spec.get('falls') else ():
+            start = wire_stream.first_frame(run, spec['phase'])
+            if start is None or not wire_stream.fell_and_landed(run, start, ticks):
+                problems.append(f'  {who} did not fall and land after the teleport (answered at tick {start})')
         # The last on-ground flag: a player still in the air when the next reset comes ends it differently.
         for who, run in ((ref_name, v), (new_name, h)) if spec.get('lands') else ():
             grounds = [f['on_ground'] for t in run[:ticks + 1] for _, f in t['packets'] if 'on_ground' in f]
