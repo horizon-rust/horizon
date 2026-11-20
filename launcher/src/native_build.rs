@@ -162,27 +162,38 @@ impl Launcher {
             .flatten();
         self.native_done = None;
         let tx = self.tx.clone();
+        let done = self.tx.clone();
+        // The worker builds the instance and base the request captured. The result goes to the
+        // window as soon as the build ends, before the old-build cleanup that follows on this
+        // thread; a panic still sends one (#18669).
         std::thread::spawn(move || {
-            let result = native_mods::build(
-                &base,
-                &folder,
-                &instance,
-                None,
-                native_mods::Asked {
-                    caller: native_mods::Caller::Window,
-                    back_up,
+            native_mods::deliver_once(
+                |deliver| {
+                    native_mods::build_then(
+                        &base,
+                        &folder,
+                        &instance,
+                        None,
+                        native_mods::Asked {
+                            caller: native_mods::Caller::Window,
+                            back_up,
+                        },
+                        |step| {
+                            let _ = tx.send(Msg::NativeProgress(step.shown(), step.progress()));
+                        },
+                        |inventory| {
+                            let (reply, answer) = std::sync::mpsc::channel();
+                            tx.send(Msg::NativeRegistryConsent(inventory.clone(), reply))
+                                .is_ok()
+                                && answer.recv().unwrap_or(false)
+                        },
+                        deliver,
+                    )
                 },
-                |step| {
-                    let _ = tx.send(Msg::NativeProgress(step.shown(), step.progress()));
-                },
-                |inventory| {
-                    let (reply, answer) = std::sync::mpsc::channel();
-                    tx.send(Msg::NativeRegistryConsent(inventory.clone(), reply))
-                        .is_ok()
-                        && answer.recv().unwrap_or(false)
+                |result| {
+                    let _ = done.send(Msg::Native(result));
                 },
             );
-            let _ = tx.send(Msg::Native(result));
         });
     }
 
