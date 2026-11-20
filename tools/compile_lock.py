@@ -17,21 +17,27 @@ lock on `priority`, which it keeps. An exclusive and a shared lock on one file n
 `pr` job takes `turn` no priority job has arrived; one that arrives later waits for `turn` like anybody. No
 interleaving lets a pull request's job start compiling under the lock while a priority job is here.
 
-Priority jobs among themselves, and pull requests among themselves, poll `turn` every POLL seconds: first come,
-first served as far as polling allows, not a strict queue. Every wait is bounded (WAIT, by time.monotonic): then the
-job compiles anyway and says who held the turn. A priority job that goes ahead keeps its `priority` lock, so no pull
+Priority jobs among themselves, and pull requests among themselves, poll `turn` every POLL seconds with a bounded
+wait: whoever polls first after a release gets the turn, which is no queue. Every wait is bounded (WAIT, by
+time.monotonic): then the job compiles anyway and says who held the turn. A priority job that goes ahead keeps its `priority` lock, so no pull
 request starts beside it meanwhile. A holder that hangs is only ever met by these bounds: nothing is taken over,
 renamed or deleted here, ever.
 
 Fail open: a folder or lock file that can't be opened, isn't a real directory or regular file, or a system without
-fcntl (Windows): said once, and the job compiles without the lock. The `holder` file is display only (who holds the
-turn, since when): never trusted, size-capped, and cut to an allow-list of characters before it reaches a log.
+fcntl (Windows): said once, and the job compiles without the lock. The folder and both lock files may already exist
+and be read-only to the job: they are opened as they are, and made only where missing and allowed.
+
+The `holder` file is display only: who holds the turn and since when, for the waiters' log lines. Nothing is
+decided from it. Its reader caps it at INFO_MAX bytes and passes it through an allow-list of characters.
+
+If a lock file is replaced while held, two compiles can overlap, as before this change.
 
 Active only where RUNNER_ENVIRONMENT is self-hosted on macOS (the runner sets it for every job), or where
 HORIZON_COMPILE_LOCK_DIR names a folder (tests). The role `off` leaves a job out.
 
-Usage as a wrapper (game-build.yml, through tools/ci/compile-lock.sh): this process holds the turn and runs the
-command as a child in its own process group, which never inherits the lock's descriptors:
+Usage as a wrapper (game-build.yml and tools/ci/vanilla-data.sh, through tools/ci/compile-lock.sh): this process
+holds the turn and runs the command as a child in its own process group, which never inherits the lock's
+descriptors. Signalled (a cancelled job: SIGINT, then SIGTERM), it ends that whole group before it lets the turn go:
   python3 tools/compile_lock.py build -- cargo build --release ...
 """
 
@@ -41,6 +47,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 
 LOCK_DIR = "/Users/Shared/horizon-compile-lock"
@@ -54,6 +61,7 @@ INFO_MAX = 300
 NOT_ALLOWED = re.compile(r"[^A-Za-z0-9 \-_.:/#@]")
 PREFIX = "  compile lock: "
 GRACE = 10.0  # between SIGTERM and SIGKILL for a stopped command's process group
+KILL_WAIT = 5.0  # for the group to be gone after SIGKILL
 
 
 class Odd(Exception):
@@ -70,14 +78,18 @@ def active(environ, platform):
 
 
 def open_folder(path):
-    """A descriptor on the lock folder, made (mode 1777, like /tmp) if missing; Odd unless a real directory."""
+    """A descriptor on the lock folder, made (mode 1777, like /tmp) only if missing; Odd unless a real directory."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     created = False
     try:
-        os.mkdir(path, 0o1777)
-        created = True
-    except FileExistsError:
-        pass
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        try:
+            os.mkdir(path, 0o1777)
+            created = True
+        except FileExistsError:
+            pass
+        descriptor = os.open(path, flags)
     try:
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
             raise Odd("the lock folder is not a directory")
@@ -93,17 +105,21 @@ def open_folder(path):
 
 
 def open_entry(folder, name, write=False):
-    """A descriptor on folder/name, a regular file with one link, made (0666) if missing. Never follows a link
-    and never blocks (a FIFO opens at once and is refused). Odd for anything else."""
+    """A descriptor on folder/name, a regular file with one link, opened as it is, or made (0666) only where
+    missing and the folder allows it. Never follows a link and never blocks (a FIFO opens at once and is refused).
+    Odd for anything else. Every check is on the open descriptor, never on the path."""
     access = (os.O_WRONLY if write else os.O_RDONLY) | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     try:
-        descriptor = os.open(name, access | os.O_CREAT | os.O_EXCL, 0o666, dir_fd=folder)
-        try:
-            os.fchmod(descriptor, 0o666)  # only a file this job made
-        except OSError:
-            pass
-    except FileExistsError:
         descriptor = os.open(name, access, dir_fd=folder)
+    except FileNotFoundError:
+        try:
+            descriptor = os.open(name, access | os.O_CREAT | os.O_EXCL, 0o666, dir_fd=folder)
+            try:
+                os.fchmod(descriptor, 0o666)  # only a file this job made; the umask narrowed its mode
+            except OSError:
+                pass
+        except FileExistsError:  # another job made it meanwhile
+            descriptor = os.open(name, access, dir_fd=folder)
     try:
         status = os.fstat(descriptor)
         if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
@@ -169,6 +185,8 @@ class Turn:
             return ""
 
     def write_holder(self):
+        """Display only: written through the descriptor whose checks passed (ftruncate, never by path); any
+        failure leaves the display as it is."""
         try:
             descriptor = open_entry(self.folder, "holder", write=True)
             try:
@@ -240,6 +258,8 @@ class Turn:
         if self.role in PRIORITY:
             while not self.arrive():
                 if self.clock() - started >= limit:
+                    self.say(f"could not announce this job ahead of pull requests for {limit // 60:.0f} min (a "
+                             "pull request held `priority` at every try); trying for the turn as it is")
                     break
                 self.sleep(ARRIVE_POLL)
         waiting = False
@@ -259,7 +279,10 @@ class Turn:
             self.sleep(POLL)
         self.write_holder()
         waited = self.taken_at - started
-        self.say(f"taken after waiting {waited / 60:.1f} min" if waiting else "taken, no wait")
+        unannounced = "" if self.arrived or self.role not in PRIORITY else ", without the announcement ahead of " \
+            "pull requests"
+        self.say((f"taken after waiting {waited / 60:.1f} min" if waiting or waited >= 1 else "taken, no wait")
+                 + unannounced)
         return True
 
     def close(self):
@@ -290,29 +313,80 @@ class Turn:
         return False
 
 
+class Hurry:
+    """While a group is being stopped in the main thread, SIGINT, SIGTERM and SIGHUP only cut the grace short: a
+    second signal from a cancelled job never interrupts the cleanup itself. Elsewhere (a watchdog thread) a no-op."""
+
+    NAMES = ("SIGINT", "SIGTERM", "SIGHUP")
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.saved = {}
+
+    def __enter__(self):
+        if threading.current_thread() is threading.main_thread():
+            for name in self.NAMES:
+                if hasattr(signal, name):
+                    number = getattr(signal, name)
+                    try:
+                        self.saved[number] = signal.signal(number, lambda *_: self.event.set())
+                    except (ValueError, OSError):
+                        pass
+        return self.event
+
+    def __exit__(self, *exception):
+        for number, handler in self.saved.items():
+            try:
+                signal.signal(number, handler)
+            except (ValueError, OSError):
+                pass
+        return False
+
+
+def group_alive(pgid):
+    """Whether anything but a zombie is left in the process group. ps (macOS and Linux) lists the group's processes
+    with their state; without ps, kill(-pgid, 0), which a zombie leader alone still answers."""
+    try:
+        listing = subprocess.run(["ps", "-A", "-o", "pgid=,stat="], capture_output=True, text=True, timeout=5)
+        if listing.returncode == 0:
+            return any(fields[0] == str(pgid) and not fields[1].startswith("Z")
+                       for fields in (line.split() for line in listing.stdout.splitlines()) if len(fields) >= 2)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def stop_group(process, grace=None):
-    """End the process and everything in its process group: SIGTERM, up to `grace` seconds, then SIGKILL. The
-    leader is not reaped meanwhile, so the group's id can't name another group."""
+    """End the process and everything in its process group, and return only once the group is gone (or SIGKILL
+    has been sent and KILL_WAIT has passed): SIGTERM, up to `grace` seconds (GRACE; a further SIGINT, SIGTERM or
+    SIGHUP cuts it short), then SIGKILL. The leader is not reaped here, so the group's id can't name another group
+    while this runs; the caller reaps it after."""
     if os.name == "nt":
         process.kill()
         return
     if process.returncode is not None:
         return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        return
-    deadline = time.monotonic() + (GRACE if grace is None else grace)
-    while time.monotonic() < deadline:
+    with Hurry() as hurry:
         try:
-            os.killpg(process.pid, 0)  # an unreaped leader alone still answers: then the grace runs out
+            os.killpg(process.pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             return
-        time.sleep(0.1)
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
+        deadline = time.monotonic() + (GRACE if grace is None else grace)
+        while time.monotonic() < deadline and not hurry.is_set():
+            if not group_alive(process.pid):
+                return
+            hurry.wait(0.2)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            return
+        deadline = time.monotonic() + KILL_WAIT
+        while time.monotonic() < deadline and group_alive(process.pid):
+            time.sleep(0.1)
 
 
 def main(argv):
@@ -329,12 +403,15 @@ def main(argv):
     for name in ("SIGTERM", "SIGINT", "SIGHUP"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda received, _frame: sys.exit(128 + received))
-    with Turn(role):
+    turn = Turn(role)
+    if not turn.on and role != "off":
+        print(f"{PREFIX}not the self-hosted Mac: no turn taken", flush=True)
+    with turn:
         process = subprocess.Popen(command, start_new_session=os.name != "nt")
         try:
             return process.wait()
         except BaseException:
-            stop_group(process)
+            stop_group(process)  # its whole group first, then the leader is reaped, then the turn released
             process.wait()
             raise
 

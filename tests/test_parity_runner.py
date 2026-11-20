@@ -143,16 +143,20 @@ class ParityRunnerTests(unittest.TestCase):
 
     def test_parity_mains_prebuild_ends_the_run_past_its_limit(self):
         # A quiet Cargo run past the limit is stopped, not waited for: the line loop alone would block. On POSIX its
-        # child (a rustc, a build script) keeps stderr open and ignores SIGTERM: the whole group still ends.
+        # child (a rustc, a build script) has closed stderr and ignores SIGTERM, while Cargo ends on it: the run
+        # still ends only once that child is gone too.
         script = "import time; time.sleep(60)"
+        pid_file = Path(tempfile.mkdtemp()) / "child.pid"
+        self.addCleanup(shutil.rmtree, pid_file.parent, True)
         if os.name == "posix":
-            script = ("import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import signal, time; "
-                      "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)']); time.sleep(60)")
+            child = ("import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); os.close(2); "
+                     f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)")
+            script = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(60)"
         with mock.patch.object(parity, "target_packages", return_value={}), \
-                mock.patch.object(parity.compile_lock, "GRACE", 1), \
+                mock.patch.object(parity.compile_lock, "GRACE", 2), \
                 mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", script]] * 2), \
                 mock.patch.object(parity, "sccache_stats", return_value=None), \
-                mock.patch.object(parity, "PREBUILD_LIMIT", {"main": 0.5}), \
+                mock.patch.object(parity, "PREBUILD_LIMIT", {"main": 1}), \
                 mock.patch.object(parity.compile_lock, "active", return_value=False), \
                 mock.patch.dict(os.environ, {"HORIZON_COMPILE_LOCK_ROLE": "main"}), \
                 mock.patch("builtins.print") as printed:
@@ -163,6 +167,21 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 30)
         self.assertTrue(printed.call_args_list[-1].args[0].startswith(
             "::error::The probe prebuild passed its 0 min limit at cargo 1/2"))
+        if os.name == "posix":
+            pid = int(pid_file.read_text())
+            try:
+                with open(f"/proc/{pid}/stat") as handle:
+                    state = handle.read().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                state = "gone"
+            except OSError:  # no /proc (macOS): kill(pid, 0) on a reaped orphan
+                state = "gone"
+                try:
+                    os.kill(pid, 0)
+                    state = "running"
+                except ProcessLookupError:
+                    pass
+            self.assertIn(state, ("gone", "Z"), "the child outlived the run's limit")
         # A pull request's prebuild has no limit of its own (its job's 240 min is the limit).
         self.assertNotIn("pr", parity.PREBUILD_LIMIT)
 

@@ -215,7 +215,7 @@ class CompileLockTests(unittest.TestCase):
         self.assertEqual(self.clock.slept, 0)
 
     @needs_flock
-    def test_hostile_folder_contents_never_block_or_reach_outside(self):
+    def test_unexpected_folder_entries_never_block_or_reach_outside(self):
         outside = Path(self.temp.name, "outside")
         outside.mkdir()
         target = outside / "precious"
@@ -258,6 +258,44 @@ class CompileLockTests(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 5)
                 self.assertEqual(target.read_text(), "keep")
 
+    @needs_flock
+    def test_a_folder_and_lock_files_the_job_cannot_replace(self):
+        # Made beforehand (by another user, say): the folder 0555, the lock files 0666. The job opens them as they
+        # are; it can't create or replace anything there, and needs not.
+        os.mkdir(self.folder)
+        for name in ("turn", "priority"):
+            Path(self.folder, name).write_bytes(b"")
+            os.chmod(os.path.join(self.folder, name), 0o666)
+        os.chmod(self.folder, 0o555)
+        self.addCleanup(os.chmod, self.folder, 0o755)
+        with self.turn("pr") as turn:
+            self.assertTrue(turn.held)
+            self.assertEqual(self.turn("main").holder(), "", "no `holder` could be made: nothing to show")
+        self.assertEqual(sorted(os.listdir(self.folder)), ["priority", "turn"])
+        self.assertEqual(self.lines[0], "  compile lock: taken, no wait")
+        # A lock file missing there can't be made: fail open, once.
+        os.chmod(self.folder, 0o755)
+        os.unlink(os.path.join(self.folder, "priority"))
+        os.chmod(self.folder, 0o555)
+        if os.geteuid() != 0:  # root creates files anyway
+            self.lines.clear()
+            with self.turn("pr") as turn:
+                self.assertFalse(turn.held)
+            self.assertEqual(len(self.lines), 1)
+            self.assertTrue(self.lines[0].endswith("compiling without it"))
+
+    @needs_flock
+    def test_a_priority_job_that_could_not_announce_itself_says_so(self):
+        gate = self.turn("pr")
+        gate.open()
+        self.assertTrue(gate.lock(gate.priority, gate.fcntl.LOCK_EX))  # a pull request between its steps, stuck
+        main = self.turn("main", job="parity-main")
+        self.assertTrue(main.acquire())
+        self.assertIn("could not announce this job ahead of pull requests for 20 min", self.lines[0])
+        self.assertTrue(self.lines[-1].startswith("  compile lock: taken after waiting 20.0 min, without the "
+                                                  "announcement ahead of pull requests"), self.lines)
+        main.release()
+
     def reset_folder(self):
         if os.path.islink(self.folder) or os.path.isfile(self.folder):
             os.unlink(self.folder)
@@ -270,8 +308,8 @@ class CompileLockTests(unittest.TestCase):
     @needs_flock
     def test_the_holders_text_reaches_a_log_only_through_the_allow_list(self):
         process = self.holder_process("main")
-        hostile = b"##[error]boom ::error::x \x1b[31mred\x1b[0m\n::warning::y \xff\xfe" + b"z" * 5000
-        Path(self.folder, "holder").write_bytes(hostile)
+        text = b"##[error]boom ::error::x \x1b[31mred\x1b[0m\n::warning::y \xff\xfe" + b"z" * 5000
+        Path(self.folder, "holder").write_bytes(text)
         self.turn("build").acquire()
         process.kill()
         for line in self.lines:
@@ -322,17 +360,27 @@ class CompileLockTests(unittest.TestCase):
             self.assertEqual(compile_lock.main(["build"]), 2)
             self.assertEqual(compile_lock.main(["--probe"]), 0)  # what tools/ci/compile-lock.sh checks first
 
-    @needs_flock
-    def test_a_cancelled_wrapper_ends_its_commands_group_and_frees_the_turn(self):
-        # The command's child ignores SIGTERM: the group still ends after the grace, and the turn is free.
-        command = ("import signal, subprocess, sys, time; "
-                   "subprocess.Popen([sys.executable, '-c', 'import signal, time; "
-                   "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)']); time.sleep(120)")
+    def test_the_wrapper_says_once_that_it_takes_no_turn_off_the_mac(self):
+        environ = {key: value for key, value in os.environ.items()
+                   if key not in ("HORIZON_COMPILE_LOCK_DIR", "RUNNER_ENVIRONMENT")}
+        result = subprocess.run([sys.executable, str(ROOT / "tools/compile_lock.py"), "pr", "--", sys.executable,
+                                 "-c", "raise SystemExit(5)"], env=environ, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 5)
+        self.assertEqual(result.stdout, "  compile lock: not the self-hosted Mac: no turn taken\n")
+
+    def cancelled_wrapper(self, signals):
+        """A wrapper whose command's child ignores SIGTERM and has closed stderr; `signals` are sent to the wrapper
+        a moment apart, as a cancelled job sends them. Returns the wrapper's status, the seconds it took, and the
+        child's pid."""
+        pid_file = Path(self.temp.name, "child.pid")
+        child = ("import os, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); os.close(2); "
+                 f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(120)")
+        command = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(120)"
         script = textwrap.dedent("""
             import sys
             sys.path.insert(0, sys.argv[1])
             from tools import compile_lock
-            compile_lock.GRACE = 1
+            compile_lock.GRACE = 5
             sys.exit(compile_lock.main(sys.argv[2:]))
         """)
         wrapper = subprocess.Popen([sys.executable, "-c", script, str(ROOT), "build", "--", sys.executable, "-c",
@@ -340,11 +388,53 @@ class CompileLockTests(unittest.TestCase):
                                    stdout=subprocess.PIPE, text=True)
         self.addCleanup(lambda: (wrapper.poll() is None and wrapper.kill(), wrapper.stdout.close()))
         self.assertIn("taken", wrapper.stdout.readline())
-        time.sleep(1)
+        for _ in range(100):
+            if pid_file.exists() and pid_file.read_text():
+                break
+            time.sleep(0.1)
+        pid = int(pid_file.read_text())
         started = time.monotonic()
-        wrapper.send_signal(signal.SIGTERM)
-        self.assertEqual(wrapper.wait(timeout=30), 128 + signal.SIGTERM)
-        self.assertLess(time.monotonic() - started, 15)
+        for number in signals:
+            wrapper.send_signal(number)
+            time.sleep(0.5)
+        status = wrapper.wait(timeout=60)
+        return status, time.monotonic() - started, pid
+
+    def assert_gone(self, pid):
+        for _ in range(50):
+            try:
+                with open(f"/proc/{pid}/stat") as handle:
+                    if handle.read().rsplit(")", 1)[1].split()[0] == "Z":
+                        return
+            except FileNotFoundError:
+                return
+            except OSError:
+                break
+            time.sleep(0.1)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        os.kill(pid, signal.SIGKILL)
+        self.fail(f"process {pid} outlived the wrapper")
+
+    @needs_flock
+    def test_a_cancelled_wrapper_ends_its_commands_group_and_frees_the_turn(self):
+        # SIGTERM alone: the child survives SIGTERM, so the group ends at SIGKILL after the 5 s grace.
+        status, seconds, pid = self.cancelled_wrapper([signal.SIGTERM])
+        self.assertEqual(status, 128 + signal.SIGTERM)
+        self.assertGreaterEqual(seconds, 4)
+        self.assertLess(seconds, 20)
+        self.assert_gone(pid)
+        self.assertTrue(self.turn("pr").acquire())
+
+    @needs_flock
+    def test_a_second_signal_cuts_the_grace_short_and_never_the_cleanup(self):
+        # SIGINT, then SIGTERM during the grace: SIGKILL at once, the group gone before the wrapper exits.
+        status, seconds, pid = self.cancelled_wrapper([signal.SIGINT, signal.SIGTERM])
+        self.assertEqual(status, 128 + signal.SIGINT)
+        self.assertLess(seconds, 4)
+        self.assert_gone(pid)
         self.assertTrue(self.turn("pr").acquire())
 
     def test_the_module_runs_on_the_macs_system_python(self):
@@ -353,23 +443,46 @@ class CompileLockTests(unittest.TestCase):
     def test_the_mac_compiles_take_their_turn(self):
         with mock.patch("sys.path", [str(ROOT / "tools/ci/vendor/pyyaml-6.0.3.zip"), *sys.path]):
             import yaml
-        game = yaml.safe_load((ROOT / ".github/workflows/game-build.yml").read_text(encoding="utf-8"))["jobs"]
-        wrapped = 'lock="bash tools/ci/compile-lock.sh build --"'
-        exporters = next(step["run"] for step in game["exporters"]["steps"] if "cargo build" in step.get("run", ""))
-        self.assertIn(wrapped, exporters)
-        self.assertIn("$lock cargo build --release --locked -p horizon-prepare", exporters)
-        build = next(step["run"] for step in game["build"]["steps"] if "cargo build" in step.get("run", ""))
-        self.assertIn(f'[ "${{{{ matrix.mac }}}}" != true ] || [ ! -f tools/ci/compile-lock.sh ] || {wrapped}', build)
-        self.assertIn("$lock cargo build --release --locked", build)
+
+        def load(name):
+            return yaml.safe_load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
+        game = load("game-build.yml")
+        self.assertEqual(game["env"]["HORIZON_COMPILE_LOCK_ROLE"], "build")  # vanilla-data.sh's preparer build too
+        jobs = game["jobs"]
+        # Each Mac cargo compile is its step's entry process (exec), in the turn: the preparer, the game, xtask.
+        wrapped = "exec bash tools/ci/compile-lock.sh build -- cargo build --release --locked -p horizon-prepare"
+        steps = [step.get("run", "") for step in jobs["exporters"]["steps"]]
+        self.assertTrue(any(run.rstrip().endswith(wrapped) for run in steps))
+        compiles = [run for run in steps if "cargo build" in run]
+        self.assertEqual(len(compiles), 1, "no other cargo build in exporters")
+        build = {step.get("name"): step for step in jobs["build"]["steps"]}
+        game_build = build["Build the official game, horizon-ctl, horizon-prepare and horizon-server"]["run"]
+        self.assertIn('if [ -f tools/ci/compile-lock.sh ]; then lock="bash tools/ci/compile-lock.sh build --"',
+                      game_build)
+        self.assertIn('if [ "${{ matrix.mac }}" = true ]; then', game_build)
+        self.assertIn("exec $lock cargo build --release --locked", game_build)
+        xtask = build["The packaging tool, compiled in its turn"]
+        self.assertEqual(xtask["if"], "matrix.mac")
+        self.assertTrue(xtask["run"].rstrip().endswith("exec bash tools/ci/compile-lock.sh build -- cargo build "
+                                                       "--locked -p xtask"))
+        names = list(build)
+        self.assertLess(names.index("The packaging tool, compiled in its turn"), names.index("Package"))
         # Room for the 60 min wait: 120 min on the Mac legs.
-        self.assertEqual(game["exporters"]["timeout-minutes"], 120)
-        self.assertTrue(game["build"]["timeout-minutes"].startswith("${{ matrix.mac && 120 ||"))
-        main = yaml.safe_load((ROOT / ".github/workflows/parity-main.yml").read_text(encoding="utf-8"))
-        steps = main["jobs"]["parity-main"]["steps"]
-        harnesses = next(step for step in steps if step.get("id") == "harnesses")
-        self.assertEqual(harnesses["env"]["HORIZON_COMPILE_LOCK_ROLE"], "main")
-        verdict = next(step for step in steps if "verdict" in step.get("run", ""))
+        self.assertEqual(jobs["exporters"]["timeout-minutes"], 120)
+        self.assertTrue(jobs["build"]["timeout-minutes"].startswith("${{ matrix.mac && 120 ||"))
+        main = load("parity-main.yml")["jobs"]["parity-main"]
+        self.assertEqual(main["env"]["HORIZON_COMPILE_LOCK_ROLE"], "main")
+        harnesses = next(step for step in main["steps"] if step.get("id") == "harnesses")
+        self.assertIn("\nexec python3 tools/parity.py --changed", harnesses["run"])
+        verdict = next(step for step in main["steps"] if "verdict" in step.get("run", ""))
         self.assertEqual(verdict["env"]["HORIZON_COMPILE_LOCK_ROLE"], "off")
+        parity = [step.get("run", "") for step in load("parity.yml")["jobs"]["parity"]["steps"]]
+        self.assertEqual(len([run for run in parity if run.startswith("exec python3 tools/parity.py")]), 2)
+        vanilla = (ROOT / "tools/ci/vanilla-data.sh").read_text(encoding="utf-8")
+        self.assertIn('lock="bash tools/ci/compile-lock.sh ${HORIZON_COMPILE_LOCK_ROLE:-pr} --"', vanilla)
+        self.assertEqual(vanilla.count("$lock "), 2)
+        self.assertEqual(vanilla.count("cargo build"), 2, "no cargo build outside the turn")
+
 
 if __name__ == "__main__":
     unittest.main()

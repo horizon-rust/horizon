@@ -35,6 +35,10 @@ on:
         default: true
 permissions:
   contents: read
+env:
+  # The Mac compiles' class in the turns at compiling on the self-hosted Mac (tools/compile_lock.py), also for
+  # tools/ci/vanilla-data.sh's preparer build. Elsewhere the turn is a no-op.
+  HORIZON_COMPILE_LOCK_ROLE: build
 jobs:
   wasm-std:
     # One shared std member, built without credentials or shared caches. Its symbol names don't depend on the host
@@ -85,15 +89,17 @@ jobs:
         env:
           HORIZON_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}
       - run: bash tools/ci/vanilla-data.sh
+      - name: The preparer, compiled in its turn
+        shell: bash
+        # target/ is gone after the clean checkout, and vanilla-data.sh builds the preparer only when it prepares
+        # afresh. Its own step, exec'd, so a cancelled job's signals reach the turn's holder (tools/compile_lock.py).
+        run: |
+          [ -f tools/ci/compile-lock.sh ] || { echo "  compile lock: this ref has no tools/ci/compile-lock.sh: compiling without a turn"; exec cargo build --release --locked -p horizon-prepare; }
+          exec bash tools/ci/compile-lock.sh build -- cargo build --release --locked -p horizon-prepare
       - name: Compile and validate original exporters against the pinned jars
         shell: bash
         run: |
           set -euo pipefail
-          # target/ is gone after the clean checkout, and vanilla-data.sh builds the preparer only when it
-          # prepares afresh.
-          # Turns at compiling on the Mac mini (tools/compile_lock.py); a ref from before it builds directly.
-          lock=""; [ ! -f tools/ci/compile-lock.sh ] || lock="bash tools/ci/compile-lock.sh build --"
-          $lock cargo build --release --locked -p horizon-prepare
           # Compiled here, never taken from the runner's shared preparations: pull requests' parity jobs
           # write those (vanilla-data.sh links .local/exporters to them).
           rm -rf .local/exporters
@@ -240,9 +246,14 @@ jobs:
       - name: Build the official game, horizon-ctl, horizon-prepare and horizon-server
         if: ${{ !matrix.musl }}
         run: |
-          # Turns at compiling on the Mac mini (tools/compile_lock.py); a ref from before it builds directly.
-          lock=""; [ "${{ matrix.mac }}" != true ] || [ ! -f tools/ci/compile-lock.sh ] || lock="bash tools/ci/compile-lock.sh build --"
-          $lock cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+          # Turns at compiling on the self-hosted Mac (tools/compile_lock.py), exec'd so a cancelled job's signals
+          # reach the turn's holder.
+          lock=""
+          if [ "${{ matrix.mac }}" = true ]; then
+            if [ -f tools/ci/compile-lock.sh ]; then lock="bash tools/ci/compile-lock.sh build --"
+            else echo "  compile lock: this ref has no tools/ci/compile-lock.sh: compiling without a turn"; fi
+          fi
+          exec $lock cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: The official game is the game players get, under its name
         # horizon-official: horizon-client's game with Horizon's own parts plugged in (docs/layers.md, "How a
         # Horizon crate plugs in"). Everything below, the launcher and players know it as horizon-client.
@@ -370,6 +381,12 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work \
             -e HORIZON_VERSION -e HORIZON_NIGHTLY \
             rust:alpine3.22 sh tools/ci/build-musl.sh
+      - name: The packaging tool, compiled in its turn
+        if: matrix.mac
+        # What `Package` compiles on the Mac, compiled here first, so that step's cargo run only runs it.
+        run: |
+          [ -f tools/ci/compile-lock.sh ] || { echo "  compile lock: this ref has no tools/ci/compile-lock.sh: compiling without a turn"; exec cargo build --locked -p xtask; }
+          exec bash tools/ci/compile-lock.sh build -- cargo build --locked -p xtask
       - name: Package
         if: ${{ !matrix.musl }}
         run: |

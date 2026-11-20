@@ -802,13 +802,19 @@ def prebuild(artifacts, jobs):
                     watchdog.start()
                 try:
                     lines = [(time.monotonic(), line) for line in process.stderr]
+                    if watchdog:
+                        # Stderr can close while the watchdog is still stopping the group (Cargo ended on SIGTERM,
+                        # a child that closed stderr has not): the group is gone before Cargo is reaped and the
+                        # turn released.
+                        watchdog.cancel()
+                        watchdog.join()
                     process.wait()
                 except BaseException:
-                    compile_lock.stop_group(process)  # its whole group, as subprocess.run kills the process
-                    raise
-                finally:
                     if watchdog:
                         watchdog.cancel()
+                        watchdog.join()
+                    compile_lock.stop_group(process)  # its whole group, as subprocess.run kills the process
+                    raise
             if process.returncode:
                 errors += "".join(line for _, line in lines)
             report(lambda: f"cargo {number}/{len(commands)}: "
