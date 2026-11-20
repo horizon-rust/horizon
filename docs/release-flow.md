@@ -884,8 +884,9 @@ Known limit, not solved: an off-main dry run runs the candidate's build scripts 
 `ludovics-mac-mini-nightly` runner, the same persistent runner later real Nightlies use, and nothing isolates runner
 state outside the checkout. The control is who may push `dry-run/*`: the same people who can already dispatch the
 workflow from their own branch, which runs that branch's workflow on the same runner. So the option adds no new
-capability; it only removes the need to edit the workflow. The `trusted: false` rules still hold (never the release
-runner, no shared cache writes).
+capability; it only removes the need to edit the workflow. As an untrusted build (`trusted: false`) it never uses the
+release runner and never saves the GitHub Actions Rust cache, but on the Mac it can read and write the machine's
+local compiler cache (sccache, `tools/ci/runner-env.sh`), which only trusted builds skip.
 
 ## Nightly audit
 
