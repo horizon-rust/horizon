@@ -2702,20 +2702,25 @@ pub fn renderer_start_crash<S: AsRef<str>>(
         if line.starts_with(GAME_FIRST_FRAME) {
             return None;
         }
-        if let Some(adapter) = line.strip_prefix("Horizon renderer: ") {
-            // The adapter line, not one of the start's steps: "<GPU> (<backend>, <type>)".
-            if adapter.ends_with(')') && adapter.contains(" (") {
-                crashed = if adapter.contains(" (Vulkan, ") {
-                    Some(StartCrash::Vulkan)
-                } else if adapter.contains(" (Gl, ") {
-                    Some(StartCrash::OpenGl)
-                } else {
-                    None
-                };
-            }
+        if let Some(backend) = adapter_backend(line) {
+            crashed = match backend {
+                "Vulkan" => Some(StartCrash::Vulkan),
+                "Gl" => Some(StartCrash::OpenGl),
+                _ => None,
+            };
         }
     }
     crashed
+}
+
+/// The backend an adapter line names: `Horizon renderer: <GPU> (<backend>, <type>)`, `<type>`
+/// one of wgpu's device types. The start's step lines can end in a parenthesis too, such as
+/// `device ready; configuring the surface (1280x720 Bgra8Unorm, Fifo)`.
+fn adapter_backend(line: &str) -> Option<&str> {
+    const DEVICE_TYPES: [&str; 5] = ["Other", "IntegratedGpu", "DiscreteGpu", "VirtualGpu", "Cpu"];
+    let (_, tail) = line.strip_prefix("Horizon renderer: ")?.rsplit_once(" (")?;
+    let (backend, kind) = tail.strip_suffix(')')?.split_once(", ")?;
+    DEVICE_TYPES.contains(&kind).then_some(backend)
 }
 
 /// The game's graphics settings file in its home (the game's `graphics.rs`).
@@ -5604,8 +5609,12 @@ pub fn {f}("
         ];
         let vulkan = Some(StartCrash::Vulkan);
         assert_eq!(renderer_start_crash(start), vulkan);
-        // A step line after the adapter keeps it a start crash.
-        let step = [start[1], "Horizon renderer: creating the pipelines"];
+        // Step lines after the adapter, one ending in a parenthesis, keep it a start crash.
+        let step = [
+            start[1],
+            "Horizon renderer: device ready; configuring the surface (1920x1080 Bgra8Unorm, Fifo)",
+            "Horizon renderer: creating the pipelines",
+        ];
         assert_eq!(renderer_start_crash(step), vulkan);
         // A crash after the first frame is the game's, not the renderer start's.
         let later = [start[1], "Horizon: first frame after 812 ms"];
@@ -5618,20 +5627,28 @@ pub fn {f}("
         assert_eq!(renderer_start_crash([start[1], dx12[0]]), None);
     }
 
-    /// #18291: Intel's OpenGL 4.0 driver for the HD 4000 dies building the pipelines.
+    /// #18291, #18518: Intel's OpenGL 4.0 driver for Ivy Bridge dies building the pipelines; the
+    /// game's output, as #18518 reported it, from its first renderer line to its last.
     #[test]
     fn a_crash_after_the_opengl_adapter_line_and_before_the_first_frame_is_an_opengl_start_crash() {
-        let gl = "Horizon renderer: Intel(R) HD Graphics 4000 (Gl, IntegratedGpu)";
-        let step = [gl, "Horizon renderer: creating the pipelines"];
-        assert_eq!(renderer_start_crash(step), Some(StartCrash::OpenGl));
-        assert_eq!(
-            renderer_start_crash([gl, "Horizon: first frame after 2310 ms"]),
-            None
-        );
-        // Vulkan had no surface and OpenGL took over: OpenGL's crash, not Vulkan's.
+        let log = [
+            "Horizon renderer: asking Vulkan for a graphics device",
+            "Horizon renderer: trying DirectX 12 (Vulkan surface: Failed to create surface for any enabled backend: {})",
+            "Horizon renderer: DirectX 12 has no conformant adapter (DirectX 12: only a software adapter (Microsoft Basic Render Driver)); asking again for the ones wgpu hides as non-conformant",
+            "Horizon renderer: trying OpenGL (Vulkan surface: Failed to create surface for any enabled backend: {}; DirectX 12: only a software adapter (Microsoft Basic Render Driver))",
+            "Horizon renderer: Intel(R) HD Graphics (Gl, IntegratedGpu)",
+            "Horizon renderer: requesting the device (driver 4.0.0 - Build 10.18.10.5161) with features [CLEAR_TEXTURE | TIMESTAMP_QUERY] and the adapter's limits (buffers up to 2147483647 bytes)",
+            "Horizon renderer: device ready; configuring the surface (1280x720 Bgra8Unorm, Fifo)",
+            "Horizon renderer: HDR output not offered by this display",
+            "Horizon renderer: creating the pipelines",
+        ];
+        assert_eq!(renderer_start_crash(log), Some(StartCrash::OpenGl));
+        let framed = [log[4], log[8], "Horizon: first frame after 2310 ms"];
+        assert_eq!(renderer_start_crash(framed), None);
+        // Vulkan had a device but OpenGL took over later: OpenGL's crash, not Vulkan's.
         let vulkan = "Horizon renderer: Intel(R) HD Graphics 4000 (Vulkan, IntegratedGpu)";
         assert_eq!(
-            renderer_start_crash([vulkan, gl, step[1]]),
+            renderer_start_crash([vulkan, log[4], log[8]]),
             Some(StartCrash::OpenGl)
         );
     }
