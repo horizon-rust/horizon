@@ -1364,14 +1364,14 @@ impl MotionWorld<'_, '_, '_> {
         if !self.entities.is_empty() {
             let entity_box = Aabb::new(
                 Vec3::new(
-                    bounds.min().x - 1.0e-4,
-                    bounds.min().y - 0.6,
-                    bounds.min().z - 1.0e-4,
+                    bounds.min_position().x - 1.0e-4,
+                    bounds.min_position().y - 0.6,
+                    bounds.min_position().z - 1.0e-4,
                 ),
                 Vec3::new(
-                    bounds.max().x + 1.0e-4,
-                    bounds.max().y + 1.0e-4,
-                    bounds.max().z + 1.0e-4,
+                    bounds.max_position().x + 1.0e-4,
+                    bounds.max_position().y + 1.0e-4,
+                    bounds.max_position().z + 1.0e-4,
                 ),
             );
             if self.entities.iter().any(|e| e.intersects(entity_box)) {
@@ -1411,11 +1411,11 @@ impl MotionWorld<'_, '_, '_> {
             return Ok(false);
         }
         let y_floor = position.y.floor() as i32;
-        let min_x = (bounds.min().x - 1.0e-7).floor() as i32;
-        let max_x = (bounds.max().x + 1.0e-7).floor() as i32;
-        let min_z = (bounds.min().z - 1.0e-7).floor() as i32;
-        let max_z = (bounds.max().z + 1.0e-7).floor() as i32;
-        let max_y = (bounds.max().y + 1.0e-7).floor() as i32;
+        let min_x = (bounds.min_position().x - 1.0e-7).floor() as i32;
+        let max_x = (bounds.max_position().x + 1.0e-7).floor() as i32;
+        let min_z = (bounds.min_position().z - 1.0e-7).floor() as i32;
+        let max_z = (bounds.max_position().z + 1.0e-7).floor() as i32;
+        let max_y = (bounds.max_position().y + 1.0e-7).floor() as i32;
         for x in min_x..=max_x {
             for z in min_z..=max_z {
                 let floor_state = self.scene.block(x, y_floor - 1, z);
@@ -1524,10 +1524,10 @@ impl MotionWorld<'_, '_, '_> {
         }
         let y_floor = position.y.floor() as i32;
         let support_y = y_floor - 1;
-        let min_x = (bounds.min().x - 1.0e-7).floor() as i32;
-        let max_x = (bounds.max().x + 1.0e-7).floor() as i32;
-        let min_z = (bounds.min().z - 1.0e-7).floor() as i32;
-        let max_z = (bounds.max().z + 1.0e-7).floor() as i32;
+        let min_x = (bounds.min_position().x - 1.0e-7).floor() as i32;
+        let max_x = (bounds.max_position().x + 1.0e-7).floor() as i32;
+        let min_z = (bounds.min_position().z - 1.0e-7).floor() as i32;
+        let max_z = (bounds.max_position().z + 1.0e-7).floor() as i32;
         let unit_cube = Aabb::new(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0));
         let cached = self.collision_binding.cached_shapes();
         let mut selected = None;
@@ -1545,10 +1545,10 @@ impl MotionWorld<'_, '_, '_> {
                 if shape.boxes() != std::slice::from_ref(&unit_cube) {
                     return None;
                 }
-                if f64::from(x) < bounds.max().x
-                    && f64::from(x + 1) > bounds.min().x
-                    && f64::from(z) < bounds.max().z
-                    && f64::from(z + 1) > bounds.min().z
+                if f64::from(x) < bounds.max_position().x
+                    && f64::from(x + 1) > bounds.min_position().x
+                    && f64::from(z) < bounds.max_position().z
+                    && f64::from(z + 1) > bounds.min_position().z
                 {
                     let p = BlockPos::new(x, support_y, z);
                     let dx = f64::from(x) + 0.5 - position.x;
@@ -1787,14 +1787,14 @@ impl MotionWorld<'_, '_, '_> {
         if !self.entities.is_empty() {
             let entity_box = Aabb::new(
                 Vec3::new(
-                    bounds.min().x - 1.0e-4,
-                    bounds.min().y - 0.6,
-                    bounds.min().z - 1.0e-4,
+                    bounds.min_position().x - 1.0e-4,
+                    bounds.min_position().y - 0.6,
+                    bounds.min_position().z - 1.0e-4,
                 ),
                 Vec3::new(
-                    bounds.max().x + 1.0e-4,
-                    bounds.max().y + 1.0e-4,
-                    bounds.max().z + 1.0e-4,
+                    bounds.max_position().x + 1.0e-4,
+                    bounds.max_position().y + 1.0e-4,
+                    bounds.max_position().z + 1.0e-4,
                 ),
             );
             if self.entities.iter().any(|e| e.intersects(entity_box)) {
@@ -1817,11 +1817,11 @@ impl MotionWorld<'_, '_, '_> {
             return Ok(false);
         }
         let y_floor = p.position.y.floor() as i32;
-        let min_x = (bounds.min().x - 1.0e-7).floor() as i32;
-        let max_x = (bounds.max().x + 1.0e-7).floor() as i32;
-        let min_z = (bounds.min().z - 1.0e-7).floor() as i32;
-        let max_z = (bounds.max().z + 1.0e-7).floor() as i32;
-        let max_y = (bounds.max().y + 1.0e-7).floor() as i32;
+        let min_x = (bounds.min_position().x - 1.0e-7).floor() as i32;
+        let max_x = (bounds.max_position().x + 1.0e-7).floor() as i32;
+        let min_z = (bounds.min_position().z - 1.0e-7).floor() as i32;
+        let max_z = (bounds.max_position().z + 1.0e-7).floor() as i32;
+        let max_y = (bounds.max_position().y + 1.0e-7).floor() as i32;
         if p.ground.supporting_block.is_some_and(|sb| {
             sb.y != y_floor - 1 || sb.x < min_x || sb.x > max_x || sb.z < min_z || sb.z > max_z
         }) {
