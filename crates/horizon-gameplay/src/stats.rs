@@ -165,16 +165,23 @@ impl Stats {
             "DataVersion": horizon_world::DATA_VERSION,
         })
     }
-    /// `ServerStatsCounter.save`.
+    /// `ServerStatsCounter.save`: a failure is logged, and the old file is left whole.
     pub fn write(&self, path: &Path) {
-        let json = self.to_json();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&json) {
-            let _ = std::fs::write(path, text);
+        if let Err(e) = self.try_write(path) {
+            log::warn!("{e}");
         }
     }
+    /// [`Self::write`], returning why it failed.
+    pub fn try_write(&self, path: &Path) -> Result<(), String> {
+        write_player_json(path, &self.to_json())
+    }
+}
+/// A player's advancements or statistics file written whole (`save::write_durable`): a crash
+/// during the write leaves the old file, and a failure names the file.
+pub fn write_player_json(path: &Path, json: &serde_json::Value) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
+    horizon_client::save::write_durable(path, text.as_bytes())
+        .map_err(|e| format!("{} is not saved: {e}", path.display()))
 }
 /// `players/<dir>/<uuid>.json` of a world (advancements, stats).
 pub fn player_json(world: &Path, dir: &str, uuid: [i32; 4]) -> PathBuf {
@@ -281,6 +288,40 @@ mod tests {
                 "{name:?} is a path segment"
             );
         }
+        let _ = std::fs::remove_dir_all(&world);
+    }
+
+    /// A stats file is replaced whole: when the new one cannot be written, the old one is still
+    /// there as it was, and the failure is returned.
+    #[test]
+    fn a_failed_stats_write_keeps_the_old_file_and_is_reported() {
+        let world = std::env::temp_dir().join(format!(
+            "horizon-stats-durable-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&world);
+        let path = player_json(&world, "stats", [1, 2, 3, 4]);
+        let mut stats = Stats {
+            loaded: true,
+            ..Stats::default()
+        };
+        stats.add("used", "minecraft:diamond_sword", 4);
+        stats.try_write(&path).unwrap();
+        let good = std::fs::read_to_string(&path).unwrap();
+        assert!(good.contains("minecraft:diamond_sword"));
+        // A folder where the new file goes: it cannot be created.
+        let file = path.file_name().unwrap().to_str().unwrap();
+        std::fs::create_dir(path.with_file_name(format!("{file}_new"))).unwrap();
+        stats.add("used", "minecraft:diamond_sword", 1);
+        let error = stats.try_write(&path).unwrap_err();
+        assert!(error.contains("is not saved"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        // A folder in the file's place: nothing is written over it.
+        let folder = player_json(&world, "stats", [5, 6, 7, 8]);
+        std::fs::create_dir_all(&folder).unwrap();
+        assert!(stats.try_write(&folder).is_err());
+        assert!(folder.is_dir());
         let _ = std::fs::remove_dir_all(&world);
     }
 
