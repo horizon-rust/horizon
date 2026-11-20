@@ -933,9 +933,9 @@ impl Sprites {
 /// A side may be at most [`MAX_ATLAS_SIZE`](crate::hud::MAX_ATLAS_SIZE), and all `count` squares
 /// together at most a full atlas, the ceiling [`crate::hud::png_frame_buffer`] puts on the image.
 fn check_frames(side: u32, count: u32) -> std::result::Result<(), String> {
-    let atlas = u64::from(crate::hud::MAX_ATLAS_SIZE);
-    let texels = u64::from(count) * u64::from(side) * u64::from(side);
-    if u64::from(side) > atlas || texels > atlas * atlas {
+    let atlas = u128::from(crate::hud::MAX_ATLAS_SIZE);
+    let texels = u128::from(count) * u128::from(side) * u128::from(side);
+    if u128::from(side) > atlas || texels > atlas * atlas {
         return Err(format!(
             "{count} frames of {side}x{side} are larger than any atlas"
         ));
