@@ -46,6 +46,7 @@ mod glass_storage;
 mod glass_toast;
 mod glass_ui;
 mod glass_versions;
+mod glide;
 mod home;
 mod home_tabs;
 mod import_page;
@@ -275,6 +276,9 @@ struct Launcher {
     update_error: Option<String>,
     self_update: SelfUpdate,
     self_update_hidden: bool,
+    /// The restart for links.json's `min_launcher` was tried this start, or this launcher is
+    /// what one started: it isn't tried (again) before the next start.
+    min_restart_tried: bool,
     /// The Horizon version being installed as an update: whether it becomes the selected one is
     /// judged when it finishes.
     update_install: Option<String>,
@@ -463,6 +467,9 @@ struct Launcher {
     starting_client: Option<String>,
     /// The instance that start is for, whatever is selected by the time it ends.
     starting_instance: Option<String>,
+    /// The Stop of the start under way while it may run its instance's pre-launch command
+    /// (Windows runs it before the game): kept until the start's result is handled.
+    pre_launch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Play was pressed on a version not prepared yet: it starts once this preparation ends well.
     play_when_prepared: Option<(String, String)>,
     /// Join a friend: the code typed on the Play page, and the one the game
@@ -508,6 +515,8 @@ struct Launcher {
     perf: perf::Perf,
     install_started: Option<Instant>,
     prepare_started: Option<Instant>,
+    /// The version the preparation under way is for: its end checks that one is ready.
+    prepare_tag: Option<String>,
     /// The download under way as first seen (when, files done), for the time left.
     download_seen: Option<(Instant, usize)>,
     /// The tab open under Home's hero (`home_tabs.rs`).
@@ -610,8 +619,8 @@ actions!(horizon_launcher, [Quit, CloseWindow]);
 fn shut_down(cx: &mut App) {
     servers_page::stop_on_quit();
     telemetry::send_before_exit();
-    // A downloaded launcher update goes in only when the player presses Update: closing drops it.
-    horizon_launcher::update_handoff::forget();
+    // A downloaded launcher update goes in once this process has exited; the game keeps running.
+    horizon_launcher::update_handoff::on_close();
     cx.quit()
 }
 

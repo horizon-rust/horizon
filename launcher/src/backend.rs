@@ -649,6 +649,21 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     release_order(a).cmp(&release_order(b))
 }
 
+/// Orders two launcher versions or tags (`0.2.80`, `0.2.80-rc.1`, `launcher@0.2.80`) the one way
+/// every launcher check uses: release selection, the minimum (`min_launcher`), the installer's
+/// "already this version or newer" and failure reports. A prerelease comes before its release; a
+/// bare version is read as the 0.2 line's tag.
+pub fn compare_launcher_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let tag = |v: &str| {
+        if v.starts_with(|c: char| c.is_ascii_digit()) {
+            format!("{LAUNCHER_TAG_PREFIX}{v}")
+        } else {
+            v.to_owned()
+        }
+    };
+    compare_versions(&tag(a), &tag(b))
+}
+
 /// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
 /// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
@@ -851,17 +866,29 @@ pub struct Links {
     /// The addresses it had before: a list holding one moves to `official_server`. A move appends
     /// the old address here.
     pub official_server_previous: Vec<String>,
+    /// The oldest launcher that may stay in use; an older one updates at once (`min_launcher`).
+    /// Unset unless a release is broken. Launchers from before it ignore the key. Read only through
+    /// [`crate::min_launcher::version_in`], so a malformed value is no minimum, never a panic.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub min_launcher: Option<String>,
 }
 
 impl Default for Links {
     /// What the launcher uses until (or unless) it can read links.json.
     fn default() -> Self {
-        serde_json::from_str(include_str!("../links.json"))
-            .expect("embedded launcher links must match Links")
+        Self::defaults_from(include_str!("../links.json"))
     }
 }
 
 impl Links {
+    fn defaults_from(text: &str) -> Self {
+        let mut links: Self =
+            serde_json::from_str(text).expect("embedded launcher links must match Links");
+        let file = serde_json::from_str::<serde_json::Value>(text).ok();
+        links.min_launcher = min_launcher_in(file.as_ref().and_then(|f| f.get("min_launcher")));
+        links
+    }
+
     /// Reads links.json. A key that is missing keeps its default, an empty one hides the link,
     /// and text that is not a JSON object gives the defaults.
     pub fn parse(text: &str) -> Self {
@@ -879,6 +906,7 @@ impl Links {
                     *slot = url.trim().to_string();
                 }
             }
+            links.min_launcher = min_launcher_in(map.get("min_launcher"));
             // A list of addresses; anything else keeps the built-in one.
             if let Some(serde_json::Value::Array(previous)) = map.get("official_server_previous") {
                 if previous.iter().all(serde_json::Value::is_string) {
@@ -893,6 +921,10 @@ impl Links {
         }
         links
     }
+}
+
+fn min_launcher_in(value: Option<&serde_json::Value>) -> Option<String> {
+    value?.as_str().and_then(crate::min_launcher::version_in)
 }
 
 /// The links from main, or the built-in ones when offline.
@@ -1028,7 +1060,7 @@ pub fn version_dir(tag: &str) -> PathBuf {
     versions_dir().join(tag)
 }
 
-const COMPLETE: &str = ".installed";
+pub(crate) const COMPLETE: &str = ".installed";
 
 /// Installed versions, newest tag first.
 pub fn installed() -> Vec<String> {
@@ -1237,9 +1269,23 @@ pub use developer_play::client_as;
 mod installation;
 pub(crate) use installation::install_as;
 
+/// Removes the installed version `tag` unless a program runs from it or a native build takes its
+/// resources. A build that predates runtime leases takes none, so no lease can ever prove its
+/// folder unused: the check [`in_use`] makes here is that proof, and it stands beside the removal
+/// it justifies. Both vetoes belong to this path, so every caller inherits them; the dependency
+/// one runs inside the removal's exclusive publication lock, so an install that finishes in
+/// between cannot lose the base it started from.
 pub fn remove(tag: &str) -> Result<(), String> {
+    if in_use(tag) {
+        return Err(format!("{tag} is running. Quit it first."));
+    }
     let dir = version_dir(tag);
-    crate::cache_cleanup::delete_game_unit(&dir).map_err(crate::native_mods::cache_error)?;
+    let veto = || match crate::native_mods::resource_dependent(tag) {
+        Some(build) => Err(crate::native_cache::Error::Dependent(build)),
+        None => Ok(()),
+    };
+    crate::cache_cleanup::delete_unleased_game_unit(&dir, veto)
+        .map_err(crate::native_mods::cache_error)?;
     forget_prepared();
     Ok(())
 }
@@ -1277,8 +1323,14 @@ fn game_version_at(dir: &Path) -> String {
 }
 
 pub fn resources(tag: &str) -> PathBuf {
-    let base = crate::native_mods::about(tag).map(|about| about.base);
-    resources_at(&version_dir(base.as_deref().unwrap_or(tag)))
+    resources_at(&version_dir(&prepared_in(tag)))
+}
+
+/// The version whose folder holds `tag`'s prepared files: a native build's base, since the build
+/// shares its base's resources (`native_mods::copy_base`); else `tag`. Preparing `tag` prepares
+/// this one, or [`is_prepared`] would never see the files.
+pub fn prepared_in(tag: &str) -> String {
+    crate::native_mods::about(tag).map_or_else(|| tag.to_owned(), |about| about.base)
 }
 
 fn resources_at(dir: &Path) -> PathBuf {
@@ -1843,14 +1895,7 @@ fn refill_own_store(tag: &str) {
     else {
         return;
     };
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     if let Err(e) = download_for_owner(&pins, &own, &fetch, &|line| eprintln!("{line}")) {
         eprintln!("{tag}: the missing assets were not downloaded: {e}");
     }
@@ -2023,14 +2068,7 @@ pub fn download_version_for_owner(
     log: &dyn Fn(String),
 ) -> Result<PathBuf, String> {
     let dir = data_dir().join("minecraft");
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     let pins = sources::Pins::for_version(id, manifest_sha1);
     download_for_owner(&pins, &dir, &fetch, log)
         .map_err(|e| e.trim_start_matches("\n  • ").to_string())?;
@@ -2157,7 +2195,7 @@ fn download_for(
                 sources::Os::MacOs => "osx",
                 sources::Os::Windows => "windows",
             };
-            mojang::download(pins, dir, os, 8, fetch, &mojang::CANCEL, log).map_err(|e| {
+            mojang::download_http(pins, dir, os, mojang::JOBS, fetch, &mojang::CANCEL, log).map_err(|e| {
                 format!("\n  • Horizon tried to download {v} from Mojang for {name}, but: {e}")
             })
         }
@@ -2229,16 +2267,9 @@ fn java(
             "{missing}\n  • Minecraft's own Java from Mojang needs glibc ({GLIBC_LOADER} is missing; on NixOS, enable programs.nix-ld), so install compatible Java instead."
         ));
     }
-    let fetch = |url: &str| -> Result<Vec<u8>, String> {
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        Ok(body)
-    };
+    let fetch = crate::downloads::install_metadata;
     let runtime = data_dir().join("minecraft").join("runtime");
-    let home = mojang::java_runtime(&component, &runtime, 8, &fetch, &mojang::CANCEL, log)
+    let home = mojang::java_runtime_http(&component, &runtime, mojang::JOBS, &fetch, &mojang::CANCEL, log)
         .map_err(|e| {
         format!("{missing}\n  • Horizon also tried to download Minecraft's own Java from Mojang, but: {e}")
     })?;
@@ -2366,14 +2397,7 @@ pub fn preparer(
                 .map(|f| sources::known_folders(sources::Os::current(), &f))
                 .unwrap_or_default(),
         );
-        let fetch = |url: &str| -> Result<Vec<u8>, String> {
-            let mut body = Vec::new();
-            get(url)?
-                .into_reader()
-                .read_to_end(&mut body)
-                .map_err(|e| e.to_string())?;
-            Ok(body)
-        };
+        let fetch = crate::downloads::install_metadata;
         let linked = data_dir().join("linked-minecraft");
         if from == MinecraftFrom::Mojang {
             // Straight from Mojang (what is already there and whole is kept), for an owner only.
@@ -2435,25 +2459,28 @@ pub fn preparer(
     let jar = data_dir()
         .join("server-jars")
         .join(format!("{version}.jar"));
-    if !reused && !jar.exists() {
-        let json: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&manifest).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        let url = json["downloads"]["server"]["url"]
-            .as_str()
-            .ok_or_else(|| format!("{} has no server download", manifest.display()))?;
-        log(format!("Downloading the {version} server jar from Mojang"));
-        fs::create_dir_all(jar.parent().unwrap()).map_err(|e| e.to_string())?;
-        let mut body = Vec::new();
-        get(url)?
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        let partial = jar.with_extension("partial");
-        fs::write(&partial, body)
-            .and_then(|_| fs::rename(&partial, &jar))
-            .map_err(|e| e.to_string())?;
+    if !reused {
+        let json = crate::java_launch::read(&manifest)?;
+        let server = &json["downloads"]["server"];
+        let artifact = crate::downloads::Artifact {
+            url: server["url"]
+                .as_str()
+                .ok_or_else(|| format!("{} has no server download", manifest.display()))?
+                .into(),
+            sha1: server["sha1"]
+                .as_str()
+                .ok_or("The server download has no SHA-1")?
+                .into(),
+            size: server["size"].as_u64(),
+            path: jar.clone(),
+        };
+        log(format!(
+            "Checking and downloading the {version} server jar from Mojang"
+        ));
+        let http = crate::downloads::shared()?.session();
+        crate::downloads::run(http.download(&artifact, &mojang::CANCEL))?;
     }
+
     if let Some(binary) = binary {
         if prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
             == Some(prepare::SOURCES_SHA256)
@@ -2914,22 +2941,11 @@ pub fn no_version_installed() -> String {
 }
 
 /// Removes an installed version, unless a program runs from it, and moves the selection to the
-/// newest one left if needed.
+/// newest one left if needed. [`remove`] refuses a version a native build takes its resources
+/// from, under the exclusive publication lock a check here could not hold.
 pub fn remove_version(tag: &str) -> Result<(), String> {
     if !installed().iter().any(|t| t == tag) {
         return Err(format!("{tag} is not installed."));
-    }
-    if let Some(build) = installed()
-        .into_iter()
-        .find(|version| crate::native_mods::about(version).is_some_and(|about| about.base == tag))
-    {
-        return Err(crate::i18n::trf(
-            "This version supplies resources to native build {build}. Remove that build first.",
-            &[("build", &build)],
-        ));
-    }
-    if in_use(tag) {
-        return Err(format!("{tag} is running. Quit it first."));
     }
     remove(tag)?;
     crate::storage::eviction::request_cleanup();
@@ -2989,15 +3005,23 @@ fn stale_versions(
 
 /// Whether a running program was started from the version's folder: the game and a server take
 /// their program and `--resources` from it. Windows refuses to delete a running program's files,
-/// so there the delete itself fails. With no answer from `ps` the version counts as running.
+/// so there the delete itself fails. A listing we cannot read — `ps` missing, failing, or
+/// answering something else — counts as running: a removal is the wrong place to guess.
 #[cfg(unix)]
 pub(crate) fn in_use(tag: &str) -> bool {
-    let dir = format!("{}/", version_dir(tag).display());
+    let folder = format!("{}/", version_dir(tag).display());
+    // A client started as `./horizon-client` from its own folder names no absolute path, and its
+    // relative `--resources` names the folder by its last component only (#18393 review).
+    let named = format!("{tag}/");
     Command::new("ps")
         .args(["-A", "-ww", "-o", "args="])
         .output()
         .ok()
-        .is_none_or(|out| String::from_utf8_lossy(&out.stdout).contains(&dir))
+        .filter(|out| out.status.success())
+        .is_none_or(|out| {
+            let listing = String::from_utf8_lossy(&out.stdout);
+            listing.contains(&folder) || listing.contains(&named)
+        })
 }
 
 #[cfg(windows)]
@@ -3248,7 +3272,7 @@ fn launcher_update_from(releases: &[Release], own: &str) -> Option<Release> {
     releases
         .iter()
         .find(|r| r.asset.is_some())
-        .filter(|r| compare_versions(&r.tag, own).is_gt())
+        .filter(|r| compare_launcher_versions(&r.tag, own).is_gt())
         .cloned()
 }
 
@@ -3512,6 +3536,30 @@ fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The file every launcher locks to replace the launcher at `target` ([`lock_update`]): beside
+/// what is replaced (the `.app` bundle on macOS, else the file), so launchers of either version
+/// lock the same one.
+pub(crate) fn update_lock_file(target: &Path) -> PathBuf {
+    let place = app_bundle(target).unwrap_or(target);
+    let name = place.file_name().unwrap_or_default().to_string_lossy();
+    place.with_file_name(format!("{name}.lock"))
+}
+
+/// Locks `lock` for one replacement, waiting while another launcher holds it. Reading the version
+/// in place, replacing it and putting the old one back after a failure happen under it, and the
+/// startup cleanup ([`remove_replaced_binaries`]) takes it too. Two windows that staged the same
+/// release and closed then go one after the other: the second reads the version the first put in
+/// and changes nothing. Released when the file is dropped.
+pub(crate) fn lock_update(lock: &Path) -> Result<fs::File, String> {
+    fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock)
+        .and_then(|file| file.lock().map(|()| file))
+        .map_err(|e| format!("Could not lock {}: {e}", lock.display()))
+}
+
 /// Deletes the binaries earlier self-updates moved aside (`replace_binary`), and the copies of an
 /// update that stopped before its new binary took its place (`<name>.update-<pid>`). The one the
 /// launcher just restarted from is still exiting, so this keeps trying for a few seconds in the
@@ -3523,29 +3571,49 @@ pub fn remove_replaced_binaries() {
         return;
     };
     let dir = dir.to_path_buf();
-    let name = name.to_string_lossy();
-    let old = format!("{name}.old-");
-    let update = format!("{name}.update-");
-    let own = format!("{update}{}", std::process::id());
+    let name = name.to_string_lossy().into_owned();
+    let lock = update_lock_file(exe);
     std::thread::spawn(move || {
         for _ in 0..10 {
-            let Ok(entries) = fs::read_dir(&dir) else {
-                return;
-            };
-            let mut left = false;
-            for entry in entries.flatten() {
-                let file = entry.file_name();
-                let file = file.to_string_lossy();
-                if file.starts_with(&old) || (file.starts_with(&update) && file != own) {
-                    left |= fs::remove_file(entry.path()).is_err();
-                }
-            }
-            if !left {
+            if remove_replaced_once(&dir, &name, std::process::id(), &lock) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
     });
+}
+
+/// One pass of [`remove_replaced_binaries`]: true when nothing is left. Nothing goes while a
+/// launcher holds the update lock, whose `.update-<pid>` copy and the `.old-` file it would put
+/// back after a failure are in use.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn remove_replaced_once(dir: &Path, name: &str, own_pid: u32, lock: &Path) -> bool {
+    let Ok(lock) = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock)
+    else {
+        return false;
+    };
+    if lock.try_lock().is_err() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return true;
+    };
+    let old = format!("{name}.old-");
+    let update = format!("{name}.update-");
+    let own = format!("{update}{own_pid}");
+    let mut left = false;
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let file = file.to_string_lossy();
+        if file.starts_with(&old) || (file.starts_with(&update) && file != own) {
+            left |= fs::remove_file(entry.path()).is_err();
+        }
+    }
+    !left
 }
 
 /// The app bundle the launcher runs from (`…/Horizon.app` for `…/Horizon.app/Contents/MacOS/
@@ -3806,7 +3874,7 @@ pub fn place_checked(
 /// Whether `installed`, the launcher in place, is already the release `tag` or a newer one.
 pub(crate) fn already_in_place(installed: Option<&str>, tag: &str) -> bool {
     match (installed, launcher_version(tag)) {
-        (Some(installed), Some(target)) => compare_versions(installed, target).is_ge(),
+        (Some(installed), Some(target)) => compare_launcher_versions(installed, target).is_ge(),
         _ => false,
     }
 }
@@ -3817,7 +3885,14 @@ pub(crate) fn already_in_place(installed: Option<&str>, tag: &str) -> bool {
 pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     if let Some(staged) = stage_update(release, &progress)? {
         let work = update_work_dir();
-        let placed = place_checked(&work, &staged, place_staged);
+        let target = update_target();
+        let placed = lock_update(&update_lock_file(&target)).and_then(|_lock| {
+            // An installer may have put this release in while this one downloaded.
+            if already_in_place(installed_launcher_version(&target).as_deref(), &staged.tag) {
+                return Ok(());
+            }
+            place_checked(&work, &staged, place_staged)
+        });
         remove_stage(&work, &staged.payload);
         placed?;
     }
@@ -3836,7 +3911,7 @@ pub fn stage_update(release: &Release, progress: impl Fn(f32)) -> Result<Option<
         .ok_or("This launcher release has no build for this platform.")?;
     let target = launcher_version(&release.tag).unwrap_or("0");
     if installed_launcher_version(&update_target())
-        .is_some_and(|v| v != VERSION && compare_versions(&v, target).is_ge())
+        .is_some_and(|v| v != VERSION && compare_launcher_versions(&v, target).is_ge())
     {
         return Ok(None);
     }
@@ -3988,9 +4063,14 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 /// arguments in place of this one: on Unix the process becomes the new binary (exec), on Windows
 /// the new one starts and this one exits. Returns only when the new one could not start.
 pub fn restart() -> String {
+    restart_with(false)
+}
+
+/// [`restart`], marked as the restart for links.json's `min_launcher` when `for_minimum`
+/// (`update_handoff::MIN_RESTARTED_ENV`).
+pub fn restart_with(for_minimum: bool) -> String {
     let target = update_target();
-    let mut cmd = Command::new(&target);
-    cmd.args(std::env::args_os().skip(1));
+    let mut cmd = restart_command(&target, std::env::args_os().skip(1), for_minimum);
     #[cfg(unix)]
     let error = {
         use std::os::unix::process::CommandExt;
@@ -4005,6 +4085,19 @@ pub fn restart() -> String {
         "Could not start {}: {error}. Close the launcher and open it again.",
         target.display()
     )
+}
+
+fn restart_command(
+    target: &Path,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    for_minimum: bool,
+) -> Command {
+    let mut cmd = Command::new(target);
+    cmd.args(args);
+    if for_minimum {
+        cmd.env(crate::update_handoff::MIN_RESTARTED_ENV, "1");
+    }
+    cmd
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -4528,6 +4621,166 @@ mod tests {
         assert!(!dir.exists());
     }
 
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): a client from before the
+    /// capability marker takes no runtime lease and never can, so nothing but the process check
+    /// can prove its folder unused — and a shared cache, which any installed build reads without
+    /// a lease, stays refused.
+    #[test]
+    fn a_version_whose_client_predates_runtime_leases_is_removed() {
+        let Some(root) = std::env::var_os("LEGACY_REMOVE_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_version_whose_client_predates_runtime_leases_is_removed"
+                ])
+                .env("LEGACY_REMOVE_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let dir = versions.join("v0.1.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), b"").unwrap();
+        fs::write(dir.join(CLIENT), b"pre-holder game").unwrap();
+        assert_eq!(installed_in(&versions), vec!["v0.1.0".to_owned()]);
+        // Shared units are read by any installed build, this one included: no proof can free
+        // one while a build without leases is installed.
+        let cache = root.join("cache/github");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("pack.hpack"), b"whole pack").unwrap();
+        assert!(matches!(
+            crate::cache_cleanup::delete_game_unit(&cache),
+            Err(crate::native_cache::Error::UnprovenExclusion)
+        ));
+        assert_eq!(fs::read(cache.join("pack.hpack")).unwrap(), b"whole pack");
+        remove_version("v0.1.0").unwrap();
+        assert!(!dir.exists());
+        assert!(installed_in(&versions).is_empty());
+    }
+
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): the proof is the check that
+    /// nothing runs from the version, so a version somebody still runs is refused whole — the
+    /// completion marker stays and the folder stays listed — and the same call removes it once
+    /// that program is gone.
+    #[test]
+    #[cfg(windows)]
+    fn a_running_legacy_version_is_refused_whole_and_removed_once_it_closes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let Some(root) = std::env::var_os("OPEN_LEGACY_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_running_legacy_version_is_refused_whole_and_removed_once_it_closes"
+                ])
+                .env("OPEN_LEGACY_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let dir = versions.join("v0.1.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), b"").unwrap();
+        fs::write(dir.join(CLIENT), b"pre-holder game").unwrap();
+        // A running image refuses writes the way the loader's own handle does, which is what the
+        // check standing in for the missing lease looks at.
+        let running = fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(dir.join(CLIENT))
+            .unwrap();
+        assert!(remove_version("v0.1.0").is_err());
+        assert!(
+            dir.join(COMPLETE).exists(),
+            "the version stays whole for the retry"
+        );
+        assert_eq!(installed_in(&versions), vec!["v0.1.0".to_owned()]);
+        drop(running);
+        remove_version("v0.1.0").unwrap();
+        assert!(!dir.exists());
+        assert!(installed_in(&versions).is_empty());
+    }
+
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): the dependency veto belongs
+    /// to the one removal path, so an automatic cleanup stops at a base an installed native build
+    /// takes its resources from as well — not only a removal a player asks for.
+    #[test]
+    fn a_version_a_native_build_takes_its_resources_from_is_kept() {
+        let Some(root) = std::env::var_os("DEPENDENT_BASE_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_version_a_native_build_takes_its_resources_from_is_kept"
+                ])
+                .env("DEPENDENT_BASE_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let base = versions.join("nightly-2026-11-13-9f42064");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join(COMPLETE), b"").unwrap();
+        fs::write(base.join(CLIENT), b"pre-holder game").unwrap();
+        let build = versions.join("native-phone");
+        fs::create_dir_all(&build).unwrap();
+        fs::write(build.join(COMPLETE), b"").unwrap();
+        fs::write(
+            build.join("native-mods.json"),
+            format!(
+                r#"{{"base":"nightly-2026-11-13-9f42064","horizon":"{}","target":"client","left_out":[]}}"#,
+                "0".repeat(40)
+            ),
+        )
+        .unwrap();
+        let refused = remove_version("nightly-2026-11-13-9f42064").unwrap_err();
+        assert!(refused.contains("native-phone"), "{refused}");
+        assert!(
+            base.join(CLIENT).exists(),
+            "the base stays while it is needed"
+        );
+        remove_version("native-phone").unwrap();
+        remove_version("nightly-2026-11-13-9f42064").unwrap();
+        assert!(!base.exists());
+    }
+
     /// A canonical path loses Windows' verbatim prefix on a drive (horizon-mixins' output
     /// check stats `\\?\C:`, the volume itself, which Windows refuses, os error 1), and keeps
     /// it where there is no drive form.
@@ -4712,7 +4965,7 @@ mod tests {
             .iter()
             .filter(|(_, tests, _)| !tests)
             .flat_map(|(name, _, text)| {
-                text.matches("mojang::download(")
+                text.matches("mojang::download_http(")
                     .map(move |_| name.as_str())
             })
             .collect();
@@ -4722,7 +4975,7 @@ mod tests {
             let start = backend.find(&format!("\nfn {f}(")).unwrap();
             &backend[start..start + backend[start + 1..].find("\n}\n").unwrap()]
         };
-        assert!(body("download_for").contains("mojang::download("));
+        assert!(body("download_for").contains("mojang::download_http("));
         assert!(body("download_for_owner").contains("account::launch("));
         assert!(!body("download_for_owner").contains("launch_for_game("));
         // `download_for` is defined once and called once, by `download_for_owner`.
@@ -4842,6 +5095,12 @@ pub fn {f}("
             "base": base, "horizon": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "target": "client"
         }).to_string()).unwrap();
         assert_eq!(resources(&native), resources(&base));
+        assert_eq!(
+            prepared_in(&native),
+            base,
+            "preparing the build prepares its base"
+        );
+        assert_eq!(prepared_in(&base), base);
         assert!(crate::native_mods::resource_dependents(&base));
         assert!(remove_version(&base).is_err());
         assert!(base_dir.join(COMPLETE).exists());
@@ -6260,6 +6519,45 @@ pub fn {f}("
         assert!(!select_after_update(Some("v2026.10.1"), &installed));
     }
 
+    /// A launcher on `0.2.80-rc.1` updates to `0.2.80`: the installer doesn't take the
+    /// prerelease in place for the release (it restarted the same prerelease forever), and the
+    /// update check and the download agree.
+    #[test]
+    fn a_prerelease_launcher_is_below_its_release_everywhere() {
+        assert!(!already_in_place(Some("0.2.80-rc.1"), "launcher@0.2.80"));
+        assert!(already_in_place(Some("0.2.80"), "launcher@0.2.80"));
+        assert!(already_in_place(Some("0.2.81"), "launcher@0.2.80"));
+        assert!(compare_launcher_versions("0.2.80-rc.1", "launcher@0.2.80").is_lt());
+        let release = Release {
+            tag: "launcher@0.2.80".into(),
+            name: String::new(),
+            body: String::new(),
+            date: String::new(),
+            time: String::new(),
+            asset: Some(("u".into(), 1)),
+            prerelease: false,
+            nightly: None,
+        };
+        assert!(
+            launcher_update_from(std::slice::from_ref(&release), "launcher@0.2.80-rc.1").is_some()
+        );
+        assert!(launcher_update_from(&[release], "launcher@0.2.80").is_none());
+    }
+
+    /// The restart when the new launcher is already in place carries the minimum's mark too.
+    #[test]
+    fn a_restart_for_the_minimum_is_marked() {
+        let marked = |cmd: &Command| {
+            cmd.get_envs().any(|(key, value)| {
+                key == crate::update_handoff::MIN_RESTARTED_ENV && value == Some("1".as_ref())
+            })
+        };
+        let command =
+            |for_minimum| restart_command(Path::new("l"), ["play"].map(Into::into), for_minimum);
+        assert!(marked(&command(true)));
+        assert!(!marked(&command(false)));
+    }
+
     #[test]
     fn links_fall_back_to_the_built_in_ones() {
         let defaults = Links::default();
@@ -6281,6 +6579,21 @@ pub fn {f}("
         assert_eq!(Links::parse("<html>404</html>"), defaults);
         assert_eq!(Links::parse("[1]"), defaults);
         assert_eq!(Links::parse(r#"{"discord": 5}"#), defaults);
+        // No minimum launcher unless the file names a version; a malformed one is none, in the
+        // built-in file too, where it must not stop the launcher.
+        assert_eq!(defaults.min_launcher, None);
+        for unset in ["\"\"", "80", r#""0.2.8O""#, "null", "[]"] {
+            let key = format!(r#""min_launcher": {unset}"#);
+            assert_eq!(Links::parse(&format!("{{{key}}}")), defaults);
+            let file = include_str!("../links.json").replacen('{', &format!("{{{key}, "), 1);
+            assert_eq!(Links::defaults_from(&file).min_launcher, None, "{file}");
+        }
+        assert_eq!(
+            Links::parse(r#"{"min_launcher": "0.2.80"}"#)
+                .min_launcher
+                .as_deref(),
+            Some("0.2.80")
+        );
         // A key that is missing keeps its default; a new address replaces it; empty hides it.
         assert_eq!(
             Links::parse(r#"{"discord": "https://x.y/z"}"#),

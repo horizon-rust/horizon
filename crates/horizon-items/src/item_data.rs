@@ -9,6 +9,8 @@ pub mod component_values;
 pub mod cooking_fuel;
 #[path = "item_data/custom_model_data.rs"]
 pub mod custom_model_data;
+#[path = "item_data/default_names.rs"]
+pub mod default_names;
 #[path = "item_data/ingredient_components.rs"]
 pub mod ingredient_components;
 use crate::items::{ItemInfo, ItemStack};
@@ -60,17 +62,52 @@ pub fn modifier_rows(tag: &Tag) -> Vec<ModifierRow> {
         })
         .collect()
 }
-use std::sync::Arc;
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
-/// Enchantment id and level, in insertion order.
+/// Enchantment id and level, in insertion order (kept for saving and sending; stacks compare
+/// them as a map, see [`same_levels`]).
 pub type Levels = Vec<(Arc<str>, u32)>;
+
+/// Whether `levels` names an id twice (say, saved as both `minecraft:sharpness` and
+/// `sharpness`): the lookup reads the first entry, saving keeps the last.
+fn repeats_an_id(levels: &Levels) -> bool {
+    levels
+        .iter()
+        .enumerate()
+        .any(|(i, (id, _))| levels[..i].iter().any(|(seen, _)| seen == id))
+}
+
+/// `ItemEnchantments.equals`: vanilla keeps the levels in a map, so two lists with the same
+/// enchantments at the same levels are equal in any order. A list repeating an id has no single
+/// map (the lookup and the saved form disagree), so it only equals the very same list.
+fn same_levels(a: &Levels, b: &Levels) -> bool {
+    if repeats_an_id(a) || repeats_an_id(b) {
+        return a == b;
+    }
+    a.len() == b.len() && a.iter().all(|entry| b.contains(entry))
+}
+
+/// A hash agreeing with [`same_levels`]: in no particular order for a list of distinct ids,
+/// as the list is for one repeating an id.
+fn hash_levels<H: Hasher>(levels: &Levels, state: &mut H) {
+    if repeats_an_id(levels) {
+        levels.hash(state);
+        return;
+    }
+    let mut sorted: Vec<_> = levels.iter().collect();
+    sorted.sort_unstable();
+    sorted.hash(state);
+}
 pub mod trim;
 pub use trim::Trim;
 
 /// A stack's modelled and preserved components. Start with `Default` (or
 /// `ItemStack::data_mut`) and use the fields and setters; component storage may
 /// gain private decoded data alongside its saved form.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct StackData {
     /// An explicit zero damage component overriding a damaged prototype.
@@ -142,6 +179,149 @@ pub struct StackData {
     /// What the server sent for this stack, for sending it back unchanged.
     pub wire: Wire,
 }
+/// Field by field, except that the enchantment lists compare as maps ([`same_levels`]).
+impl PartialEq for StackData {
+    fn eq(&self, rhs: &Self) -> bool {
+        let Self {
+            damage_set,
+            enchantments,
+            stored_enchantments,
+            repair_cost,
+            explicit_zero_damage,
+            custom_name,
+            kinetic_weapon,
+            consumable,
+            death_protection,
+            potion,
+            potion_extra,
+            trim,
+            container,
+            charged,
+            fireworks,
+            map_id,
+            writable_pages,
+            written,
+            banner_patterns,
+            base_color,
+            ominous_banner,
+            ominous_amplifier,
+            dyed_color,
+            firework_explosion,
+            pot_decorations,
+            bundle_contents,
+            bundle_selected,
+            stew_effects,
+            map_post_processing,
+            other,
+            wire,
+        } = self;
+        same_levels(enchantments, &rhs.enchantments)
+            && same_levels(stored_enchantments, &rhs.stored_enchantments)
+            && *damage_set == rhs.damage_set
+            && *repair_cost == rhs.repair_cost
+            && *explicit_zero_damage == rhs.explicit_zero_damage
+            && *custom_name == rhs.custom_name
+            && *kinetic_weapon == rhs.kinetic_weapon
+            && *consumable == rhs.consumable
+            && *death_protection == rhs.death_protection
+            && *potion == rhs.potion
+            && *potion_extra == rhs.potion_extra
+            && *trim == rhs.trim
+            && *container == rhs.container
+            && *charged == rhs.charged
+            && *fireworks == rhs.fireworks
+            && *map_id == rhs.map_id
+            && *writable_pages == rhs.writable_pages
+            && *written == rhs.written
+            && *banner_patterns == rhs.banner_patterns
+            && *base_color == rhs.base_color
+            && *ominous_banner == rhs.ominous_banner
+            && *ominous_amplifier == rhs.ominous_amplifier
+            && *dyed_color == rhs.dyed_color
+            && *firework_explosion == rhs.firework_explosion
+            && *pot_decorations == rhs.pot_decorations
+            && *bundle_contents == rhs.bundle_contents
+            && *bundle_selected == rhs.bundle_selected
+            && *stew_effects == rhs.stew_effects
+            && *map_post_processing == rhs.map_post_processing
+            && *other == rhs.other
+            && *wire == rhs.wire
+    }
+}
+impl Hash for StackData {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let Self {
+            damage_set,
+            enchantments,
+            stored_enchantments,
+            repair_cost,
+            explicit_zero_damage,
+            custom_name,
+            kinetic_weapon,
+            consumable,
+            death_protection: _,
+            potion,
+            potion_extra,
+            trim,
+            container,
+            charged,
+            fireworks,
+            map_id,
+            writable_pages,
+            written,
+            banner_patterns,
+            base_color,
+            ominous_banner,
+            ominous_amplifier,
+            dyed_color,
+            firework_explosion,
+            pot_decorations,
+            bundle_contents,
+            bundle_selected: _,
+            stew_effects,
+            map_post_processing,
+            other,
+            wire: _,
+        } = self;
+        damage_set.hash(state);
+        hash_levels(enchantments, state);
+        hash_levels(stored_enchantments, state);
+        repair_cost.hash(state);
+        explicit_zero_damage.hash(state);
+        custom_name.hash(state);
+        kinetic_weapon
+            .as_ref()
+            .map(|component| component.raw())
+            .hash(state);
+        consumable
+            .as_ref()
+            .map(|component| &component.raw)
+            .hash(state);
+        potion.hash(state);
+        potion_extra.hash(state);
+        trim.hash(state);
+        container.hash(state);
+        charged.hash(state);
+        fireworks.hash(state);
+        map_id.hash(state);
+        writable_pages.hash(state);
+        written.hash(state);
+        banner_patterns.hash(state);
+        base_color.hash(state);
+        ominous_banner.hash(state);
+        ominous_amplifier.hash(state);
+        dyed_color.hash(state);
+        firework_explosion.hash(state);
+        pot_decorations.hash(state);
+        bundle_contents.hash(state);
+        stew_effects.hash(state);
+        map_post_processing.hash(state);
+        // Includes the saved death_protection component. The decoded cache
+        // may contain floats and is only used by exact equality.
+        other.hash(state);
+    }
+}
+
 /// A saved consumable decoded once for use animation, countdown and completion.
 #[derive(Clone, Debug, PartialEq)]
 struct ConsumableComponent {
@@ -428,7 +608,7 @@ fn ominous_tooltip_display() -> Tag {
 }
 
 /// `WrittenBookContent` with the pages as plain text.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct WrittenBook {
     pub title: String,
     pub author: String,
@@ -468,15 +648,7 @@ pub fn destroyed_container(stack: &mut ItemStack) -> Vec<ItemStack> {
 /// `NbtOps.getBooleanValue`, used by boolean component codecs: every numeric tag
 /// is true unless its double value is zero. In particular, fractions stay true.
 pub fn component_bool(value: &Tag) -> Option<bool> {
-    Some(match value {
-        Tag::Byte(v) => *v != 0,
-        Tag::Short(v) => *v != 0,
-        Tag::Int(v) => *v != 0,
-        Tag::Long(v) => *v != 0,
-        Tag::Float(bits) => f32::from_bits(*bits) != 0.0,
-        Tag::Double(bits) => f64::from_bits(*bits) != 0.0,
-        _ => return None,
-    })
+    horizon_client_core::component_codec::nbt_bool(value)
 }
 
 /// `FoodProperties.DIRECT_CODEC`: required numeric nutrition/saturation and an
@@ -604,6 +776,26 @@ impl ItemStack {
             }
         }
         info.map_or(0, |item| item.damage)
+    }
+    /// The stack's own `max_stack_size` component: `Some(1)` when the stack
+    /// removes it (`!minecraft:max_stack_size`, vanilla's `getOrDefault`
+    /// default of 1), `None` when it leaves the item's.
+    pub fn own_max_stack_size(&self) -> Option<u32> {
+        let data = self.data();
+        if data.is_some_and(|d| d.other("!minecraft:max_stack_size").is_some()) {
+            return Some(1);
+        }
+        match data.and_then(|d| d.other("minecraft:max_stack_size")) {
+            Some(Tag::Int(n)) => Some((*n).clamp(1, 99) as u32),
+            _ => None,
+        }
+    }
+    /// `ItemInstance.getMaxStackSize`: the stack's own `max_stack_size`, else
+    /// the item's. A removed component is vanilla's `getOrDefault` default of
+    /// 1, not the item's size.
+    pub fn max_stack_size(&self, items: &crate::items::Items) -> u32 {
+        self.own_max_stack_size()
+            .unwrap_or_else(|| items.get(&self.item).map_or(64, |i| i.max_stack))
     }
     /// The patch the server sent for this stack, while the stack is still what
     /// it decoded to (its count aside); None once anything else changed.
@@ -749,8 +941,15 @@ impl ItemStack {
     /// saves and reaches clients unchanged; the ominous banner's is modelled
     /// by `ominous_banner` instead.
     pub fn item_name(&self) -> Option<String> {
-        let name = self.data()?.other("minecraft:item_name")?;
-        Some(horizon_client_core::component::name_text(name).plain())
+        self.item_name_text().map(|name| name.plain())
+    }
+    /// `getItemName`'s component as text: the stack's own `minecraft:item_name`, else the
+    /// item's default where it is not its description id's ([`default_names`]).
+    pub fn item_name_text(&self) -> Option<horizon_client_core::text::Text> {
+        match self.data().and_then(|d| d.other("minecraft:item_name")) {
+            Some(name) => Some(horizon_client_core::component::name_text(name)),
+            None => default_names::of(&self.item),
+        }
     }
     pub fn potion(&self) -> Option<&str> {
         self.data().and_then(|d| d.potion.as_deref())
@@ -807,6 +1006,14 @@ impl ItemStack {
     pub fn same_item_same_components(&self, other: &Self) -> bool {
         self.item == other.item && self.damage == other.damage && self.data() == other.data()
     }
+    /// Hash candidates for `same_item_same_components`. Confirm a match with
+    /// that comparison, since fingerprints can collide.
+    pub fn hash_item_and_components(&self, state: &mut impl Hasher) {
+        self.item.hash(state);
+        self.damage.hash(state);
+        self.extra.hash(state);
+    }
+
     /// `ItemStack.matches`: the same item, count and components.
     pub fn matches(&self, other: &Self) -> bool {
         self.count == other.count && self.same_item_same_components(other)
@@ -1892,6 +2099,74 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 mod tests {
     use super::*;
     use crate::banner_layer::BannerLayer;
+
+    /// `ItemEnchantments.equals` compares a level map: the same enchantments in
+    /// another order are the same component, so the stacks stack, merge and match
+    /// (and hash alike); another level is still a different component.
+    #[test]
+    fn enchantments_compare_as_a_map_whatever_their_order() {
+        let hash = |stack: &ItemStack| {
+            let mut state = std::collections::hash_map::DefaultHasher::new();
+            stack.hash_item_and_components(&mut state);
+            state.finish()
+        };
+        for item in ["minecraft:diamond_sword", "minecraft:enchanted_book"] {
+            let enchanted = |levels: &[(&str, u32)]| {
+                let mut stack = ItemStack::new(item, 1);
+                for (id, level) in levels {
+                    stack.enchant(id, *level);
+                }
+                stack
+            };
+            let a = enchanted(&[("minecraft:sharpness", 5), ("minecraft:unbreaking", 3)]);
+            let b = enchanted(&[("minecraft:unbreaking", 3), ("minecraft:sharpness", 5)]);
+            // Each keeps the order it was given in, for saving and sending.
+            assert_ne!(
+                a.crafting_enchantments(),
+                b.crafting_enchantments(),
+                "{item}"
+            );
+            assert!(a.same_item_same_components(&b), "{item}");
+            assert!(a.matches(&b), "{item}");
+            assert_eq!(hash(&a), hash(&b), "{item}");
+            let c = enchanted(&[("minecraft:unbreaking", 2), ("minecraft:sharpness", 5)]);
+            assert!(!a.same_item_same_components(&c), "{item}");
+            let d = enchanted(&[("minecraft:sharpness", 5)]);
+            assert!(!a.same_item_same_components(&d), "{item}");
+        }
+    }
+
+    /// A list may repeat an id (the vectors are public; two spellings of one id
+    /// decode to one key). The lookup reads the first entry but the saved map
+    /// keeps the last, so such a list only equals the very same list, in order.
+    #[test]
+    fn a_list_repeating_an_id_only_equals_the_same_list() {
+        let hash = |stack: &ItemStack| {
+            let mut state = std::collections::hash_map::DefaultHasher::new();
+            stack.hash_item_and_components(&mut state);
+            state.finish()
+        };
+        let sword = |levels: &[(&str, u32)]| {
+            let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
+            stack.data_mut().enchantments =
+                levels.iter().map(|(id, l)| (Arc::from(*id), *l)).collect();
+            stack
+        };
+        let one_five = sword(&[("minecraft:sharpness", 1), ("minecraft:sharpness", 5)]);
+        let five_one = sword(&[("minecraft:sharpness", 5), ("minecraft:sharpness", 1)]);
+        let one = sword(&[("minecraft:sharpness", 1)]);
+        assert!(!one_five.same_item_same_components(&five_one));
+        assert!(!one_five.same_item_same_components(&one));
+        assert!(!one.same_item_same_components(&one_five));
+        let again = sword(&[("minecraft:sharpness", 1), ("minecraft:sharpness", 5)]);
+        assert!(one_five.same_item_same_components(&again));
+        assert_eq!(hash(&one_five), hash(&again));
+        // Distinct ids in another order are still equal, and hash alike.
+        let a = sword(&[("minecraft:sharpness", 1), ("minecraft:unbreaking", 3)]);
+        let b = sword(&[("minecraft:unbreaking", 3), ("minecraft:sharpness", 1)]);
+        assert!(a.same_item_same_components(&b));
+        assert_eq!(hash(&a), hash(&b));
+    }
 
     /// `set_banner_pattern` (and `set_components`) hand a banner's layers over
     /// as a component; the renderer and the tooltip read `banner_patterns`, so

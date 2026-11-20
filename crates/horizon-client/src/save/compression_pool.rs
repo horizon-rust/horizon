@@ -52,7 +52,9 @@ pub fn pool() -> &'static CompressionPool {
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .filter(|&n| n > 0)
-            .unwrap_or_else(|| horizon_threads::worker_count().div_ceil(2).max(1));
+            .unwrap_or_else(|| {
+                horizon_threads::sizing::for_pool(horizon_threads::sizing::Pool::SaveCompression)
+            });
         CompressionPool::new(workers)
     })
 }
@@ -135,6 +137,7 @@ fn run_job(batch: &Arc<Batch>, i: usize) {
 }
 
 fn worker_loop(weak_inner: Weak<Inner>) {
+    let mut release_seen = horizon_threads::release_seen();
     loop {
         let batch = {
             let inner = match weak_inner.upgrade() {
@@ -143,7 +146,18 @@ fn worker_loop(weak_inner: Weak<Inner>) {
             };
             let mut queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
             while queue.is_empty() && !inner.shutdown.load(Ordering::Relaxed) {
-                queue = inner.wake.wait(queue).unwrap_or_else(|e| e.into_inner());
+                let (next, wait) = inner
+                    .wake
+                    .wait_timeout(queue, horizon_threads::RELEASE_POLL)
+                    .unwrap_or_else(|e| e.into_inner());
+                queue = next;
+                // Give back what the server freed into this thread's heap
+                // when it asks (`release_everywhere`).
+                if wait.timed_out() && horizon_threads::release_asked(&mut release_seen) {
+                    drop(queue);
+                    horizon_threads::release_free_memory();
+                    queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
+                }
             }
             if inner.shutdown.load(Ordering::Relaxed) && queue.is_empty() {
                 return;
@@ -155,6 +169,11 @@ fn worker_loop(weak_inner: Weak<Inner>) {
             while let Some(i) = next_job(&batch) {
                 did_work = true;
                 run_job(&batch, i);
+            }
+            // Asked while batches keep coming (no gap for the timed check
+            // above): give it back between two.
+            if horizon_threads::release_asked(&mut release_seen) {
+                horizon_threads::release_free_memory();
             }
             if !did_work && let Some(inner) = weak_inner.upgrade() {
                 let mut queue = inner.queue.lock().unwrap_or_else(|e| e.into_inner());
