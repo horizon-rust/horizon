@@ -15,9 +15,9 @@ use wgpu::util::DeviceExt;
 pub use model_reducing::set_mod_namespaces;
 use model_reducing::{full_size_sprites, mod_namespaces, reducible_model_sprites};
 
+mod animate;
 #[cfg(test)]
 mod atlas_32x_tests;
-mod animate;
 pub mod cit_glint;
 mod clip_corner;
 mod gui_sprite;
@@ -1398,7 +1398,11 @@ impl HudAtlas {
             // `defaults` would answer a replaced texture with the pack's own
             // file and a hi-res pack would draw its pixel size everywhere.
             let gui_size = png_size(
-                if defaulted { source } else { shadow.unwrap_or(defaults) },
+                if defaulted {
+                    source
+                } else {
+                    shadow.unwrap_or(defaults)
+                },
                 &crate::atlas_sources::texture_resource(&name, "textures"),
             )
             .map(|(dw, dh)| {
@@ -1480,8 +1484,11 @@ impl HudAtlas {
             // texture) is no logical size. The defaults' own generation names
             // every sprite they generate; a sprite only the pack generates
             // keeps its own size.
-            let generation =
-                if defaults.same_generation(root) { root.underlay() } else { Some(defaults) };
+            let generation = if defaults.same_generation(root) {
+                root.underlay()
+            } else {
+                Some(defaults)
+            };
             if let Some(generation) = generation {
                 let (default_generated, _) = atlas_sprites(generation, &[]);
                 for (name, w, h, _) in default_generated {
