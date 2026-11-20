@@ -132,7 +132,8 @@ impl<T> Consumer<T> {
     /// Only values already published at the beginning of this turn, written into `out`
     /// under a single queue lock to reuse `out`'s buffer.
     pub fn take_turn_into(&self, out: &mut Vec<OwnedReceipt<T>>) {
-        self.receiver.drain_turn_into(out);
+        out.clear();
+        out.extend(self.receiver.drain_turn());
     }
     /// Only values already published at the beginning of this turn. New replies
     /// append behind these values and cannot feed back into the same actor turn.

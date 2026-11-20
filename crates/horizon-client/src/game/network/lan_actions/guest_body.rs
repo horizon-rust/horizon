@@ -64,8 +64,8 @@ impl Game<'_> {
     /// hazards (drowning, lava, fire blocks, suffocation, the void), and
     /// regeneration and the food tick (ServerPlayer.doTick). Their hurt
     /// sounds are heard at the guest.
-    pub(super) fn guest_server_tick(&mut self, conn: u32, body: bool) {
-        self.guest_server_tick_inner(conn, body, None);
+    pub(super) fn guest_server_tick(&mut self, conn: u32) {
+        self.guest_server_tick_inner(conn, true, None);
     }
 
     pub(super) fn guest_server_tick_with_tail(

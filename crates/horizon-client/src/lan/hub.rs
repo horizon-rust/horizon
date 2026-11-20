@@ -1637,10 +1637,7 @@ impl Hub {
         if !hidden.is_empty() {
             self.guests.update(i, |g| g.tab_hidden.extend(hidden));
         }
-        self.guests[i].send(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
-            actions: Self::INFO_ACTIONS,
-            entries,
-        }));
+        self.send_player_list(i, entries);
         let newcomer = super::Body::from(Arc::<[u8]>::from(
             C::PlayerInfoUpdate(play::PlayerInfoUpdate {
                 actions: Self::INFO_ACTIONS,

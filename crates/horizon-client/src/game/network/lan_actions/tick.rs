@@ -115,6 +115,10 @@ impl Game<'_> {
                 );
                 continue;
             }
+            let body = self
+                .lan
+                .as_ref()
+                .is_some_and(|host| self.guest_body_ticks(&host.hub.guests[gi]));
             // ServerPlayerGameMode.tick stops an active destroy when its block is air.
             let Some(host) = self.lan.as_mut() else {
                 return;

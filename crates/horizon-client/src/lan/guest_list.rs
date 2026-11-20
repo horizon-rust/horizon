@@ -408,7 +408,11 @@ impl GuestList {
         index: usize,
         f: impl FnOnce(ReplayTurn<'_>) -> T,
     ) -> Option<T> {
-        let g = self.rows.get_mut(index)?;
+        if index >= self.rows.len() {
+            return None;
+        }
+        self.mark_written(index);
+        let g = &mut self.rows[index];
         let spectator = g.spectator();
         let client_loaded = g.client_loaded();
         let awaiting_teleport = g.awaiting_teleport.is_some();
