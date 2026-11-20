@@ -380,6 +380,7 @@ pub struct Hub {
     pub encoder: ChunkEncoder,
     pub guests: super::guest_list::GuestList,
     pub(super) sync: Arc<SyncData>,
+    recipes_packet: super::Body,
     /// The active world session rule definitions.
     pub rule_registry: Arc<crate::gamerules::RuleRegistry>,
     pub ticks: u64,
@@ -484,6 +485,10 @@ pub struct Hub {
     selector_tokens: Vec<horizon_client_core::registries::SelectorToken>,
     /// Players' areas in other levels and what their clients view of them (arismoko/horizon#3716).
     pub viewed: super::viewed_levels::ViewedLevels,
+    /// Reused per-tick `EntityState` storage for placed guests (`track_entities`).
+    player_states: super::entity::States,
+    /// Reused per-tick ingress batch buffer (`poll`).
+    poll_buf: Vec<crate::net::ingress::OwnedReceipt<NetEvent>>,
 }
 
 fn string(s: &str) -> Tag {
@@ -735,23 +740,19 @@ enum Body {
     Saved(Arc<[u8]>),
 }
 
-/// The level's columns a tick's batches send, each once, with the number of batches taking it.
+/// The level's columns a tick's batches send, each once.
 #[derive(Default)]
 struct Columns<'w> {
     chunks: Vec<&'w Chunk>,
-    uses: Vec<usize>,
     index: crate::fast_hash::FxHashMap<(i32, i32), usize>,
 }
 
 impl<'w> Columns<'w> {
     fn add(&mut self, chunk: &'w Chunk) -> usize {
-        let j = *self.index.entry((chunk.x, chunk.z)).or_insert_with(|| {
+        *self.index.entry((chunk.x, chunk.z)).or_insert_with(|| {
             self.chunks.push(chunk);
-            self.uses.push(0);
             self.chunks.len() - 1
-        });
-        self.uses[j] += 1;
-        j
+        })
     }
 }
 
@@ -795,6 +796,8 @@ impl Hub {
         let clock_ids = (0..sync.dynamic.len("minecraft:world_clock") as i32).collect();
         let mut encoder = encoder;
         encoder.set_dimension(config.levels.get(&config.dimension));
+        encoder.set_level_name(&config.dimension);
+        let recipes_packet = recipes_body(&sync.recipes);
         Self {
             payload_player_epoch: None,
             lan,
@@ -803,6 +806,7 @@ impl Hub {
             encoder,
             guests: Default::default(),
             sync,
+            recipes_packet,
             rule_registry: crate::gamerules::rule_registry(),
             ticks: 0,
             sound_seeds: Mutex::new(crate::random_source::create()),
@@ -844,6 +848,8 @@ impl Hub {
             synced: Vec::new(),
             entity_out: Vec::new(),
             entity_gone: Vec::new(),
+            player_states: Default::default(),
+            poll_buf: Vec::new(),
             mod_commands: (serde_json::Value::Null, None),
             selector_tokens: Vec::new(),
             native_menu_events: Vec::new(),
@@ -1516,7 +1522,7 @@ impl Hub {
 
     /// PlayerList.placeNewPlayer for a guest whose saved state is loaded.
     pub fn place_new_player(&mut self, conn: u32, ctx: &mut TickCtx) {
-        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
+        let Some(i) = self.guests.connection_index(conn) else {
             return;
         };
         if !self.guests[i].participates_online() {
@@ -1564,7 +1570,7 @@ impl Hub {
             slot: g.selected as i32,
         }));
         // PlayerList.placeNewPlayer: ClientboundUpdateRecipesPacket.
-        g.send(&raw(ids::UPDATE_RECIPES, self.sync.recipes.clone()));
+        g.sender.send_body(self.recipes_packet.clone());
         // OnDatapackSyncEvent.sendRecipes: the recipes the native mods asked
         // for, to a Horizon client only.
         if g.brand == "horizon" {
@@ -1579,18 +1585,20 @@ impl Hub {
         // a native mod hides it from). A held player is not announced, and
         // not placed.
         if !held {
-            let joined = C::SystemChat(play::SystemChat {
-                content: self.joined_line(uuid, &name),
-                overlay: false,
-            })
-            .encode();
+            let joined = super::Body::from(Arc::<[u8]>::from(
+                C::SystemChat(play::SystemChat {
+                    content: self.joined_line(uuid, &name),
+                    overlay: false,
+                })
+                .encode(),
+            ));
             for g in self
                 .guests
                 .iter()
                 .filter(|g| g.placed && g.conn != conn && g.participates_online())
             {
                 if self.sees(g.permission, uuid) {
-                    g.sender.send(joined.clone());
+                    g.sender.send_body(joined.clone());
                 }
             }
             {
@@ -1626,30 +1634,45 @@ impl Hub {
                 o.latency.load(Ordering::Relaxed),
             ));
         }
-        self.guests.update(i, |g| g.tab_hidden.extend(hidden));
-        self.send_player_list(i, entries);
-        let newcomer = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+        if !hidden.is_empty() {
+            self.guests.update(i, |g| g.tab_hidden.extend(hidden));
+        }
+        self.guests[i].send(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
             actions: Self::INFO_ACTIONS,
-            entries: vec![self.player_info(uuid, &name, mode, 0)],
-        })
-        .encode();
+            entries,
+        }));
+        let newcomer = super::Body::from(Arc::<[u8]>::from(
+            C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                actions: Self::INFO_ACTIONS,
+                entries: vec![self.player_info(uuid, &name, mode, 0)],
+            })
+            .encode(),
+        ));
         if held {
             // Its own list has itself in it; the others' lists do not.
-            self.guests[i].sender.send(newcomer);
+            self.guests[i].sender.send_body(newcomer);
         } else {
             let level = self.hidden.get(&uuid).copied();
             // A held player is shown the entities around it, so it must know the players
             // who join meanwhile, or its client drops their entity (`ClientPacketListener`
             // adds a player only with its list entry).
-            self.guests.update_all(|g| {
-                if (g.placed || g.held) && g.participates_online() {
-                    if level.is_some_and(|l| g.permission < l) {
-                        g.tab_hidden.insert(uuid);
-                    } else {
-                        g.sender.send(newcomer.clone());
+            if let Some(level) = level {
+                self.guests.update_all(|g| {
+                    if (g.placed || g.held) && g.participates_online() {
+                        if g.permission < level {
+                            g.tab_hidden.insert(uuid);
+                        } else {
+                            g.sender.send_body(newcomer.clone());
+                        }
+                    }
+                });
+            } else {
+                for g in self.guests.iter() {
+                    if (g.placed || g.held) && g.participates_online() {
+                        g.sender.send_body(newcomer.clone());
                     }
                 }
-            });
+            }
         }
         self.send_level_info(i, ctx, true);
         // ServerLevel.addNewPlayer: the chunk tracking starts at the player.
@@ -2348,7 +2371,9 @@ impl Hub {
         self.finish_fake_kicks(&mut events);
         self.expire_arrivals(&mut events);
         let mut credits = Vec::new();
-        for receipt in self.lan.poll() {
+        let mut polled = std::mem::take(&mut self.poll_buf);
+        self.lan.poll_into(&mut polled);
+        for receipt in polled.drain(..) {
             let (event, credit) = receipt.into_parts();
             match event {
                 NetEvent::RawPayload(delivery) => {
@@ -2368,18 +2393,14 @@ impl Hub {
                 }
                 NetEvent::Left(conn, reason) => {
                     credits.push(credit);
-                    if let Some(i) = self.guests.iter().position(|g| g.conn == conn) {
+                    if let Some(i) = self.guests.connection_index(conn) {
                         let g = self.remove_guest(i, &reason);
                         events.push(HostEvent::Left(Box::new(g)));
                     }
                 }
                 NetEvent::Packet(conn, packet, bytes) => {
-                    self.update_guest(conn, |g| {
-                        g.sender.undrained.taken(bytes);
-                        if g.left_reason.is_empty() {
-                            g.inbox.push_back(InboxItem::Packet(*packet, Some(credit)));
-                        }
-                    });
+                    self.guests
+                        .push_inbox(conn, bytes, InboxItem::Packet(*packet, Some(credit)));
                 }
                 NetEvent::Duplicate(uuid) => {
                     credits.push(credit);
@@ -2397,6 +2418,9 @@ impl Hub {
                     }
                 }
             }
+        }
+        if polled.capacity() <= 8192 {
+            self.poll_buf = polled;
         }
         // keepConnectionAlive's timeout: close a kicked client still unread a second later.
         if self.ticks.is_multiple_of(20) {
@@ -2417,7 +2441,9 @@ impl Hub {
                 self.kick(conn, translatable("disconnect.timeout", &[]));
             }
         }
-        events.push(HostEvent::InputCredits(credits));
+        if !credits.is_empty() {
+            events.push(HostEvent::InputCredits(credits));
+        }
         events
     }
 
@@ -2498,6 +2524,7 @@ impl Hub {
                 if let Some(far) = self.far.as_mut() {
                     far.forget_level();
                 }
+                self.encoder.forget_columns();
                 ctx.world.bulk_log.clear();
             }
             return events;
@@ -2843,11 +2870,35 @@ impl Hub {
                 (i, taken, far, bodies)
             })
             .collect();
-        self.encoder.warm(&columns.chunks);
-        let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
-            ctx.streaming.and_then(|s| s.proto_sections(x, z))
-        });
-        let uses = &mut columns.uses;
+        if !world.bulk_log.is_empty() {
+            for &(x, z) in &world.bulk_log {
+                self.encoder.invalidate_column(x, z);
+            }
+        }
+        if let Some(log) = &world.block_log
+            && !log.is_empty()
+        {
+            for &(x, _, z) in log {
+                self.encoder.invalidate_column(x >> 4, z >> 4);
+            }
+        }
+        if !world.block_log_held.is_empty() {
+            for &(x, _, z) in &world.block_log_held {
+                self.encoder.invalidate_column(x >> 4, z >> 4);
+            }
+        }
+        if let Some(log) = &world.light_log
+            && !log.is_empty()
+        {
+            for &(x, z) in log.keys() {
+                self.encoder.invalidate_column(x, z);
+            }
+        }
+        let encoded = self
+            .encoder
+            .bodies_with_shared(&columns.chunks, world, &|x, z| {
+                ctx.streaming.and_then(|s| s.proto_sections(x, z))
+            });
         let chunks = &columns.chunks;
         for (i, taken, far, batch) in batches {
             self.guests.update(i, |g| {
@@ -2862,14 +2913,9 @@ impl Hub {
                             if memory {
                                 super::handoff::offer(chunks[j]);
                             }
-                            uses[j] -= 1;
-                            if uses[j] == 0 {
-                                std::mem::take(&mut encoded[j])
-                            } else {
-                                encoded[j].clone()
-                            }
+                            super::body::Body::Shared(Arc::clone(&encoded[j]))
                         }
-                        Body::Saved(body) => body.to_vec(),
+                        Body::Saved(body) => super::body::Body::Shared(body),
                     }));
                     g.send(&C::ChunkBatchFinished(play::ChunkBatchFinished {
                         size: size as i32,
@@ -3130,8 +3176,18 @@ impl Hub {
                 data: Some(ParticleData::Mod(name.to_string())),
             });
         }
-        let name = format!("minecraft:{}", options.ty.name());
-        let id = self.registry_id("minecraft:particle_type", &name)?;
+        let raw = options.ty.name();
+        let mut stack_buf = [0u8; 96];
+        let prefix = b"minecraft:";
+        let id = if prefix.len() + raw.len() <= stack_buf.len() {
+            stack_buf[..prefix.len()].copy_from_slice(prefix);
+            stack_buf[prefix.len()..prefix.len() + raw.len()].copy_from_slice(raw.as_bytes());
+            let name = std::str::from_utf8(&stack_buf[..prefix.len() + raw.len()]).ok()?;
+            self.registry_id("minecraft:particle_type", name)?
+        } else {
+            let name = format!("minecraft:{raw}");
+            self.registry_id("minecraft:particle_type", &name)?
+        };
         // The options' RGB as an RGB colour (`ARGB.colorFromFloat` without alpha).
         let rgb_int = |c: [f32; 3]| {
             let b = |v: f32| ((v.clamp(0.0, 1.0) * 255.0).round() as i32) & 255;
@@ -3190,12 +3246,40 @@ impl Hub {
         &self,
         effects: impl IntoIterator<Item = crate::effects::ShownEffect>,
     ) -> Vec<(u8, i32, Value)> {
-        let mut effects = effects.into_iter().peekable();
-        if effects.peek().is_none() {
-            return Vec::new();
+        let mut meta = Vec::new();
+        self.append_effect_meta(effects, &mut meta);
+        meta
+    }
+
+    fn append_effect_meta(
+        &self,
+        effects: impl IntoIterator<Item = crate::effects::ShownEffect>,
+        meta: &mut Vec<(u8, i32, Value)>,
+    ) {
+        let mut has_any = false;
+        let mut all_ambient = true;
+        let mut encoded = Vec::new();
+        for effect in effects {
+            has_any = true;
+            if !effect.visible {
+                continue;
+            }
+            all_ambient &= effect.ambient;
+            if let Some(particle) = crate::effects::effect_particle(effect.effect, effect.ambient)
+                && let Some(p) = self.particle(&particle, None)
+            {
+                encoded.push(p);
+            }
         }
-        let (particles, ambient) = crate::effects::effect_particles(effects);
-        self.particle_meta(&particles, ambient)
+        if !has_any {
+            return;
+        }
+        if !encoded.is_empty() {
+            meta.push((10, serializer::PARTICLES, Value::Particles(encoded)));
+        }
+        if all_ambient {
+            meta.push((11, serializer::BOOLEAN, Value::Bool(true)));
+        }
     }
 
     /// The synchronized registry tables, available to helper threads.
@@ -3210,10 +3294,18 @@ impl Hub {
         particles: &[crate::particles::ParticleOptions],
         ambient: bool,
     ) -> Vec<(u8, i32, Value)> {
+        if particles.is_empty() {
+            return if ambient {
+                vec![(11, serializer::BOOLEAN, Value::Bool(true))]
+            } else {
+                Vec::new()
+            };
+        }
         let particles: Vec<_> = (particles.iter())
             .filter_map(|p| self.particle(p, None))
             .collect();
-        let mut meta = Vec::new();
+        let mut meta =
+            Vec::with_capacity(usize::from(!particles.is_empty()) + usize::from(ambient));
         if !particles.is_empty() {
             meta.push((10, serializer::PARTICLES, Value::Particles(particles)));
         }
@@ -3238,29 +3330,27 @@ impl Hub {
         }
     }
 
-    fn player_state(
+    fn append_player_effect_meta(
         &self,
-        id: i32,
-        uuid: u128,
-        position: [f64; 3],
-        rot: (f32, f32, f32),
-        on_ground: bool,
-        flags: (bool, bool, bool),
-        body: BodyFlags,
-        living_flags: i8,
-        bed: Option<[i32; 3]>,
-        skin: u8,
-        main_hand: i32,
-        health: f32,
-        equipment: Vec<(u8, Option<horizon_protocol::item::Stack>)>,
-        attributes: Vec<play::AttributeSnapshot>,
-        effect_meta: Vec<(u8, i32, Value)>,
-    ) -> EntityState {
-        let (sneaking, sprinting, sleeping) = flags;
-        let shared = shared_flags(sneaking, sprinting, &body);
+        g: &Guest,
+        modified: bool,
+        meta: &mut Vec<(u8, i32, Value)>,
+    ) {
+        if modified {
+            if let Some(m) = g.modified_effect_particles.as_ref() {
+                meta.extend(m.meta.iter().cloned());
+            }
+        } else if !g.effects.list.is_empty() {
+            self.append_effect_meta(g.effects.list.iter().map(EffectInstance::shown), meta);
+        }
+    }
+
+    fn fill_player_state(&self, state: &mut EntityState, g: &Guest, modified_particles: bool) {
+        let body = guest_body(g);
+        let shared = shared_flags(g.sneaking, g.sprinting, &body);
         // Player.getDesiredPose (and updatePlayerPose's crawl): sleeping,
         // swimming, gliding, Riptide's spin, crouching.
-        let pose = if sleeping {
+        let pose = if g.sleeping {
             2
         } else if body.swimming || body.crawling {
             3
@@ -3268,68 +3358,72 @@ impl Hub {
             1
         } else if body.spin_attack {
             4
-        } else if sneaking || body.crouching {
+        } else if g.sneaking || body.crouching {
             5
         } else {
             0
         };
-        let mut meta = Vec::new();
         if shared != 0 {
-            meta.push((0, serializer::BYTE, Value::Byte(shared)));
+            state.meta.push((0, serializer::BYTE, Value::Byte(shared)));
         }
         if pose != 0 {
-            meta.push((6, serializer::POSE, Value::Id(pose)));
+            state.meta.push((6, serializer::POSE, Value::Id(pose)));
         }
         // Always there: the trackers send the entries that changed, and an
         // item no longer in use is a change back to 0.
-        meta.push((8, serializer::BYTE, Value::Byte(living_flags)));
+        state
+            .meta
+            .push((8, serializer::BYTE, Value::Byte(g.living_flags)));
         // LivingEntity.SLEEPING_POS: the others draw the player lying in it,
         // a player paired later too.
-        if let Some(bed) = bed.filter(|_| sleeping) {
-            meta.push((14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(Some(bed))));
+        if let Some(bed) = g.bed.filter(|_| g.sleeping) {
+            state
+                .meta
+                .push((14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(Some(bed))));
         }
-        if (health - 1.0).abs() > f32::EPSILON && health != 20.0 {
-            meta.push((9, serializer::FLOAT, Value::Float(health)));
+        if (g.health - 1.0).abs() > f32::EPSILON && g.health != 20.0 {
+            state
+                .meta
+                .push((9, serializer::FLOAT, Value::Float(g.health)));
         }
-        if skin != 0 {
-            meta.push((16, serializer::BYTE, Value::Byte(skin as i8)));
+        if g.info.model_customisation != 0 {
+            state.meta.push((
+                16,
+                serializer::BYTE,
+                Value::Byte(g.info.model_customisation as i8),
+            ));
         }
         // Avatar.DATA_PLAYER_MAIN_HAND (Avatar.java:38): anything but 1 is LEFT
         // (HumanoidArm.java:17), and RIGHT = 1, its default, is not sent.
-        let arm = if main_hand == 1 { 1 } else { 0 };
+        let arm = if g.info.main_hand == 1 { 1 } else { 0 };
         if arm != 1 {
-            meta.push((15, serializer::HUMANOID_ARM, Value::Id(arm)));
+            state
+                .meta
+                .push((15, serializer::HUMANOID_ARM, Value::Id(arm)));
         }
-        meta.extend(effect_meta);
-        EntityState {
-            id,
-            uuid,
-            kind: "minecraft:player".into(),
-            position,
-            yaw: rot.0,
-            pitch: rot.1,
-            head_yaw: rot.2,
-            on_ground,
-            meta,
-            forced_meta: [0; 4],
-            // What a client still holds goes back to its default: the effect
-            // swirls to none, the hand one holds LEFT back to RIGHT (send_dirty
-            // sends defaults, entity.rs), and the skin parts to 0, every outer
-            // layer hidden (Avatar.DATA_PLAYER_MODE_CUSTOMISATION).
-            defaults: vec![
-                (10, serializer::PARTICLES, Value::Particles(Vec::new())),
-                (11, serializer::BOOLEAN, Value::Bool(false)),
-                (15, serializer::HUMANOID_ARM, Value::Id(1)),
-                (16, serializer::BYTE, Value::Byte(0)),
-            ],
-            equipment,
-            attributes,
-            ..EntityState::default()
-        }
+        self.append_player_effect_meta(g, modified_particles, &mut state.meta);
+        // What a client still holds goes back to its default: the effect
+        // swirls to none, the hand one holds LEFT back to RIGHT (send_dirty
+        // sends defaults, entity.rs), and the skin parts to 0, every outer
+        // layer hidden (Avatar.DATA_PLAYER_MODE_CUSTOMISATION).
+        state
+            .defaults
+            .push((10, serializer::PARTICLES, Value::Particles(Vec::new())));
+        state
+            .defaults
+            .push((11, serializer::BOOLEAN, Value::Bool(false)));
+        state
+            .defaults
+            .push((15, serializer::HUMANOID_ARM, Value::Id(1)));
+        state.defaults.push((16, serializer::BYTE, Value::Byte(0)));
+        state.position = g.position;
+        state.yaw = g.yaw;
+        state.pitch = g.pitch;
+        state.head_yaw = g.head_yaw;
+        state.on_ground = g.on_ground;
     }
 
-    /// Convert only equipment whose full typed source changed, including body and saddle.
-    fn guest_equipment(&mut self, i: usize) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+    fn refresh_guest_equipment(&mut self, i: usize) {
         for index in 0..equipment_cache::SLOTS {
             let g = &self.guests[i];
             let source = equipment_source(g, index);
@@ -3341,6 +3435,12 @@ impl Hub {
             self.guests
                 .update(i, |g| g.equipment_cache.store(index, source, converted));
         }
+    }
+
+    /// Convert only equipment whose full typed source changed, including body and saddle.
+    #[cfg(test)]
+    fn guest_equipment(&mut self, i: usize) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+        self.refresh_guest_equipment(i);
         self.guests[i].equipment_cache.equipment()
     }
 
@@ -3353,52 +3453,37 @@ impl Hub {
 
     /// All entities as one client sees them: the world's and the other players.
     pub(in crate::lan) fn track_entities(&mut self, ctx: &mut TickCtx) {
-        let mut all: Vec<EntityState> = Vec::with_capacity(ctx.entities.len() + self.guests.len());
+        let mut all = std::mem::take(&mut self.player_states);
+        all.clear();
         let modified_particles =
             mod_api::__private::listened(mod_api::HookId::EffectParticleModification);
-        let placed: Vec<usize> = (0..self.guests.len())
-            .filter(|&i| self.here(&self.guests[i]) && self.guests[i].body_present())
-            .collect();
-        let guest_states: Vec<_> = placed
-            .into_iter()
-            .map(|i| {
-                let equipment = self.guest_equipment(i);
-                let g = &self.guests[i];
-                let mut state = self.player_state(
-                    g.entity_id,
-                    g.uuid,
-                    g.position,
-                    (g.yaw, g.pitch, g.head_yaw),
-                    g.on_ground,
-                    (g.sneaking, g.sprinting, g.sleeping),
-                    guest_body(g),
-                    g.living_flags,
-                    g.bed,
-                    g.info.model_customisation,
-                    g.info.main_hand,
-                    g.health,
-                    equipment,
-                    g.motion
-                        .as_ref()
-                        .map(|m| super::attributes::syncable(&m.attributes))
-                        .unwrap_or_default(),
-                    self.player_effect_meta(g, modified_particles),
-                );
-                state.spectator = g.spectator();
-                state.watching = g.watching;
-                state.hidden = self.tracker_hidden(g.uuid);
-                stuck_meta(&mut state.meta, &mut state.defaults, g.stuck);
-                frozen_meta(&mut state, g.motion.as_ref().map_or(0, |m| m.ticks_frozen));
-                // Entity.getDeltaMovement: the server copy's, which a glide sends.
-                if let Some(v) = g.motion.as_ref().map(|m| m.velocity) {
-                    state.velocity = [v.x, v.y, v.z];
-                }
-                shoulder_meta(&mut state, g.shoulders);
-                state
-            })
-            .collect();
-        all.extend(guest_states);
-        let mut entities: Vec<&EntityState> = all.iter().chain(ctx.entities).collect();
+        for i in 0..self.guests.len() {
+            if !self.here(&self.guests[i]) || !self.guests[i].body_present() {
+                continue;
+            }
+            self.refresh_guest_equipment(i);
+            self.guests.refresh_syncable_attrs(i);
+            let g = &self.guests[i];
+            let state = all.add(g.entity_id, g.uuid, "minecraft:player");
+            g.equipment_cache.fill_equipment(&mut state.equipment);
+            if g.motion.is_some() {
+                state.attributes.clone_from(&g.syncable_attrs_cache.1);
+            }
+            self.fill_player_state(state, g, modified_particles);
+            state.spectator = g.spectator();
+            state.watching = g.watching;
+            state.hidden = self.tracker_hidden(g.uuid);
+            stuck_meta(&mut state.meta, &mut state.defaults, g.stuck);
+            frozen_meta(state, g.motion.as_ref().map_or(0, |m| m.ticks_frozen));
+            // Entity.getDeltaMovement: the server copy's, which a glide sends.
+            if let Some(v) = g.motion.as_ref().map(|m| m.velocity) {
+                state.velocity = [v.x, v.y, v.z];
+            }
+            shoulder_meta(state, g.shoulders);
+        }
+        let mut entities: Vec<&EntityState> =
+            Vec::with_capacity(all.as_slice().len() + ctx.entities.len());
+        entities.extend(all.as_slice().iter().chain(ctx.entities));
         // ChunkMap.tick: the level's entities, once for all its players.
         let mut level = self
             .entities
@@ -3437,6 +3522,8 @@ impl Hub {
         level.tick(&entities, &self.riding, &mut viewers, |kind| {
             entity_type(types, sync, kind)
         });
+        drop(entities);
+        self.player_states = all;
         drop(viewers);
         for (g, out) in self.guests.iter().filter(|g| here(g)).zip(outs.iter_mut()) {
             self.hold_sound_removals(g.conn, out);
@@ -3444,23 +3531,15 @@ impl Hub {
         }
         let ticks = self.ticks;
         let mut gone_rows = gone.iter_mut();
-        self.guests.update_all(|g| {
-            if !here(g) {
-                return;
+        for i in 0..self.guests.len() {
+            if !here(&self.guests[i]) {
+                continue;
             }
             let gone = gone_rows.next().expect("one output per visible guest");
-            let slack = super::prediction::slack(std::array::from_fn(|i| {
-                g.position[i] - g.previous_position[i]
-            }));
-            for at in gone.drain(..) {
-                let block = at.map(|v| v.floor() as i32);
-                if let Some(record) = g.record.as_deref_mut()
-                    && super::prediction::near(g.position, block, slack)
-                {
-                    record.entity_gone(ticks);
-                }
+            if !gone.is_empty() {
+                self.guests.record_entity_gone(i, ticks, gone);
             }
-        });
+        }
         self.entity_gone = gone;
         self.entity_out = outs;
         self.send_view_entities(views);
@@ -3763,6 +3842,7 @@ impl Hub {
     /// player the recipes and their recipe book again.
     pub fn reload_resources(&mut self, sync: Arc<SyncData>, owners: &mut AdvancementOwners<'_>) {
         self.lan.shared.set_sync(sync.clone());
+        self.recipes_packet = recipes_body(&sync.recipes);
         self.sync = sync.clone();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3824,7 +3904,7 @@ impl Hub {
             if !self.guests[i].placed {
                 continue;
             }
-            self.guests[i].send(&raw(ids::UPDATE_RECIPES, sync.recipes.clone()));
+            self.guests[i].sender.send_body(self.recipes_packet.clone());
             if self.guests[i].brand == "horizon" {
                 super::recipes::send_content(&self.guests[i]);
             }
@@ -3936,7 +4016,7 @@ impl Hub {
     /// since (`ServerRecipeBook.addRecipes`), once the player's first tick
     /// has sent their advancements.
     pub fn flush_progress(&mut self, conn: u32) {
-        if let Some(i) = self.guests.iter().position(|g| g.conn == conn)
+        if let Some(i) = self.guests.connection_index(conn)
             && self.guests[i].sent_health.is_some()
         {
             self.flush_advancements(i, true);
@@ -3947,6 +4027,11 @@ impl Hub {
         }
     }
     fn flush_advancements(&mut self, i: usize, show: bool) {
+        if self.guests[i].recipes_unlocked.is_empty()
+            && self.guests[i].advancements_changed.is_empty()
+        {
+            return;
+        }
         let sync = self.sync.clone();
         self.guests.update(i, |g| {
             let mut unlocked = std::mem::take(&mut g.recipes_unlocked);
@@ -4022,19 +4107,14 @@ impl Hub {
         i: usize,
         ctx: &mut TickCtx,
         events: &mut Vec<HostEvent>,
+        credits: &mut Vec<crate::net::ingress::ReceiveLease<NetEvent>>,
         begin: bool,
         held: &mut bool,
     ) -> bool {
-        let mut credits = Vec::new();
         // ServerGamePacketListenerImpl.tickPlayer ran between the last
         // tick's packets and these: resetPosition, and the moves it counted.
         if begin {
-            self.guests.update(i, |g| {
-                g.first_good = g.position;
-                g.known_moves = g.received_moves;
-                // ServerPlayer.tick: tickClientLoadTimeout.
-                g.load_timeout = g.load_timeout.saturating_sub(1);
-            });
+            self.guests.begin_inbox(i);
         }
         // An action the game runs after this pass has a move queued behind it: the
         // move waits for the next tick, but the arm swing the client sent right after
@@ -4042,7 +4122,7 @@ impl Hub {
         // (the swing starts the attack strength again, #7817).
         loop {
             if self.discard_closed_input(i) || self.holds_for_move(i) {
-                if self.pause_for_move(i, &mut credits, events) {
+                if self.pause_for_move(i, credits, events) {
                     return true;
                 }
                 break;
@@ -4055,12 +4135,12 @@ impl Hub {
             {
                 break;
             }
-            let Some(entry) = self.guests.update(i, |g| g.inbox.pop_front()) else {
+            let Some(entry) = self.guests.pop_inbox(i) else {
                 break;
             };
             let packet = match entry {
                 InboxItem::Raw(delivery, credit) => {
-                    if yield_raw(delivery, credit, events, &mut credits) {
+                    if yield_raw(delivery, credit, events, credits) {
                         return true;
                     }
                     continue;
@@ -4081,11 +4161,7 @@ impl Hub {
                 |to| self.moved_far(i, to),
             );
             if acted {
-                {
-                    let value = self.ticks;
-                    self.guests
-                        .update(i, |guest| guest.last_action_tick = value);
-                }
+                self.guests.set_last_action_tick(i, self.ticks);
             }
             match packet {
                 // hasClientLoaded: these handlers ignore the player's actions until
@@ -4203,12 +4279,7 @@ impl Hub {
                 }
                 S::ClientTickEnd(_) => {
                     // handleClientTickEnd: no move this tick, no known movement.
-                    self.guests.update(i, |g| {
-                        if !g.position_this_tick {
-                            g.known_movement = [0.0; 3];
-                        }
-                        g.position_this_tick = false;
-                    });
+                    self.guests.end_client_tick(i);
                     self.anticheat_tick_end(i, events);
                 }
                 // ServerGamePacketListenerImpl.handleRecipeBookSeenRecipePacket:
@@ -4414,7 +4485,6 @@ impl Hub {
                 other => events.push(HostEvent::Packet(conn, Box::new(other))),
             }
         }
-        events.push(HostEvent::InputCredits(credits));
         false
     }
 
@@ -4441,15 +4511,7 @@ impl Hub {
         if self.anticheat.is_some() {
             self.anticheat_moved(i, pos, rot, flags);
         }
-        let repeated = self.guests.update(i, |g| {
-            if pos.is_some() {
-                if g.position_this_tick {
-                    return true;
-                }
-                g.position_this_tick = true;
-            }
-            false
-        });
+        let repeated = pos.is_some() && self.guests.mark_position_this_tick(i);
         if repeated {
             self.kick(conn, invalid_movement());
             return;
@@ -5055,6 +5117,7 @@ impl Hub {
             .unwrap_or(0);
         self.encoder
             .set_dimension(self.config.levels.get(dimension));
+        self.encoder.set_level_name(dimension);
     }
 
     /// ServerPlayer.teleport(TeleportTransition) into the level the hub now names
@@ -5234,6 +5297,12 @@ fn invalid_movement() -> Tag {
 
 fn raw(id: i32, payload: Vec<u8>) -> C {
     C::Unknown(id, payload)
+}
+
+fn recipes_body(recipes: &[u8]) -> super::Body {
+    super::Body::from(Arc::<[u8]>::from(
+        raw(ids::UPDATE_RECIPES, recipes.to_vec()).encode(),
+    ))
 }
 
 /// The joined states `Hub::note_joined` kept, if it kept them in the last
@@ -7282,8 +7351,7 @@ mod tests {
         body.ticks_frozen = 140;
         let (mut hub, rx) = hub_with_a_guest();
         {
-            let value = Some(Box::new(body));
-            hub.guests.update(0, |g| g.motion = value);
+            hub.guests.update(0, |g| g.motion.set(body));
         }
         hub.sync_player_state(0);
         assert_eq!(sent_frozen(&rx), vec![140]);

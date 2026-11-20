@@ -34,11 +34,19 @@ impl EquipmentCache {
 
     /// `(wire slot, stack)` for each equipment slot that holds an item.
     pub fn equipment(&self) -> Vec<(u8, Option<Stack>)> {
-        WIRE_SLOTS
-            .iter()
-            .zip(&self.slots)
-            .filter(|(_, slot)| slot.source.is_some())
-            .map(|(&wire, slot)| (wire, slot.converted.clone()))
-            .collect()
+        let mut out = Vec::new();
+        self.fill_equipment(&mut out);
+        out
+    }
+
+    /// Populate `out` with `(wire slot, stack)` for each occupied equipment slot,
+    /// reusing existing allocation capacity across ticks.
+    pub fn fill_equipment(&self, out: &mut Vec<(u8, Option<Stack>)>) {
+        out.clear();
+        for (&wire, slot) in WIRE_SLOTS.iter().zip(&self.slots) {
+            if slot.source.is_some() {
+                out.push((wire, slot.converted.clone()));
+            }
+        }
     }
 }

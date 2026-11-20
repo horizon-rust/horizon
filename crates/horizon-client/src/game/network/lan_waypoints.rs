@@ -25,7 +25,16 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        let mut players: Vec<(&str, waypoints::Player)> = Vec::new();
+        let locator_bar = self
+            .ui
+            .rules
+            .bool_at(horizon_client::gamerules::vanilla::LOCATOR_BAR);
+        if !locator_bar && host.waypoints.is_empty() {
+            host.waypoint_dead.clear();
+            return;
+        }
+        let mut by_level: std::collections::BTreeMap<String, Vec<waypoints::Player>> =
+            std::collections::BTreeMap::new();
         let mut respawned = Vec::new();
         for g in host
             .hub
@@ -41,64 +50,62 @@ impl Game<'_> {
             }
             // Player.updatePlayerPose: the shift key crouches unless flying.
             let crouching = g.sneaking && !g.abilities.flying && !g.fall_flying && !g.sleeping;
-            players.push((
-                &g.dimension,
-                waypoints::Player {
-                    uuid: g.uuid,
-                    conn: Some(g.conn),
-                    position: g.position,
-                    spectator: g.spectator(),
-                    transmit_range: transmit_range(
-                        crouching,
-                        g.effects.get("invisibility").is_some(),
-                        g.armor[0].as_ref(),
-                    ),
-                    receive_range: PLAYER_RANGE,
-                    first_tick: g.ticks == 0,
-                    view_distance: g.view_distance,
-                    team: self.score.board.players_team(&g.name).map(|team| {
-                        (
-                            team.name.clone(),
-                            team.color.as_deref().and_then(waypoints::team_rgb),
-                        )
-                    }),
-                    // `/waypoint modify` and a mod's writes, kept by connection.
-                    icon: self
-                        .cmds
-                        .waypoint_icons
-                        .get(&Target::Guest(g.conn))
-                        .cloned()
-                        .unwrap_or_default(),
-                },
-            ));
+            let player = waypoints::Player {
+                uuid: g.uuid,
+                conn: Some(g.conn),
+                position: g.position,
+                spectator: g.spectator(),
+                transmit_range: transmit_range(
+                    crouching,
+                    g.effects.get("invisibility").is_some(),
+                    g.armor[0].as_ref(),
+                ),
+                receive_range: PLAYER_RANGE,
+                first_tick: g.ticks == 0,
+                view_distance: g.view_distance,
+                team: self.score.board.players_team(&g.name).map(|team| {
+                    (
+                        team.name.clone(),
+                        team.color.as_deref().and_then(waypoints::team_rgb),
+                    )
+                }),
+                // `/waypoint modify` and a mod's writes, kept by connection.
+                icon: self
+                    .cmds
+                    .waypoint_icons
+                    .get(&Target::Guest(g.conn))
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            if let Some(list) = by_level.get_mut(&g.dimension) {
+                list.push(player);
+            } else {
+                by_level.insert(g.dimension.clone(), vec![player]);
+            }
         }
         host.waypoint_dead
-            .retain(|uuid| players.iter().any(|(_, p)| p.uuid == *uuid));
-        let locator_bar = self
-            .ui
-            .rules
-            .bool_at(horizon_client::gamerules::vanilla::LOCATOR_BAR);
+            .retain(|uuid| by_level.values().flatten().any(|p| p.uuid == *uuid));
         let mut levels: Vec<String> = host.waypoints.keys().cloned().collect();
-        for (level, _) in &players {
+        for level in by_level.keys() {
             if !levels.iter().any(|l| l == level) {
-                levels.push((*level).to_owned());
+                levels.push(level.clone());
             }
         }
         levels.sort();
         let mut out = Vec::new();
         for level in levels {
-            let here: Vec<waypoints::Player> = players
-                .iter()
-                .filter(|(l, _)| *l == level)
-                .map(|(_, p)| p.clone())
-                .collect();
-            let away: Vec<(u128, u32)> = players
-                .iter()
-                .filter(|(l, _)| *l != level)
-                .filter_map(|(_, p)| Some((p.uuid, p.conn?)))
-                .collect();
+            let here = by_level.get(&level).map(Vec::as_slice).unwrap_or(&[]);
+            let away: Vec<(u128, u32)> = if by_level.len() <= 1 && !here.is_empty() {
+                Vec::new()
+            } else {
+                by_level
+                    .iter()
+                    .filter(|(l, _)| *l != &level)
+                    .flat_map(|(_, ps)| ps.iter().filter_map(|p| Some((p.uuid, p.conn?))))
+                    .collect()
+            };
             let manager = host.waypoints.entry(level.clone()).or_default();
-            out.extend(manager.tick_level(&here, &away, &respawned, locator_bar));
+            out.extend(manager.tick_level(here, &away, &respawned, locator_bar));
             // Nobody left in the level: nothing to remember there.
             if here.is_empty() {
                 host.waypoints.remove(&level);

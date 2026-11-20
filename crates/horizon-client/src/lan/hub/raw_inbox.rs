@@ -23,6 +23,7 @@ impl Hub {
     /// changed.
     pub fn drain_packets(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let mut events = Vec::new();
+        let mut credits = Vec::new();
         let mut pass = self.packet_drain.take().unwrap_or_else(|| PacketDrain {
             conns: self
                 .guests
@@ -46,7 +47,7 @@ impl Hub {
                 pass.movement_held = held.movement_held;
                 self.deferred_payloads.remove(&Some(conn));
             }
-            let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
+            let Some(i) = self.guests.connection_index(conn) else {
                 pass.next += 1;
                 pass.started = false;
                 pass.movement_held = false;
@@ -73,7 +74,14 @@ impl Hub {
             if frozen {
                 self.keep_acknowledgements(i, &mut events);
             }
-            if self.process_inbox(i, ctx, &mut events, !pass.started, &mut pass.movement_held) {
+            if self.process_inbox(
+                i,
+                ctx,
+                &mut events,
+                &mut credits,
+                !pass.started,
+                &mut pass.movement_held,
+            ) {
                 pass.started = true;
                 self.packet_drain = Some(pass);
                 return events;
@@ -84,6 +92,9 @@ impl Hub {
             pass.next += 1;
             pass.started = false;
             pass.movement_held = false;
+        }
+        if !credits.is_empty() {
+            events.push(HostEvent::InputCredits(credits));
         }
         events
     }
@@ -127,9 +138,8 @@ impl Hub {
     pub(super) fn begin_payload_poll(&mut self) -> Vec<HostEvent> {
         let mut events = std::mem::take(&mut self.pending_kicks);
         // Departed physical connections no longer own a receiving turn or its credit.
-        self.deferred_payloads.retain(|conn, _| {
-            conn.is_none_or(|conn| self.guests.iter().any(|guest| guest.conn == conn))
-        });
+        self.deferred_payloads
+            .retain(|conn, _| conn.is_none_or(|conn| self.guests.connection_index(conn).is_some()));
         for held in self.deferred_payloads.values_mut() {
             if let Some(delivery) = held.delivery.take() {
                 held.retrying = true;

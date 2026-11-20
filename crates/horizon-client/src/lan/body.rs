@@ -49,6 +49,12 @@ impl From<Vec<u8>> for Body {
     }
 }
 
+impl From<Arc<[u8]>> for Body {
+    fn from(bytes: Arc<[u8]>) -> Self {
+        Self::Shared(bytes)
+    }
+}
+
 /// Bodies are equal when their bytes are, shared or not.
 impl PartialEq for Body {
     fn eq(&self, other: &Self) -> bool {

@@ -525,7 +525,7 @@ impl PlayerSender {
     pub fn send(&self, body: Vec<u8>) {
         self.send_body(body.into());
     }
-    fn send_body(&self, body: Body) {
+    pub(crate) fn send_body(&self, body: Body) {
         if matches!(self.to, To::Disabled) {
             return;
         }
@@ -584,13 +584,17 @@ impl PlayerSender {
     }
     /// Hand the held packets to the network thread.
     pub fn flush(&self) {
-        let held = std::mem::take(&mut *self.held());
-        if !held.is_empty() {
-            match &self.to {
-                To::Disabled => {}
-                To::Channel(tx) => drop(tx.send(unshared(held))),
-                To::Pool(outbox, _) => outbox.send(held, None),
-            }
+        let mut held = self.held();
+        if held.is_empty() {
+            return;
+        }
+        match &self.to {
+            To::Disabled => held.clear(),
+            To::Channel(tx) => drop(tx.send(unshared(std::mem::take(&mut *held)))),
+            To::Pool(outbox, _) => outbox.send_from(&mut held, None),
+        }
+        if held.capacity() > 512 {
+            held.shrink_to(64);
         }
     }
     /// Send a play disconnect with this reason after what was sent before,
@@ -656,20 +660,23 @@ impl Drop for PreparedPayload {
 pub fn flush_all<'a>(senders: impl IntoIterator<Item = &'a PlayerSender>) {
     let mut wake: Vec<&Arc<io_pool::Worker>> = Vec::new();
     for s in senders {
-        let held = std::mem::take(&mut *s.held());
+        let mut held = s.held();
         if held.is_empty() {
             continue;
         }
         match &s.to {
-            To::Disabled => {}
-            To::Channel(tx) => drop(tx.send(unshared(held))),
+            To::Disabled => held.clear(),
+            To::Channel(tx) => drop(tx.send(unshared(std::mem::take(&mut *held)))),
             To::Pool(outbox, _) => {
-                if let Some(worker) = outbox.push(held, None)
+                if let Some(worker) = outbox.push_from(&mut held, None)
                     && !wake.iter().any(|w| Arc::ptr_eq(w, worker))
                 {
                     wake.push(worker);
                 }
             }
+        }
+        if held.capacity() > 512 {
+            held.shrink_to(64);
         }
     }
     wake.into_iter().for_each(|w| w.wake());
@@ -2145,6 +2152,7 @@ fn play(
         counted,
         undrained,
         packet_counts,
+        deferred: None,
     };
     // The ServerPlayer is made with the configuration's client information (updateOptions).
     shared.set_listed(parts.uuid, parts.info.allows_listing);
@@ -2196,6 +2204,8 @@ struct PlayConn {
     undrained: Arc<Undrained>,
     /// Shared with the player's [`PlayerSender`]: the packets counted while a mod asks.
     packet_counts: Arc<super::packet_counts::PacketCounts>,
+    /// Already-decoded play event awaiting ingress budget after `Refusal::Pressure`.
+    deferred: Option<NetEvent>,
 }
 /// The id an inbound play packet is counted under: its own when the protocol has it, else -1.
 fn counted_id(id: i32) -> i32 {
@@ -2350,11 +2360,29 @@ impl io_pool::Session for PlayConn {
                 let event = NetEvent::Packet(self.conn, Box::new(p), payload.len());
                 match self.shared.events.send(event) {
                     Ok(()) => Verdict::Go,
+                    Err(err) if err.reason == crate::net::ingress::Refusal::Pressure => {
+                        self.deferred = Some(err.value);
+                        Verdict::Defer
+                    }
                     Err(_) => Verdict::Close("server closed".to_owned()),
                 }
             }
             // A malformed packet disconnects like vanilla's decoder exception.
             Err(e) => Verdict::Close(format!("Invalid packet {id}: {e}")),
+        }
+    }
+    fn flush_deferred(&mut self) -> io_pool::Verdict {
+        use io_pool::Verdict;
+        let Some(event) = self.deferred.take() else {
+            return Verdict::Go;
+        };
+        match self.shared.events.send(event) {
+            Ok(()) => Verdict::Go,
+            Err(err) if err.reason == crate::net::ingress::Refusal::Pressure => {
+                self.deferred = Some(err.value);
+                Verdict::Defer
+            }
+            Err(_) => Verdict::Close("server closed".to_owned()),
         }
     }
     /// ServerCommonPacketListenerImpl.keepConnectionAlive: a keep-alive 15 s
@@ -2367,7 +2395,13 @@ impl io_pool::Session for PlayConn {
         Some(body)
     }
     fn left(&mut self, reason: String) {
-        let _ = self.shared.events.send(NetEvent::Left(self.conn, reason));
+        if let Some(NetEvent::Packet(_, _, bytes)) = self.deferred.take() {
+            self.undrained.taken(bytes);
+        }
+        let _ = self
+            .shared
+            .events
+            .send_over_budget(NetEvent::Left(self.conn, reason));
         self.shared.closing.fetch_add(1, Ordering::AcqRel);
     }
     fn closed(&mut self) {
@@ -3733,6 +3767,7 @@ mod tests {
             counted: None,
             undrained: Arc::default(),
             packet_counts: Arc::default(),
+            deferred: None,
         };
         // The bodies after the packets' one-byte VarInt ids.
         let packets = |sequence: i32| {
@@ -3872,6 +3907,7 @@ mod tests {
             counted: None,
             undrained: Arc::default(),
             packet_counts: Arc::default(),
+            deferred: None,
         };
         let answer = |c: &mut PlayConn, id: i64| c.packet(KEEP_ALIVE, id.to_be_bytes().to_vec());
         // The pending one: accepted.
@@ -3926,6 +3962,7 @@ mod tests {
             counted: None,
             undrained: Arc::default(),
             packet_counts: Arc::default(),
+            deferred: None,
         };
         // The body after the packet's one-byte VarInt id.
         let response = play::Serverbound::CookieResponse(cfg::CookieResponse {

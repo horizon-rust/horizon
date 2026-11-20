@@ -40,10 +40,28 @@ impl Hub {
 
     /// `body`, a play clientbound packet, to each of `holders`.
     fn send_to_holders(&self, holders: &[(usize, Option<Level>)], body: &[u8]) {
-        for &(i, level) in holders {
+        if holders.len() == 1 {
+            let &(i, level) = &holders[0];
             let g = &self.guests[i];
             match level {
                 None => g.sender.send(body.to_vec()),
+                Some(level) => {
+                    let mut runs = Runs::new(level);
+                    runs.push(body);
+                    g.sender.send_many(runs.finish());
+                }
+            }
+            return;
+        }
+        let shared: std::sync::Arc<[u8]> = std::sync::Arc::from(body);
+        for &(i, level) in holders {
+            let g = &self.guests[i];
+            match level {
+                None => g
+                    .sender
+                    .send_many(std::iter::once(crate::lan::body::Body::Shared(
+                        std::sync::Arc::clone(&shared),
+                    ))),
                 Some(level) => {
                     let mut runs = Runs::new(level);
                     runs.push(body);
@@ -68,6 +86,7 @@ impl Hub {
         // One entry per column, so the order is the columns'.
         changes.sort_unstable_by_key(|&(column, _)| column);
         for ((x, z), sections) in changes {
+            self.encoder.invalidate_column(x, z);
             if let Some(far) = self.far.as_mut() {
                 far.changed(x, z);
             }
@@ -109,6 +128,7 @@ impl Hub {
                     && !g.sent_chunks.contains(key)
             };
             for key in &bulk {
+                self.encoder.invalidate_column(key.0, key.1);
                 if let Some(chunk) = world.chunks.get(key)
                     && self.guests.iter().any(|g| unsent(g, key))
                 {
@@ -189,6 +209,7 @@ impl Hub {
                 .push(p);
         }
         for ((sx, sy, sz), positions) in sections {
+            self.encoder.invalidate_column(sx, sz);
             if let Some(far) = self.far.as_mut() {
                 far.changed(sx, sz);
             }

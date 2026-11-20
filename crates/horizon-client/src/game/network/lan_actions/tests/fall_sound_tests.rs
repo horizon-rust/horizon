@@ -53,7 +53,7 @@ fn run(distance: f64, expected: usize) {
                 C::Sound(s) => s.sound,
                 _ => unreachable!(),
             };
-            game.guest_server_tick(1);
+            game.guest_server_tick(1, true);
             let sounds = |rx: mpsc::Receiver<Out>| {
                 rx.try_iter()
                     .flat_map(|out| match out {

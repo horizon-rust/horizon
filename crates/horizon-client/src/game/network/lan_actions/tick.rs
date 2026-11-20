@@ -25,10 +25,11 @@ impl Game<'_> {
         // Entity.commonTick belongs to each player, including spectators and
         // players whose client has not loaded yet, not to the server clock.
         if let Some(host) = self.lan.as_mut() {
+            let has_trips = !self.server_trips.is_empty();
             for g in &host.hub.guests {
                 if g.participates_in_player_simulation()
                     && host.hub.here(g)
-                    && !self.server_trips.iter().any(|t| t.is(g.conn))
+                    && (!has_trips || !self.server_trips.iter().any(|t| t.is(g.conn)))
                 {
                     host.play.entry(g.conn).or_default().level_up_sound.tick();
                 }
@@ -56,7 +57,7 @@ impl Game<'_> {
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
-            let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            let Some(gi) = host.hub.guests.connection_index(conn) else {
                 continue;
             };
             // ServerGamePacketListenerImpl.tick: the chat and command throttlers
@@ -118,22 +119,21 @@ impl Game<'_> {
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
-            if let Some((pos, _)) = host.play.get(&conn).and_then(|play| play.digging)
+            let play = host.play.entry(conn).or_default();
+            if let Some((pos, _)) = play.digging
                 && self
                     .res
                     .facts()
                     .is_air(self.world.block(pos[0], pos[1], pos[2]))
-                && let Some(play) = host.play.get_mut(&conn)
             {
                 play.digging = None;
                 play.mining = None;
             }
-            let play = host.play.entry(conn).or_default();
             // ServerGamePacketListenerImpl.tick's dropSpamThrottler.
             play.creative_drops = play.creative_drops.saturating_sub(1);
             let digging = play.digging;
             let using = play.using.is_some();
-            let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
+            let delayed = play.destroy_delay > 0 || play.use_delay > 0;
             if digging.is_some() || using || delayed {
                 let players = if using {
                     self.stab_players_for(conn)
@@ -176,59 +176,52 @@ impl Game<'_> {
                 {
                     play.digging = None;
                 }
+            } else {
+                if body && play.attack_ticks < 100 {
+                    play.attack_ticks = play.attack_ticks.saturating_add(1);
+                }
+                play.mining = None;
             }
-            // Player.tick's ItemCooldowns.tick, once a tick for each player
-            // (the shield an axe disabled, a thrown pearl), after
-            // LivingEntity.tick's use: an entry a finished use starts has 20
-            // ticks left when the next tick's packets are handled, as the
-            // guest's own client counts.
-            let Some(host) = self.lan.as_mut() else {
-                return;
-            };
-            let play = host.play.entry(conn).or_default();
-            play.shield_cooldown = play.shield_cooldown.saturating_sub(1);
-            // ServerItemCooldowns.onCooldownEnded: a finished entry is told to
-            // the guest (a duration of 0 removes it).
-            for group in play.cooldowns.tick() {
-                host.hub.send_to(
-                    conn,
-                    &C::Cooldown(play::Cooldown {
-                        group: group.to_string(),
-                        duration: 0,
-                    }),
-                );
-            }
-            // Player.tick: a different main-hand item resets the attack
-            // strength, and detectEquipmentUpdates gives the guest its modifiers.
-            let g = &host.hub.guests[gi];
-            let held = crate::game::held_items::held_attack_item(&g.inventory, g.selected);
-            let play = host.play.entry(conn).or_default();
-            if play.attack_item.as_ref() != held {
-                play.attack_ticks = 0;
-                play.attack_item = held.cloned();
+            if body {
+                // Player.tick's ItemCooldowns.tick, once a tick for each player
+                // (the shield an axe disabled, a thrown pearl), after
+                // LivingEntity.tick's use: an entry a finished use starts has 20
+                // ticks left when the next tick's packets are handled, as the
+                // guest's own client counts.
+                let Some(host) = self.lan.as_mut() else {
+                    return;
+                };
+                let play = host.play.entry(conn).or_default();
+                play.shield_cooldown = play.shield_cooldown.saturating_sub(1);
+                // ServerItemCooldowns.onCooldownEnded: a finished entry is told to
+                // the guest (a duration of 0 removes it).
+                for group in play.cooldowns.tick() {
+                    host.hub.send_to(
+                        conn,
+                        &C::Cooldown(play::Cooldown {
+                            group: group.to_string(),
+                            duration: 0,
+                        }),
+                    );
+                }
+                // Player.tick: a different main-hand item resets the attack
+                // strength, and detectEquipmentUpdates gives the guest its modifiers.
+                let g = &host.hub.guests[gi];
+                let held = crate::game::held_items::held_attack_item(&g.inventory, g.selected);
+                if play.attack_item.as_ref() != held {
+                    play.attack_ticks = 0;
+                    play.attack_item = held.cloned();
+                }
             }
             self.guest_delayed_destroy(conn);
-            self.guest_server_tick(conn);
-            // Player.tick's statistics and ServerPlayer.tick's triggers, then
-            // PlayerAdvancements.flushDirty.
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
-            let sleeping = host.hub.guests[gi].sleeping;
             // ServerPlayer.doTick's updateScoreForCriteria: the health, food,
             // armor, experience and level objectives follow the guest.
             let mut recorded =
                 std::mem::take(&mut host.play.entry(conn).or_default().score_recorded);
-            self.as_guest(conn, |g| {
-                g.tick_fishing();
-                g.tick_maps();
-                g.tick_lodestone_compasses();
-                g.native_inventory_ticks();
-                g.count_tick_stats(sleeping);
-                g.tick_advancements();
-                g.update_player_attributes();
-                g.record_player_scores(&mut recorded);
-            });
+            self.guest_server_tick_with_tail(conn, body, &mut recorded);
             if let Some(host) = self.lan.as_mut() {
                 host.play.entry(conn).or_default().score_recorded = recorded;
             }
@@ -255,6 +248,39 @@ impl Game<'_> {
                 game.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player })
             });
         }
+    }
+
+    /// Tail of a guest's per-tick body step (fishing, maps, stats, advancements,
+    /// attributes and scoreboard criteria), merged into the single `as_guest` turn.
+    pub(super) fn guest_tick_tail(
+        &mut self,
+        body: bool,
+        sleeping: bool,
+        recorded: &mut crate::game::scoreboard::Recorded,
+    ) {
+        self.tick_fishing();
+        if body {
+            self.tick_maps();
+            self.tick_lodestone_compasses();
+            self.native_inventory_ticks();
+            self.count_tick_stats(sleeping);
+        }
+        self.tick_advancements();
+        self.update_player_attributes();
+        self.record_player_scores(recorded);
+    }
+
+    /// Whether guest `g`'s body ticks this tick: `ServerPlayer.doTick`'s
+    /// `!isSpectator() || !touchingUnloadedChunk()`. A spectator whose box,
+    /// inflated by one block, reaches a chunk the level hasn't loaded skips
+    /// `super.tick()` (Player.tick: its effects, death ticks, cooldowns, attack
+    /// strength, inventory ticks and PlayerTickEvent.Pre/Post) and doTick's food tick
+    /// and statistics; everything else the server does for it still runs.
+    pub(super) fn guest_body_ticks(&self, g: &horizon_client::lan::guest::Guest) -> bool {
+        !g.spectator()
+            || !touching_unloaded_chunk(g.position, g.dimensions(), |x, z| {
+                self.world.chunks.contains_key(&(x, z))
+            })
     }
 
     /// Only listeners pay for a guest swap; reuse the loop's resolved index.
@@ -318,7 +344,7 @@ impl Game<'_> {
             self.lan
                 .as_ref()
                 .and_then(|host| host.hub.guest(conn))
-                .map(|g| (g.uuid, g.name.clone()))
+                .map(|g| (g.uuid, std::sync::Arc::clone(&g.name_shared)))
         };
         self.as_guest(conn, |game| {
             let Some(player) = game.player.as_mut() else {

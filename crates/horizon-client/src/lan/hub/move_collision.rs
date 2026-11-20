@@ -85,6 +85,9 @@ fn check_move<W>(
 where
     W: BlockCollisionWorld<Error = io::Error> + EntityMovementWorld<Error = io::Error>,
 {
+    if g.position == to && requested == Vec3::ZERO && movement == Vec3::ZERO && !overridden {
+        return (false, false, false);
+    }
     // getBoundingBox: the box of the body's pose (swimming and crawling
     // are 0.6 tall), so a swimmer under a ceiling isn't sent back.
     let d = g.dimensions();
@@ -154,18 +157,23 @@ where
     // already touch.
     let shrink = f64::from(1.0E-5_f32);
     let shrink = Vec3::new(shrink, shrink, shrink);
-    let Ok(old_shape) = VoxelShape::from_box(old.deflate(shrink)) else {
-        return (fail, false, stands);
-    };
     let Ok(scan) = BlockCollisionScan::new(world, context, new.deflate(shrink), false, 1 << 20)
     else {
         return (fail, false, stands);
     };
+    let mut old_shape: Option<VoxelShape> = None;
     for hit in scan {
         let Ok(hit) = hit else { break };
+        let old_shape = match old_shape {
+            Some(ref shape) => shape,
+            None => match VoxelShape::from_box(old.deflate(shrink)) {
+                Ok(shape) => old_shape.insert(shape),
+                Err(_) => return (fail, false, stands),
+            },
+        };
         if !hit
             .shape
-            .join_is_not_empty(&old_shape, ShapeOp::AND)
+            .join_is_not_empty(old_shape, ShapeOp::AND)
             .unwrap_or(true)
         {
             return (fail, true, stands);

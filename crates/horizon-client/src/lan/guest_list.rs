@@ -3,26 +3,18 @@ use super::guest::Guest;
 use crate::fast_hash::FxHashMap;
 use std::ops::Deref;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Layout stamps are unique across lists, so a reader never takes one list's stamp for another's.
 static LAYOUTS: AtomicU64 = AtomicU64::new(1);
 
 /// What a reader that keeps a copy of the simulation rows needs to know, without scanning them:
 /// when the set or order of the rows changed, and which rows were written since it last looked.
+#[derive(Default)]
 struct Written {
-    layout: u64,
     rows: Vec<usize>,
     seen: Vec<bool>,
-}
-impl Default for Written {
-    fn default() -> Self {
-        Self {
-            layout: LAYOUTS.fetch_add(1, Ordering::Relaxed),
-            rows: Vec::new(),
-            seen: Vec::new(),
-        }
-    }
+    scratch: Vec<usize>,
 }
 impl Written {
     fn mark(&mut self, row: usize) {
@@ -34,40 +26,83 @@ impl Written {
         }
     }
     fn reset(&mut self) {
-        self.layout = LAYOUTS.fetch_add(1, Ordering::Relaxed);
         self.rows.clear();
         self.seen.clear();
     }
 }
 
+/// Borrowed per-guest slice passed into [`GuestList::replay_turn_at`] without lending whole
+/// mutable rows or running indexed-key guards.
+pub struct ReplayTurn<'a> {
+    pub position: [f64; 3],
+    pub vehicle: Option<u32>,
+    pub sleeping: bool,
+    pub dead: bool,
+    pub spectator: bool,
+    pub client_loaded: bool,
+    pub awaiting_teleport: bool,
+    pub selected: usize,
+    pub armor: &'a [Option<crate::items::ItemStack>; 4],
+    pub inventory: &'a [Option<crate::items::ItemStack>],
+    pub offhand: &'a Option<crate::items::ItemStack>,
+    pub motion: &'a mut super::guest::GuestMotion,
+    pub record: &'a mut Option<Box<super::prediction::record::Record>>,
+    pub replay: &'a mut Option<Box<super::prediction::Replay>>,
+}
+
 /// Collection-owned mutation keeps identity and material-body indexes current.
 /// Ordinary state writes compare only the indexed fields; membership or key
 /// changes rebuild indexes while preserving join order and first-match lookup.
-#[derive(Default)]
 pub struct GuestList {
     rows: Vec<Guest>,
     simulation: Vec<usize>,
     connections: FxHashMap<u32, usize>,
     identities: FxHashMap<(u128, u32), usize>,
+    uuids: FxHashMap<u128, usize>,
     residency: Option<(
         crate::join_seq::residency::Journal,
         fn(&str) -> mod_api::DimensionKey,
     )>,
+    layout: AtomicU64,
+    has_written: AtomicBool,
     written: Mutex<Written>,
 }
+impl Default for GuestList {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            simulation: Vec::new(),
+            connections: FxHashMap::default(),
+            identities: FxHashMap::default(),
+            uuids: FxHashMap::default(),
+            residency: None,
+            layout: AtomicU64::new(LAYOUTS.fetch_add(1, Ordering::Relaxed)),
+            has_written: AtomicBool::new(false),
+            written: Mutex::default(),
+        }
+    }
+}
 impl GuestList {
-    fn written(&mut self) -> &mut Written {
+    fn mark_written(&mut self, index: usize) {
         self.written
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mark(index);
+        self.has_written.store(true, Ordering::Release);
+    }
+    fn reset_written(&mut self) {
+        self.layout
+            .store(LAYOUTS.fetch_add(1, Ordering::Relaxed), Ordering::Release);
+        self.written
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset();
+        self.has_written.store(false, Ordering::Release);
     }
     /// A stamp that changes whenever the simulation rows are added, removed, reordered or
     /// switch kind: a copy of them taken at one stamp stays row for row valid until it changes.
     pub fn layout(&self) -> u64 {
-        self.written
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .layout
+        self.layout.load(Ordering::Acquire)
     }
     /// Hands `f` each simulation row (its place among them, and the guest) written through
     /// this list since the last call, once each. The writes that can change a row's position,
@@ -75,7 +110,10 @@ impl GuestList {
     /// borrows reach only fields apart from those, and a change of the rows' set or order
     /// changes `layout` instead.
     pub fn drain_written(&self, mut f: impl FnMut(usize, &Guest)) {
-        let rows = {
+        if !self.has_written.load(Ordering::Acquire) {
+            return;
+        }
+        let mut rows = {
             let mut w = self
                 .written
                 .lock()
@@ -84,11 +122,25 @@ impl GuestList {
             for &row in &w.rows {
                 w.seen[row] = false;
             }
-            std::mem::take(&mut w.rows)
+            let mut rows = std::mem::take(&mut w.scratch);
+            rows.clear();
+            std::mem::swap(&mut w.rows, &mut rows);
+            self.has_written.store(false, Ordering::Release);
+            rows
         };
-        for row in rows {
+        for &row in &rows {
             if let Ok(place) = self.simulation.binary_search(&row) {
                 f(place, &self.rows[row]);
+            }
+        }
+        rows.clear();
+        if rows.capacity() <= 4096 {
+            let mut w = self
+                .written
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if w.scratch.capacity() < rows.capacity() {
+                w.scratch = rows;
             }
         }
     }
@@ -139,7 +191,7 @@ impl GuestList {
     /// again, including when the callback unwinds. Ordinary state writes do
     /// not scan the collection or rebuild its indexes.
     pub fn update<T>(&mut self, index: usize, update: impl FnOnce(&mut Guest) -> T) -> T {
-        self.written().mark(index);
+        self.mark_written(index);
         let before = index_fields(&self.rows[index]);
         let registration = self.rows[index].attachments.registration();
         let dimension = self
@@ -199,7 +251,7 @@ impl GuestList {
         use super::viewed_levels::entities::tracks_view;
         let viewing = !views.is_empty();
         let (mut outputs, mut views) = (outputs.into_iter(), views.iter_mut());
-        let mut viewers = Vec::new();
+        let mut viewers = Vec::with_capacity(self.rows.len());
         for g in self.rows.iter_mut() {
             let (spectator, horizon) = (g.spectator(), g.is_horizon());
             let (chunks, sources, tracker, out, gone, moved) = if visible(g) {
@@ -266,6 +318,129 @@ impl GuestList {
         Some(&mut self.rows[index].attachments)
     }
 
+    /// Borrow a player's canonical attachments at a known collection index.
+    pub fn attachments_mut_at(
+        &mut self,
+        index: usize,
+    ) -> Option<&mut horizon_mod_runtime::attachments::ResidentAttachments> {
+        Some(&mut self.rows.get_mut(index)?.attachments)
+    }
+
+    /// Update a guest's idle action clock without triggering indexed/body guards.
+    pub fn set_last_action_tick(&mut self, index: usize, tick: u64) {
+        self.rows[index].last_action_tick = tick;
+    }
+
+    /// Mark that a position packet arrived this client tick; returns whether already marked.
+    pub fn mark_position_this_tick(&mut self, index: usize) -> bool {
+        let g = &mut self.rows[index];
+        if g.position_this_tick {
+            return true;
+        }
+        g.position_this_tick = true;
+        false
+    }
+
+    /// Recompute `living_flags` across every guest without indexed/body guards.
+    pub fn set_living_flags_all(&mut self, mut f: impl FnMut(&Guest) -> i8) {
+        for g in &mut self.rows {
+            g.living_flags = f(g);
+        }
+    }
+
+    /// Recompute stuck-arrow and shoulder counts across every guest without indexed/body guards.
+    pub fn set_stuck_and_shoulders_all(
+        &mut self,
+        mut f: impl FnMut(&Guest) -> ((i32, i32), [Option<i32>; 2]),
+    ) {
+        for g in &mut self.rows {
+            let (stuck, shoulders) = f(g);
+            g.stuck = stuck;
+            g.shoulders = shoulders;
+        }
+    }
+
+    /// Refresh `index`'s cached syncable attributes if `LiveAttributes::version()` changed.
+    pub fn refresh_syncable_attrs(&mut self, index: usize) {
+        let g = &mut self.rows[index];
+        let Some(m) = g.motion.as_ref() else {
+            return;
+        };
+        let version = m.attributes.version();
+        if g.syncable_attrs_cache.0 == Some(version) {
+            return;
+        }
+        super::attributes::syncable_into(&m.attributes, &mut g.syncable_attrs_cache.1);
+        g.syncable_attrs_cache.0 = Some(version);
+    }
+
+    /// Record vanished tracked entity positions on a guest's replay history.
+    pub fn record_entity_gone(&mut self, index: usize, ticks: u64, gone: &mut Vec<[f64; 3]>) {
+        let g = &mut self.rows[index];
+        let slack = super::prediction::slack(std::array::from_fn(|k| {
+            g.position[k] - g.previous_position[k]
+        }));
+        for at in gone.drain(..) {
+            let block = at.map(|v| v.floor() as i32);
+            if let Some(record) = g.record.as_deref_mut()
+                && super::prediction::near(g.position, block, slack)
+            {
+                record.entity_gone(ticks);
+            }
+        }
+    }
+
+    /// Take pending movement deltas and their starting ground flag without `Edit` guard overhead.
+    pub fn take_moves(&mut self, index: usize) -> Option<(Vec<([f64; 3], bool)>, bool)> {
+        let g = self.rows.get_mut(index)?;
+        let moves = std::mem::take(&mut g.moves);
+        let from_ground = if moves.is_empty() {
+            g.on_ground
+        } else {
+            g.moves_from_ground
+        };
+        Some((moves, from_ground))
+    }
+
+    /// Borrow only prediction replay state and immutable gameplay context for `index`.
+    pub fn replay_turn_at<T>(
+        &mut self,
+        index: usize,
+        f: impl FnOnce(ReplayTurn<'_>) -> T,
+    ) -> Option<T> {
+        let g = self.rows.get_mut(index)?;
+        let spectator = g.spectator();
+        let client_loaded = g.client_loaded();
+        let awaiting_teleport = g.awaiting_teleport.is_some();
+        Some(f(ReplayTurn {
+            position: g.position,
+            vehicle: g.vehicle,
+            sleeping: g.sleeping,
+            dead: g.dead,
+            spectator,
+            client_loaded,
+            awaiting_teleport,
+            selected: g.selected,
+            armor: &g.armor,
+            inventory: &g.inventory,
+            offhand: &g.offhand,
+            motion: &mut g.motion,
+            record: &mut g.record,
+            replay: &mut g.replay,
+        }))
+    }
+
+    /// Mark a guest's replay as excused without triggering `Edit` guards.
+    pub fn excuse_replay(&mut self, index: usize) {
+        if let Some(replay) = self
+            .rows
+            .get_mut(index)
+            .and_then(|g| g.replay.as_deref_mut())
+        {
+            replay.excuse();
+        }
+    }
+
     /// Borrow only the stored menu items at this collection index.
     pub fn ender_items_mut(
         &mut self,
@@ -293,8 +468,110 @@ impl GuestList {
     /// Borrow a body without exposing the guest's indexed fields or row replacement.
     pub fn motion_mut(&mut self, conn: u32) -> Option<&mut crate::motion::PlayerMotion> {
         let index = self.connection_index(conn)?;
-        self.written().mark(index);
+        self.mark_written(index);
         self.rows[index].motion.as_deref_mut()
+    }
+
+    pub fn push_inbox(&mut self, conn: u32, bytes: usize, item: super::guest::InboxItem) {
+        let Some(index) = self.connection_index(conn) else {
+            return;
+        };
+        let g = &mut self.rows[index];
+        g.sender.undrained.taken(bytes);
+        if g.left_reason.is_empty() {
+            g.inbox.push_back(item);
+        }
+    }
+
+    pub fn pop_inbox(&mut self, index: usize) -> Option<super::guest::InboxItem> {
+        self.rows[index].inbox.pop_front()
+    }
+
+    pub fn begin_inbox(&mut self, index: usize) {
+        let g = &mut self.rows[index];
+        g.first_good = g.position;
+        g.known_moves = g.received_moves;
+        g.load_timeout = g.load_timeout.saturating_sub(1);
+    }
+
+    pub fn end_client_tick(&mut self, index: usize) {
+        let g = &mut self.rows[index];
+        if !g.position_this_tick {
+            g.known_movement = [0.0; 3];
+        }
+        g.position_this_tick = false;
+    }
+
+    pub fn take_motion(&mut self, index: usize) -> Option<crate::motion::PlayerMotion> {
+        self.mark_written(index);
+        self.rows[index].motion.take()
+    }
+
+    pub fn has_motion(&self, index: usize) -> bool {
+        self.rows.get(index).is_some_and(|g| g.motion.is_present())
+    }
+
+    /// Swap guest `index`'s boxed `PlayerMotion` directly into `slot`, keeping the
+    /// heap box in place on `GuestMotion` for zero-alloc restoration in `leave_guest`.
+    pub fn swap_motion_into(
+        &mut self,
+        index: usize,
+        slot: &mut Option<crate::motion::PlayerMotion>,
+    ) -> bool {
+        self.mark_written(index);
+        self.rows[index].motion.swap_with_option(slot)
+    }
+
+    pub fn effects_mut(&mut self, index: usize) -> &mut crate::effects::PlayerEffects {
+        &mut self.rows[index].effects
+    }
+
+    pub fn swap_ender_items(
+        &mut self,
+        index: usize,
+        ender_items: &mut Vec<Option<crate::items::ItemStack>>,
+    ) {
+        std::mem::swap(ender_items, &mut self.rows[index].ender_items);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn swap_turn_gear(
+        &mut self,
+        index: usize,
+        inventory: &mut Vec<Option<crate::items::ItemStack>>,
+        armor: &mut [Option<crate::items::ItemStack>; 4],
+        location_armor: &mut [Option<crate::items::ItemStack>; 4],
+        offhand: &mut Option<crate::items::ItemStack>,
+        equipment: &mut horizon_items::equipment::Equipment,
+        carried: &mut Option<crate::items::ItemStack>,
+    ) {
+        let g = &mut self.rows[index];
+        std::mem::swap(inventory, &mut g.inventory);
+        std::mem::swap(armor, &mut g.armor);
+        std::mem::swap(location_armor, &mut g.location_armor);
+        std::mem::swap(offhand, &mut g.offhand);
+        std::mem::swap(equipment, &mut g.equipment);
+        std::mem::swap(carried, &mut g.carried);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn swap_turn_progress(
+        &mut self,
+        index: usize,
+        progress: &mut crate::advancements::Progress,
+        changed: &mut std::collections::BTreeSet<usize>,
+        unlocked: &mut Vec<String>,
+        recipe_book: &mut crate::recipe_book::Settings,
+        saved: &mut Option<horizon_core::nbt::Tag>,
+        last_death: &mut Option<(String, [i32; 3])>,
+    ) {
+        let g = &mut self.rows[index];
+        std::mem::swap(progress, &mut g.advancements);
+        std::mem::swap(changed, &mut g.advancements_changed);
+        std::mem::swap(unlocked, &mut g.recipes_unlocked);
+        std::mem::swap(recipe_book, &mut g.recipe_book);
+        std::mem::swap(saved, &mut g.saved);
+        std::mem::swap(last_death, &mut g.last_death);
     }
 
     /// Borrow only advancement state; indexed identity and kind stay inaccessible.
@@ -323,6 +600,9 @@ impl GuestList {
     pub fn identity_index(&self, uuid: u128, entity: u32) -> Option<usize> {
         self.identities.get(&(uuid, entity)).copied()
     }
+    pub fn uuid_index(&self, uuid: u128) -> Option<usize> {
+        self.uuids.get(&uuid).copied()
+    }
     /// Material player bodies in join order, without visiting connectionless actors.
     pub fn simulation_iter(&self) -> impl Iterator<Item = &Guest> {
         self.simulation_indexed_iter().map(|(_, guest)| guest)
@@ -336,17 +616,21 @@ impl GuestList {
     pub fn as_slice(&self) -> &[Guest] {
         &self.rows
     }
-    pub fn push(&mut self, guest: Guest) {
+    pub fn push(&mut self, mut guest: Guest) {
+        if &*guest.name_shared != guest.name.as_str() {
+            guest.name_shared = std::sync::Arc::from(guest.name.as_str());
+        }
         let index = self.rows.len();
         self.connections.entry(guest.conn).or_insert(index);
         self.identities
             .entry((guest.uuid, guest.entity_id as u32))
             .or_insert(index);
+        self.uuids.entry(guest.uuid).or_insert(index);
         if guest.participates_in_player_simulation() {
             self.simulation.push(index);
         }
         self.rows.push(guest);
-        self.written().reset();
+        self.reset_written();
         if !self.bind_guest(index) {
             self.rows[index].residency.put_back();
         }
@@ -383,7 +667,10 @@ impl GuestList {
         }
         self.reindex();
     }
-    pub fn replace(&mut self, index: usize, guest: Guest) -> Guest {
+    pub fn replace(&mut self, index: usize, mut guest: Guest) -> Guest {
+        if &*guest.name_shared != guest.name.as_str() {
+            guest.name_shared = std::sync::Arc::from(guest.name.as_str());
+        }
         let mut old = std::mem::replace(&mut self.rows[index], guest);
         old.residency.retire();
         if !self.bind_guest(index) {
@@ -401,17 +688,19 @@ impl GuestList {
         self.simulation.clear();
         self.connections.clear();
         self.identities.clear();
-        self.written().reset();
+        self.uuids.clear();
+        self.reset_written();
     }
     pub fn reverse(&mut self) {
         self.rows.reverse();
         self.reindex();
     }
     fn reindex(&mut self) {
-        self.written().reset();
+        self.reset_written();
         self.simulation.clear();
         self.connections.clear();
         self.identities.clear();
+        self.uuids.clear();
         for (index, guest) in self.rows.iter().enumerate() {
             if guest.participates_in_player_simulation() {
                 self.simulation.push(index);
@@ -420,6 +709,7 @@ impl GuestList {
             self.identities
                 .entry((guest.uuid, guest.entity_id as u32))
                 .or_insert(index);
+            self.uuids.entry(guest.uuid).or_insert(index);
         }
     }
 }
@@ -470,8 +760,8 @@ impl Drop for Edit<'_> {
         if let Some(old) = &self.registration
             && !self.list.rows[self.index]
                 .attachments
-                .registration()
-                .is_some_and(|current| old.same_registration(&current))
+                .registration_ref()
+                .is_some_and(|current| old.same_registration(current))
         {
             old.unregister();
         }
@@ -484,8 +774,8 @@ impl Drop for Edit<'_> {
             if self.registration.as_ref().is_some_and(|old| {
                 self.list.rows[self.index]
                     .attachments
-                    .registration()
-                    .is_some_and(|current| old.same_registration(&current))
+                    .registration_ref()
+                    .is_some_and(|current| old.same_registration(current))
             }) {
                 self.list.rows[self.index].attachments.retire();
             }
@@ -496,6 +786,10 @@ impl Drop for Edit<'_> {
             .residency
             .as_ref()
             .map(|(_, key)| key(&self.list.rows[self.index].dimension));
+        if &*self.list.rows[self.index].name_shared != self.list.rows[self.index].name.as_str() {
+            self.list.rows[self.index].name_shared =
+                std::sync::Arc::from(self.list.rows[self.index].name.as_str());
+        }
         if identity_changed
             || dimension != self.dimension
             || self.list.rows[self.index].released != self.released

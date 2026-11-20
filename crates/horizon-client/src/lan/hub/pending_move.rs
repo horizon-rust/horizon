@@ -199,7 +199,9 @@ impl Hub {
                 p.paused = true;
             }
         });
-        events.push(HostEvent::InputCredits(std::mem::take(credits)));
+        if !credits.is_empty() {
+            events.push(HostEvent::InputCredits(std::mem::take(credits)));
+        }
         true
     }
 
@@ -236,7 +238,7 @@ impl Hub {
     /// ruling is past [`MOVE_PENDING_TICKS`]) it is dropped and the client corrected. Nothing happens if the player is gone or has no pending
     /// report any more (a disconnect, a teleport or a level change dropped it).
     pub fn resolve_move(&mut self, conn: u32, commit: bool) {
-        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
+        let Some(i) = self.guests.connection_index(conn) else {
             return;
         };
         let Some(p) = self.guests.update(i, |g| g.pending_move.take()) else {

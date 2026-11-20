@@ -177,9 +177,9 @@ impl Game<'_> {
         if !paused {
             self.combat.stuck.tick();
         }
-        host.hub.guests.update_all(|g| {
-            g.shoulders = crate::game::shoulders::shoulder_variants(g.saved.as_ref());
-            g.stuck = match self.guest_combat.get_mut(&g.conn) {
+        host.hub.guests.set_stuck_and_shoulders_all(|g| {
+            let shoulders = crate::game::shoulders::shoulder_variants(g.saved.as_ref());
+            let stuck = match self.guest_combat.get_mut(&g.conn) {
                 Some(combat) => {
                     if !paused {
                         combat.stuck.tick();
@@ -188,6 +188,7 @@ impl Game<'_> {
                 }
                 None => (0, 0),
             };
+            (stuck, shoulders)
         });
     }
 
@@ -198,13 +199,13 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        host.hub.guests.update_all(|g| {
-            let using = host.play.get(&g.conn).and_then(GuestPlay::using);
+        host.hub.guests.set_living_flags_all(|g| {
+            let using = host.play.get(&g.conn).and_then(|p| p.using());
             let spinning = g
                 .motion
                 .as_ref()
                 .is_some_and(|m| m.auto_spin_attack_ticks > 0);
-            g.living_flags = crate::game::lan::living_flags(using, spinning);
+            crate::game::lan::living_flags(using, spinning)
         });
     }
 

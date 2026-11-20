@@ -57,7 +57,7 @@ pub(super) struct LanHost {
     /// The mods heard that everyone still here leaves with the server.
     pub players_told_left: bool,
     pub settings: LanSettings,
-    pub play: HashMap<u32, super::lan_actions::GuestPlay>,
+    pub play: horizon_client::fast_hash::FxHashMap<u32, Box<super::lan_actions::GuestPlay>>,
     /// Each guest's menu owners, outside `play` (`as_guest` lifts that).
     pub menus: HashMap<u32, super::lan_menus::GuestMenus>,
     /// Blocks broken this tick (their sound is a level event for the guests).
@@ -824,12 +824,26 @@ pub(super) fn mob_meta_sync(
                 meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
             }
             defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
-            let default = horizon_client::mobs::MannequinDescription::Default.component();
-            let shown = e.description.component();
-            if shown != default {
-                meta.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(shown)));
+            let default = horizon_client::mobs::MannequinDescription::default_component();
+            match &e.description {
+                horizon_client::mobs::MannequinDescription::Default => {}
+                horizon_client::mobs::MannequinDescription::Hidden => {
+                    meta.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(None)));
+                }
+                horizon_client::mobs::MannequinDescription::Custom(tag) if tag != default => {
+                    meta.push((
+                        19,
+                        serializer::OPTIONAL_COMPONENT,
+                        Value::OptText(Some(tag.clone())),
+                    ));
+                }
+                horizon_client::mobs::MannequinDescription::Custom(_) => {}
             }
-            defaults.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(default)));
+            defaults.push((
+                19,
+                serializer::OPTIONAL_COMPONENT,
+                Value::OptText(Some(default.clone())),
+            ));
         }
         // Creaking.CAN_MOVE, IS_ACTIVE and IS_TEARING_DOWN.
         "minecraft:creaking" => {
@@ -1313,7 +1327,7 @@ impl Game<'_> {
             players_told_left: false,
             hub,
             settings: LanSettings { port, ..settings },
-            play: HashMap::new(),
+            play: Default::default(),
             menus: HashMap::new(),
             broken: Vec::new(),
             mob_state: HashMap::new(),
@@ -5223,10 +5237,16 @@ pub(crate) mod world_spawn_sync_tests {
             // RespawnData.of(level.dimension(), ..): the same block set from the
             // End is a changed RespawnData, sent with the End as its dimension.
             game.as_console(|game| {
-                assert!(game.run_command("execute in minecraft:the_end run setworldspawn 100 140 -20"))
+                assert!(
+                    game.run_command("execute in minecraft:the_end run setworldspawn 100 140 -20")
+                )
             });
             let sent = spawns(&rx);
-            assert_eq!(sent.len(), 1, "a spawn that only changes dimension is broadcast");
+            assert_eq!(
+                sent.len(),
+                1,
+                "a spawn that only changes dimension is broadcast"
+            );
             assert_eq!(sent[0].pos.dimension, "minecraft:the_end");
             assert_eq!(sent[0].pos.pos, [100, 140, -20]);
             game.as_console(|game| {
@@ -5829,7 +5849,9 @@ mod merchant_restock_tests {
         game.set_allow_commands(true);
         let rx = super::world_spawn_sync_tests::host_for(&mut game);
         let mut host = game.lan.take().unwrap();
-        host.hub.guests.update(0, |guest| guest.dimension = "minecraft:overworld".into());
+        host.hub
+            .guests
+            .update(0, |guest| guest.dimension = "minecraft:overworld".into());
         game.lan = Some(host);
         assert!(game.run_command(concat!(
             "summon villager 0.5 80 2.5 {NoAI:1b,Silent:1b,Xp:20,",
@@ -5883,9 +5905,13 @@ mod merchant_restock_tests {
         live.offers[0].uses = 0;
         live.offers[0].demand = 12;
         game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
-            guest.effects.add(horizon_client::effects::EffectInstance::new(
-                "hero_of_the_village", 1000, 0,
-            ));
+            guest
+                .effects
+                .add(horizon_client::effects::EffectInstance::new(
+                    "hero_of_the_village",
+                    1000,
+                    0,
+                ));
         });
         game.merchant_restocked(id);
         let restocked = offers();

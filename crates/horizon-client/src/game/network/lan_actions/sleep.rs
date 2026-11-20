@@ -94,6 +94,10 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
+        let g = &host.hub.guests[gi];
+        if g.bed.is_none() && g.sleep_timer == 0 {
+            return;
+        }
         let (identity, bed, gone, uuid) = host.hub.guests.update(gi, |g| {
             let was_deep = g.sleep_timer >= 100;
             g.sleep_timer = crate::game::tick_sleep_timer(g.sleep_timer, g.bed.is_some());

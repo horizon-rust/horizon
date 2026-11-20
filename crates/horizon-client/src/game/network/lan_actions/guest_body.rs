@@ -11,7 +11,7 @@ pub(super) fn initialize(resources: &MotionResources, guest: &mut Guest) -> bool
     let Ok(motion) = PlayerMotion::new(resources, p) else {
         return false;
     };
-    guest.motion = Some(Box::new(motion));
+    guest.motion.set(motion);
     let entity_id = guest.entity_id as u32;
     let accepted_hit = guest.carried_hit.take();
     if let Some(motion) = guest.motion.as_mut() {
@@ -64,7 +64,25 @@ impl Game<'_> {
     /// hazards (drowning, lava, fire blocks, suffocation, the void), and
     /// regeneration and the food tick (ServerPlayer.doTick). Their hurt
     /// sounds are heard at the guest.
-    pub(super) fn guest_server_tick(&mut self, conn: u32) {
+    pub(super) fn guest_server_tick(&mut self, conn: u32, body: bool) {
+        self.guest_server_tick_inner(conn, body, None);
+    }
+
+    pub(super) fn guest_server_tick_with_tail(
+        &mut self,
+        conn: u32,
+        body: bool,
+        recorded: &mut crate::game::scoreboard::Recorded,
+    ) {
+        self.guest_server_tick_inner(conn, body, Some(recorded));
+    }
+
+    fn guest_server_tick_inner(
+        &mut self,
+        conn: u32,
+        body: bool,
+        mut tail: Option<&mut crate::game::scoreboard::Recorded>,
+    ) {
         self.guest_replay(conn);
         self.guest_vehicle_tick(conn);
         // The last move's fall stands in for the server's delta movement.
@@ -77,17 +95,17 @@ impl Game<'_> {
             .and_then(|g| g.moves.last().map(|m| m.0[1]))
             .unwrap_or(0.0);
         self.guest_glide_tick(conn, fell);
-        let Some((moves, from_ground)) = self.lan.as_mut().and_then(|host| {
-            host.hub.update_guest(conn, |g| {
-                let moves = std::mem::take(&mut g.moves);
-                let from_ground = if moves.is_empty() {
-                    g.on_ground
-                } else {
-                    g.moves_from_ground
-                };
-                (moves, from_ground)
-            })
-        }) else {
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        let Some(gi) = host.hub.guests.connection_index(conn) else {
+            return;
+        };
+        let (moves, from_ground) = if host.hub.guests[gi].moves.is_empty() {
+            (Vec::new(), host.hub.guests[gi].on_ground)
+        } else if let Some(pair) = host.hub.guests.take_moves(gi) {
+            pair
+        } else {
             return;
         };
         let g = self.lan.as_ref().unwrap().hub.guest(conn).unwrap();
@@ -98,36 +116,50 @@ impl Game<'_> {
         if g.spectator() {
             // ServerPlayer.doTick runs the player's whole tick for a spectator
             // too, unless its box touches an unloaded chunk
-            // (`touchingUnloadedChunk`): its effects (LivingEntity.baseTick),
-            // Player.aiStep's tickRegeneration and foodData.tick go on while
-            // it watches (#11312). The hazards, the travel and the movement
-            // statistics below are what a spectator's body skips.
-            let (at, body) = (g.position, g.dimensions());
-            let loaded =
-                !touching_unloaded_chunk(at, body, |x, z| self.world.chunks.contains_key(&(x, z)));
-            if !g.effects.list.is_empty() {
-                self.as_guest(conn, |game| game.tick_mob_effects());
-            }
-            self.as_guest(conn, |game| {
-                game.handle_shoulder_entities();
-                if !loaded {
-                    return;
+            // (`touchingUnloadedChunk`, `guest_body_ticks`): its effects
+            // (LivingEntity.baseTick), Player.aiStep's shoulder entities and
+            // tickRegeneration, and foodData.tick go on while it watches
+            // (#11312). The hazards, the travel and the movement statistics
+            // below are what a spectator's body skips.
+            let sleeping = g.sleeping;
+            if !body {
+                if let Some(recorded) = tail {
+                    self.as_guest(conn, |game| game.guest_tick_tail(false, sleeping, recorded));
                 }
-                let rules = game.world.health_rules;
-                let Some(player) = game.player.as_mut() else {
-                    return;
-                };
-                // Entity.baseTick's clocks (hurtTime, invulnerableTime) run too.
-                player.health.advance_clock();
-                let _ = player.peaceful_regeneration(&game.loop_context, rules);
-                let _ = player.food_tick(
-                    &game.loop_context,
-                    crate::game::entity::damage_level_of!(game),
-                    &game.health_resources,
-                    rules,
-                );
-                let events = std::mem::take(&mut player.events);
-                game.record_combat(&events);
+                return;
+            }
+            let has_effects = !g.effects.list.is_empty();
+            self.as_guest(conn, |game| {
+                if has_effects {
+                    game.tick_mob_effects();
+                }
+                game.handle_shoulder_entities();
+                if let Some(player) = game.player.as_mut() {
+                    let rules = game.world.health_rules;
+                    // Entity.baseTick's clocks (hurtTime, invulnerableTime) run too.
+                    player.health.advance_clock();
+                    let _ = player.peaceful_regeneration(&game.loop_context, rules);
+                    let _ = player.food_tick(
+                        &game.loop_context,
+                        crate::game::entity::damage_level_of!(game),
+                        &game.health_resources,
+                        rules,
+                    );
+                    if !player.events.is_empty() {
+                        let mut events = std::mem::take(&mut player.events);
+                        game.record_combat(&events);
+                        if let Some(player) = game.player.as_mut()
+                            && player.events.capacity() == 0
+                            && events.capacity() <= 64
+                        {
+                            events.clear();
+                            player.events = events;
+                        }
+                    }
+                }
+                if let Some(recorded) = tail {
+                    game.guest_tick_tail(true, sleeping, recorded);
+                }
             });
             return;
         }
@@ -176,22 +208,21 @@ impl Game<'_> {
             if w.player.flying && !riding {
                 w.player.fall_distance = 0.0;
             }
-            let travelled: Vec<[f64; 3]> = moves.iter().map(|m| m.0).collect();
             // The tick's whole movement, for the delta movement a glide's wall
             // hit reads (`handleMovePlayer` gives the server copy the client's
             // own movement).
-            let tick_movement = travelled.iter().fold(Vec3::ZERO, |sum, d| {
+            let tick_movement = moves.iter().fold(Vec3::ZERO, |sum, (d, _)| {
                 sum.add_vector(Vec3::new(d[0], d[1], d[2]))
             });
             // Entity.move's movementThisTick: each move, from where the
             // tick's first one started.
             let end = w.player.position;
-            let start = travelled
+            let start = moves
                 .iter()
-                .fold(end, |p, d| p.subtract(Vec3::new(d[0], d[1], d[2])));
+                .fold(end, |p, (d, _)| p.subtract(Vec3::new(d[0], d[1], d[2])));
             w.player.history.clear();
             let mut from = start;
-            for d in &travelled {
+            for (d, _) in &moves {
                 let delta = Vec3::new(d[0], d[1], d[2]);
                 let to = from.add_vector(delta);
                 w.player
@@ -208,7 +239,7 @@ impl Game<'_> {
             // was alive then: the hazards below may kill it later in this tick.
             let mut rose = None;
             let mut at = start;
-            for (moved, on_ground) in moves {
+            for &(moved, on_ground) in &moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
                 at = at.add_vector(movement);
                 let landed = (|| -> horizon_client::Result<()> {
@@ -264,7 +295,11 @@ impl Game<'_> {
             } else {
                 w.server_player_pose_tick()
             };
-            let mut events = std::mem::take(&mut w.player.events);
+            let mut events = if w.player.events.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut w.player.events)
+            };
             if let Some((at, alive)) = rose {
                 game.end_tracked_fall(at, alive);
             }
@@ -289,7 +324,7 @@ impl Game<'_> {
             }
             // ServerGamePacketListenerImpl.handleMovePlayer:
             // Player.checkMovementStatistics for each move.
-            for d in travelled {
+            for (d, _) in moves {
                 game.movement_stats(Vec3::new(d[0], d[1], d[2]));
             }
             // LivingEntity.baseTick: a new block position runs the worn
@@ -312,7 +347,9 @@ impl Game<'_> {
                 health,
                 rules,
             );
-            events.append(&mut player.events);
+            if !player.events.is_empty() {
+                events.append(&mut player.events);
+            }
             player.carry_client_movement(tick_movement);
             let _ = MotionWorld {
                 entities: &[],
@@ -340,7 +377,9 @@ impl Game<'_> {
                 return (events, None);
             };
             // Landing damage from this travel reaches the tracker too.
-            events.append(&mut player.events);
+            if !player.events.is_empty() {
+                events.append(&mut player.events);
+            }
             // A hurt since the last tick marked the velocity (Entity.markHurt):
             // ServerEntity.sendChanges sends it as it is after this travel.
             let marked = std::mem::take(&mut player.health.sync_velocity);
@@ -354,17 +393,6 @@ impl Game<'_> {
             }
             game.record_combat(&events);
             game.wear_armor(&events);
-            (events, velocity)
-        });
-        let Some((events, marked)) = events else {
-            return;
-        };
-        if let Some((at, velocity)) = soul
-            && let Some(host) = self.lan.as_ref()
-        {
-            crate::game::lan_particles::send_soul_particle(host, at, velocity);
-        }
-        self.as_guest(conn, |game| {
             game.sculk_step_on_player();
             game.tick_player_sculk_events();
             // Entity.restituteMovementAfterCollisions: GameEvent.BOUNCE.
@@ -373,7 +401,30 @@ impl Game<'_> {
                     game.post_entity_event("minecraft:bounce", horizon_client::mobs::Who::Player);
                 }
             }
+            if events.is_empty()
+                && let Some(recorded) = tail.take()
+            {
+                let tail_sleeping = game.sleeping.is_some();
+                game.guest_tick_tail(body, tail_sleeping, recorded);
+            }
+            (events, velocity)
         });
+        let Some((events, marked)) = events else {
+            if let Some(recorded) = tail {
+                let sleeping = self
+                    .lan
+                    .as_ref()
+                    .and_then(|host| host.hub.guest(conn))
+                    .is_some_and(|g| g.sleeping);
+                self.as_guest(conn, |game| game.guest_tick_tail(body, sleeping, recorded));
+            }
+            return;
+        };
+        if let Some((at, velocity)) = soul
+            && let Some(host) = self.lan.as_ref()
+        {
+            crate::game::lan_particles::send_soul_particle(host, at, velocity);
+        }
         for event in events {
             match event {
                 MotionEvent::Health(horizon_client::health::HealthEvent::DamageBroadcast {
@@ -571,6 +622,14 @@ impl Game<'_> {
                     velocity: [v.x, v.y, v.z],
                 }));
             }
+        }
+        if let Some(recorded) = tail {
+            let sleeping = self
+                .lan
+                .as_ref()
+                .and_then(|host| host.hub.guest(conn))
+                .is_some_and(|g| g.sleeping);
+            self.as_guest(conn, |game| game.guest_tick_tail(body, sleeping, recorded));
         }
     }
 }
