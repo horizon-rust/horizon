@@ -27,6 +27,7 @@ struct HorizonShadowOut {
     // The point on the flat face, camera-relative (`[displacement]`'s grid takes it over near
     // the camera).
     @location(4) base: vec3<f32>,
+    @location(5) @interpolate(flat) held: u32,
 }
 // `color` is the vertex colour: the tint, and the fluid flag in its alpha's bit 3 (mesher.rs's
 // `FLUID_BIT`, clear on a fluid). What the light passes through is that colour, whether or not the
@@ -42,6 +43,7 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
     out.tint = color.rgb;
     out.fluid = u32((u32(round(color.a * 255.0)) & 8u) == 0u);
     out.base = pos;
+    out.held = 0u;
     return out;
 }
 // `slot`: the corner's in the arena page, whose look is its quad's; `corner` its index there.
@@ -51,7 +53,10 @@ fn horizon_shadow_terrain(c: HorizonCorner, origin: vec4<f32>, slot: u32, corner
     let look = horizon_look(slot);
     let pos = horizon_material_displace(c.position + origin.xyz, atlas, c.layer, c.color, c.light,
         look, horizon_look_ao(look, corner));
-    return horizon_shadow_vertex(pos, atlas, c.layer, c.color);
+    var out = horizon_shadow_vertex(pos, atlas, c.layer, c.color);
+    // A section held only for shadows carries its negated UV step, with no fade code.
+    out.held = u32(origin.w < 0.0 && origin.w > -1.0);
+    return out;
 }
 @vertex fn horizon_shadow_vs(@builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
@@ -81,7 +86,7 @@ fn horizon_shadow_terrain(c: HorizonCorner, origin: vec4<f32>, slot: u32, corner
     return horizon_shadow_terrain(horizon_terrain_corner_inputs(s.c), origin, s.slot, vertex & 3u);
 }
 @fragment fn horizon_shadow_fs(in: HorizonShadowOut) {
-    if horizon_shadow_taken(in.base, in.layer) { discard; }
+    if in.held == 0u && horizon_shadow_taken(in.base, in.layer) { discard; }
     horizon_shadow_cutout(in);
 }
 // Merged LOD quads are large enough for the nonlinear projection to bend
@@ -114,6 +119,11 @@ fn horizon_shadow_cutout(in: HorizonShadowOut) {
     return vec4(horizon_line_in(color.rgb * in.tint), select(min(color.a, 0.99), 1.0, in.fluid != 0u));
 }
 ";
+
+/// A retiring section past its world fade is absent from the relief grid.
+pub(super) fn held_section_instance([x, y, z]: [f32; 3]) -> [f32; 4] {
+    [x, y, z, -1.0 / crate::mesher::UV_STEPS]
+}
 
 /// The entity draw of the shadow pass: the renderer's opaque entity quads (`EntityBatch`'s first
 /// material) through the shadow camera, with their texture's cutout. The sky's bodies, clouds,

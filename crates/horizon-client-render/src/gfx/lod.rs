@@ -29,6 +29,7 @@ pub(super) struct Pending {
     /// The order they go up in: as handed over (`Lod::update`: finer tiles
     /// first, so no tile clipped around a finer one is drawn before it).
     order: VecDeque<TileKey>,
+    retry_at: FxHashMap<TileKey, Instant>,
     removed: FxHashSet<TileKey>,
     cutout: Option<FxHashSet<(i32, i32)>>,
 }
@@ -45,24 +46,47 @@ impl Pending {
     ) {
         for (key, mesh) in meshes {
             self.removed.remove(&key);
+            self.retry_at.remove(&key);
             if self.meshes.insert(key, mesh).is_none() {
                 self.order.push_back(key);
             }
         }
         for key in removed {
             self.meshes.remove(&key);
+            self.retry_at.remove(&key);
             self.removed.insert(key);
         }
         if cutout.is_some() {
             self.cutout = cutout;
         }
     }
+
+    fn take_next(&mut self, now: Instant) -> Option<(TileKey, SectionMesh)> {
+        for _ in 0..self.order.len() {
+            let key = self.order.pop_front().expect("queued tile");
+            if self.retry_at.get(&key).is_some_and(|&due| now < due) {
+                self.order.push_back(key);
+            } else if let Some(mesh) = self.meshes.remove(&key) {
+                self.retry_at.remove(&key);
+                return Some((key, mesh));
+            }
+        }
+        None
+    }
+
+    fn retry(&mut self, key: TileKey, mesh: SectionMesh, now: Instant) {
+        // Try other tiles first and leave time for the arena to reclaim space.
+        self.retry_at.insert(key, now + Duration::from_millis(250));
+        self.meshes.insert(key, mesh);
+        self.order.push_back(key);
+    }
 }
 
 /// Small, its meshes boxed: `draw_frame` walks every tile each frame (thousands at long far
 /// distances), and that walk is bound by the memory it reads.
 pub(super) struct Tile {
-    pub mesh: Box<SectionGpu>,
+    /// None for an empty replacement whose finer cutouts are still uploading.
+    pub mesh: Option<Box<SectionGpu>>,
     info: MeshInfo,
     /// When it began to fade in; none while the rest of its job uploads.
     shown: Option<Instant>,
@@ -87,6 +111,7 @@ struct StandIn {
     mesh: SectionGpu,
     info: MeshInfo,
     since: Option<Instant>,
+    casts_shadow: bool,
 }
 
 pub(super) struct MeshInfo {
@@ -99,7 +124,6 @@ struct Handoff {
     shown: Option<Instant>,
     previous: Option<Box<StandIn>>,
     shadow_previous: Option<Box<StandIn>>,
-    shadow_waits: bool,
 }
 
 /// How long a tile takes to fade in over the ones it replaces.
@@ -133,7 +157,7 @@ pub(super) fn fade_out_code(since: Instant, level: u8, now: Instant) -> u32 {
     1 + u32::from(level) * 129 + 64 + ((faded * 64.0) as u32 + 1).min(64)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Bounds {
     min: Vec3,
     max: Vec3,
@@ -141,7 +165,7 @@ struct Bounds {
 
 impl Bounds {
     fn mesh(mesh: &SectionMesh) -> Option<Self> {
-        let [min, max] = mesh.bounds?;
+        let [min, max] = mesh.bounds.or_else(|| mesh.compute_bounds())?;
         Some(Self { min, max })
     }
 
@@ -353,40 +377,62 @@ fn waiting_parent_cuts(
 /// until that child arrives, even after the visual stand-in has faded.
 fn finish_uploads(
     lods: &mut FxHashMap<TileKey, Tile>,
-    empty: &FxHashSet<TileKey>,
+    empty: &mut FxHashSet<TileKey>,
+    free_slots: &mut Vec<u32>,
     removed: &FxHashSet<TileKey>,
     now: Instant,
     start_showing: impl Fn(TileKey) -> Instant,
 ) -> Vec<SectionGpu> {
-    let waits: FxHashSet<_> = lods
+    let mut waiting: Vec<_> = lods
         .iter()
-        .filter_map(|(&key, tile)| {
-            (tile.shadow_waits
-                && !tile.finer_ready(|child| {
-                    !removed.contains(&child)
-                        && (empty.contains(&child)
-                            || lods.get(&child).is_some_and(|tile| tile.dying.is_none()))
-                }))
-            .then_some(key)
-        })
+        .filter_map(|(&key, tile)| tile.shadow_waits.then_some(key))
         .collect();
-    lods.iter_mut()
-        .filter_map(|(&key, tile)| {
-            tile.shown.get_or_insert_with(|| start_showing(key));
-            tile.finish_upload(now, !waits.contains(&key))
-        })
-        .collect()
+    // A finer mesh can itself have cutouts. Resolve those first, even when
+    // the worker returned all the meshes in the same batch.
+    waiting.sort_unstable_by_key(|key| key.level);
+    let mut blocked = FxHashSet::default();
+    for key in waiting {
+        let tile = &lods[&key];
+        if tile.dying.is_some()
+            || removed.contains(&key)
+            || !tile.finer_ready(|child| {
+                !removed.contains(&child)
+                    && lods.get(&child).map_or_else(
+                        || empty.contains(&child),
+                        |tile| tile.dying.is_none() && !blocked.contains(&child),
+                    )
+            })
+        {
+            blocked.insert(key);
+        }
+    }
+    let mut released = Vec::new();
+    lods.retain(|&key, tile| {
+        tile.shown.get_or_insert_with(|| start_showing(key));
+        released.extend(tile.finish_upload(now, !blocked.contains(&key)));
+        if tile.mesh.is_some() || tile.shadow_waits {
+            return true;
+        }
+        empty.insert(key);
+        free_slots.push(tile.cull_slot);
+        released.extend(tile.previous.take().map(|previous| previous.mesh));
+        false
+    });
+    released
 }
 
 impl Tile {
     /// The mesh drawn this frame: the previous one while it stands in.
     pub fn drawn(&self) -> &SectionGpu {
-        self.previous.as_deref().map_or(&self.mesh, |p| &p.mesh)
+        self.previous.as_deref().map_or_else(
+            || self.mesh.as_deref().expect("visible tile has a mesh"),
+            |p| &p.mesh,
+        )
     }
     pub fn drawn_mut(&mut self) -> &mut SectionGpu {
         match self.previous.as_deref_mut() {
             Some(p) => &mut p.mesh,
-            None => &mut self.mesh,
+            None => self.mesh.as_deref_mut().expect("visible tile has a mesh"),
         }
     }
     /// The box occlusion culling tests (`cull::Cull`), around its origin: its
@@ -404,13 +450,15 @@ impl Tile {
     /// Whether any mesh it holds is in the compact layout: a stand-in drawn in its place can
     /// hide a compact replacement (`Renderer::follow_packed_layout`).
     pub fn holds_packed(&self) -> bool {
-        self.mesh.packed
+        self.mesh.as_ref().is_some_and(|mesh| mesh.packed)
             || self.previous.as_ref().is_some_and(|p| p.mesh.packed)
             || self.shadow_previous.as_ref().is_some_and(|p| p.mesh.packed)
     }
     /// All meshes it holds in the arena.
     pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
-        std::iter::once(&mut *self.mesh)
+        self.mesh
+            .as_deref_mut()
+            .into_iter()
             .chain(self.previous.as_deref_mut().map(|p| &mut p.mesh))
             .chain(self.shadow_previous.as_deref_mut().map(|p| &mut p.mesh))
     }
@@ -418,12 +466,16 @@ impl Tile {
     /// Shadow depth has no cross-fade. Keep the old mesh until the whole
     /// upload is ready, then cast only the replacement even while both draw.
     pub fn shadow(&self) -> Option<(&SectionGpu, &MeshInfo)> {
-        if self.shadow_waits
-            && let Some(previous) = self.shadow_previous.as_deref().or(self.previous.as_deref())
-        {
+        if self.shadow_waits {
+            let previous = self
+                .shadow_previous
+                .as_deref()
+                .or_else(|| self.previous.as_deref().filter(|p| p.casts_shadow))?;
             return Some((&previous.mesh, &previous.info));
         }
-        self.shown.map(|_| (&*self.mesh, &self.info))
+        self.shown
+            .and(self.mesh.as_deref())
+            .map(|mesh| (mesh, &self.info))
     }
 
     /// Keeps the currently published shadow mesh through a replacement
@@ -433,16 +485,19 @@ impl Tile {
             shown: self.shown,
             previous: self.previous,
             shadow_previous: self.shadow_previous,
-            shadow_waits: self.shadow_waits || (shadows && self.shown.is_some()),
+        };
+        let Some(mesh) = self.mesh else {
+            return handoff;
         };
         let old = StandIn {
-            mesh: *self.mesh,
+            mesh: *mesh,
             info: self.info,
             since: None,
+            casts_shadow: shadows && !self.shadow_waits && self.shown.is_some(),
         };
         if handoff.previous.is_none() && keep {
             handoff.previous = Some(Box::new(old));
-        } else if handoff.shadow_waits && !self.shadow_waits {
+        } else if old.casts_shadow {
             handoff.shadow_previous = Some(Box::new(old));
         } else {
             release(old.mesh);
@@ -465,6 +520,9 @@ impl Tile {
             return None;
         }
         self.shadow_waits = false;
+        if let Some(previous) = self.previous.as_deref_mut() {
+            previous.casts_shadow = false;
+        }
         self.shadow_previous.take().map(|previous| previous.mesh)
     }
 
@@ -474,7 +532,7 @@ impl Tile {
             return None;
         }
         let previous = self.previous.take();
-        if self.shadow_waits && self.shadow_previous.is_none() {
+        if self.shadow_waits && previous.as_ref().is_some_and(|p| p.casts_shadow) {
             self.shadow_previous = previous;
             None
         } else {
@@ -489,7 +547,7 @@ impl Tile {
         frustum: &Frustum,
         now: Instant,
     ) -> Option<Visible> {
-        if self.dying.is_some_and(|since| now - since >= FADE) {
+        if self.mesh.is_none() || self.dying.is_some_and(|since| now - since >= FADE) {
             return None;
         }
         let fade = match self.dying {
@@ -512,15 +570,25 @@ impl Renderer {
     /// one meshed around near chunks or finer tiles that are new (`keep`):
     /// its old mesh stands in while they fade in. A new one waits for the rest of its job
     /// (`upload_lods`), then fades in.
-    pub fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) {
-        if let Some(copies) = &mut self.capture_copies {
-            copies.tile(key, mesh);
-        }
-        if mesh.solid.is_empty() && mesh.translucent.is_empty() {
-            self.lod_uploads.empty.insert(key);
+    fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) -> bool {
+        let (bounds, uploaded) = if mesh.solid.is_empty() && mesh.translucent.is_empty() {
+            (Bounds::default(), None)
         } else {
-            self.lod_uploads.empty.remove(&key);
+            let bounds = Bounds::mesh(mesh).expect("nonempty tile has bounds");
+            // The old tile owns its arena ranges until both new allocations succeed.
+            let Some(uploaded) = self.upload_mesh(mesh) else {
+                return false;
+            };
+            (bounds, Some(Box::new(uploaded)))
+        };
+        if let Some(copies) = &mut self.capture_copies {
+            if uploaded.is_some() {
+                copies.tile(key, mesh);
+            } else {
+                copies.forget_tile(key);
+            }
         }
+        self.lod_uploads.empty.remove(&key);
         let old = self.lods.remove(&key);
         let old_slot = old.as_ref().map(|tile| tile.cull_slot);
         let shadows = self.executor.is_some_and(|caps| caps.shadow);
@@ -528,10 +596,11 @@ impl Renderer {
             shown,
             previous,
             shadow_previous,
-            shadow_waits,
         } = match old {
             Some(old) if old.dying.is_none() => {
-                old.handoff(keep, shadows, |mesh| self.release_mesh(mesh))
+                old.handoff(keep && uploaded.is_some(), shadows, |mesh| {
+                    self.release_mesh(mesh)
+                })
             }
             Some(old) if shadows && retired_shadow_needed(&self.lods, key) => Handoff {
                 shown: None,
@@ -543,41 +612,36 @@ impl Renderer {
             }
             None => Handoff::default(),
         };
-        let cutouts = mesh.lod_cutouts.clone();
-        match Bounds::mesh(mesh).zip(self.upload_mesh(mesh)) {
-            Some((bounds, mesh)) => {
-                let cull_slot = old_slot.unwrap_or_else(|| {
-                    self.lod_cull_free.pop().unwrap_or_else(|| {
-                        self.lod_cull_next += 1;
-                        self.lod_cull_next - 1
-                    })
-                });
-                self.lods.insert(
-                    key,
-                    Tile {
-                        mesh: Box::new(mesh),
-                        info: MeshInfo { bounds, cutouts },
-                        shown,
-                        dying: None,
-                        alone: false,
-                        previous,
-                        shadow_previous,
-                        shadow_waits,
-                        cull_slot,
-                    },
-                );
-            }
-            None => {
-                for previous in previous.into_iter().chain(shadow_previous) {
-                    self.release_mesh(previous.mesh);
-                }
-                self.lod_cull_free.extend(old_slot);
-            }
-        }
+        let cull_slot = old_slot.unwrap_or_else(|| {
+            self.lod_cull_free.pop().unwrap_or_else(|| {
+                self.lod_cull_next += 1;
+                self.lod_cull_next - 1
+            })
+        });
+        self.lods.insert(
+            key,
+            Tile {
+                mesh: uploaded,
+                info: MeshInfo {
+                    bounds,
+                    cutouts: mesh.lod_cutouts.clone(),
+                },
+                shown,
+                dying: None,
+                alone: false,
+                previous,
+                shadow_previous,
+                shadow_waits: shadows,
+                cull_slot,
+            },
+        );
+        true
     }
 
     fn release_tile(&mut self, tile: Tile) {
-        self.release_mesh(*tile.mesh);
+        if let Some(mesh) = tile.mesh {
+            self.release_mesh(*mesh);
+        }
         for previous in tile.previous.into_iter().chain(tile.shadow_previous) {
             self.release_mesh(previous.mesh);
         }
@@ -643,7 +707,12 @@ impl Renderer {
     /// once all are in, fades them in over the tiles they replace.
     pub fn upload_lods(&mut self, budget: Duration) {
         let start = Instant::now();
-        if self.lod_uploads.pending.is_some() {
+        if self
+            .lod_uploads
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.retry_at.is_empty())
+        {
             // Far tiles fill the arenas too: large translucent pages wait for them.
             self.shrink_gate.wait(start, super::SHRINK_SETTLE);
         }
@@ -681,7 +750,7 @@ impl Renderer {
             .chain(
                 self.lods
                     .iter()
-                    .filter(|(_, tile)| tile.shown.is_none())
+                    .filter(|(_, tile)| tile.mesh.is_some() && tile.shown.is_none())
                     .map(|(key, _)| key),
             );
         for &key in new {
@@ -700,9 +769,12 @@ impl Renderer {
             .collect();
         while let Some(pending) = &mut self.lod_uploads.pending {
             // Keys meshed again keep their place; removed ones are skipped.
-            let next = std::iter::from_fn(|| pending.order.pop_front())
-                .find(|key| pending.meshes.contains_key(key));
-            let Some(key) = next else {
+            let Some((key, mesh)) = pending.take_next(start) else {
+                if !pending.meshes.is_empty() {
+                    // A refused upload still owns its place in this batch. It may be
+                    // needed for the new cutout or to replace a tile being retired.
+                    return;
+                }
                 let pending = self.lod_uploads.pending.take().expect("pending tiles");
                 // A tile fades in over the ones it replaces. One over nothing
                 // shows whole: its hidden chunks would open holes to the sky
@@ -739,7 +811,7 @@ impl Renderer {
                 let mut kept: FxHashSet<TileKey> = self
                     .lods
                     .iter()
-                    .filter(|(_, tile)| tile.shown.is_none())
+                    .filter(|(_, tile)| tile.mesh.is_some() && tile.shown.is_none())
                     .map(|(&key, _)| key)
                     .collect();
                 let cut = pending.cutout.as_ref().unwrap_or(&self.lod_cutout);
@@ -763,7 +835,8 @@ impl Renderer {
                 let whole = start.checked_sub(FADE).unwrap_or(start);
                 let released_shadows = finish_uploads(
                     &mut self.lods,
-                    &self.lod_uploads.empty,
+                    &mut self.lod_uploads.empty,
+                    &mut self.lod_cull_free,
                     &pending.removed,
                     start,
                     |key| {
@@ -788,7 +861,6 @@ impl Renderer {
                 }
                 return;
             };
-            let mesh = pending.meshes.remove(&key).expect("pending tile");
             let [x, _, z] = key.origin();
             let size = key.size();
             let keep = mesh.keep
@@ -796,7 +868,13 @@ impl Renderer {
                 || taken.iter().any(|&(cx, cz)| {
                     (x..x + size).contains(&(cx * 16)) && (z..z + size).contains(&(cz * 16))
                 });
-            self.upload_lod(key, &mesh, keep);
+            if !self.upload_lod(key, &mesh, keep) {
+                self.lod_uploads
+                    .pending
+                    .as_mut()
+                    .expect("pending tiles")
+                    .retry(key, mesh, start);
+            }
             if start.elapsed() >= budget {
                 return;
             }
@@ -807,7 +885,7 @@ impl Renderer {
     pub(super) fn standing_lods(&self) -> FxHashSet<TileKey> {
         self.lods
             .iter()
-            .filter(|(_, tile)| tile.dying.is_none())
+            .filter(|(_, tile)| tile.mesh.is_some() && tile.dying.is_none())
             .map(|(&key, _)| key)
             .collect()
     }
@@ -841,7 +919,7 @@ mod tests {
 
     fn tile(solid: u32, y: f32, shown: Option<Instant>) -> Tile {
         Tile {
-            mesh: Box::new(section(solid, 1, None)),
+            mesh: Some(Box::new(section(solid, 1, None))),
             info: MeshInfo {
                 bounds: Bounds {
                     min: Vec3::new(1.0, y, 1.0),
@@ -854,7 +932,7 @@ mod tests {
             alone: false,
             previous: None,
             shadow_previous: None,
-            shadow_waits: false,
+            shadow_waits: shown.is_none(),
             cull_slot: 0,
         }
     }
@@ -978,6 +1056,128 @@ mod tests {
     }
 
     #[test]
+    fn a_first_clipped_parent_waits_for_the_child_to_cast() {
+        let now = Instant::now();
+        let child = TileKey {
+            x: 4,
+            z: 0,
+            level: 0,
+        };
+        let parent = child.parent();
+        let mut clipped = tile(2, 74.0, None);
+        clipped.info.cutouts = Some(Arc::new(MeshCutouts {
+            near: Vec::new(),
+            finer: vec![child],
+        }));
+        let mut tiles = [(parent, clipped)].into_iter().collect();
+        let mut empty = FxHashSet::default();
+        let removed = FxHashSet::default();
+        finish_uploads(
+            &mut tiles,
+            &mut empty,
+            &mut Vec::new(),
+            &removed,
+            now,
+            |_| now,
+        );
+        assert!(tiles[&parent].shown.is_some());
+        assert!(tiles[&parent].shadow().is_none(), "child has not arrived");
+
+        tiles.insert(child, tile(3, 74.0, None));
+        finish_uploads(
+            &mut tiles,
+            &mut empty,
+            &mut Vec::new(),
+            &removed,
+            now,
+            |_| now,
+        );
+        let casters = collect_shadow(&tiles, DVec3::new(0.5, 80.0, 0.5));
+        assert_eq!(casters.keys, [parent, child].into_iter().collect());
+    }
+
+    #[test]
+    fn an_empty_replacement_releases_the_old_caster_when_its_child_finishes() {
+        let now = Instant::now();
+        let camera = DVec3::new(0.5, 80.0, 0.5);
+        let child = TileKey {
+            x: 4,
+            z: 0,
+            level: 0,
+        };
+        let parent = child.parent();
+        for child_empty in [false, true] {
+            let Handoff {
+                shown,
+                previous,
+                shadow_previous,
+            } = tile(1, 74.0, Some(now)).handoff(false, true, |_| {
+                panic!("empty replacement dropped the live shadow at upload");
+            });
+            let mut replacement = Tile {
+                mesh: None,
+                shown,
+                previous,
+                shadow_previous,
+                cull_slot: 7,
+                ..tile(0, 0.0, None)
+            };
+            replacement.info.cutouts = Some(Arc::new(MeshCutouts {
+                near: Vec::new(),
+                finer: vec![child],
+            }));
+            let mut tiles = [(parent, replacement)].into_iter().collect();
+            let mut empty = FxHashSet::default();
+            let mut slots = Vec::new();
+            let removed = FxHashSet::default();
+            let expired = now + FADE;
+            assert!(
+                finish_uploads(
+                    &mut tiles,
+                    &mut empty,
+                    &mut slots,
+                    &removed,
+                    expired,
+                    |_| now
+                )
+                .is_empty()
+            );
+            assert!(empty.is_empty() && slots.is_empty());
+            assert_eq!(
+                collect_shadow(&tiles, camera).keys,
+                [parent].into_iter().collect()
+            );
+
+            let mut child_tile = tile(3, 74.0, None);
+            if child_empty {
+                child_tile.mesh = None;
+            }
+            child_tile.cull_slot = 8;
+            tiles.insert(child, child_tile);
+            let released = finish_uploads(
+                &mut tiles,
+                &mut empty,
+                &mut slots,
+                &removed,
+                expired,
+                |_| now,
+            );
+            assert_eq!(
+                released.iter().map(|mesh| mesh.solid).collect::<Vec<_>>(),
+                [1]
+            );
+            assert!(empty.contains(&parent));
+            assert_eq!(empty.contains(&child), child_empty);
+            assert!(slots.contains(&7));
+            assert_eq!(
+                collect_shadow(&tiles, camera).keys.contains(&child),
+                !child_empty
+            );
+            assert!(!tiles.contains_key(&parent));
+        }
+    }
+
+    #[test]
     fn a_second_upload_keeps_the_last_published_shadow_through_the_first_fade() {
         let now = Instant::now();
         let mut current = tile(1, 74.0, Some(now));
@@ -986,7 +1186,6 @@ mod tests {
                 shown,
                 previous,
                 shadow_previous,
-                shadow_waits,
             } = old.handoff(true, true, |_| {
                 panic!("published mesh released before its replacement finished");
             });
@@ -994,7 +1193,6 @@ mod tests {
                 shown,
                 previous,
                 shadow_previous,
-                shadow_waits,
                 ..tile(solid, 74.0, None)
             }
         };
@@ -1048,7 +1246,6 @@ mod tests {
             shown,
             previous,
             shadow_previous,
-            shadow_waits,
         } = old.handoff(true, true, |_| {
             panic!("the old parent must stay in the arena");
         });
@@ -1056,7 +1253,6 @@ mod tests {
             shown,
             previous,
             shadow_previous,
-            shadow_waits,
             ..tile(2, 74.0, None)
         };
         new.info.cutouts = clip(incoming);
@@ -1065,11 +1261,21 @@ mod tests {
             .collect();
         let mut removed = FxHashSet::default();
         removed.insert(outgoing);
-        let empty = FxHashSet::default();
+        let mut empty = FxHashSet::default();
 
         // The worker delivered the clipped parent in its own batch. The old child has
         // left the plan, but the old parent still leaves that part of its footprint out.
-        assert!(finish_uploads(&mut tiles, &empty, &removed, now, |_| now).is_empty());
+        assert!(
+            finish_uploads(
+                &mut tiles,
+                &mut empty,
+                &mut Vec::new(),
+                &removed,
+                now,
+                |_| now
+            )
+            .is_empty()
+        );
         tiles.get_mut(&outgoing).unwrap().dying = Some(now);
         assert_eq!(tiles[&parent].shadow().unwrap().0.solid, 1);
         assert!(collect_shadow(&tiles, camera).keys.contains(&outgoing));
@@ -1087,7 +1293,14 @@ mod tests {
         // The child really uploads. One batch publishes the parent and new child, and the
         // old child is no longer needed even if its GPU mesh has yet to be reclaimed.
         tiles.insert(incoming, tile(3, 74.0, None));
-        let released = finish_uploads(&mut tiles, &empty, &FxHashSet::default(), later, |_| later);
+        let released = finish_uploads(
+            &mut tiles,
+            &mut empty,
+            &mut Vec::new(),
+            &FxHashSet::default(),
+            later,
+            |_| later,
+        );
         assert_eq!(released.iter().map(|s| s.solid).collect::<Vec<_>>(), [1]);
         assert_eq!(tiles[&parent].shadow().unwrap().0.solid, 2);
         let casters = collect_shadow(&tiles, camera);
@@ -1132,14 +1345,13 @@ mod tests {
         let Handoff {
             previous,
             shadow_previous,
-            shadow_waits,
             ..
         } = previous.handoff(true, true, |_| {
             panic!("the old parent must stay in the arena");
         });
         parent_mesh.previous = previous;
         parent_mesh.shadow_previous = shadow_previous;
-        parent_mesh.shadow_waits = shadow_waits;
+        parent_mesh.shadow_waits = true;
         let mut tiles = [
             (parent, parent_mesh),
             (single, tile(3, 74.0, Some(now))),
@@ -1152,7 +1364,17 @@ mod tests {
         let later = now + FADE;
         let removed = FxHashSet::default();
         let mut uploads = Uploads::default();
-        assert!(finish_uploads(&mut tiles, &uploads.empty, &removed, now, |_| now).is_empty());
+        assert!(
+            finish_uploads(
+                &mut tiles,
+                &mut uploads.empty,
+                &mut Vec::new(),
+                &removed,
+                now,
+                |_| now
+            )
+            .is_empty()
+        );
         assert!(retiring.past_lod_fade(later));
         assert!(retired_near_needed(&tiles, held_section));
         let casters = collect_shadow(&tiles, camera);
@@ -1171,7 +1393,14 @@ mod tests {
         uploads.empty.insert(missing);
         let mut rebuilt = Uploads::default();
         std::mem::swap(&mut uploads, &mut rebuilt);
-        finish_uploads(&mut tiles, &rebuilt.empty, &removed, later, |_| later);
+        finish_uploads(
+            &mut tiles,
+            &mut rebuilt.empty,
+            &mut Vec::new(),
+            &removed,
+            later,
+            |_| later,
+        );
         assert!(!retired_near_needed(&tiles, held_section));
         let casters = collect_shadow(&tiles, camera);
         assert_eq!(casters.keys, [parent, single, coarse].into_iter().collect());
@@ -1241,6 +1470,46 @@ mod tests {
             .map(|k| k.x)
             .collect();
         assert_eq!(order, [1, 3]);
+    }
+
+    #[test]
+    fn a_refused_upload_waits_its_turn_and_is_superseded_by_new_work() {
+        let mut pending = Pending::default();
+        let now = Instant::now();
+        let first = TileKey {
+            x: 2,
+            z: 0,
+            level: 0,
+        };
+        let second = TileKey { x: 3, ..first };
+        let solid = TerrainVertex::tiled([1.0; 3], [0.0; 2], 0, 0, 0);
+        pending.add(
+            vec![
+                (
+                    first,
+                    SectionMesh {
+                        solid: vec![solid; 4],
+                        ..Default::default()
+                    },
+                ),
+                (second, SectionMesh::default()),
+            ],
+            vec![],
+            None,
+        );
+        let (key, mesh) = pending.take_next(now).unwrap();
+        assert_eq!(key, first);
+        pending.retry(key, mesh, now);
+        assert_eq!(pending.take_next(now).unwrap().0, second);
+        assert!(pending.take_next(now).is_none());
+        let later = now + Duration::from_secs(1);
+        let (key, mesh) = pending.take_next(later).unwrap();
+        assert_eq!(key, first);
+        assert_eq!(mesh.solid.len(), 4);
+        pending.retry(key, mesh, later);
+        pending.add(vec![(first, SectionMesh::default())], vec![], None);
+        assert!(pending.take_next(later).unwrap().1.solid.is_empty());
+        assert!(pending.take_next(later + Duration::from_secs(1)).is_none());
     }
 
     #[test]

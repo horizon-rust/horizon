@@ -8072,10 +8072,12 @@ impl Renderer {
                         self.active_animated_layers[layer / u64::BITS as usize] |=
                             1_u64 << (layer % u64::BITS as usize);
                     }
-                    for &layer in &*tile.mesh.animated_layers {
-                        let layer = layer as usize;
-                        self.active_animated_layers[layer / u64::BITS as usize] |=
-                            1_u64 << (layer % u64::BITS as usize);
+                    if let Some(mesh) = &tile.mesh {
+                        for &layer in &*mesh.animated_layers {
+                            let layer = layer as usize;
+                            self.active_animated_layers[layer / u64::BITS as usize] |=
+                                1_u64 << (layer % u64::BITS as usize);
+                        }
                     }
                 }
             }
@@ -8137,11 +8139,13 @@ impl Renderer {
                     section_instance(v.origin, code, visibility(v.key))
                 })
                 .chain(visible_lods.iter().map(|v| lod::instance(v.origin, v.fade)))
-                .chain(
-                    shadow_visible
-                        .iter()
-                        .map(|v| section_instance(v.origin, 0, visibility(v.key))),
-                )
+                .chain(shadow_visible.iter().map(|v| {
+                    if lod_shadows && shadow_only(sections.get(v.slot)) {
+                        native_shadow::held_section_instance(v.origin)
+                    } else {
+                        section_instance(v.origin, 0, visibility(v.key))
+                    }
+                }))
                 .chain(shadow_lods.tiles.iter().map(|v| lod::instance(v.origin, 0)))
                 .chain(self.world_views.sections.sections().map(|v| {
                     let code = fade_code(sections.get(v.slot), &v.key);
@@ -9275,11 +9279,13 @@ impl Renderer {
                             .chain(lists.sections())
                             .filter_map(|v| {
                                 let section = sections.get(v.slot);
-                                let code = fade_code(section, &v.key);
-                                Some((
-                                    section.flat_id?,
-                                    section_instance(v.origin, code, visibility(v.key)),
-                                ))
+                                let origin = if lod_shadows && shadow_only(section) {
+                                    native_shadow::held_section_instance(v.origin)
+                                } else {
+                                    let code = fade_code(section, &v.key);
+                                    section_instance(v.origin, code, visibility(v.key))
+                                };
+                                Some((section.flat_id?, origin))
                             })
                             .chain(shadow_lods.tiles.iter().filter_map(|v| {
                                 let (mesh, _) = lods[&v.key].shadow().expect("shadow tile");
