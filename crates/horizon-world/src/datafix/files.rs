@@ -1595,118 +1595,148 @@ mod upgrade_tests {
         Tag::ByteArray(vec![fill; 1_100_000])
     }
 
-    /// A chunk too large for its region file lives in its own `c.X.Z.mcc`
-    /// beside it: the upgraded one replaces the old, the staging folder goes,
-    /// and a retry gets past what a stopped run left in staging, including an
-    /// upgraded region's `.mcc` that never left it.
-    #[test]
-    fn oversized_chunk_moves_out_with_its_region() {
-        let base = std::env::temp_dir().join(format!("horizon-mcc-upgrade-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let pos = ChunkPos::new(3, 4);
-        let external = "c.3.4.mcc";
-        for case in ["first", "leftover", "stranded"] {
-            let dir = base.join(case);
-            // A stranded file was upgraded and its region moved out.
-            let version = if case == "stranded" { CURRENT } else { 4000 };
-            region_with_chunk(&dir, pos, version, big(7), Compression::None);
-            assert!(
-                dir.join(external).is_file(),
-                "{case}: the fixture is external"
-            );
-            let staging = dir.join(".datafix");
-            match case {
-                // A stopped run's copies in staging, the old files in place.
-                "leftover" => {
-                    fs::create_dir_all(&staging).unwrap();
-                    fs::write(staging.join(external), b"partial").unwrap();
-                    fs::write(staging.join("r.0.0.mca"), b"partial").unwrap();
-                }
-                // The region moved out, its `.mcc` left in staging.
-                "stranded" => {
-                    fs::create_dir_all(&staging).unwrap();
-                    fs::rename(dir.join(external), staging.join(external)).unwrap();
-                }
-                _ => {}
-            }
+    const EXTERNAL: &str = "c.3.4.mcc";
 
-            upgrade(&dir).unwrap();
-            assert!(!staging.exists(), "{case}: staging is gone");
-            assert!(!dir.join(".datafix-leftover").exists(), "{case}");
-            assert!(dir.join(external).is_file(), "{case}: the .mcc is beside");
-            let chunk = read_chunk(&dir, pos);
-            assert_eq!(data_version(&chunk, -1), CURRENT, "{case}: upgraded");
-            assert_eq!(chunk.get("Payload"), Some(&big(7)), "{case}: content kept");
-        }
-        let _ = fs::remove_dir_all(&base);
+    /// `dir` with `r.0.0.mca` holding one oversized chunk at (3, 4) at
+    /// `version` (its `c.3.4.mcc` beside it), then `stage` run on it.
+    fn oversized_world(name: &str, version: i32, stage: impl FnOnce(&Path, &Path)) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("horizon-mcc-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        region_with_chunk(
+            &dir,
+            ChunkPos::new(3, 4),
+            version,
+            big(7),
+            Compression::None,
+        );
+        assert!(dir.join(EXTERNAL).is_file(), "the fixture is external");
+        let staging = dir.join(".datafix");
+        fs::create_dir_all(&staging).unwrap();
+        stage(&dir, &staging);
+        dir
+    }
+
+    /// The upgrade succeeded: staging gone, nothing kept aside, the `.mcc`
+    /// beside its region, the chunk upgraded with its content.
+    fn assert_upgraded_beside(dir: &Path) {
+        assert!(!dir.join(".datafix").exists(), "staging is gone");
+        assert!(
+            !dir.join(".datafix-leftover").exists(),
+            "nothing kept aside"
+        );
+        assert!(dir.join(EXTERNAL).is_file(), "the .mcc is beside");
+        let chunk = read_chunk(dir, ChunkPos::new(3, 4));
+        assert_eq!(data_version(&chunk, -1), CURRENT);
+        assert_eq!(chunk.get("Payload"), Some(&big(7)));
+    }
+
+    /// A chunk too large for its region file lives in its own `c.X.Z.mcc`
+    /// beside it: the upgraded one replaces the old and staging goes.
+    #[test]
+    fn an_oversized_chunk_moves_out_with_its_region() {
+        let dir = oversized_world("first", 4000, |_, _| {});
+        upgrade(&dir).unwrap();
+        assert_upgraded_beside(&dir);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stopped run's copies in staging (its region file among them), the
+    /// old files in place: the retry gets past them.
+    #[test]
+    fn a_stopped_runs_copies_do_not_block_the_retry() {
+        let dir = oversized_world("copies", 4000, |_, staging| {
+            fs::write(staging.join(EXTERNAL), b"partial").unwrap();
+            fs::write(staging.join("r.0.0.mca"), b"partial").unwrap();
+        });
+        upgrade(&dir).unwrap();
+        assert_upgraded_beside(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The upgrader before this fix moved an upgraded region out and left its
-    /// chunk's upgraded `.mcc` in staging, while an older `.mcc` of the same
-    /// name stayed beside the region: the staged one is the right one.
+    /// chunk's `.mcc` in staging: it moves out beside the region.
+    #[test]
+    fn a_stranded_mcc_moves_out() {
+        let dir = oversized_world("stranded", CURRENT, |dir, staging| {
+            fs::rename(dir.join(EXTERNAL), staging.join(EXTERNAL)).unwrap();
+        });
+        upgrade(&dir).unwrap();
+        assert_upgraded_beside(&dir);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// As above, while an older `.mcc` of the same name stayed beside the
+    /// region: the staged one is the right one.
     #[test]
     fn a_stranded_mcc_replaces_a_stale_one() {
-        let dir = std::env::temp_dir().join(format!("horizon-mcc-stale-{}", std::process::id()));
+        let dir = oversized_world("stale", CURRENT, |dir, staging| {
+            fs::rename(dir.join(EXTERNAL), staging.join(EXTERNAL)).unwrap();
+            let stale = chunk_record(ChunkPos::new(3, 4), 4000, big(6), Compression::None);
+            fs::write(dir.join(EXTERNAL), &stale.compressed).unwrap();
+        });
+        upgrade(&dir).unwrap();
+        assert_upgraded_beside(&dir);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `staged` left as `c.3.4.mcc` in staging beside a region whose chunk is
+    /// stored as `compression` at an old version: the file is kept aside
+    /// whole, not deleted, and the world still upgrades.
+    fn assert_kept_aside(name: &str, compression: Compression, staged: &[u8]) {
+        let dir = std::env::temp_dir().join(format!("horizon-aside-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let pos = ChunkPos::new(3, 4);
-        let external = "c.3.4.mcc";
-        region_with_chunk(&dir, pos, CURRENT, big(7), Compression::None);
+        region_with_chunk(&dir, pos, 4000, big(7), compression);
         let staging = dir.join(".datafix");
         fs::create_dir_all(&staging).unwrap();
-        fs::rename(dir.join(external), staging.join(external)).unwrap();
-        let stale = chunk_record(pos, 4000, big(6), Compression::None);
-        fs::write(dir.join(external), &stale.compressed).unwrap();
+        fs::write(staging.join(EXTERNAL), staged).unwrap();
 
         upgrade(&dir).unwrap();
         assert!(!staging.exists());
-        assert!(!dir.join(".datafix-leftover").exists());
+        assert_eq!(
+            fs::read(dir.join(".datafix-leftover").join(EXTERNAL)).unwrap(),
+            staged,
+            "kept aside whole"
+        );
         let chunk = read_chunk(&dir, pos);
         assert_eq!(data_version(&chunk, -1), CURRENT);
         assert_eq!(chunk.get("Payload"), Some(&big(7)));
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A staged `.mcc` the live region does not read whole at the target
-    /// version is kept aside, not deleted, and the world still upgrades.
-    #[test]
-    fn an_unmatched_staged_mcc_is_kept_aside() {
-        let base = std::env::temp_dir().join(format!("horizon-mcc-aside-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let pos = ChunkPos::new(3, 4);
-        let external = "c.3.4.mcc";
-        let upgraded = chunk_record(pos, CURRENT, big(7), Compression::None).compressed;
-        for case in ["inline stub", "truncated", "other compression"] {
-            let dir = base.join(case);
-            let staged = match case {
-                "inline stub" => {
-                    region_with_chunk(&dir, pos, 4000, big(7), Compression::Zlib);
-                    upgraded.clone()
-                }
-                "truncated" => {
-                    region_with_chunk(&dir, pos, 4000, big(7), Compression::None);
-                    upgraded[..upgraded.len() / 2].to_vec()
-                }
-                _ => {
-                    region_with_chunk(&dir, pos, 4000, big(7), Compression::None);
-                    chunk_record(pos, CURRENT, big(7), Compression::Zlib).compressed
-                }
-            };
-            let staging = dir.join(".datafix");
-            fs::create_dir_all(&staging).unwrap();
-            fs::write(staging.join(external), &staged).unwrap();
+    fn upgraded_mcc(compression: Compression) -> Vec<u8> {
+        chunk_record(ChunkPos::new(3, 4), CURRENT, big(7), compression).compressed
+    }
 
-            upgrade(&dir).unwrap();
-            assert!(!staging.exists(), "{case}");
-            assert_eq!(
-                fs::read(dir.join(".datafix-leftover").join(external)).unwrap(),
-                staged,
-                "{case}: kept aside whole"
-            );
-            let chunk = read_chunk(&dir, pos);
-            assert_eq!(data_version(&chunk, -1), CURRENT, "{case}: upgraded");
-            assert_eq!(chunk.get("Payload"), Some(&big(7)), "{case}: content kept");
-        }
-        let _ = fs::remove_dir_all(&base);
+    /// The live stub is inline: a staged `.mcc` is not its file.
+    #[test]
+    fn a_staged_mcc_beside_an_inline_stub_is_kept_aside() {
+        assert_kept_aside(
+            "inline",
+            Compression::Zlib,
+            &upgraded_mcc(Compression::None),
+        );
+    }
+
+    /// A run killed while writing it left half a `.mcc`.
+    #[test]
+    fn a_truncated_staged_mcc_is_kept_aside() {
+        let upgraded = upgraded_mcc(Compression::None);
+        assert_kept_aside(
+            "truncated",
+            Compression::None,
+            &upgraded[..upgraded.len() / 2],
+        );
+    }
+
+    /// The staged `.mcc` is in another compression than the stub names.
+    #[test]
+    fn a_staged_mcc_in_another_compression_is_kept_aside() {
+        assert_kept_aside(
+            "compression",
+            Compression::None,
+            &upgraded_mcc(Compression::Zlib),
+        );
     }
 
     /// A file in staging the upgrader does not write stays, and the error
