@@ -338,7 +338,7 @@ impl RegionStorageUpgrader {
         file: &Path,
         pos: ChunkPos,
     ) -> io::Result<bool> {
-        let limits = Limits::saved();
+        let limits = Limits::default();
         if open.reader.as_ref().is_none_or(|(path, _)| path != file) {
             open.reader = Some((file.to_path_buf(), RegionFile::open(file)?));
         }
@@ -390,10 +390,7 @@ impl RegionStorageUpgrader {
         let new_file = resolve_recreate_directory(file.parent().unwrap_or(Path::new(".")))
             .join(file.file_name().unwrap_or_default());
         if new_file.exists() {
-            if let Err(e) = move_external_files(&new_file, file)
-                .and_then(|()| fs::remove_file(file))
-                .and_then(|()| fs::rename(&new_file, file))
-            {
+            if let Err(e) = fs::remove_file(file).and_then(|()| fs::rename(&new_file, file)) {
                 eprintln!("Failed to replace an old region file: {e}");
             }
         } else {
@@ -410,23 +407,6 @@ impl RegionStorageUpgrader {
             let _ = fs::remove_dir_all(resolve_recreate_directory(&self.region_folder));
         }
     }
-}
-
-/// The `c.X.Z.mcc` files of `new_file`'s oversized chunks, written beside it,
-/// moved beside `file` over the old ones before the region replaces `file`, so
-/// the region never points to a missing file or to a chunk's old one.
-fn move_external_files(new_file: &Path, file: &Path) -> io::Result<()> {
-    let from = new_file.parent().unwrap_or(Path::new("."));
-    let to = file.parent().unwrap_or(Path::new("."));
-    let region = RegionFile::open(new_file)?;
-    for (pos, _) in region.chunks() {
-        let name = format!("c.{}.{}.mcc", pos.x, pos.z);
-        let external = from.join(&name);
-        if external.is_file() {
-            fs::rename(&external, to.join(&name))?;
-        }
-    }
-    Ok(())
 }
 
 /// `resolveRecreateDirectory`: `new_` + the folder's name, beside it.
