@@ -440,20 +440,45 @@ class NightlyTrainTests(unittest.TestCase):
         self.assertTrue(train.nightly_decision(True, "forced", self.PRS, None, 30, force=True)[0])
         self.assertFalse(train.nightly_decision(True, "forced", self.PRS, 7, 0, force=True)[0])
 
-    def test_an_active_build_is_found_behind_newer_finished_runs(self):
-        # Newest first, as GitHub lists them: eleven finished dry runs, then the real cut still building.
-        runs = [{"databaseId": n, "status": "completed"} for n in range(100, 89, -1)] + \
-               [{"databaseId": 42, "status": "in_progress"}, {"databaseId": 41, "status": "queued"}]
+    def listing(self, runs):
+        """`gh run list` over `runs` (newest first), as GitHub answers it; records each call."""
+        calls = []
 
         def gh_json(*arguments):
-            status = arguments[arguments.index("--status") + 1]
+            calls.append(arguments)
             limit = int(arguments[arguments.index("--limit") + 1])
-            return [{"databaseId": r["databaseId"]} for r in runs if r["status"] == status][:limit]
+            return [{"databaseId": n, "status": status} for n, status in runs][:limit]
+        return calls, mock.patch.object(train, "gh_json", gh_json)
 
-        with mock.patch.object(train, "gh_json", gh_json):
-            self.assertIn(train.nightly_building(), (41, 42))
-            runs[11:] = []
-            self.assertIsNone(train.nightly_building())
+    def test_one_listing_finds_an_active_build_behind_finished_runs(self):
+        # Newest first: 150 finished dry runs, then the real cut waiting for its rerun.
+        runs = [(n, "completed") for n in range(1000, 850, -1)] + [(42, "waiting"), (41, "completed")]
+        calls, patch = self.listing(runs)
+        with patch:
+            self.assertEqual(train.nightly_building(NOW), 42)
+        # One snapshot: a run moving from waiting to in_progress can't fall between two queries.
+        self.assertEqual(len(calls), 1)
+        arguments = calls[0]
+        self.assertNotIn("--status", arguments)
+        self.assertEqual(arguments[arguments.index("--created") + 1], ">=2026-10-08")
+        self.assertEqual(arguments[arguments.index("--limit") + 1], str(train.NIGHTLY_LISTING))
+        calls, patch = self.listing([(n, "completed") for n in range(10)])
+        with patch:
+            self.assertIsNone(train.nightly_building(NOW))
+
+    def test_a_cut_off_listing_holds_the_train(self):
+        calls, patch = self.listing([(n, "completed") for n in range(train.NIGHTLY_LISTING + 5)])
+        with patch:
+            building = train.nightly_building(NOW)
+        self.assertTrue(building)
+        self.assertFalse(train.nightly_decision(True, "5", self.PRS, building, 0)[0])
+
+    def test_a_blank_listing_is_an_error_not_an_idle_train(self):
+        with mock.patch.object(train, "run", return_value=""):
+            with self.assertRaises(SystemExit):
+                train.nightly_building(NOW)
+        with mock.patch.object(train, "run", return_value="[]\n"):
+            self.assertIsNone(train.nightly_building(NOW))
 
     def test_the_cap_is_the_nightly_sets(self):
         from tools.ci import nightly_set
