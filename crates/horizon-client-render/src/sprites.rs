@@ -1390,7 +1390,7 @@ mod tests {
     /// shows (`gfx::material_animate`).
     #[test]
     fn companion_frames_keep_their_stored_size() {
-        assert_eq!(16_448u64 * 128 * 128 * 4, 1_078_722_560);
+        assert_eq!(16_448u64 * 128 * 128 * 4, 1_028 << 20);
         assert_eq!(16_448u64 * 16 * 16 * 4, 16_842_752);
         let maps: Vec<Vec<u8>> = (0..4u8).map(|i| [i, 1, 2, 255].repeat(16 * 16)).collect();
         let mut sprites = Sprites {
