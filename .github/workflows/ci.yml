@@ -554,7 +554,12 @@ jobs:
         run: |
           if [ "$STORE" = true ]; then
             python3 tools/check_mod_points_unchanged.py --store-snapshot "$CARGO_TARGET_DIR/mod-points-snapshots"
-            python3 tools/ci/surface_report.py --store-layouts "$CARGO_TARGET_DIR/wire-layouts"
+            # Only main's pushes store compiled layouts, not the merge queue: a baseline is main's own code.
+            if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+              python3 tools/ci/surface_report.py --store-layouts "$CARGO_TARGET_DIR/wire-layouts"
+            else
+              cargo build --locked -p horizon-mod-api --example wire_layouts
+            fi
           else
             cargo build --locked -p horizon-mod-api-gen --example hook_snapshot
             cargo build --locked -p horizon-mod-api --example wire_layouts
@@ -574,8 +579,9 @@ jobs:
       # fails, and so does a change that makes the game refuse wasm mods built before it: a changed wire layout of a
       # type that crosses, or an argument added to a hook (the point check above compares the generated text, which
       # shows neither). horizon-stage is built from the package and profile the check built hook_snapshot from. The
-      # compiled layouts of HEAD^1 come from the store main's runs fill, or are built by checking it out here and then
-      # this commit again: this step runs after the point check, and the wire loopback after it builds this commit.
+      # compiled layouts of HEAD^1 come from the store main's pushes fill, or are built by checking it out here, with its
+      # own wire_layouts example, and then this commit again: this step runs after the point check, and the wire
+      # loopback after it builds this commit. A base without the example is compared by source alone, with a warning.
       - name: The mod API keeps what mods built before it use
         if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.rust.outputs.mod_points != 'false' }}
         env:

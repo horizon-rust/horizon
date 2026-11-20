@@ -762,6 +762,9 @@ class TryRunTests(unittest.TestCase):
         self.assertEqual(len(store), 1)
         self.assertIn("if: github.event_name != 'pull_request'", store[0])
         self.assertIn('--store-layouts "$CARGO_TARGET_DIR/wire-layouts"', store[0])
+        # Only a push to main stores one: the merge queue saves the disk too.
+        self.assertIn('if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then\n'
+                      '              python3 tools/ci/surface_report.py --store-layouts', store[0])
 
     def test_the_windows_build_runs_by_hand_and_saves_no_cache(self):
         block = dict(jobs((WORKFLOWS / "ci.yml").read_text()))["windows-x64"]

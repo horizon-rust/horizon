@@ -15,9 +15,10 @@
 //! leaves out type names, which the `Wire` derive hashes, so the source can miss a change:
 //! [`Compiled`] holds the hashes the game itself compares, as a build compiled them
 //! (`crates/horizon-mod-api/examples/wire_layouts.rs`). [`apply`] adds every change to an
-//! existing call or to the core to a surface diff, as breaking, by what the source shows and,
-//! where the source shows nothing, by the compiled hash. A call that is new is never a change
-//! here.
+//! existing call or to the core to a surface diff, as breaking: what the source shows under the
+//! type, call or core it names, and every compiled change under its call or `core:wire`. A
+//! compiled hash covers all of a call's causes at once, so it is never taken as explained by
+//! one of them. A call that is new is never a change here.
 use crate::Surface;
 use crate::diff::{Change, ChangeKind, Class, Diff, Verdict};
 use serde::{Deserialize, Serialize};
@@ -167,8 +168,8 @@ fn reachers(by: &BTreeSet<String>) -> String {
 
 /// Adds to `diff` the changes of the boundary from `old` to `new`, all breaking: a changed core,
 /// an existing call gone or changed, and a layout change of an owned type an existing call or the
-/// core reaches. With `compiled`, the two builds' compiled hashes: a change to one that nothing
-/// the source shows explains is added too, under the call's id or `core:wire`. `old_surface` and
+/// core reaches. With `compiled`, the two builds' compiled hashes: every change to one is added
+/// too, under the call's id or `core:wire`, whatever the source shows. `old_surface` and
 /// `new_surface` are the surfaces `diff` compared.
 pub fn apply(
     diff: &mut Diff,
@@ -225,8 +226,6 @@ pub fn apply(
     if let Some(line) = changed_set("the wire core", &old.core_owned, &new.core_owned) {
         lines.entry("core:wire".into()).or_default().push(line);
     }
-    // The calls whose change the source shows, for the compiled comparison.
-    let mut explained: BTreeSet<String> = BTreeSet::new();
     let after: BTreeMap<&str, &Call> = new.calls.iter().map(|c| (c.key.as_str(), c)).collect();
     for call in &old.calls {
         let mut said = Vec::new();
@@ -252,18 +251,22 @@ pub fn apply(
             }
         }
         if !said.is_empty() {
-            explained.insert(call.key.clone());
             lines
                 .entry(call_id(&call.key, surfaces))
                 .or_default()
                 .extend(said);
         }
     }
-    let mut core_explained = lines.contains_key("core:wire");
+    // The owned types whose layout the source shows changed, by what reaches them (the core as `None`).
+    let mut changed_types: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
     for (path, (was, now, by)) in layouts {
         let id = type_id(&path, surfaces);
-        core_explained |= by.contains(&None);
-        explained.extend(by.iter().flatten().cloned());
+        for reacher in &by {
+            changed_types
+                .entry(reacher.clone())
+                .or_default()
+                .push(path.clone());
+        }
         let named: BTreeSet<String> = by
             .iter()
             .map(|by| {
@@ -297,28 +300,42 @@ pub fn apply(
             ));
         }
     }
+    // A compiled change is always reported under the call's id or `core:wire`, even where the
+    // source shows a cause: the dump holds one hash per call and one for the core, so it cannot
+    // tell whether that cause is all of it (a reordered `EquipReadRow` beside a type renamed
+    // inside `PackageInfo`). A source change under the same id needs no second note id.
     if let Some((was, now)) = compiled {
-        const UNSEEN: &str = "with no change the source shows (a crossing type's name, which the `Wire` derive hashes and a shape leaves out, for example)";
-        if was.core != now.core && !core_explained {
+        let shown = |by: Option<String>| {
+            changed_types.get(&by).map_or_else(String::new, |paths| {
+                let named: BTreeSet<String> = paths.iter().map(|p| format!("`{p}`")).collect();
+                format!(
+                    "; the source shows {} changed, which it reaches, and cannot tell whether that is all",
+                    reachers(&named)
+                )
+            })
+        };
+        if was.core != now.core {
             lines.entry("core:wire".into()).or_default().push(format!(
-                "the compiled core layout changed (`{}` → `{}`) {UNSEEN}: {REFUSED}",
-                was.core, now.core
+                "the compiled core layout changed (`{}` → `{}`){}: {REFUSED}",
+                was.core,
+                now.core,
+                shown(None)
             ));
         }
         let after: BTreeMap<&str, &CompiledCall> =
             now.calls.iter().map(|c| (c.key.as_str(), c)).collect();
         for call in &was.calls {
-            if explained.contains(&call.key) {
-                continue;
-            }
             let line = match after.get(call.key.as_str()) {
                 None => format!(
                     "call `{}` is gone from the compiled table: {REFUSED}",
                     call.key
                 ),
                 Some(n) if n.layout != call.layout || n.export != call.export => format!(
-                    "call `{}`: its compiled layout changed (`{}` → `{}`) {UNSEEN}: {REFUSED}",
-                    call.key, call.layout, n.layout
+                    "call `{}`: its compiled layout changed (`{}` → `{}`){}: {REFUSED}",
+                    call.key,
+                    call.layout,
+                    n.layout,
+                    shown(Some(call.key.clone()))
                 ),
                 Some(_) => continue,
             };

@@ -383,11 +383,11 @@ fn a_compiled_change_the_source_does_not_show_breaks_under_the_call() {
         (&s, &b, &built("l0", &[("Hooks::tick", "a2")])),
     );
     assert_eq!(undeclared(&d), ["method:Hooks::tick"]);
-    assert!(
-        d.changes[0].what[0]
-            .starts_with("call `Hooks::tick`: its compiled layout changed (`a1` → `a2`) with no change the source shows"),
-        "{:?}",
-        d.changes[0].what
+    assert_eq!(
+        d.changes[0].what,
+        [
+            "call `Hooks::tick`: its compiled layout changed (`a1` → `a2`): every wasm mod built before it is refused at load"
+        ]
     );
     let d = compiled(
         (&s, &b, &built("l0", &[("Hooks::tick", "a1")])),
@@ -402,8 +402,40 @@ fn a_compiled_change_the_source_does_not_show_breaks_under_the_call() {
 }
 
 #[test]
-fn a_compiled_change_the_source_explains_adds_no_second_id() {
-    // #18742's case: the source names the type; the calls that reach it need no note of their own.
+fn a_type_change_does_not_cover_a_second_compiled_change_of_the_core() {
+    // One pull request swaps `EquipReadRow.health` and `max_health` (the source shows it) and
+    // stores `PackageInfo.kind` as a new derived enum (only the compiled core shows it). A note
+    // naming `type:EquipReadRow` alone must not pass it.
+    let s = surface(&[], vec![]);
+    let core = |equip: &str| {
+        let mut b = boundary("c0", vec![]);
+        b.core_owned = owned(&[
+            ("mod_api::EquipReadRow", equip),
+            ("mod_api::PackageInfo", "p0"),
+        ]);
+        b
+    };
+    let d = compiled(
+        (&s, &core("e1"), &built("l0", &[])),
+        (&s, &core("e2"), &built("l1", &[])),
+    );
+    assert_eq!(undeclared(&d), ["core:wire", "type:EquipReadRow"]);
+    let wire = d.changes.iter().find(|c| c.id == "core:wire").unwrap();
+    assert_eq!(
+        wire.what,
+        [
+            "the compiled core layout changed (`l0` → `l1`); the source shows `mod_api::EquipReadRow` changed, which it reaches, and cannot tell whether that is all: every wasm mod built before it is refused at load"
+        ]
+    );
+    // Without the compiled layouts, the source change alone.
+    let d = compared((&s, &core("e1")), (&s, &core("e2")));
+    assert_eq!(undeclared(&d), ["type:EquipReadRow"]);
+}
+
+#[test]
+fn a_type_change_does_not_cover_a_second_compiled_change_of_a_call() {
+    // #18742's `PlayerWorldRefusal` insert, with another hidden change on the same call: the call
+    // is named too, so a note must list both ids.
     let s = surface(&["place_block"], vec![]);
     let reaching = |shape| {
         boundary(
@@ -428,26 +460,27 @@ fn a_compiled_change_the_source_explains_adds_no_second_id() {
             &built("l0", &[("Hooks::place_block", "a2")]),
         ),
     );
-    assert_eq!(undeclared(&d), ["type:PlayerWorldRefusal"]);
-    // A core change the source shows (`EquipReadRow`, a prepared hook's payload) is one entry.
-    let mut new = boundary("c0", vec![]);
-    new.core_owned = owned(&[
-        ("mod_api::EquipReadRow", "e2"),
-        ("mod_api::PackageInfo", "p0"),
-    ]);
-    let mut old = boundary("c0", vec![]);
-    old.core_owned = owned(&[
-        ("mod_api::EquipReadRow", "e1"),
-        ("mod_api::PackageInfo", "p0"),
-    ]);
-    let d = compiled((&s, &old, &built("l0", &[])), (&s, &new, &built("l1", &[])));
-    assert_eq!(undeclared(&d), ["type:EquipReadRow"]);
     assert_eq!(
-        d.changes[0].what,
-        [
-            "wire layout: `e1` → `e2`: reached by the wire core, so every wasm mod built before it is refused at load"
-        ]
+        undeclared(&d),
+        ["method:Hooks::place_block", "type:PlayerWorldRefusal"]
     );
+    // A signature change the source shows is under the call's own id: the compiled change adds a
+    // line there, no second id.
+    let signed = |signature| boundary("c0", vec![call("Hooks::place_block", signature, true, &[])]);
+    let d = compiled(
+        (
+            &s,
+            &signed("01"),
+            &built("l0", &[("Hooks::place_block", "a1")]),
+        ),
+        (
+            &s,
+            &signed("02"),
+            &built("l0", &[("Hooks::place_block", "a2")]),
+        ),
+    );
+    assert_eq!(undeclared(&d), ["method:Hooks::place_block"]);
+    assert_eq!(d.changes[0].what.len(), 2);
 }
 
 #[test]

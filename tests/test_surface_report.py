@@ -64,7 +64,7 @@ class GateTests(unittest.TestCase):
 class ReportTests(unittest.TestCase):
     """report() against a stub horizon-stage whose behaviour each test sets."""
 
-    def run_report(self, base_export=0, diff_exit=0, gate_on=False, head_export=0, diff_err="", layouts=False):
+    def run_report(self, base_export=0, diff_exit=0, gate_on=False, head_export=0, diff_err="", layouts=None):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             tool = work / "horizon-stage"
@@ -73,7 +73,7 @@ echo "$@" >> {work}/calls
 if [ "$1" = surface ]; then
   case "$2" in *base) [ {base_export} = 0 ] || {{ echo 'unclassified: x' >&2; echo 'horizon-stage surface: unknown key `access`' >&2; exit 1; }};; esac
   case "$2" in *head) [ {head_export} = 0 ] || {{ echo 'horizon-stage surface: a.rs: parse error' >&2; exit 1; }};; esac
-  echo '{{}}' > "$3"; exit 0
+  echo '{{}}' > "$3"; [ -n "$5" ] && echo '{{}}' > "$5"; exit 0
 fi
 echo "Surface: report"; [ -z "{diff_err}" ] && [ {diff_exit} != 0 ] && echo "breaking change without a change note: fn:a" >&2
 [ -n "{diff_err}" ] && echo "horizon-stage: $2: {diff_err}" >&2
@@ -130,79 +130,125 @@ exit {diff_exit}
     def test_compiled_layouts_are_passed_after_the_calls(self):
         _, _, calls = self.run_report()
         self.assertNotIn("--layouts", calls)
-        _, _, calls = self.run_report(layouts=True)
+        asked = []
+
+        def layouts(expected):
+            asked.append(expected)
+            return True, "The base's compiled layouts: stored.\n"
+        _, text, calls = self.run_report(layouts=layouts)
+        # The stub's base table is `{}`: no calls.
+        self.assertEqual(asked, [0])
+        self.assertTrue(text.startswith("The base's compiled layouts: stored.\nSurface: report\n"), text)
         self.assertRegex(calls, r"--calls \S+base-calls\.json \S+head-calls\.json "
                                 r"--layouts \S+base-layouts\.json \S+head-layouts\.json --notes ")
 
+    def test_a_base_without_the_example_is_compared_by_source_with_a_warning(self):
+        warning = "Warning: the base has no wire_layouts example, so only the source is compared.\n"
+        code, text, calls = self.run_report(gate_on=True, layouts=lambda expected: (False, warning))
+        self.assertEqual(code, 0)
+        self.assertTrue(text.startswith(warning), text)
+        self.assertNotIn("--layouts", calls)
 
-LAYOUTS = '{"schema": 1, "core": "c0", "calls": []}\n'
+    def test_compiled_layouts_that_cannot_be_built_fail_the_gate(self):
+        def broken(expected):
+            raise subprocess.CalledProcessError(101, "cargo build")
+        code, text, calls = self.run_report(gate_on=True, layouts=broken)
+        self.assertEqual(code, 1)
+        self.assertEqual(text, "No surface comparison: the compiled layouts could not be built (Command 'cargo build' "
+                               "returned non-zero exit status 101.). The gate fails without one.\n")
+        self.assertNotIn("surface-diff", calls)
+        code, text, calls = self.run_report(layouts=broken)
+        self.assertEqual(code, 0)
+        self.assertTrue(text.startswith("No compiled layouts (Command 'cargo build' returned non-zero exit status "
+                                        "101.).\nSurface: report\n"), text)
+        self.assertNotIn("--layouts", calls)
+
+
+def layouts_text(calls=2, schema=1):
+    entries = ",".join(f'{{"key": "K{i}", "layout": "0{i}", "export": false}}' for i in range(calls))
+    return f'{{"schema": {schema}, "core": "c0", "calls": [{entries}]}}\n'
+
+
+LAYOUTS = layouts_text()
 
 
 class LayoutsTests(unittest.TestCase):
-    """Both builds' compiled layouts: the base's stored or built in place, the head's built."""
+    """Both builds' compiled layouts: the base's stored or built in place with its own example, the head's built."""
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.dir = Path(directory.name)
-        self.example = self.dir / "wire_layouts.rs"
-        self.example.write_text("// the head's example\n")
+        self.work = self.dir / "work"
+        self.work.mkdir()
+        self.store = self.dir / "store"
+        self.store.mkdir()
         self.git_calls = []
 
-    def git(self, status="", tracked=""):
+    def git(self, status="", example=True):
         def run(*args):
             self.git_calls.append(args)
             if args[0] == "status":
                 return status
             if args[0] == "rev-parse":
                 return "head\n"
-            if args[0] == "ls-files":
-                return tracked
-            if args[0] == "checkout" and args[-1] == "base":
-                # The base has no example of its own.
-                self.example.unlink()
+            if args[0] == "ls-tree":
+                return surface_report.LAYOUTS_EXAMPLE + "\n" if example else ""
             return ""
         return run
 
+    def checkouts(self):
+        return [args for args in self.git_calls if args[0] == "checkout"]
+
     def test_a_stored_base_is_read_and_nothing_is_checked_out(self):
-        store = self.dir / "store"
-        store.mkdir()
-        (store / "base.json").write_text(LAYOUTS.replace("c0", "c1"))
-        work = self.dir / "work"
-        work.mkdir()
-        origin = surface_report.compiled_layouts("base", work, store, build=lambda: LAYOUTS, run_git=self.git(),
-                                                 example=self.example)
-        self.assertEqual(origin, "stored")
-        self.assertEqual(self.git_calls, [])
-        self.assertIn("c1", (work / "base-layouts.json").read_text())
-        self.assertEqual((work / "head-layouts.json").read_text(), LAYOUTS)
+        (self.store / "base.json").write_text(LAYOUTS.replace("c0", "c1"))
+        done = surface_report.compiled_layouts("base", self.work, self.store, 2, build=lambda: LAYOUTS,
+                                               run_git=self.git())
+        self.assertEqual(done, (True, "The base's compiled layouts: stored.\n"))
+        self.assertEqual(self.checkouts(), [])
+        self.assertIn("c1", (self.work / "base-layouts.json").read_text())
+        self.assertEqual((self.work / "head-layouts.json").read_text(), LAYOUTS)
 
-    def test_a_stored_base_of_another_schema_is_missing(self):
-        store = self.dir / "store"
-        store.mkdir()
-        (store / "base.json").write_text(LAYOUTS.replace('"schema": 1', '"schema": 2'))
-        self.assertIsNone(surface_report.stored_layouts(store, "base"))
-        self.assertIsNone(surface_report.stored_layouts(store, "other"))
-        self.assertIsNone(surface_report.stored_layouts(None, "base"))
+    def test_a_stored_base_that_does_not_match_its_source_is_a_miss(self):
+        (self.store / "base.json").write_text(LAYOUTS)
+        self.assertEqual(surface_report.stored_layouts(self.store, "base", 2), LAYOUTS)
+        # Another call count than the base's source table, none at all, another schema, no file, no store.
+        self.assertIsNone(surface_report.stored_layouts(self.store, "base", 3))
+        (self.store / "empty.json").write_text(layouts_text(calls=0))
+        self.assertIsNone(surface_report.stored_layouts(self.store, "empty", 0))
+        (self.store / "old.json").write_text(layouts_text(schema=2))
+        self.assertIsNone(surface_report.stored_layouts(self.store, "old", 2))
+        self.assertIsNone(surface_report.stored_layouts(self.store, "other", 2))
+        self.assertIsNone(surface_report.stored_layouts(None, "base", 2))
 
-    def test_a_missing_base_is_built_with_the_heads_example_and_the_head_checked_out_again(self):
-        seen = []
+    @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
+    def test_a_symlinked_store_or_entry_is_a_miss(self):
+        (self.store / "real.json").write_text(LAYOUTS)
+        (self.store / "base.json").symlink_to(self.store / "real.json")
+        self.assertIsNone(surface_report.stored_layouts(self.store, "base", 2))
+        linked = self.dir / "linked"
+        linked.symlink_to(self.store)
+        self.assertIsNone(surface_report.stored_layouts(linked, "real", 2))
 
-        def build():
-            seen.append(self.example.read_text())
-            return LAYOUTS
-        work = self.dir / "work"
-        work.mkdir()
-        origin = surface_report.compiled_layouts("base", work, None, build=build, run_git=self.git(),
-                                                 example=self.example)
-        self.assertEqual(origin, "built")
-        # The head's build, then the base's with the head's example copied in.
-        self.assertEqual(seen, ["// the head's example\n"] * 2)
-        checkouts = [args for args in self.git_calls if args[0] == "checkout"]
-        self.assertEqual(checkouts, [("checkout", "-q", "--detach", "base"),
-                                     ("checkout", "-q", "-f", "--detach", "head")])
-        # The copy the base did not track is gone.
-        self.assertFalse(self.example.exists())
+    def test_a_missing_base_is_built_with_its_own_example_and_the_head_checked_out_again(self):
+        (self.store / "base.json").write_text(layouts_text(calls=1))
+        done = surface_report.compiled_layouts("base", self.work, self.store, 2, build=lambda: LAYOUTS,
+                                               run_git=self.git())
+        self.assertEqual(done, (True, "The base's compiled layouts: built.\n"))
+        self.assertEqual(self.checkouts(), [("checkout", "-q", "--detach", "base"),
+                                            ("checkout", "-q", "-f", "--detach", "head")])
+
+    def test_a_base_without_the_example_is_compared_by_source(self):
+        done = surface_report.compiled_layouts("base", self.work, None, 2, build=lambda: LAYOUTS,
+                                               run_git=self.git(example=False))
+        self.assertFalse(done[0])
+        self.assertTrue(done[1].startswith("Warning: the base has no wire_layouts example"), done[1])
+        self.assertEqual(self.checkouts(), [])
+        self.assertFalse((self.work / "base-layouts.json").exists())
+
+    def test_a_base_whose_own_example_disagrees_with_its_source_fails(self):
+        with self.assertRaisesRegex(ValueError, "lists 2 calls, its source 5"):
+            surface_report.compiled_layouts("base", self.work, None, 5, build=lambda: LAYOUTS, run_git=self.git())
 
     def test_the_head_is_checked_out_again_when_the_base_fails_to_build(self):
         builds = iter([LAYOUTS])
@@ -212,33 +258,64 @@ class LayoutsTests(unittest.TestCase):
                 return next(builds)
             except StopIteration:
                 raise subprocess.CalledProcessError(101, "cargo build") from None
-        work = self.dir / "work"
-        work.mkdir()
         with self.assertRaises(subprocess.CalledProcessError):
-            surface_report.compiled_layouts("base", work, None, build=build, run_git=self.git(), example=self.example)
+            surface_report.compiled_layouts("base", self.work, None, 2, build=build, run_git=self.git())
         self.assertEqual(self.git_calls[-1], ("checkout", "-q", "-f", "--detach", "head"))
 
     def test_a_tree_with_changes_is_not_checked_out(self):
         with self.assertRaisesRegex(ValueError, "has changes"):
-            surface_report.built_base_layouts("base", build=lambda: LAYOUTS, run_git=self.git(status=" M a.rs\n"),
-                                              example=self.example)
-        self.assertFalse(any(args[0] == "checkout" for args in self.git_calls))
+            surface_report.built_base_layouts("base", build=lambda: LAYOUTS, run_git=self.git(status=" M a.rs\n"))
+        self.assertEqual(self.checkouts(), [])
 
-    def test_unreadable_layouts_are_refused(self):
-        work = self.dir / "work"
-        work.mkdir()
+    def test_unreadable_head_layouts_are_refused(self):
         with self.assertRaisesRegex(ValueError, "no readable layouts"):
-            surface_report.compiled_layouts("base", work, None, build=lambda: "error\n", run_git=self.git(),
-                                            example=self.example)
+            surface_report.compiled_layouts("base", self.work, None, 2, build=lambda: "error\n", run_git=self.git())
 
-    def test_storing_keeps_the_newest(self):
-        store = self.dir / "store"
-        with mock.patch.object(surface_report, "LAYOUTS_KEPT", 2):
+    def test_only_a_push_to_main_stores_and_the_newest_are_kept(self):
+        store = self.dir / "kept"
+        for event in ({}, {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/1/merge"},
+                      {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/feature"}):
+            with mock.patch.dict(os.environ, event, clear=True), self.assertRaises(SystemExit):
+                surface_report.store_layouts(store, build=lambda: LAYOUTS, run_git=lambda *args: "a\n")
+        self.assertFalse(store.exists())
+        main = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}
+        with mock.patch.dict(os.environ, main), mock.patch.object(surface_report, "LAYOUTS_KEPT", 2):
             for sha in ("a", "b", "c"):
                 surface_report.store_layouts(store, build=lambda: LAYOUTS, run_git=lambda *args: f"{sha}\n")
                 os.utime(store / f"{sha}.json", (ord(sha), ord(sha)))
             surface_report.store_layouts(store, build=lambda: LAYOUTS, run_git=lambda *args: "d\n")
         self.assertEqual(sorted(path.name for path in store.iterdir()), ["c.json", "d.json"])
+
+
+STEP = '''      - name: The mod API keeps what mods built before it use
+        run: python3 tools/ci/surface_report.py
+'''
+WORKFLOW_TEXT = "jobs:\n  verify:\n    steps:\n      - name: Other\n        run: true\n" + STEP
+
+
+class GateChangedTests(unittest.TestCase):
+    def changed(self, paths, head_workflow=WORKFLOW_TEXT):
+        def git(*args):
+            if args[0] == "diff":
+                return "".join(f"{path}\n" for path in paths)
+            return WORKFLOW_TEXT if args[1].startswith("base:") else head_workflow
+        return surface_report.gate_changed("base", run_git=git)
+
+    def test_a_change_to_the_gates_code_is_flagged(self):
+        self.assertEqual(self.changed(["crates/horizon-world/src/a.rs", ".github/workflows/ci.yml"]), "")
+        for path in ["tools/ci/surface_report.py", "crates/horizon-mod-surface/src/boundary.rs",
+                     "crates/horizon-mod-api/examples/wire_layouts.rs", "tools/ci/surface.toml"]:
+            with self.subTest(path=path):
+                line = self.changed(["README.md", path])
+                self.assertTrue(line.startswith(f"Warning: this pull request changes the gate's own code ({path}), "),
+                                line)
+
+    def test_a_change_to_the_gates_step_is_flagged_and_another_steps_is_not(self):
+        other = WORKFLOW_TEXT.replace("run: true", "run: false")
+        self.assertEqual(self.changed([".github/workflows/ci.yml"], other), "")
+        step = WORKFLOW_TEXT.replace("surface_report.py\n", "surface_report.py || true\n")
+        self.assertIn(".github/workflows/ci.yml (the surface report's steps)",
+                      self.changed([".github/workflows/ci.yml"], step))
 
 
 class SummaryTests(unittest.TestCase):
@@ -314,40 +391,37 @@ class MainTests(unittest.TestCase):
         self.assertIn("the base could not be fetched", out)
 
     def test_a_report_is_printed_written_and_its_code_returned(self):
-        fetched, reported = [], []
+        fetched, asked = [], []
 
-        def report(*args, layouts=False):
-            reported.append(layouts)
+        def report(tool, base, head, work, gate_on, layouts):
+            asked.append(layouts(7))
             return 1, "Surface: breaking\n"
+
+        def compiled(sha, work, store, expected):
+            return True, f"The base's compiled layouts: stored ({sha}, {expected}).\n"
         code, out, summary = self.run_main(
             base_commit=lambda *a: ("abcd", ""),
             unpack=lambda sha, into: fetched.append(sha),
-            compiled_layouts=lambda *a: "stored",
+            compiled_layouts=compiled,
+            gate_changed=lambda sha: "",
             report=report)
-        self.assertEqual((code, fetched, reported), (1, ["abcd"], [True]))
-        self.assertRegex(out, r"^Surface: breaking\nBase abcd; fetch \d+\.\ds, compiled layouts \d+\.\ds "
-                              r"\(the base's stored\), total \d+\.\ds\n$")
+        self.assertEqual((code, fetched), (1, ["abcd"]))
+        self.assertEqual(asked, [(True, "The base's compiled layouts: stored (abcd, 7).\n")])
+        self.assertRegex(out, r"^Surface: breaking\nBase abcd; fetch \d+\.\ds, compiled layouts \d+\.\ds, "
+                              r"total \d+\.\ds\n$")
         self.assertTrue(summary.startswith("### Mod API surface\n\n```text\nSurface: breaking\nBase abcd"))
 
-    def test_missing_compiled_layouts_fail_the_gate_and_report_without_them_otherwise(self):
-        def broken(*args):
-            raise subprocess.CalledProcessError(101, "cargo build")
-        reported = []
-
-        def report(*args, layouts=False):
-            reported.append(layouts)
-            return 0, "Surface: identical\n"
-        patches = {"base_commit": lambda *a: ("abcd", ""), "unpack": lambda sha, into: None,
-                   "compiled_layouts": broken, "report": report}
-        code, out, _ = self.run_main(gate=lambda _: True, **patches)
-        self.assertEqual((code, reported), (1, []))
-        self.assertTrue(out.startswith("No surface comparison: the compiled layouts could not be built "
-                                       "(Command 'cargo build' returned non-zero exit status 101.). "
-                                       "The gate fails without one.\n"), out)
-        code, out, _ = self.run_main(gate=lambda _: False, **patches)
-        self.assertEqual((code, reported), (0, [False]))
-        self.assertIn("no compiled layouts (Command 'cargo build' returned non-zero exit status 101.)", out)
-
+    def test_a_warning_leads_the_report_and_is_annotated(self):
+        code, out, summary = self.run_main(
+            base_commit=lambda *a: ("abcd", ""),
+            unpack=lambda sha, into: None,
+            gate_changed=lambda sha: "Warning: this pull request changes the gate's own code (x).\n",
+            report=lambda *a: (0, "Surface: identical\n"))
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("Warning: this pull request changes the gate's own code (x).\n"
+                                       "Surface: identical\n"), out)
+        self.assertTrue(out.endswith("::warning::this pull request changes the gate's own code (x).\n"), out)
+        self.assertIn("```text\nWarning: this pull request changes the gate's own code (x).\n", summary)
 
 if __name__ == "__main__":
     unittest.main()
