@@ -186,7 +186,10 @@ class RustChangesTests(unittest.TestCase):
 
 ROOT = Path(__file__).resolve().parents[1]
 # include_str!/include_bytes!/include! of a literal path, beside the file or under CARGO_MANIFEST_DIR.
-INCLUDE = re.compile(r'include(?:_str|_bytes)?!\s*\(\s*(concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]*)"')
+# Any of a macro's delimiters: include_str!("a"), include_str!["a"], include_str! {"a"}.
+INCLUDE = re.compile(
+    r'include(?:_str|_bytes)?!\s*[(\[{]\s*'
+    r'(concat!\s*[(\[{]\s*env!\s*[(\[{]\s*"CARGO_MANIFEST_DIR"\s*[)\]}]\s*,\s*)?"([^"]*)"')
 
 
 def rust_embeds():
