@@ -59,6 +59,7 @@ WAIT = {"main": 20 * 60, "build": 60 * 60, "pr": 60 * 60}
 PRIORITY = {"main", "build"}
 BUDGET_FILE = "horizon-compile-lock-waited"  # under RUNNER_TEMP: the seconds this job's priority waits took
 BUDGET_MAX = 16  # bytes a budget record may have
+PROBE_TIMEOUT = 1.0  # seconds a ps listing of a process group may take
 POLL = 2.0
 ARRIVE_POLL = 0.1  # a pull request holds `priority` exclusively only for an instant
 INFO_MAX = 300
@@ -394,9 +395,11 @@ class Hurry:
 
 def group_alive(pgid):
     """Whether anything but a zombie is left in the process group. ps (macOS and Linux) lists the group's processes
-    with their state; without ps, kill(-pgid, 0), which a zombie leader alone still answers."""
+    with their state; without ps, kill(-pgid, 0), which a zombie leader alone still answers. ps answers in
+    milliseconds; its short time limit bounds how long a probe under way can hold up a hurried group stop."""
     try:
-        listing = subprocess.run(["ps", "-A", "-o", "pgid=,stat="], capture_output=True, text=True, timeout=5)
+        listing = subprocess.run(["ps", "-A", "-o", "pgid=,stat="], capture_output=True, text=True,
+                                 timeout=PROBE_TIMEOUT)
         if listing.returncode == 0:
             return any(fields[0] == str(pgid) and not fields[1].startswith("Z")
                        for fields in (line.split() for line in listing.stdout.splitlines()) if len(fields) >= 2)

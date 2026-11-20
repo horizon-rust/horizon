@@ -512,6 +512,38 @@ class CompileLockTests(unittest.TestCase):
         self.assertLess(float(seconds), 3)  # without the signal reaching the thread: about 9
         self.assertTrue(process_gone(int(pid)))
 
+    @unittest.skipUnless(os.name == "posix", "process groups and signals")
+    def test_a_slow_process_listing_holds_up_a_hurried_group_stop_only_briefly(self):
+        # ps hangs until its time limit while the stop is hurried: SIGKILL follows that one probe, not the grace.
+        script = textwrap.dedent("""
+            import os, signal, subprocess, sys, threading, time
+            sys.path.insert(0, sys.argv[1])
+            from tools import compile_lock
+            run = subprocess.run
+            def slow(command, **options):
+                if command[0] == "ps" and not compile_lock.ESCALATE.is_set():
+                    compile_lock.ESCALATE.wait(options["timeout"])
+                    time.sleep(options["timeout"])
+                    raise subprocess.TimeoutExpired(command, options["timeout"])
+                return run(command, **options)
+            compile_lock.subprocess.run = slow
+            child = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(1, flush=True); "
+                     "time.sleep(60)")
+            group = subprocess.Popen([sys.executable, "-c", child], stdout=subprocess.PIPE, text=True,
+                                     start_new_session=True)
+            group.stdout.readline()
+            threading.Timer(0.5, compile_lock.ESCALATE.set).start()
+            started = time.monotonic()
+            compile_lock.stop_group(group)
+            print(f"{time.monotonic() - started:.2f}", flush=True)
+            group.wait()
+        """)
+        runner = subprocess.run([sys.executable, "-c", script, str(ROOT)], capture_output=True, text=True,
+                                timeout=60)
+        self.assertEqual(runner.returncode, 0, runner.stderr)
+        # Hurried at 0.5 s; the probe under way then ends within its 1 s limit, and SIGKILL ends the group.
+        self.assertLess(float(runner.stdout.split()[-1]), 3)
+
     def test_the_module_runs_on_the_macs_system_python(self):
         ast.parse(Path(compile_lock.__file__).read_text(encoding="utf-8"), feature_version=(3, 9))
 
@@ -546,6 +578,8 @@ class CompileLockTests(unittest.TestCase):
         self.assertEqual(jobs["exporters"]["timeout-minutes"], 150)
         self.assertTrue(jobs["build"]["timeout-minutes"].startswith("${{ matrix.mac && 180 ||"))
         main = load("parity-main.yml")["jobs"]["parity-main"]
+        # 20 min of waiting and the 240 min prebuild limit (tools/parity.py) leave setup and the harnesses 100.
+        self.assertEqual(main["timeout-minutes"], 360)
         self.assertEqual(main["env"]["HORIZON_COMPILE_LOCK_ROLE"], "main")
         harnesses = next(step for step in main["steps"] if step.get("id") == "harnesses")
         self.assertIn("\nexec python3 tools/parity.py --changed", harnesses["run"])

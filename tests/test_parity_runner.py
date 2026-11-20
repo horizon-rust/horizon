@@ -176,8 +176,10 @@ class ParityRunnerTests(unittest.TestCase):
             if not gone:
                 os.kill(pid, 9)
             self.assertTrue(gone, "the child outlived the run's limit")
-        # A pull request's prebuild has no limit of its own (its job's 240 min is the limit).
+        # A pull request's prebuild has no limit of its own (its job's 240 min is the limit); parity-main's is 240
+        # min, as a full prebuild takes over 2 hours even alone.
         self.assertNotIn("pr", parity.PREBUILD_LIMIT)
+        self.assertEqual(parity.PREBUILD_LIMIT["main"], 240 * 60)
 
     @unittest.skipUnless(os.name == "posix", "process groups")
     def test_a_cargo_that_closes_its_stderr_still_meets_the_limit(self):
