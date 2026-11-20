@@ -816,8 +816,12 @@ impl Game<'_> {
             name: &name,
             local: true,
         };
-        let hooks = self.mob_render_hooks();
-        let pre = self.mod_render_pre(m, Some(who), hooks, alpha as f32, camera, packed, out);
+        let hooks = super::super::modding::native_mob_draw::MobRenderHooks::current();
+        let pre = if hooks.any_pre() {
+            self.mod_render_pre(m, Some(who), alpha as f32, camera, packed, out)
+        } else {
+            Some(Default::default())
+        };
         let Some(hidden) = pre else {
             return;
         };
@@ -891,16 +895,9 @@ impl Game<'_> {
             );
         }
         // The post hooks, whether or not the layers drew (a spectator draws none).
-        self.mod_render_post(
-            m,
-            Some(who),
-            hooks,
-            parts,
-            alpha as f32,
-            camera,
-            packed,
-            out,
-        );
+        if hooks.any_post() {
+            self.mod_render_post(m, Some(who), parts, alpha as f32, camera, packed, out);
+        }
         // LivingEntity.isCurrentlyGlowing: the Glowing effect.
         let vanilla = self
             .potions

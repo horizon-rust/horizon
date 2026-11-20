@@ -9873,14 +9873,16 @@ impl Game<'_> {
     }
     /// Status for `horizon-ctl status`.
     /// The other players' entities in the level and their names (their
-    /// profiles', which outlive the player list's entries), borrowed without allocating.
-    pub(super) fn remote_player_names(&self) -> impl Iterator<Item = (u32, &str)> + '_ {
-        self.remote.iter().flat_map(|r| {
-            r.level_players
-                .iter()
-                .filter(move |(_, uuid)| **uuid != r.profile)
-                .filter_map(move |(id, uuid)| Some((*id as u32, r.level_player_name(*id, uuid)?)))
-        })
+    /// profiles', which outlive the player list's entries).
+    pub(super) fn remote_player_names(&self) -> Vec<(u32, String)> {
+        self.remote
+            .as_ref()
+            .map(|r| {
+                r.player_names_iter()
+                    .map(|(id, name)| (id, name.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     /// `ClientClockManager.tick`: the clock moves on by the game time that
     /// passed since its last tick, at its rate. A game time the server sets
@@ -10628,6 +10630,12 @@ impl Remote {
             .get(&id)
             .or_else(|| self.players.get(uuid))
             .map(String::as_str)
+    }
+    pub(in crate::game) fn player_names_iter(&self) -> impl Iterator<Item = (u32, &str)> + '_ {
+        self.level_players
+            .iter()
+            .filter(move |(_, uuid)| **uuid != self.profile)
+            .filter_map(move |(id, uuid)| Some((*id as u32, self.level_player_name(*id, uuid)?)))
     }
     /// Listed UUIDs always have a tab entry; removal clears both together.
     pub(super) fn listed_player_count(&self) -> usize {

@@ -7896,7 +7896,10 @@ impl Game<'_> {
         // Who watches (`Entity.isInvisibleTo`): the local player's team.
         let viewer = self.player_team();
         self.rendered_mobs.set(0);
-        let (skinning, hooks) = (self.skinning(), self.mob_render_hooks());
+        let (skinning, hooks) = (
+            self.skinning(),
+            super::super::modding::native_mob_draw::MobRenderHooks::current(),
+        );
         // What custom entity model animations read of the frame.
         horizon_client::mobs::cem_anim::set_frame(horizon_client::mobs::cem_anim::Frame {
             time: self.world.game_time as f64 + alpha,
@@ -8003,7 +8006,11 @@ impl Game<'_> {
                 .then(|| self.remote_player_name(mob.id))
                 .flatten()
                 .map(|name| PlayerRender { name, local: false });
-            let pre = self.mod_render_pre(mob, who, hooks, alpha as f32, camera, packed, out);
+            let pre = if hooks.any_pre() {
+                self.mod_render_pre(mob, who, alpha as f32, camera, packed, out)
+            } else {
+                Some(Default::default())
+            };
             let Some(hidden) = pre else {
                 // What the mods drew in its place is culled as the entity's own would be.
                 if culling.rays_only() {
@@ -8168,7 +8175,9 @@ impl Game<'_> {
                 }
                 self.mod_layer_geometry(mob, who, parts, added, alpha as f32, camera, packed, out);
             }
-            self.mod_render_post(mob, who, hooks, parts, alpha as f32, camera, packed, out);
+            if hooks.any_post_for(is_player) {
+                self.mod_render_post(mob, who, parts, alpha as f32, camera, packed, out);
+            }
             if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if let Some(((first, _, _), _)) = skinned {

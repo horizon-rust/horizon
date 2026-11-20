@@ -178,7 +178,7 @@ impl Game<'_> {
         Some(t)
     }
     /// The other players' models and names: the players a server sends.
-    fn other_players(&self) -> Vec<(&Mob, &str)> {
+    fn other_players(&self) -> Vec<(&Mob, String)> {
         let mut out = Vec::new();
         let indices = first_mob_indices(&self.mobs);
         for (id, name) in self.remote_player_names() {
@@ -238,13 +238,25 @@ impl Game<'_> {
         let name_format = hooks && mod_api::__private::listened(mod_api::HookId::PlayerNameFormat);
         let viewer = self.player_team();
         let mut tags = Vec::new();
-        let players = self.other_players();
+        let players: Vec<(&Mob, &str)> = match self.remote.as_ref() {
+            Some(r) => {
+                let mut indices =
+                    FxHashMap::with_capacity_and_hasher(self.mobs.len(), Default::default());
+                for (index, mob) in self.mobs.iter().enumerate() {
+                    indices.entry(mob.id).or_insert(index);
+                }
+                r.player_names_iter()
+                    .filter_map(|(id, name)| Some((&self.mobs[*indices.get(&id)?], name)))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         let has_below_name = self
             .score
             .board
             .display_objective(sb::SLOT_BELOW_NAME)
             .is_some();
-        let player_ids = named_by_player_list(&players);
+        let player_ids: FxHashSet<u32> = players.iter().map(|(player, _)| player.id).collect();
         let named = self.mobs.iter().filter_map(|m| {
             // Already named by the player list: a second tag would sit on the
             // first (`named_by_player_list`). A mob a mod's pre hook canceled has none.
@@ -851,8 +863,8 @@ fn name_tag_in_view(
         && frustum.is_none_or(|view| view.intersects(min, max))
 }
 
-fn first_mob_indices(mobs: &[Mob]) -> FxHashMap<u32, usize> {
-    let mut indices = FxHashMap::with_capacity_and_hasher(mobs.len(), Default::default());
+fn first_mob_indices(mobs: &[Mob]) -> std::collections::HashMap<u32, usize> {
+    let mut indices = std::collections::HashMap::with_capacity(mobs.len());
     for (index, mob) in mobs.iter().enumerate() {
         // Match iter().find even if a transient snapshot contains duplicate IDs.
         indices.entry(mob.id).or_insert(index);
@@ -909,7 +921,7 @@ fn collect_vehicle_ids(
 /// Built whether or not native mods are loaded. It was briefly built only with
 /// them, as a fast path, and without them both tags were drawn on top of each
 /// other on every server that names its players this way.
-fn named_by_player_list<S: AsRef<str>>(players: &[(&Mob, S)]) -> FxHashSet<u32> {
+fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }
 /// `EntityAttachment.NAME_TAG` of the entity's current pose

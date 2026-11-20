@@ -32,6 +32,12 @@ pub(in crate::game) struct MobRenderHooks {
 
 impl MobRenderHooks {
     #[inline]
+    pub(in crate::game) fn current() -> Self {
+        FRAME.with_borrow(|frame| frame.hooks)
+    }
+    pub(in crate::game) fn any(self) -> bool {
+        self.living_pre || self.living_post || self.player_pre || self.player_post
+    }
     pub(in crate::game) fn any_pre(self) -> bool {
         self.living_pre || self.player_pre
     }
@@ -160,10 +166,10 @@ pub(super) fn mob_pose(at: DVec3, body_yaw: f32) -> Mat4 {
 }
 
 impl Game<'_> {
-    /// Which of the four render hooks have listeners this frame (asked once, when the frame's
+    /// Whether any of the four render hooks have listeners this frame (asked once, when the frame's
     /// entity pass began): with none, nothing is posed or built for the hooks per entity.
-    pub(super) fn mob_render_hooks(&self) -> MobRenderHooks {
-        FRAME.with_borrow(|frame| frame.hooks)
+    pub(super) fn mob_render_listened(&self) -> bool {
+        MobRenderHooks::current().any()
     }
     /// Whether a mod's pre hook canceled the drawing of entity `id` this frame: the later passes
     /// (flames, name tags, shadows, leashes) leave it out too.
@@ -190,12 +196,12 @@ impl Game<'_> {
         &self,
         mob: &Mob,
         who: Option<PlayerRender<'_>>,
-        hooks: MobRenderHooks,
         partial: f32,
         camera: DVec3,
         light: u32,
         out: &mut Vec<Vertex>,
     ) -> Option<HiddenParts> {
+        let hooks = MobRenderHooks::current();
         let mut hidden = HiddenParts::default();
         if !hooks.any_pre() {
             return Some(hidden);
@@ -282,13 +288,13 @@ impl Game<'_> {
         &self,
         mob: &Mob,
         who: Option<PlayerRender<'_>>,
-        hooks: MobRenderHooks,
         parts: Option<PosedParts>,
         partial: f32,
         camera: DVec3,
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
+        let hooks = MobRenderHooks::current();
         // Every mob in view each frame: only when a mod listens to a post hook.
         if !hooks.any_post() {
             return;
