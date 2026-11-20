@@ -340,7 +340,7 @@ class VerifyGateTests(unittest.TestCase):
                 self.assertEqual(probe["name"], "Load probe")
                 self.assertEqual(probe["if"], "always()")
                 self.assertIs(probe["continue-on-error"], True)
-                self.assertTrue(probe["run"].startswith("timeout 10 tools/ci/load_probe.sh || echo "), probe["run"])
+                self.assertTrue(probe["run"].startswith("timeout -k 5 10 tools/ci/load_probe.sh || echo "), probe["run"])
 
     def test_the_load_probe_prints_one_line_and_succeeds(self):
         if not BASH:
@@ -357,7 +357,7 @@ class InstallRustTests(unittest.TestCase):
 
     STAND_INS = {
         "rustup": 'echo "rustup $*"\nexit "${FAKE_RUSTUP:-0}"\n',
-        "sudo": 'exec "$@"\n',
+        "sudo": 'echo "sudo $*"\nexec "$@"\n',
         "apt-get": 'echo "apt-get $*"\nsleep "${FAKE_APT_SLEEP:-0}"\nexit "${FAKE_APT:-0}"\n',
     }
 
@@ -379,6 +379,10 @@ class InstallRustTests(unittest.TestCase):
         self.assertIn("rustup toolchain install stable", result.stdout)
         self.assertIn("apt-get install -y --no-install-recommends libudev-dev mold", result.stdout)
         self.assertIn("::group::apt-get (exit 0)", result.stdout)
+        # The bound runs as root, so it can stop apt-get and the dpkg it starts, not only sudo.
+        self.assertIn("sudo timeout -k 30 300 apt-get update", result.stdout)
+        self.assertIn("sudo timeout -k 30 300 apt-get install -y --no-install-recommends libudev-dev mold",
+                      result.stdout)
 
     def test_a_rustup_failure_still_reaps_apt_and_shows_it(self):
         result = self.install("libudev-dev", FAKE_RUSTUP="3", FAKE_APT_SLEEP="1")

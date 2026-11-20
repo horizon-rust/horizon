@@ -222,7 +222,7 @@ jobs:
       - name: Load probe
         if: always()
         continue-on-error: true
-        run: timeout 10 tools/ci/load_probe.sh || echo "The load probe did not run"
+        run: timeout -k 5 10 tools/ci/load_probe.sh || echo "The load probe did not run"
   # Format and lint are not in the merge queue: every pull request passed them on its own head, and main's push after
   # the merge still runs clippy (a combination that breaks a lint shows there). A commit the queue verified skips the
   # format check but still runs clippy. A pull request that changes no Rust skips it (verify-scope).
@@ -273,7 +273,7 @@ jobs:
       - name: Load probe
         if: always()
         continue-on-error: true
-        run: timeout 10 tools/ci/load_probe.sh || echo "The load probe did not run"
+        run: timeout -k 5 10 tools/ci/load_probe.sh || echo "The load probe did not run"
   # The server build (released as horizon-engine): the game without sound or controllers. Its libraries and binaries,
   # not the tests and examples verify-lint checks. Every pull request that changes Rust runs it, whatever crate the
   # change is in (tools/ci/rust_changes.py's server_build answer goes unread on purpose): the merge queue doesn't, so a
@@ -317,7 +317,7 @@ jobs:
       - name: Load probe
         if: always()
         continue-on-error: true
-        run: timeout 10 tools/ci/load_probe.sh || echo "The load probe did not run"
+        run: timeout -k 5 10 tools/ci/load_probe.sh || echo "The load probe did not run"
   # The launcher is its own workspace (launcher/Cargo.toml), so verify's other cargo runs never build it. A pull request
   # that changes it or a crate it builds is checked here, and so are main's pushes when their range changes it: two pull
   # requests can each pass alone and break it together (#2059 and the registry ratings did, 2026-10-26), and the push
@@ -379,7 +379,7 @@ jobs:
       - name: Load probe
         if: always()
         continue-on-error: true
-        run: timeout 10 tools/ci/load_probe.sh || echo "The load probe did not run"
+        run: timeout -k 5 10 tools/ci/load_probe.sh || echo "The load probe did not run"
   verify-test:
     name: verify (Rust tests)
     runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'blacksmith-16vcpu-ubuntu-2404' }}
@@ -478,7 +478,7 @@ jobs:
       - name: Load probe
         if: always()
         continue-on-error: true
-        run: timeout 10 tools/ci/load_probe.sh || echo "The load probe did not run"
+        run: timeout -k 5 10 tools/ci/load_probe.sh || echo "The load probe did not run"
   # docs/layers.md#mod-points-stay-put: every eligible `Game` method is a mod injection point, so a change to `Game`'s
   # source or to the generator must leave the point catalog and the generated API as they were. A point's name,
   # target and signature are part of the mod API: a removed or changed point or any other change to the generated API
