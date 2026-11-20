@@ -2004,7 +2004,7 @@ fn base_tick(
                     4
                 },
             };
-            let breath = breathe(w.loop_context, m.id, &m.kind.id, vanilla);
+            let breath = breathe(w.loop_context, m.id, &m.kind.id, m.air, max, vanilla);
             if let Some(drowning) = drown(
                 w.loop_context,
                 m.id,

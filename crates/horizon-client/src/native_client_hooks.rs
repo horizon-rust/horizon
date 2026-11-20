@@ -12,7 +12,7 @@ pub struct NativeClientHooks {
     pub menu_still_valid_listens: fn(&str) -> bool,
     pub item_stacked_on_other: fn(&LoopContext, &mut crate::menu::StackedOnOther<'_>, &mut bool),
     pub living_heal: fn(&LoopContext, u32, &mut f32, &mut bool),
-    pub living_breathe: fn(&LoopContext, u32, &str, &mut bool, &mut i32, &mut i32),
+    pub living_breathe: fn(&LoopContext, u32, &str, [i32; 2], &mut bool, &mut i32, &mut i32),
     pub farmland_trample: fn(&LoopContext, u32, [i32; 3], u32, f64, &mut bool),
     pub has_mods: fn() -> bool,
     pub player_name_format: fn(&LoopContext, &crate::text::Text, &mut crate::text::Text),
@@ -103,12 +103,13 @@ pub(crate) fn living_breathe(
     context: &LoopContext,
     entity: u32,
     kind: &str,
+    air: [i32; 2],
     can_breathe: &mut bool,
     consume: &mut i32,
     refill: &mut i32,
 ) {
     if let Some(hooks) = HOOKS.get() {
-        (hooks.living_breathe)(context, entity, kind, can_breathe, consume, refill);
+        (hooks.living_breathe)(context, entity, kind, air, can_breathe, consume, refill);
     }
 }
 

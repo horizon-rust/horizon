@@ -264,13 +264,21 @@ pub(crate) fn install_client_hooks() {
             let context = reader.context();
             mod_api::dispatch_living_heal(&context, entity, amount, cancel);
         },
-        living_breathe: |context, entity, kind, can_breathe, consume, refill| {
+        living_breathe: |context, entity, kind, air, can_breathe, consume, refill| {
             if !mod_api::__private::listened(mod_api::HookId::LivingBreathe) {
                 return;
             }
             let reader = horizon_client_render::api_context::LoopReader(context);
             let context = reader.context();
-            mod_api::dispatch_living_breathe(&context, entity, kind, can_breathe, consume, refill);
+            mod_api::dispatch_living_breathe(
+                &context,
+                entity,
+                kind,
+                air,
+                can_breathe,
+                consume,
+                refill,
+            );
         },
         farmland_trample: |context, entity, pos, state, distance, cancel| {
             if !mod_api::__private::listened(mod_api::HookId::FarmlandTrample) {

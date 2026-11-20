@@ -5,7 +5,10 @@ pub trait Hooks {
     /// An entity's breathing this tick (`LivingBreatheEvent`, posted from
     /// `LivingEntity.baseTick` every tick for a living entity with the generic
     /// air logic): `entity` is its ID and `kind` its type (`minecraft:player`,
-    /// `minecraft:zombie`). `can_breathe`, `consume` and `refill` come in as
+    /// `minecraft:zombie`). `air` is `[air, max_air]`: what it has before this
+    /// tick's breathing (down to -19 while it drowns) and the most it can hold
+    /// (300; 4800 for a dolphin; 6000 for an axolotl); both are read-only.
+    /// `can_breathe`, `consume` and `refill` come in as
     /// Horizon does it (a mod-free game changes nothing); set them to
     /// change this tick. With `can_breathe` the air rises by `refill`, up to its
     /// maximum (300 for every entity except dolphins, which have 4800); a dolphin's

@@ -111,6 +111,8 @@ impl MotionWorld<'_, '_, '_> {
                 self.loop_context,
                 self.player.entity_id as u32,
                 "minecraft:player",
+                self.player.air,
+                300,
                 vanilla,
             )
         };

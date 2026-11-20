@@ -83,8 +83,12 @@ pub(crate) fn install() {
                     *amount += 1.0;
                 }
             },
-            living_breathe: |context, _, kind, can_breathe, consume, _| {
+            living_breathe: |context, _, kind, air, can_breathe, consume, refill| {
                 if context.setting("rules_mod", "stack").is_some() {
+                    // A zombie's refill reports the air and maximum it was told.
+                    if kind == "minecraft:zombie" {
+                        *refill = air[0] + air[1];
+                    }
                     // A cod breathes on land; a salmon loses all its air at once.
                     *can_breathe = kind == "minecraft:cod";
                     *consume = match kind {

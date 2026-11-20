@@ -32,25 +32,47 @@ pub struct Breath {
 /// as 0.
 /// Asked on servers for players and mobs. Water animals, axolotls and
 /// nautiluses come in with their own air logic's answer ([`own_air`]).
+/// `air` is `[air, max_air]`: what the entity has before this tick's
+/// breathing (down to -19 while it drowns) and the most it can hold; both are
+/// read-only. (A hook target takes at most seven parameters, so the pair is
+/// one.)
 #[inline(never)]
 pub fn native_living_breathe(
     context: &LoopContext,
     entity: u32,
     kind: &str,
+    air: [i32; 2],
     can_breathe: &mut bool,
     consume: &mut i32,
     refill: &mut i32,
 ) {
-    crate::native_client_hooks::living_breathe(context, entity, kind, can_breathe, consume, refill);
+    crate::native_client_hooks::living_breathe(
+        context,
+        entity,
+        kind,
+        air,
+        can_breathe,
+        consume,
+        refill,
+    );
 }
 
-/// `vanilla`'s breathing after the mods have had their say.
-pub fn breathe(context: &LoopContext, entity: u32, kind: &str, vanilla: Breath) -> Breath {
+/// `vanilla`'s breathing after the mods have had their say, for an entity
+/// holding `air` of at most `max_air`.
+pub fn breathe(
+    context: &LoopContext,
+    entity: u32,
+    kind: &str,
+    air: i32,
+    max_air: i32,
+    vanilla: Breath,
+) -> Breath {
     let mut now = vanilla;
     native_living_breathe(
         context,
         entity,
         kind,
+        [air, max_air],
         &mut now.can_breathe,
         &mut now.consume,
         &mut now.refill,
@@ -166,7 +188,7 @@ pub fn own_air(
         consume: 1,
         refill: max,
     };
-    let breath = breathe(context, entity, kind, vanilla);
+    let breath = breathe(context, entity, kind, *air, max, vanilla);
     if breath.can_breathe && breath.refill == max {
         // `setAirSupply(getMaxAirSupply())`: full whatever the air was.
         *air = max;
@@ -237,15 +259,18 @@ mod tests {
     #[test]
     fn nothing_changes_without_a_mod() {
         let context = crate::test_resources::server_loop_context();
-        assert_eq!(breathe(context, 1, "minecraft:zombie", VANILLA), VANILLA);
+        assert_eq!(
+            breathe(context, 1, "minecraft:zombie", 200, 300, VANILLA),
+            VANILLA
+        );
         let negative = Breath {
             can_breathe: false,
             consume: -3,
             refill: -2,
         };
         // Mods only ever answer with their own values, so what comes back is clamped.
-        assert_eq!(breathe(context, 1, "minecraft:player", negative).consume, 0);
-        assert_eq!(breathe(context, 1, "minecraft:player", negative).refill, 0);
+        let clamped = breathe(context, 1, "minecraft:player", 200, 300, negative);
+        assert_eq!((clamped.consume, clamped.refill), (0, 0));
     }
 
     #[test]

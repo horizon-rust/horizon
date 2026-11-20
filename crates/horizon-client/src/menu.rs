@@ -4422,6 +4422,7 @@ pub(crate) mod tests {
                 context,
                 1,
                 "minecraft:zombie",
+                [120, 300],
                 &mut can_breathe,
                 &mut consume,
                 &mut refill,
@@ -4436,10 +4437,21 @@ pub(crate) mod tests {
                 &mut 8,
                 &mut cancel_drown,
             );
-            (amount, cancel, can_breathe, consume, drowning, damage)
+            (amount, cancel, can_breathe, consume, drowning, damage, refill)
         };
-        assert_eq!(health(&before), (2.0, false, true, 1, false, 2.0));
-        assert_eq!(health(&after), (3.0, true, false, 5, true, 3.0));
+        assert_eq!(health(&before), (2.0, false, true, 1, false, 2.0, 4));
+        assert_eq!(health(&after), (3.0, true, false, 5, true, 3.0, 420));
+        // `breathe`, which the player's and the mobs' air logic call, hands the hooks the air and
+        // its maximum: with the mod, a zombie's refill reports them.
+        let vanilla = crate::breathing::Breath {
+            can_breathe: true,
+            consume: 1,
+            refill: 4,
+        };
+        let breathe = |context: &LoopContext| {
+            crate::breathing::breathe(context, 1, "minecraft:zombie", 120, 300, vanilla).refill
+        };
+        assert_eq!((breathe(&before), breathe(&after)), (4, 420));
         // A listener that lets a cod breathe: on land for 300 ticks it keeps
         // full air and takes no damage.
         let mut air = 300;
