@@ -172,6 +172,47 @@ SCENARIOS = {
         setup=[f'setblock 0 {FLOOR + 1} 2 minecraft:stone'],
         ticks=60, anchor='accept_teleportation',
         steps={0: ['look 0 45'], 3: ['mouse left down'], 15: ['command tp @s ~ ~ ~'], 40: ['mouse left up']}),
+    # Movement: the moves, flags and inputs a client sends where the ground isn't flat and open.
+    # A 20-block fall from a teleport: every falling move, then the landing's on-ground flag.
+    'fall': dict(ticks=60, anchor='accept_teleportation', steps={0: ['command tp @s ~ ~20 ~']}),
+    # Sprinting into a wall (horizontal collision, the sprint it stops), then sliding along it.
+    'wall': dict(
+        setup=[f'fill -3 {FLOOR + 1} 4 3 {FLOOR + 3} 4 minecraft:stone'],
+        ticks=60, steps={0: ['key ctrl down', 'key w down'], 30: ['key a down'], 40: ['key a up'],
+                         45: ['key w up', 'key ctrl up']}),
+    # Stepping up a slab, down from it, then up a full block from the ground (a jump: no step is that high).
+    'step_up': dict(
+        setup=[f'fill -3 {FLOOR + 1} 3 3 {FLOOR + 1} 3 minecraft:stone_slab',
+               f'fill -3 {FLOOR + 1} 7 3 {FLOOR + 1} 7 minecraft:stone'],
+        ticks=60, steps={0: ['key w down'], 28: ['key space down'], 32: ['key space up'], 50: ['key w up']}),
+    # Climbing a ladder, holding on to it sneaking, then letting go.
+    'ladder': dict(
+        setup=[f'fill -1 {FLOOR + 1} 3 1 {FLOOR + 6} 3 minecraft:stone',
+               f'fill 0 {FLOOR + 1} 2 0 {FLOOR + 6} 2 minecraft:ladder[facing=north]'],
+        ticks=70, steps={0: ['key w down'], 30: ['key shift down'], 40: ['key shift up'], 45: ['key w up']}),
+    # Sprint-jumping on packed ice, then sliding to a stop.
+    'ice': dict(
+        setup=[f'fill -3 {FLOOR} -3 3 {FLOOR} 20 minecraft:packed_ice'],
+        ticks=70, steps={0: ['key ctrl down', 'key w down'], 5: ['key space down'],
+                         30: ['key space up', 'key w up', 'key ctrl up']}),
+    # A server teleport while walking: its acceptance, then the moves from the new place with the key still held.
+    'teleport_moving': dict(ticks=60, anchor='accept_teleportation',
+                            steps={0: ['key w down'], 15: ['command tp @s ~ ~ ~5'], 40: ['key w up']}),
+    # An elytra: a teleport 30 blocks up, a jump in the air opens it (START_FALL_FLYING), a glide looking down,
+    # then a dive to the ground. It must land before the scenario ends: a player still gliding when the next
+    # reset takes the elytra and teleports it glides a tick more or not, by when the packets land (seen on the
+    # vanilla client both ways), and the next scenario starts from another place.
+    'elytra': dict(
+        setup=[f'item replace entity {PLAYER} armor.chest with minecraft:elytra',
+               f'effect give {PLAYER} minecraft:resistance 60 4 true'],
+        ticks=80, anchor='accept_teleportation',
+        steps={0: ['command tp @s ~ ~30 ~'], 8: ['key space down'], 10: ['key space up'], 12: ['look 0 20'],
+               40: ['look 0 80']}),
+    # Walking into a pool below the ground (the reset restores only the top layer), swimming up, sprint-swimming.
+    'swim': dict(
+        setup=[f'fill -3 {FLOOR - 2} 2 3 {FLOOR} 14 minecraft:water'],
+        ticks=70, steps={0: ['key w down'], 25: ['key space down'], 40: ['key space up'], 45: ['key ctrl down'],
+                         60: ['key w up', 'key ctrl up']}),
 }
 
 
