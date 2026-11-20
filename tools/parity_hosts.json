@@ -83,6 +83,7 @@
   "dispenser": "#18133: container-entity slot0 and sapling-growth `set` records missing",
   "dragon_render": "#18133: dragon tests exit 101; Rust log not in the artifact",
   "enchantment_map_validation": "#18133: an emptied enchantments component stays as {}",
+  "environment_render": "#18727: the probe now prints sky_light_level on vanilla's 0 to 15 scale; no Mac pass yet (parity run 44650421940 hit the 3-hour limit after 5 of 353 harnesses)",
   "fishing_rng": "#18133: test fixture leaves 5 hooks extracted (UnbalancedPass)",
   "lan_auth": "#18133: harness runs a daily-ignored test without --include-ignored",
   "level_environment_reads": "#18133: harness expects 5 passed tests, 6 pass",
