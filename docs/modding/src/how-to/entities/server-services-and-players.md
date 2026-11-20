@@ -73,11 +73,12 @@ online mode. The first call answers `ProfileResolution::Pending` while the backg
 poll it from a command or `server_tick` until `ProfileResolution::Done(Some(profile))` with the
 account's UUID, current name and properties, or `ProfileResolution::Done(None)` when there is no
 such account or the lookup failed (for example, Mojang rate-limited it). `Done(None)` does not
-prove the account is missing; retry later when the distinction matters. A mod's new lookups are
-paced at 60 a minute (the game's own lookups are not), so `Pending` can also mean that budget is
-refilling; poll again later. The resolver caches answers and uses the TLS stack the game already
-links, so a mod needs no HTTP client of its own. Keep the result in your own state; do not block a
-login hook on it.
+prove the account is missing; retry later when the distinction matters. Calls through
+`host.profiles()` are paced at 60 new lookups a minute; `/fetchprofile` and the game's own skin
+lookups take the game path and are not paced. `Pending` can also mean that budget is refilling;
+poll again later. The resolver caches answers and uses the TLS stack the game already links, so a
+mod needs no HTTP client of its own. Keep the result in your own state; do not block a login hook
+on it.
 
 To change a skin, `player.set_profile_property(host, "textures", value, signature)` sets the
 `textures` property (Mojang's base64 value and its signature). Other players see it once
@@ -310,3 +311,5 @@ a client. `player.set_statistics(host, json)` replaces all of them with a JSON o
 changing nothing, for text that is not an object or for a stale, unavailable or dead player. A statistic the text lacks
 goes back to 0, scoreboard criteria follow the changed values, and the client sees them on its next request. Server only;
 `player_stat_award` is not heard.
+
+Measuring a client's transaction round trip (a lag-compensating anticheat): send the player a `ping` with `player_send_packet` and hear the answer in `player_pong(player, name, id)`, which carries the number the ping had; the time between the two is finer than the keep-alive average `player_latency` reads. The engine's own pings (a recording's end-of-tick ping, whose id is the server tick) are answered here too, so pick ids that tell apart from small tick numbers. The hook is heard only for a pong that answers a ping the server sent on that connection, once per ping (an unsolicited or repeated pong, or an answer to a ping older than 30 seconds, is dropped), in order with the guest's other packets, with their state swapped in, and cannot cancel; with no listener nothing is queued.

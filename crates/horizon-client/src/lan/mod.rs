@@ -43,6 +43,7 @@ pub mod menu_extra_rev;
 pub mod packet_counts;
 #[cfg(test)]
 mod payload_bounds_tests;
+pub mod ping_ledger;
 pub mod player_shown;
 pub mod playerdata;
 pub mod prediction;
@@ -51,6 +52,7 @@ mod recording;
 mod registry_names;
 pub mod scoreboard;
 mod sound_order;
+mod terrain_view;
 pub mod tracking;
 pub mod viewed_levels;
 pub mod waypoints;
