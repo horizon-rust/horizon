@@ -3,6 +3,7 @@ horizon-client-lib legacy_build::tests::a_banner_copy_stages_a_copyable_patterne
 horizon-client-lib legacy_build::tests::a_required_cell_emptied_while_its_stack_was_away_fills_again lib daily resources
 horizon-client-lib legacy_build::tests::a_shaped_template_has_no_place_in_a_small_grid lib daily resources
 horizon-client-lib legacy_build::tests::a_staged_rocket_makes_what_the_game_would lib daily resources
+horizon-client-lib legacy_build::tests::a_two_by_two_rocket_takes_three_gunpowder lib daily resources
 horizon-client-lib legacy_build::tests::colour_recipes_of_one_thing_share_a_row_entry lib daily resources
 horizon-client-lib legacy_build::tests::every_builder_has_a_template_from_the_real_recipes lib daily resources
 horizon-client-lib legacy_craft::tests::every_banner_colour_is_on_a_crafting_table_tab_and_not_in_the_inventory lib daily resources

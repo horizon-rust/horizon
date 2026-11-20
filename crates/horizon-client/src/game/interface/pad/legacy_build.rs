@@ -12,7 +12,7 @@ use super::super::Game;
 use horizon_client::{
     gamepad::{self, Button},
     items::ItemStack,
-    legacy_build::{self, Kind, Template},
+    legacy_build::{self, CellRole, Kind, Template},
     legacy_craft_screen::{self as screen, Area, Cell, Hit, RecipeSlot, View},
 };
 use std::{
@@ -294,7 +294,9 @@ impl Game<'_> {
     }
 
     /// The focused grid cell's staged item, stepped to the next (or previous) the inventory has
-    /// that fits it; an optional cell steps through empty too.
+    /// that fits it; an optional cell steps through empty too. A shapeless recipe's first free
+    /// cell steps through what its empty optional cells take, and the focus follows the pick to
+    /// where it lands (the filled cells stay first to last).
     fn legacy_build_cycle(&mut self, next: bool) {
         let Some(Now {
             template,
@@ -307,39 +309,57 @@ impl Game<'_> {
         let template = &template;
         let grid = self.craft_size;
         let cell = self.pad.legacy.cursor;
-        let Some(i) = (0..template.cells.len()).find(|&i| template.cell_in(i, grid) == Some(cell))
-        else {
+        let Some(target) = template.role_at(&staged, grid, cell) else {
             // A cell the recipe doesn't use.
             self.pad_rumble(gamepad::Rumble::RadialNothing);
             return;
         };
-        let role = &template.cells[i].1;
-        let inventory = &self.inventory[..36];
-        let mut choices: Vec<Option<ItemStack>> =
-            legacy_build::candidates(&self.loop_context, role, inventory)
-                .into_iter()
-                .map(Some)
-                .collect();
-        if role.optional {
-            choices.insert(0, None);
-        }
-        if choices.is_empty() {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
-        }
+        let roles = match &target {
+            CellRole::One(i) => vec![*i],
+            CellRole::Add(roles) => roles.clone(),
+        };
         let same = |a: &Option<ItemStack>, b: &Option<ItemStack>| match (a, b) {
             (Some(a), Some(b)) => a.same_item_same_components(b),
             (None, None) => true,
             _ => false,
         };
-        let at = choices.iter().position(|c| same(c, &staged[i]));
+        // Each choice with the first of the roles that takes it.
+        let inventory = &self.inventory[..36];
+        let mut choices: Vec<(Option<ItemStack>, usize)> = Vec::new();
+        for &i in &roles {
+            for stack in
+                legacy_build::candidates(&self.loop_context, &template.cells[i].1, inventory)
+            {
+                let stack = Some(stack);
+                if !choices.iter().any(|(c, _)| same(c, &stack)) {
+                    choices.push((stack, i));
+                }
+            }
+        }
+        if template.cells[roles[0]].1.optional {
+            choices.insert(0, (None, roles[0]));
+        }
+        let current = match target {
+            CellRole::One(i) => staged[i].clone(),
+            CellRole::Add(_) => None,
+        };
+        // Nothing held that it takes, and nothing in it to take out.
+        if choices.is_empty() || (current.is_none() && choices.iter().all(|(c, _)| c.is_none())) {
+            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            return;
+        }
+        let at = choices.iter().position(|(c, _)| same(c, &current));
         let n = choices.len();
         let to = match (at, next) {
             (Some(at), true) => (at + 1) % n,
             (Some(at), false) => (at + n - 1) % n,
             (None, _) => 0,
         };
-        staged[i] = choices[to].clone();
+        let (choice, role) = choices[to].clone();
+        staged[role] = choice;
+        if let Some(place) = template.places(&staged, grid)[role] {
+            self.pad.legacy.cursor = place;
+        }
         self.pad
             .legacy
             .build
@@ -388,9 +408,10 @@ impl Game<'_> {
     ) -> Option<VecDeque<Step>> {
         let grid = self.craft_size;
         let mut steps = VecDeque::from([Step::Clear, Step::Empty]);
+        let places = template.places(staged, grid);
         for (i, stack) in staged.iter().enumerate() {
             if let Some(stack) = stack {
-                let cell = GRID + template.cell_in(i, grid)?;
+                let cell = GRID + (*places.get(i)?)?;
                 steps.push_back(Step::Put {
                     stack: stack.clone(),
                     cell,
@@ -653,8 +674,9 @@ impl Game<'_> {
         // The staged cells where they go in this grid; the template's other cells show what
         // they'd take, faded as missing.
         let mut cells: Vec<Option<Cell>> = vec![None; grid * grid];
+        let places = template.places(&staged, grid);
         for (i, (_, role)) in template.cells.iter().enumerate() {
-            let Some(at) = template.cell_in(i, grid) else {
+            let Some(at) = places[i] else {
                 continue;
             };
             cells[at] = match &staged[i] {

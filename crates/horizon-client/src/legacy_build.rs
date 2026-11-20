@@ -79,7 +79,7 @@ pub struct Template {
     /// What its row slot shows.
     pub icon: ItemStack,
     /// Its cells: a position in a 3x3 grid (row by row) and what goes there. A shapeless
-    /// recipe's come first to last and fill any grid in that order.
+    /// recipe's filled ones take any grid's places first to last (`Template::places`).
     pub cells: Vec<(usize, Role)>,
     /// The positions matter (a pot's four sides, a ring round a map): only a 3x3 grid has them.
     pub shaped: bool,
@@ -88,23 +88,72 @@ pub struct Template {
     pub family: String,
 }
 
+/// What a grid cell of a staging edits (`Template::role_at`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CellRole {
+    /// The cell holds (or is kept for) this role.
+    One(usize),
+    /// The first free cell of a shapeless recipe: it takes any of these optional roles, all
+    /// empty.
+    Add(Vec<usize>),
+}
+
 impl Template {
-    /// Where its `i`th cell goes in a grid `grid` wide: none when the grid has no room for it.
-    pub fn cell_in(&self, i: usize, grid: usize) -> Option<usize> {
-        let (at, _) = self.cells.get(i)?;
-        if self.shaped {
-            (grid == 3).then_some(*at)
-        } else {
-            (i < grid * grid).then_some(i)
+    /// Where each cell's stack goes in a grid `grid` wide, cell by cell (none: no room). A shaped
+    /// recipe's cells have their places, only in a 3x3 grid. A shapeless recipe's filled and
+    /// required cells take the grid's places first to last, so any of its cells can be among the
+    /// ones a small grid holds: a 2x2 grid takes paper and three gunpowder, or paper, gunpowder
+    /// and a star.
+    pub fn places(&self, staged: &[Option<ItemStack>], grid: usize) -> Vec<Option<usize>> {
+        let room = grid * grid;
+        let mut next = 0;
+        self.cells
+            .iter()
+            .enumerate()
+            .map(|(i, (at, role))| {
+                if self.shaped {
+                    return (grid == 3).then_some(*at);
+                }
+                if role.optional && staged.get(i).is_none_or(Option::is_none) {
+                    return None;
+                }
+                let place = (next < room).then_some(next);
+                next += 1;
+                place
+            })
+            .collect()
+    }
+
+    /// What grid cell `cell` of this staging edits: a cell holding a role's stack (or kept for a
+    /// required one) edits that role; a shapeless recipe's first free cell adds to its empty
+    /// optional roles. None: the recipe doesn't use the cell.
+    pub fn role_at(
+        &self,
+        staged: &[Option<ItemStack>],
+        grid: usize,
+        cell: usize,
+    ) -> Option<CellRole> {
+        let places = self.places(staged, grid);
+        if let Some(i) = places.iter().position(|&p| p == Some(cell)) {
+            return Some(CellRole::One(i));
         }
+        let used = places.iter().flatten().count();
+        if self.shaped || cell != used || cell >= grid * grid {
+            return None;
+        }
+        let empty: Vec<usize> = (0..self.cells.len())
+            .filter(|&i| self.cells[i].1.optional && staged.get(i).is_none_or(Option::is_none))
+            .collect();
+        (!empty.is_empty()).then_some(CellRole::Add(empty))
     }
 
     /// The grid can hold every cell it requires.
     pub fn fits(&self, grid: usize) -> bool {
+        let places = self.places(&vec![None; self.cells.len()], grid);
         self.cells
             .iter()
-            .enumerate()
-            .all(|(i, (_, role))| role.optional || self.cell_in(i, grid).is_some())
+            .zip(places)
+            .all(|((_, role), place)| role.optional || place.is_some())
     }
 }
 
@@ -539,11 +588,12 @@ pub fn layout(
     grid: usize,
 ) -> Option<Vec<Option<ItemStack>>> {
     let mut cells = vec![None; grid * grid];
+    let places = template.places(staged, grid);
     for (i, stack) in staged.iter().enumerate() {
         let Some(stack) = stack else {
             continue;
         };
-        *cells.get_mut(template.cell_in(i, grid)?)? = Some(stack.clone());
+        *cells.get_mut((*places.get(i)?)?)? = Some(stack.clone());
     }
     Some(cells)
 }
@@ -700,6 +750,114 @@ mod tests {
                 .all(|s| &*s.item == "minecraft:gunpowder")
         );
         assert_eq!(gone.iter().flatten().count(), 1);
+    }
+
+    /// The rocket's cells as the builder makes them: paper, gunpowder, then the optional star,
+    /// gunpowder, gunpowder, star, star.
+    fn rocket() -> Template {
+        let (paper, powder, star) = (
+            Ingredient::of(vec!["minecraft:paper".into()]),
+            Ingredient::of(vec!["minecraft:gunpowder".into()]),
+            Ingredient::of(vec!["minecraft:firework_star".into()]),
+        );
+        Template {
+            recipe: "test:rocket".into(),
+            kind: Kind::Fireworks,
+            icon: ItemStack::new("minecraft:firework_rocket", 3),
+            cells: shapeless(vec![
+                required(&paper),
+                required(&powder),
+                optional(&star),
+                optional(&powder),
+                optional(&powder),
+                optional(&star),
+                optional(&star),
+            ]),
+            shaped: false,
+            family: "test:rocket".into(),
+        }
+    }
+
+    fn staging(items: &[Option<&str>]) -> Vec<Option<ItemStack>> {
+        items
+            .iter()
+            .map(|i| i.map(|i| ItemStack::new(i, 1)))
+            .collect()
+    }
+
+    #[test]
+    fn a_small_grid_holds_any_four_of_a_shapeless_recipes_stacks() {
+        let rocket = rocket();
+        let (p, g, s) = (
+            Some("minecraft:paper"),
+            Some("minecraft:gunpowder"),
+            Some("minecraft:firework_star"),
+        );
+        // Paper and three gunpowder: the third gunpowder is the fifth cell.
+        let three = staging(&[p, g, None, g, g, None, None]);
+        assert_eq!(
+            rocket.places(&three, 2),
+            [Some(0), Some(1), None, Some(2), Some(3), None, None]
+        );
+        let grid = layout(&rocket, &three, 2).expect("room in a 2x2 grid");
+        assert_eq!(grid.iter().flatten().count(), 4);
+        // Paper, gunpowder and a star.
+        let starred = staging(&[p, g, s, None, None, None, None]);
+        assert!(layout(&rocket, &starred, 2).is_some());
+        // A fifth stack has no room in a 2x2 grid; a 3x3 grid takes all seven where they were.
+        let five = staging(&[p, g, s, g, g, None, None]);
+        assert!(layout(&rocket, &five, 2).is_none());
+        let all = staging(&[p, g, s, g, g, s, s]);
+        assert_eq!(rocket.places(&all, 3), (0..7).map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_shapeless_recipes_first_free_cell_adds_and_an_emptied_one_closes_up() {
+        let rocket = rocket();
+        let (p, g) = (Some("minecraft:paper"), Some("minecraft:gunpowder"));
+        let two = staging(&[p, g, None, None, None, None, None]);
+        assert_eq!(rocket.role_at(&two, 2, 1), Some(CellRole::One(1)));
+        // The first free cell takes any empty optional cell; the one after it is unused.
+        assert_eq!(
+            rocket.role_at(&two, 2, 2),
+            Some(CellRole::Add(vec![2, 3, 4, 5, 6]))
+        );
+        assert_eq!(rocket.role_at(&two, 2, 3), None);
+        // With the star taken out of the middle, the gunpowder after it moves up a place.
+        let gap = staging(&[p, g, None, g, None, None, None]);
+        assert_eq!(rocket.role_at(&gap, 2, 2), Some(CellRole::One(3)));
+        // A full 2x2 grid has no free cell to add in.
+        let full = staging(&[p, g, None, g, g, None, None]);
+        assert!(
+            (0..4).all(|cell| matches!(rocket.role_at(&full, 2, cell), Some(CellRole::One(_))))
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_two_by_two_rocket_takes_three_gunpowder() {
+        let recipes = recipes();
+        let all = templates(&recipes);
+        let rocket = all
+            .iter()
+            .find(|t| &*t.icon.item == "minecraft:firework_rocket")
+            .unwrap();
+        // Paper and three gunpowder, each in the first free cell that takes it.
+        let mut left: Vec<ItemStack> = ["paper", "gunpowder", "gunpowder", "gunpowder"]
+            .iter()
+            .map(|i| ItemStack::new(&format!("minecraft:{i}"), 1))
+            .collect();
+        let mut staged: Vec<Option<ItemStack>> = vec![None; rocket.cells.len()];
+        for (i, (_, role)) in rocket.cells.iter().enumerate() {
+            if let Some(k) = left.iter().position(|s| role.accepts.test_in(ctx(), s)) {
+                staged[i] = Some(left.remove(k));
+            }
+        }
+        assert!(left.is_empty(), "no cell for {left:?}");
+        assert_eq!(staged.iter().flatten().count(), 4);
+        let grid = layout(rocket, &staged, 2).expect("room in a 2x2 grid");
+        let made = recipes.craft(ctx(), &grid, 2).expect("a rocket");
+        assert_eq!(&*made.item, "minecraft:firework_rocket");
     }
 
     #[test]
