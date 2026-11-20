@@ -202,6 +202,15 @@ fn mcmeta(text: Option<&str>) -> (Option<bool>, Option<bool>) {
     (flag("blur"), flag("clamp"))
 }
 
+/// Whether a PNG of `file` bytes could hold the `width` x `height` pixels of `bits` each its
+/// header claims. The pixel buffer is sized from the header alone, so a pack file of a few dozen
+/// bytes claiming 60000x60000 would ask for gigabytes; deflate stores at most 1032 bytes in each
+/// byte, so no real PNG is refused.
+fn could_hold(width: u32, height: u32, bits: u64, file: usize) -> bool {
+    let pixel_bytes = u128::from(width) * u128::from(height) * u128::from(bits) / 8;
+    pixel_bytes <= 1032 * file as u128
+}
+
 /// A PNG as 8-bit RGBA, rows top first.
 pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -210,6 +219,15 @@ pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
+    let info = reader.info();
+    if !could_hold(
+        info.width,
+        info.height,
+        info.color_type.samples() as u64 * info.bit_depth as u64,
+        bytes.len(),
+    ) {
+        return None;
+    }
     let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     let pixels = &buf[..info.buffer_size()];
@@ -433,6 +451,45 @@ mod tests {
         let ihdr = encoded.windows(4).position(|w| w == b"IHDR").unwrap();
         encoded[ihdr + 4 + 13] ^= 0xFF;
         assert!(decode_png(&encoded).is_some());
+    }
+
+    fn grey_png(width: u32, height: u32) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        let mut encoder = png::Encoder::new(&mut encoded, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        let pixels = [128, 128, 128, 255].repeat(width as usize * height as usize);
+        writer.write_image_data(&pixels).unwrap();
+        writer.finish().unwrap();
+        encoded
+    }
+
+    /// A pack texture of a few dozen bytes whose header claims 60000x60000 pixels is no PNG,
+    /// and is refused from its header before memory for its pixels is reserved.
+    #[test]
+    fn a_png_claiming_more_pixels_than_its_file_holds_is_refused() {
+        let mut crafted = grey_png(1, 1);
+        let ihdr = crafted.windows(4).position(|w| w == b"IHDR").unwrap();
+        crafted[ihdr + 4..ihdr + 8].copy_from_slice(&60_000u32.to_be_bytes());
+        crafted[ihdr + 8..ihdr + 12].copy_from_slice(&60_000u32.to_be_bytes());
+        assert!(!could_hold(60_000, 60_000, 32, crafted.len()));
+        assert!(decode_png(&crafted).is_none());
+    }
+
+    #[test]
+    fn the_bound_is_deflates_largest_ratio() {
+        assert!(could_hold(1032, 1, 8, 1));
+        assert!(!could_hold(1033, 1, 8, 1));
+        assert!(could_hold(1, 1032, 64, 8));
+        assert!(!could_hold(u32::MAX, u32::MAX, 64, 1 << 20));
+    }
+
+    /// One flat colour compresses about as tightly as a PNG can, and still decodes.
+    #[test]
+    fn a_flat_png_still_decodes() {
+        let texture = decode_png(&grey_png(1024, 1024)).unwrap();
+        assert_eq!(texture.size, [1024, 1024, 1]);
     }
 
     #[test]
