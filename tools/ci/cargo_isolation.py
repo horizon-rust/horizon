@@ -139,7 +139,12 @@ def main(argv):
         del args[index:index + 2]
     [checkout] = args
     environ = dict(os.environ)
-    found = problems(checkout, environ, top)
+    try:
+        found = problems(checkout, environ, top)
+    except OSError:
+        # realpath() can fail on a link that changes while it is read; its error names the path.
+        print("::error::could not read the checkout's parent folders")
+        return 1
     if found:
         for line in found:
             print(f"::error::{line}")

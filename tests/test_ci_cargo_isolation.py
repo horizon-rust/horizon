@@ -1,11 +1,14 @@
 """tools/ci/cargo_isolation.py: no cargo configuration from outside the checkout, a fresh cargo home, no values in
 its output."""
+import contextlib
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.ci import cargo_isolation
 
@@ -57,6 +60,17 @@ class CargoIsolationTests(unittest.TestCase):
         # No path from the runner's variables in either stream.
         for text in (str(runner_temp), runner_temp.name, "runner-temp", "cargo-home"):
             self.assertNotIn(text, result.stdout + result.stderr)
+
+    def test_a_failing_ancestor_walk_prints_a_fixed_message_and_no_path(self):
+        error = OSError(2, "No such file or directory", "/runner/secret-link-5d2e")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cargo_isolation.os.path, "realpath", side_effect=error), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = cargo_isolation.main([str(self.checkout), "--top", str(self.top)])
+        self.assertEqual(status, 1)
+        self.assertEqual(out.getvalue(), "::error::could not read the checkout's parent folders\n")
+        self.assertEqual(err.getvalue(), "")
+        self.assertNotIn("secret-link-5d2e", out.getvalue())
 
     def test_setup_failures_print_a_fixed_message_and_no_path(self):
         unopenable = self.top / "missing-env-dir-7f3a" / "github-env"
