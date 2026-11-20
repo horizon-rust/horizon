@@ -3457,7 +3457,7 @@ pub fn check_updates() -> Result<Updates, String> {
 }
 
 mod update_selection;
-pub use update_selection::select_after_update;
+pub use update_selection::{select_after_instance_install, select_after_update};
 
 /// Installs `tag` (or with "latest" the newest release, pre-releases left out), then updates the selection as
 /// `select_after_update` says when `as_update`, or always selects it otherwise.
@@ -6665,6 +6665,40 @@ pub fn {f}("
         assert!(!select_after_update(
             Some("imported-2026-11-01-abcdef0"),
             &["imported-2026-11-01-abcdef0".to_string()]
+        ));
+    }
+
+    #[test]
+    fn an_instance_install_of_a_newer_nightly_moves_a_following_selection_not_a_pick() {
+        let (n18, n19, n20) = (
+            "nightly-2026-11-18-dd67b76",
+            "nightly-2026-11-19-f00125f",
+            "nightly-2026-11-20-0a875da",
+        );
+        let list = |tags: &[&str]| tags.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        // Following the newest (n18), an instance pinned to n19 installs it: the selection
+        // follows, and the next update moves it on again.
+        assert!(select_after_instance_install(
+            Some(n18),
+            &list(&[n18]),
+            &list(&[n19, n18]),
+            n19
+        ));
+        assert!(select_after_update(Some(n19), &list(&[n19, n18])));
+        // Use picked n18 over the newer n19: neither an instance's n20 nor the update moves it.
+        assert!(!select_after_instance_install(
+            Some(n18),
+            &list(&[n19, n18]),
+            &list(&[n20, n19, n18]),
+            n20
+        ));
+        assert!(!select_after_update(Some(n18), &list(&[n19, n18])));
+        // An older build for an instance never moves the selection back.
+        assert!(!select_after_instance_install(
+            Some(n19),
+            &list(&[n19]),
+            &list(&[n19, n18]),
+            n18
         ));
     }
 

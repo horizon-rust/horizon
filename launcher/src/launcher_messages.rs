@@ -206,7 +206,8 @@ impl Launcher {
                             if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
                                 self.updates.horizon = None;
                             }
-                            // An instance's own version leaves the other instances on theirs.
+                            // An instance's own version leaves the other instances on theirs,
+                            // unless it is the newest and the selection was following the newest.
                             // Judged now, not when the download started: a version picked on
                             // Versions meanwhile stays picked.
                             let before: Vec<String> = self
@@ -215,12 +216,17 @@ impl Launcher {
                                 .filter(|t| **t != tag)
                                 .cloned()
                                 .collect();
-                            let select = as_update.is_none_or(|_| {
-                                backend::select_after_update(
-                                    self.settings.selected.as_deref(),
-                                    &before,
-                                )
-                            }) && (!for_instance || self.launcher_version().is_none());
+                            let selected = self.settings.selected.as_deref();
+                            let select = as_update
+                                .is_none_or(|_| backend::select_after_update(selected, &before))
+                                && (!for_instance
+                                    || self.launcher_version().is_none()
+                                    || backend::select_after_instance_install(
+                                        selected,
+                                        &before,
+                                        &self.installed,
+                                        &tag,
+                                    ));
                             if select {
                                 self.settings.selected = Some(tag);
                             }

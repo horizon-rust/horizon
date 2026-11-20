@@ -28,3 +28,18 @@ pub fn select_after_update(selected: Option<&str>, installed_before: &[String]) 
             .is_none_or(|newest| newest == s),
     }
 }
+
+/// Whether `tag`, installed only because an instance is pinned to it, becomes the selected one
+/// too: when it is now the newest installed (`installed`) and the selection was following the
+/// newest (`select_after_update` on `installed_before`). Without this, the selection would stay
+/// on the build before it, which then reads as picked on Versions and no update moves it again.
+/// An older build for an instance, or a selection a person picked, stays as it is.
+pub fn select_after_instance_install(
+    selected: Option<&str>,
+    installed_before: &[String],
+    installed: &[String],
+    tag: &str,
+) -> bool {
+    installed.first().map(String::as_str) == Some(tag)
+        && select_after_update(selected, installed_before)
+}
