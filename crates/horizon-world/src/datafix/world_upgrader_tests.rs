@@ -232,6 +232,46 @@ fn recreating_rewrites_every_file_and_removes_the_new_folder() {
     );
 }
 
+/// A recreated chunk too large for its region gets its own `c.X.Z.mcc`,
+/// which moves out with the region, over the old one of another compression.
+#[test]
+fn recreating_moves_an_oversized_chunks_file_out() {
+    let world = TempWorld::new("recreate-mcc");
+    let file = world.folder(OVERWORLD, "entities").join("r.0.0.mca");
+    let pos = ChunkPos::new(2, 3);
+    // Incompressible, so the chunk stays past 255 sectors under Zlib too.
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let payload: Vec<u8> = (0..1_100_000)
+        .map(|_| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 56) as u8
+        })
+        .collect();
+    let tag = Tag::compound([
+        ("DataVersion", Tag::Int(CURRENT)),
+        ("Position", Tag::IntArray(vec![pos.x, pos.z])),
+        ("Entities", Tag::List(vec![])),
+        ("Payload", Tag::ByteArray(payload.clone())),
+    ]);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut region = RegionFile::open_writable(&file, true).unwrap();
+    let record = ChunkRecord::from_nbt(&root(tag), Compression::None, 1, Limits::saved()).unwrap();
+    region.write(pos, &record).unwrap();
+    drop(region);
+    assert!(file.with_file_name("c.2.3.mcc").is_file());
+
+    let progress = run(&world, false, true);
+    assert!(progress.is_finished());
+    assert!(!world.folder(OVERWORLD, "new_entities").exists());
+    let mut region = RegionFile::open(&file).unwrap();
+    let chunk = region.read(pos).unwrap().expect("the chunk reads");
+    assert_eq!(chunk.compression, Compression::Zlib);
+    let chunk = chunk.nbt(Limits::saved()).unwrap().tag;
+    assert_eq!(chunk.get("Payload"), Some(&Tag::ByteArray(payload)));
+}
+
 #[test]
 fn cancel_stops_before_the_next_file() {
     let world = TempWorld::new("cancel");
