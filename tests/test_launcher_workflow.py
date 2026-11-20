@@ -195,15 +195,18 @@ def strings(value):
             yield from strings(item)
 
 
-def run(event, ref, inputs=None, variables=VARS):
-    """Everything a run reaches: per job (and matrix entry), runs-on, environment, steps run, secrets read."""
+def run(event, ref, inputs=None, variables=VARS, blank=(), edit=None):
+    """Everything a run reaches: per job (and matrix entry), runs-on, environment, permissions, steps run, secrets
+    read. `blank` empties those outputs of decide's mode step; `edit` changes the parsed workflow first."""
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    if edit:
+        edit(workflow)
     github = {"event_name": event, "ref": ref, "sha": "c0ffee", "token": "token", "repository": "horizon-rust/horizon"}
     secrets = {name: f"<{name}>" for name in BRANCH_SECRETS | SIGNING_SECRETS}
     base = {"github": github, "inputs": inputs or {}, "vars": variables, "secrets": secrets}
     reached = []
 
-    # decide: its main and dry-run answers come from the mode step itself, run in bash.
+    # decide: the mode step itself runs in bash; the job's outputs are its own `outputs:` mapping over its steps.
     decide = workflow["jobs"]["decide"]
     mode = next(step for step in decide["steps"] if step.get("id") == "mode")
     found = Expressions({**base, "steps": {}})
@@ -214,16 +217,18 @@ def run(event, ref, inputs=None, variables=VARS):
         subprocess.run([BASH, "-e", "-c", found.template(mode["run"])], check=True,
                        env={**os.environ, **env, "GITHUB_REF": ref, "GITHUB_OUTPUT": str(output)})
         answers = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    dry_run = answers["dry_run"]
+    answers = {key: "" if key in blank else value for key, value in answers.items()}
     # A dry run always builds (the decide script's own rule); for main's real release, assume one is due.
-    outputs = {"release": "true", "tag": "launcher@0.2.99", "head": "c0ffee", "version": "0.2.99",
-               "dry_run": dry_run, "main": answers["main"]}
+    decided = {"release": "true", "tag": "launcher@0.2.99", "head": "c0ffee", "version": "0.2.99"}
+    steps_ctx = {"mode": {"outputs": answers}, "decide": {"outputs": decided}}
+    found = Expressions({**base, "steps": steps_ctx})
+    outputs = {key: found.text(found.template(value)) for key, value in (decide.get("outputs") or {}).items()}
     needs = {"decide": {"outputs": outputs, "result": "success"}}
+    default_permissions = workflow.get("permissions") or {}
 
     for name, job in workflow["jobs"].items():
         entries = (job.get("strategy") or {}).get("matrix", {}).get("include") or [{}]
         for entry in entries:
-            steps_ctx = {"mode": {"outputs": {"dry_run": dry_run}}, "decide": {"outputs": outputs}}
             ex = Expressions({**base, "needs": needs, "matrix": entry, "steps": steps_ctx})
             if not ex.condition(job.get("if")):
                 continue
@@ -248,12 +253,15 @@ def run(event, ref, inputs=None, variables=VARS):
                 body = ex.template(step["run"]) if "run" in step else ""
                 steps.append({"name": step.get("name", step.get("uses", "")), "uses": step.get("uses", ""),
                               "env": env, "with": with_, "run": body})
+            permissions = job.get("permissions", default_permissions)
+            writes = {scope for scope, level in permissions.items() if level == "write"} \
+                if isinstance(permissions, dict) else {"all"} if permissions == "write-all" else set()
             label = f"{name} {entry.get('name', '')}".strip()
             reached.append({"job": label, "runs_on": runs_on, "hosted": hosted, "environment": environment,
-                            "steps": steps, "secrets": set(ex.secrets),
+                            "steps": steps, "secrets": set(ex.secrets), "writes": writes,
                             "env": {k: ex.template(v) if isinstance(v, str) else v
                                     for k, v in (job.get("env") or {}).items()}})
-    return dry_run, reached
+    return outputs, reached
 
 
 def saves_cache(step):
@@ -263,6 +271,12 @@ def saves_cache(step):
     if uses.startswith("actions/cache@") or uses.startswith("actions/cache/save@"):
         return True
     return False
+
+
+def drop_output(name):
+    def edit(workflow):
+        del workflow["jobs"]["decide"]["outputs"][name]
+    return edit
 
 
 @unittest.skipUnless(BASH, "the mode step runs in bash")
@@ -278,36 +292,72 @@ class BranchBuilds(unittest.TestCase):
         ("workflow_dispatch", "refs/tags/launcher@0.2.99", {"dry_run": False, "force": True}),
         ("workflow_dispatch", "refs/tags/launcher-v9.9.9", {"dry_run": False, "force": False}),
     ]
+    MAIN_RELEASES = [("push", None), ("schedule", None), ("workflow_dispatch", {"dry_run": False, "force": True})]
+
+    def assert_safe(self, jobs):
+        """Hosted, unsigned (throwaway key only), no protected environment, no cache saved, nothing published, and
+        no token that writes."""
+        self.assertTrue(any(job["job"] == "build macos" for job in jobs))
+        for job in jobs:
+            where = job["job"]
+            self.assertTrue(job["hosted"], f"{where} runs on {job['runs_on']}")
+            self.assertEqual(job["environment"], "", where)
+            self.assertLessEqual(job["secrets"], BRANCH_SECRETS, where)
+            self.assertEqual(job["writes"], set(), where)
+            for step in job["steps"]:
+                what = f"{where}: {step['name']}"
+                self.assertNotIn("keychain.sh", step["run"], what)
+                self.assertEqual(step["env"].get("MACOS_SIGN_IDENTITY", ""), "", what)
+                self.assertEqual(step["env"].get("MACOS_NOTARY_PROFILE", ""), "", what)
+                self.assertFalse(saves_cache(step), what)
+                self.assertIsNone(PUBLISH.search(step["run"]), what)
+                if "EPHEMERAL" in step["env"]:
+                    # The throwaway key, and the signature checked against it.
+                    self.assertEqual(step["env"]["EPHEMERAL"], "yes", what)
+
+    def assert_writers_run_no_checkout(self, jobs):
+        for job in jobs:
+            if job["writes"]:
+                self.assertFalse(any(step["uses"].startswith("actions/checkout@") for step in job["steps"]),
+                                 f"{job['job']} writes and runs the repository's code")
 
     def test_off_main_nothing_signs_and_every_job_is_hosted(self):
         for variables in (VARS, {**VARS, "MAC_RUNNER": ""}):
             for event, ref, inputs in self.OFF_MAIN:
                 with self.subTest(event=event, ref=ref, inputs=inputs, mac_runner=variables["MAC_RUNNER"]):
-                    dry_run, jobs = run(event, ref, inputs, variables)
-                    self.assertEqual(dry_run, "true")
-                    self.assertTrue(any(job["job"] == "build macos" for job in jobs))
-                    for job in jobs:
-                        where = job["job"]
-                        self.assertTrue(job["hosted"], f"{where} runs on {job['runs_on']}")
-                        self.assertEqual(job["environment"], "", where)
-                        self.assertLessEqual(job["secrets"], BRANCH_SECRETS, where)
-                        for step in job["steps"]:
-                            what = f"{where}: {step['name']}"
-                            self.assertNotIn("keychain.sh", step["run"], what)
-                            self.assertEqual(step["env"].get("MACOS_SIGN_IDENTITY", ""), "", what)
-                            self.assertEqual(step["env"].get("MACOS_NOTARY_PROFILE", ""), "", what)
-                            self.assertFalse(saves_cache(step), what)
-                            self.assertIsNone(PUBLISH.search(step["run"]), what)
-                            if "sign_release.sh" in step["run"]:
-                                # The throwaway key only.
-                                self.assertEqual(step["env"]["EPHEMERAL"], "yes", what)
+                    outputs, jobs = run(event, ref, inputs, variables)
+                    self.assertEqual((outputs["main"], outputs["dry_run"]), ("false", "true"))
+                    self.assert_safe(jobs)
+
+    def test_an_empty_or_missing_answer_is_a_branch_build(self):
+        # Main's real release, but with decide's main or dry_run answer empty, or its output binding gone.
+        for event, inputs in self.MAIN_RELEASES:
+            for name in ("main", "dry_run"):
+                for how, options in (("empty", {"blank": (name,)}), ("unbound", {"edit": drop_output(name)})):
+                    with self.subTest(event=event, output=name, how=how):
+                        outputs, jobs = run(event, "refs/heads/main", inputs, **options)
+                        self.assertEqual(outputs.get(name, ""), "")
+                        if name == "dry_run":
+                            # main stays true: its runner and Apple signing stay, as on a dry run on main.
+                            jobs = [job for job in jobs if not job["job"].startswith("build ")]
+                            self.assertTrue(jobs)
+                            self.assertFalse(any(job["job"] == "publish" for job in jobs))
+                            for job in jobs:
+                                self.assertEqual(job["environment"], "", job["job"])
+                                self.assertEqual(job["secrets"] & SIGNING_SECRETS, set(), job["job"])
+                                self.assertEqual(job["writes"], set(), job["job"])
+                                for step in job["steps"]:
+                                    self.assertIsNone(PUBLISH.search(step["run"]), job["job"])
+                                    if "EPHEMERAL" in step["env"]:
+                                        self.assertEqual(step["env"]["EPHEMERAL"], "yes", job["job"])
+                        else:
+                            self.assert_safe(jobs)
 
     def test_main_keeps_its_runner_signing_cache_and_release(self):
-        for event, inputs in (("push", None), ("schedule", None),
-                              ("workflow_dispatch", {"dry_run": False, "force": True})):
+        for event, inputs in self.MAIN_RELEASES:
             with self.subTest(event=event):
-                dry_run, jobs = run(event, "refs/heads/main", inputs)
-                self.assertEqual(dry_run, "false")
+                outputs, jobs = run(event, "refs/heads/main", inputs)
+                self.assertEqual((outputs["main"], outputs["dry_run"]), ("true", "false"))
                 by_name = {job["job"]: job for job in jobs}
                 for leg in ("build macos", "build macos-x64"):
                     mac = by_name[leg]
@@ -320,16 +370,25 @@ class BranchBuilds(unittest.TestCase):
                 self.assertTrue(any(saves_cache(step) for step in by_name["build linux"]["steps"]))
                 self.assertEqual(by_name["sign"]["environment"], "release")
                 self.assertTrue(SIGNING_SECRETS <= by_name["sign"]["secrets"])
-                self.assertTrue(any(PUBLISH.search(step["run"]) for step in by_name["release"]["steps"]))
+                # Notes and the signature check read only; the publish job writes, and only it.
+                self.assertEqual(by_name["release"]["writes"], set())
+                publish = by_name["publish"]
+                self.assertEqual(publish["writes"], {"contents"})
+                self.assertEqual(publish["environment"], "release")
+                self.assertTrue(any(PUBLISH.search(step["run"]) for step in publish["steps"]))
+                self.assertEqual([job["job"] for job in jobs if job["writes"]], ["publish"])
+                self.assert_writers_run_no_checkout(jobs)
 
     def test_a_dry_run_on_main_builds_main_on_its_runner_and_publishes_nothing(self):
-        dry_run, jobs = run("workflow_dispatch", "refs/heads/main", {"dry_run": True, "force": False})
-        self.assertEqual(dry_run, "true")
+        outputs, jobs = run("workflow_dispatch", "refs/heads/main", {"dry_run": True, "force": False})
+        self.assertEqual((outputs["main"], outputs["dry_run"]), ("true", "true"))
         by_name = {job["job"]: job for job in jobs}
         self.assertEqual(by_name["build macos"]["runs_on"], VARS["MAC_RUNNER"])
         self.assertEqual(by_name["sign"]["environment"], "")
         self.assertEqual(by_name["sign"]["secrets"] & SIGNING_SECRETS, set())
-        self.assertFalse(any(PUBLISH.search(step["run"]) for step in by_name["release"]["steps"]))
+        self.assertNotIn("publish", by_name)
+        self.assertEqual([job["job"] for job in jobs if job["writes"]], [])
+        self.assertFalse(any(PUBLISH.search(step["run"]) for job in jobs for step in job["steps"]))
 
     def test_the_workflow_has_no_other_way_in(self):
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
