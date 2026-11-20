@@ -360,18 +360,13 @@ impl GuestList {
         }
     }
 
-    /// Refresh `index`'s cached syncable attributes if `LiveAttributes::version()` changed.
+    /// Refresh `index`'s cached syncable attributes into `syncable_attrs_cache`.
     pub fn refresh_syncable_attrs(&mut self, index: usize) {
         let g = &mut self.rows[index];
         let Some(m) = g.motion.as_ref() else {
             return;
         };
-        let version = m.attributes.version();
-        if g.syncable_attrs_cache.0 == Some(version) {
-            return;
-        }
         super::attributes::syncable_into(&m.attributes, &mut g.syncable_attrs_cache.1);
-        g.syncable_attrs_cache.0 = Some(version);
     }
 
     /// Record vanished tracked entity positions on a guest's replay history.

@@ -133,7 +133,8 @@ impl<T> Consumer<T> {
     /// under a single queue lock to reuse `out`'s buffer.
     pub fn take_turn_into(&self, out: &mut Vec<OwnedReceipt<T>>) {
         out.clear();
-        out.extend(self.receiver.drain_turn());
+        let count = self.stats().queued_items;
+        out.extend((0..count).map_while(|_| self.try_recv_owned().ok()));
     }
     /// Only values already published at the beginning of this turn. New replies
     /// append behind these values and cannot feed back into the same actor turn.
