@@ -209,12 +209,19 @@ impl Launcher {
                             if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
                                 self.updates.horizon = None;
                             }
+                            let before: Vec<String> = self
+                                .installed
+                                .iter()
+                                .filter(|t| **t != tag)
+                                .cloned()
+                                .collect();
                             // Judged on the selection as saved now, not when the download
                             // started: a version picked on Versions or with `settings
-                            // selected-version` meanwhile stays picked.
+                            // selected-version` meanwhile stays picked. A file from before
+                            // `following` is read against the list before this install.
                             // A saved selection that isn't installed is the one the window
                             // replaced at start: the window's stays then.
-                            let saved = Settings::load();
+                            let saved = Settings::load_for_install(&before);
                             if self.settings_save_error.is_none()
                                 && saved
                                     .selected
@@ -223,12 +230,6 @@ impl Launcher {
                             {
                                 self.settings.selection_from(&saved);
                             }
-                            let before: Vec<String> = self
-                                .installed
-                                .iter()
-                                .filter(|t| **t != tag)
-                                .cloned()
-                                .collect();
                             // An instance's own version leaves the selection where it is, unless
                             // an instance on the Nightly channel is pinned to it and the
                             // selection follows the newest. Home's Stable update never moves it.
@@ -241,9 +242,7 @@ impl Launcher {
                                             && i.version.as_deref() == Some(tag.as_str())
                                     })
                             });
-                            let select = backend::selection_after_install(
-                                self.settings.selected.as_deref(),
-                                self.settings.following.as_deref(),
+                            self.settings.apply_install(
                                 &tag,
                                 &before,
                                 &self.installed,
@@ -252,10 +251,6 @@ impl Launcher {
                                     instance,
                                 },
                             );
-                            if let Some(follow) = select {
-                                self.settings.following = follow.then(|| tag.clone());
-                                self.settings.selected = Some(tag);
-                            }
                             // Pruning reads settings from disk: protect the selection only once
                             // it has been saved there. A failed save leaves all versions in place.
                             if self.save_settings() {

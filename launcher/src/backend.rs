@@ -3520,14 +3520,15 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
             eprintln!("Could not mark updated Nightly {}: {e}", release.tag);
         }
     }
-    let mut settings = Settings::load();
+    let mut settings = Settings::load_for_install(&before);
     // An older Nightly is a deliberate rollback: installed, but an update never moves the selection back.
-    let select = match (as_update, &downgrade) {
-        (false, _) => Some(false),
-        (true, Some(_)) => None,
-        (true, None) => selection_after_install(
-            settings.selected.as_deref(),
-            settings.following.as_deref(),
+    let changed = match (as_update, &downgrade) {
+        (false, _) => {
+            settings.pick(release.tag.clone());
+            true
+        }
+        (true, Some(_)) => false,
+        (true, None) => settings.apply_install(
             &release.tag,
             &before,
             &installed(),
@@ -3537,9 +3538,7 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
             },
         ),
     };
-    if let Some(follow) = select {
-        settings.selected = Some(release.tag.clone());
-        settings.following = follow.then(|| release.tag.clone());
+    if changed {
         settings.save()?;
     }
     if as_update && release.nightly.is_some() {
@@ -4617,21 +4616,34 @@ impl Settings {
         self.save()
     }
 
+    /// The saved settings. Only reads: a file from before `following` is migrated in memory
+    /// ([`Settings::adopt_legacy_selection`] against what is installed now), and written as such
+    /// at the next save.
     pub fn load() -> Self {
-        let text = fs::read_to_string(data_dir().join("settings.json")).unwrap_or_default();
-        let (settings, legacy) = Self::from_saved(&text, installed);
-        // Settled once and written, so no later read (another window's, or the one an install
-        // makes when it ends) sees the old file and judges against a newer list.
-        if legacy {
-            if let Err(e) = settings.save() {
-                eprintln!("Could not save the settings with their followed version: {e}");
-            }
-        }
-        settings
+        Self::load_from(&data_dir().join("settings.json"))
     }
 
-    /// The settings saved as `text`, and whether it is a file from before `following`, which the
-    /// caller writes back once. `installed` is read only for such a file.
+    fn load_from(path: &Path) -> Self {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        Self::from_saved(&text, installed).0
+    }
+
+    /// The saved settings when an install of a version just ended, `before` being what was
+    /// installed before it. A file from before `following` is judged against `before`, as the
+    /// update rule of launchers before it judged it before moving the selection: against the list
+    /// with the new version in it, a follower would read as a pick. [`Settings::apply_install`]
+    /// then decides, and the caller's save writes `following` from then on.
+    pub fn load_for_install(before: &[String]) -> Self {
+        Self::load_for_install_from(&data_dir().join("settings.json"), before)
+    }
+
+    fn load_for_install_from(path: &Path, before: &[String]) -> Self {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        Self::from_saved(&text, || before.to_vec()).0
+    }
+
+    /// The settings saved as `text`, and whether it is a file from before `following`, whose
+    /// selection is then judged against `installed` (read only for such a file).
     fn from_saved(text: &str, installed: impl FnOnce() -> Vec<String>) -> (Self, bool) {
         let mut settings = Self::parse(text);
         let legacy = serde_json::from_str::<serde_json::Value>(text)
@@ -4647,6 +4659,31 @@ impl Settings {
             settings.adopt_legacy_selection(&installed());
         }
         (settings, legacy)
+    }
+
+    /// Settles the selection after `tag` was installed for `cause`, `installed` being every
+    /// installed version newest first and `before` the same without `tag`
+    /// ([`selection_after_install`]). True when it changed; the caller saves.
+    pub fn apply_install(
+        &mut self,
+        tag: &str,
+        before: &[String],
+        installed: &[String],
+        cause: InstallCause,
+    ) -> bool {
+        let Some(follow) = selection_after_install(
+            self.selected.as_deref(),
+            self.following.as_deref(),
+            tag,
+            before,
+            installed,
+            cause,
+        ) else {
+            return false;
+        };
+        self.selected = Some(tag.to_owned());
+        self.following = follow.then(|| tag.to_owned());
+        true
     }
 
     /// A settings file from before `following`: its selection follows when it is the newest
@@ -6987,59 +7024,68 @@ pub fn {f}("
     }
 
     #[test]
-    fn a_legacy_follower_is_written_once_and_survives_a_stable_install() {
-        let (n19, n20, n21) = (
+    fn a_legacy_selection_is_judged_at_install_completion_against_the_list_before_it() {
+        let (n18, n19, n20) = (
+            "nightly-2026-11-18-dd67b76",
             "nightly-2026-11-19-f00125f",
             "nightly-2026-11-20-0a875da",
-            "nightly-2026-11-21-1111111",
         );
-        // Start: a file from before `following`, on the newest installed.
-        let legacy = format!(r#"{{"selected": "{n19}"}}"#);
-        let (settings, write) = Settings::from_saved(&legacy, || vec![n19.into()]);
-        assert!(write);
-        assert_eq!(settings.following.as_deref(), Some(n19));
-        let saved = serde_json::to_string(&settings).unwrap();
-        // Home's Stable update installs n20; its completion reads the saved file against the
-        // list that now has n20, and leaves the selection where it is.
-        let (reloaded, write) = Settings::from_saved(&saved, || unreachable!());
-        assert!(!write, "written once only");
-        assert_eq!(reloaded.following.as_deref(), Some(n19));
-        let now = [n20, n19].map(String::from);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let before = [n19, n18].map(String::from);
+        let now = [n20, n19, n18].map(String::from);
         let stable = InstallCause {
             update: false,
             instance: Some(false),
         };
-        assert_eq!(
-            selection_after_install(
-                reloaded.selected.as_deref(),
-                reloaded.following.as_deref(),
-                n20,
-                &now[1..],
-                &now,
-                stable
-            ),
-            None
+        // A file from before `following` on f00125f, the newest; Home's Stable update installs
+        // 0a875da and its completion reads the file. The selection stays and follows, and the
+        // completion's save writes that.
+        fs::write(&file, format!(r#"{{"selected": "{n19}"}}"#)).unwrap();
+        let mut settings = Settings::load_for_install_from(&file, &before);
+        assert!(!settings.apply_install(n20, &before, &now, stable));
+        assert_eq!(settings.selected.as_deref(), Some(n19));
+        assert_eq!(settings.following.as_deref(), Some(n19));
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(
+            saved.contains(&format!(r#""following":"{n19}""#)),
+            "{saved}"
         );
-        // It still follows: the next update moves it on.
-        let now = [n21, n20, n19].map(String::from);
+        // The next update moves it on.
+        let next = "nightly-2026-11-21-1111111";
+        let later = [next, n20, n19, n18].map(String::from);
         let update = InstallCause {
             update: true,
             instance: None,
         };
+        let mut reloaded = Settings::parse(&saved);
+        assert!(reloaded.apply_install(next, &now, &later, update));
+        assert_eq!(reloaded.following.as_deref(), Some(next));
+        // A legacy pick of an older build stays a pick through the same completion.
+        fs::write(&file, format!(r#"{{"selected": "{n18}"}}"#)).unwrap();
+        let mut picked = Settings::load_for_install_from(&file, &before);
+        assert!(!picked.apply_install(n20, &before, &now, stable));
         assert_eq!(
-            selection_after_install(
-                reloaded.selected.as_deref(),
-                reloaded.following.as_deref(),
-                n21,
-                &now[1..],
-                &now,
-                update
-            ),
-            Some(true)
+            (picked.selected.as_deref(), picked.following.as_deref()),
+            (Some(n18), None)
         );
-        // A file that isn't settings is not rewritten.
-        assert!(!Settings::from_saved("", Vec::new).1);
-        assert!(!Settings::from_saved("not json", Vec::new).1);
+        assert!(serde_json::to_string(&picked)
+            .unwrap()
+            .contains(r#""following":null"#));
+    }
+
+    #[test]
+    fn loading_a_legacy_settings_file_never_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let text = r#"{"selected": "nightly-2026-11-19-f00125f", "a_newer_key": 1}"#;
+        fs::write(&file, text).unwrap();
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        let _ = Settings::load_from(&file);
+        let _ = Settings::load_for_install_from(&file, &[]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), text);
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
