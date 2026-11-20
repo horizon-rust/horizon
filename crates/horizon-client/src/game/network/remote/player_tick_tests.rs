@@ -104,7 +104,7 @@ fn guest_ticks_before_player_loaded_and_after_its_timeout() {
             )
             .unwrap();
             motion.health.food.exhaustion = 5.0;
-            g.motion = Some(Box::new(motion));
+            g.motion.set(motion);
             let host = game.lan.as_mut().unwrap();
             host.hub.guests.push(g);
             host.play

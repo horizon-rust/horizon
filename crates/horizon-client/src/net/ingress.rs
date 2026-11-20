@@ -129,12 +129,18 @@ impl<T> Consumer<T> {
     ) -> Result<OwnedReceipt<T>, std::sync::mpsc::RecvTimeoutError> {
         self.receiver.recv_timeout_owned(timeout)
     }
+    /// Only values already published at the beginning of this turn, written into `out`
+    /// under a single queue lock to reuse `out`'s buffer.
+    pub fn take_turn_into(&self, out: &mut Vec<OwnedReceipt<T>>) {
+        out.clear();
+        let count = self.stats().queued_items;
+        out.extend((0..count).map_while(|_| self.try_recv_owned().ok()));
+    }
     /// Only values already published at the beginning of this turn. New replies
     /// append behind these values and cannot feed back into the same actor turn.
     pub fn take_turn(&self) -> Vec<OwnedReceipt<T>> {
-        let count = self.stats().queued_items;
-        (0..count)
-            .map_while(|_| self.try_recv_owned().ok())
-            .collect()
+        let mut out = Vec::new();
+        self.take_turn_into(&mut out);
+        out
     }
 }

@@ -82,6 +82,17 @@ mod tests {
                 assert_eq!(lo[0], 3.0 + face, "pig {id}'s near face");
                 pig
             };
+            // The fixture leaves the guest without a body, and a player's attributes live on
+            // it: give one, as a joined player's record keeps.
+            let body =
+                horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(3.0, 64.0, 5.0))
+                    .unwrap();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(12, |guest| guest.motion.set(body))
+                .unwrap();
             let player = game.player(12).unwrap();
             let reach = |game: &crate::game::Game<'_>, pig, rule| {
                 game.player_within_entity_reach(player, pig, rule)

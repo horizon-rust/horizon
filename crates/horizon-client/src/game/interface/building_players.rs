@@ -54,7 +54,8 @@ impl BuildingPlayers {
             .collect();
         if let Some(outer) = outer {
             ancestors.retain(|p| p.conn != outer.conn);
-            if outer.conn != Some(actor)
+            if (outer.conn.is_some() || outer.bounds.is_some())
+                && outer.conn != Some(actor)
                 && (outer.conn.is_none() || current.iter().any(|g| g.get().conn == outer.conn))
             {
                 ancestors.push(outer);

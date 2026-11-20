@@ -240,7 +240,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
             game.lan.as_mut().unwrap().hub.guests.push(guest);
             for dead in [true, false] {
                 fresh_player(game, GameMode::Spectator); // excluded from splash
-                let mut body = Box::new(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+                let mut body = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
                 if dead {
                     body.set_health(0.0, false).unwrap();
                 }
@@ -250,7 +250,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
                     .hub
                     .guests
                     .update_connection(88, |guest| {
-                        guest.motion = Some(body);
+                        guest.motion.set(body);
                         guest.dead = dead;
                         guest.loaded = dead;
                         guest.loading = !dead;

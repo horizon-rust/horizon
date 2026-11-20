@@ -475,8 +475,7 @@ impl Game<'_> {
         let mut guest = Guest::connectionless(conn, uuid, name.into(), entity_id, [0.0; 3], motion);
         guest.dimension = level.dimension_id().to_owned();
         host.hub.guests.push(guest);
-        host.play
-            .insert(conn, super::lan_actions::GuestPlay::default());
+        host.play.insert(conn, Box::default());
         self.next_entity = id;
         Some(mod_api::__private::game::player_ref(
             mod_api::EntityRef::new(epoch, id),
@@ -843,14 +842,26 @@ impl Game<'_> {
                 self.lan_acting_entity?,
             ));
         }
-        if let Some(guest) = self.lan.as_ref().and_then(|host| {
-            host.hub.guests.simulation_iter().find(|guest| {
-                guest.placed
-                    && guest.participates_online()
-                    && guest.uuid == uuid
-                    && !self.lan_guest_swaps.contains(&guest.conn)
-            })
-        }) {
+        if let Some(host) = self.lan.as_ref()
+            && let Some(guest) = host
+                .hub
+                .guests
+                .uuid_index(uuid)
+                .and_then(|idx| host.hub.guests.get(idx))
+                .filter(|guest| {
+                    guest.placed
+                        && guest.participates_online()
+                        && !self.lan_guest_swaps.contains(&guest.conn)
+                })
+                .or_else(|| {
+                    host.hub.guests.simulation_iter().find(|guest| {
+                        guest.placed
+                            && guest.participates_online()
+                            && guest.uuid == uuid
+                            && !self.lan_guest_swaps.contains(&guest.conn)
+                    })
+                })
+        {
             return Some((PlayerRead::Guest(guest), guest.entity_id as u32));
         }
         if self.lan_acting_uuid.is_none()
@@ -925,10 +936,9 @@ impl Game<'_> {
 
     pub(super) fn player_handle_read(&self, player: PlayerRef) -> Option<PlayerRead<'_>> {
         (self.native_lifecycle.epoch()? == player.fields().entity.epoch()).then_some(())?;
-        if self.lan_acting_fake
-            && self.lan_acting_uuid == Some(player.fields().uuid)
-            && self.lan_acting_entity == Some(player.fields().entity.id())
-        {
+        let uuid = player.fields().uuid;
+        let entity_id = player.fields().entity.id();
+        if self.lan_acting_uuid == Some(uuid) && self.lan_acting_entity == Some(entity_id) {
             return Some(PlayerRead::Acting {
                 mode: self.mode_id(),
                 body: self.player.as_ref(),
@@ -936,18 +946,25 @@ impl Game<'_> {
                 last_death: self.level.last_death.as_ref(),
             });
         }
-        if let Some((read, id)) = self.player_lookup(player.fields().uuid)
-            && id == player.fields().entity.id()
+        if let Some(guests) = self.lan.as_ref().map(|host| &host.hub.guests)
+            && let Some(guest) = guests
+                .identity_index(uuid, entity_id)
+                .and_then(|idx| guests.get(idx))
+        {
+            if guest.placed
+                && (guest.participates_online() || guest.is_fake())
+                && !self.lan_guest_swaps.contains(&guest.conn)
+            {
+                return Some(PlayerRead::Guest(guest));
+            }
+            return None;
+        }
+        if let Some((read, id)) = self.player_lookup(uuid)
+            && id == entity_id
         {
             return Some(read);
         }
-        let guests = &self.lan.as_ref()?.hub.guests;
-        let guest = guests
-            .get(guests.identity_index(player.fields().uuid, player.fields().entity.id())?)?;
-        if !guest.placed || !guest.is_fake() || self.lan_guest_swaps.contains(&guest.conn) {
-            return None;
-        }
-        Some(PlayerRead::Guest(guest))
+        None
     }
 
     /// `ServerPlayerGameMode.getGameModeForPlayer`; Paper `HumanEntity#getGameMode`.
@@ -1166,18 +1183,16 @@ impl Game<'_> {
     /// A connected player's record, including one displaced by a nested turn.
     pub(super) fn online_player_record(&self, player: PlayerRef) -> Option<&Guest> {
         (self.native_lifecycle.epoch()? == player.entity().epoch()).then_some(())?;
-        self.lan
-            .as_ref()?
-            .hub
-            .online_players()
-            .find(|g| g.uuid == player.uuid() && g.entity_id as u32 == player.entity().id())
+        let guests = &self.lan.as_ref()?.hub.guests;
+        let g = guests.get(guests.identity_index(player.uuid(), player.entity().id())?)?;
+        (g.placed && g.participates_online()).then_some(g)
     }
 
     /// The stable name of a connected or acting player. None for a stale or
     /// unavailable player; displaced online players retain their identity.
     pub(super) fn player_name(&self, player: PlayerRef) -> Option<String> {
         if self.native_acting_player() == Some(player) {
-            return self.lan_acting_name.clone();
+            return self.lan_acting_name.as_deref().map(str::to_owned);
         }
         Some(self.online_player_record(player)?.name.clone())
     }
@@ -2256,7 +2271,7 @@ fn api_stack_or_keep(
 }
 
 struct ScopedPlayerState {
-    motion: Option<Box<PlayerMotion>>,
+    motion: horizon_client::lan::guest::GuestMotion,
     position: [f64; 3],
     yaw: f32,
     pitch: f32,
@@ -2302,8 +2317,10 @@ impl ScopedPlayerState {
             .stack
             .try_into_engine(items)
             .map_err(ActionRefused::InvalidStack)?;
+        let mut guest_motion = horizon_client::lan::guest::GuestMotion::default();
+        guest_motion.set(motion);
         Ok(Self {
-            motion: Some(Box::new(motion)),
+            motion: guest_motion,
             position,
             yaw: setup.yaw,
             pitch: setup.pitch,
@@ -2425,7 +2442,10 @@ mod tests {
         ));
         let plain = ItemStack::new("minecraft:stick", 5);
         assert_eq!(api_stack_or_keep(Some(unknown.clone()), &mut kept), None);
-        assert_eq!(api_stack_or_keep(Some(odd_components.clone()), &mut kept), None);
+        assert_eq!(
+            api_stack_or_keep(Some(odd_components.clone()), &mut kept),
+            None
+        );
         assert_eq!(api_stack_or_keep(None, &mut kept), None);
         assert_eq!(
             api_stack_or_keep(Some(plain.clone()), &mut kept),
@@ -4242,7 +4262,10 @@ mod tests {
         let (t, levels, problems) = tree(&[mod_api::Command::new("cu callItemClear")]);
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(levels.keys().collect::<Vec<_>>(), ["cu"]);
-        assert_eq!(t["children"]["cu"]["children"]["callItemClear"]["type"], "literal");
+        assert_eq!(
+            t["children"]["cu"]["children"]["callItemClear"]["type"],
+            "literal"
+        );
         let arguments = command_arguments();
         let mut dispatcher = Dispatcher::new();
         register_dispatcher(&mut dispatcher, &t, "native_mod_command", &arguments);

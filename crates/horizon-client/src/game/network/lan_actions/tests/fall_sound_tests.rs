@@ -28,7 +28,7 @@ fn run(distance: f64, expected: usize) {
             let mut motion = PlayerMotion::new(game.motion, Vec3::new(1.5, 64.0, 1.5)).unwrap();
             // The replayed downward move accumulates the fall distance.
             motion.fall_distance = 0.0;
-            landing.motion = Some(Box::new(motion));
+            landing.motion.set(motion);
             let (tx, own) = mpsc::channel();
             landing.sender = PlayerSender::new(tx, Arc::default());
             let mut observer = guest(2);

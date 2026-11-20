@@ -97,10 +97,10 @@ fn with_server(role: ExecutionRole, test: impl FnOnce(&mut Game<'_>)) {
         guest.placed = true;
         guest.loaded = true;
         guest.health = 20.0;
-        guest.motion = Some(Box::new(
+        guest.motion.set(
             horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(3.5, 64.0, 5.5))
                 .unwrap(),
-        ));
+        );
         game.lan.as_mut().unwrap().hub.guests.push(guest);
         test(game);
     });

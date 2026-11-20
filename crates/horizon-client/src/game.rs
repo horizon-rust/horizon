@@ -1926,6 +1926,9 @@ struct Game<'a> {
     acting_abilities: Option<horizon_client::lan::abilities::PlayerAbilities>,
     /// Other players in the current guest turn, including borrowed ancestor bodies.
     lan_building_boxes: building_players::BuildingPlayers,
+    /// Scratch buffers reused across `with_level_opts(true, ...)` calls.
+    level_guest_boxes: Vec<([f64; 3], [f64; 3])>,
+    level_fire_players: Vec<[f64; 3]>,
     /// A guest's `/save-all`: saved once their turn ends (`run_guest_command`),
     /// when their own state is back in their record.
     save_after_guest_turn: bool,
@@ -1949,7 +1952,7 @@ struct Game<'a> {
     /// them (`PlayerRef::destroy_block` with `into_inventory`).
     break_collect: Option<Vec<ItemStack>>,
     /// The name of the guest `lan_acting` acts for (`Player.getName`).
-    lan_acting_name: Option<String>,
+    lan_acting_name: Option<std::sync::Arc<str>>,
     /// Their UUID (`Player.getUUID`).
     lan_acting_uuid: Option<u128>,
     /// Where the mods refused to prime TNT: the sound and game event the level
@@ -2008,9 +2011,9 @@ struct Game<'a> {
     /// The retained server reload listeners of the last successful reload.
     reload_resources: mod_api::RetainedListeners,
     ui: chat::UiState,
-    combat: combat::CombatTracker,
+    combat: Box<combat::CombatTracker>,
     /// Each guest's own `CombatTracker`, out of `combat` between turns.
-    guest_combat: std::collections::HashMap<u32, combat::CombatTracker>,
+    guest_combat: horizon_client::fast_hash::FxHashMap<u32, Box<combat::CombatTracker>>,
     mount: mounts::MountState,
     stats: stats::Stats,
     score: scoreboard::ScoreState,
@@ -2661,120 +2664,176 @@ impl Game<'_> {
         &mut self,
         f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,
     ) -> R {
+        self.with_level_opts(true, f)
+    }
+
+    /// Lightweight [`Self::with_level`] omitting per-player AABB/entity box
+    /// allocations for block ticks/daylight detectors that never query entities.
+    #[allow(dead_code)]
+    fn with_level_light<R>(
+        &mut self,
+        f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,
+    ) -> R {
+        self.with_level_opts(false, f)
+    }
+
+    fn with_level_opts<R>(
+        &mut self,
+        include_entities: bool,
+        f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,
+    ) -> R {
         self.ensure_stateful_entity_table();
         let darken = self.sky_darken();
         let (rain, thunder) = self.weather_levels(1.0);
         // Spectators ignore block triggers (Entity.isIgnoringBlockTriggers).
         let spectator = self.spectator();
-        let player_box = self.player.as_ref().filter(|_| !spectator).map(|p| {
-            let w = f64::from(p.dimensions.width) / 2.0;
-            (
-                [p.position.x - w, p.position.y, p.position.z - w],
-                [
-                    p.position.x + w,
-                    p.position.y + f64::from(p.dimensions.height),
-                    p.position.z + w,
-                ],
-            )
-        });
-        let player_collision = self.player.as_ref().filter(|_| !spectator).map(|p| {
-            let main_hand = self.inventory.get(self.selected).and_then(Option::as_ref);
-            PlayerCollision {
-                y: p.position.y,
-                descending: p.velocity.y < 0.0,
-                fall_distance: p.fall_distance,
-                main_hand_item: main_hand.map_or_else(
-                    || Arc::from("minecraft:air"),
-                    |stack| Arc::clone(&stack.item),
-                ),
-                main_hand_count: main_hand.map_or(0, |stack| stack.count as i32),
-                leather_boots: worn_boots::leather_boots(&self.armor),
-            }
-        });
-        let cart_boxes = self
-            .carts
-            .iter()
-            .map(|c| {
-                let p = c.position;
-                (
-                    [p.x - 0.49, p.y, p.z - 0.49],
-                    [p.x + 0.49, p.y + 0.7, p.z + 0.49],
-                )
+        let player_box = include_entities
+            .then(|| {
+                self.player.as_ref().filter(|_| !spectator).map(|p| {
+                    let w = f64::from(p.dimensions.width) / 2.0;
+                    (
+                        [p.position.x - w, p.position.y, p.position.z - w],
+                        [
+                            p.position.x + w,
+                            p.position.y + f64::from(p.dimensions.height),
+                            p.position.z + w,
+                        ],
+                    )
+                })
             })
-            .collect();
-        let arrow_boxes = self
-            .creatures
-            .projectiles
-            .iter()
-            .filter(|p| p.arrow.is_some())
-            .map(|p| p.position)
-            .chain(self.tridents.iter().map(|t| t.position))
-            .map(|at| {
-                let b = horizon_client::arrows::arrow_bounds(at);
-                (b.min_position().components(), b.max_position().components())
+            .flatten();
+        let player_collision = include_entities
+            .then(|| {
+                self.player.as_ref().filter(|_| !spectator).map(|p| {
+                    let main_hand = self.inventory.get(self.selected).and_then(Option::as_ref);
+                    PlayerCollision {
+                        y: p.position.y,
+                        descending: p.velocity.y < 0.0,
+                        fall_distance: p.fall_distance,
+                        main_hand_item: main_hand.map_or_else(
+                            || Arc::from("minecraft:air"),
+                            |stack| Arc::clone(&stack.item),
+                        ),
+                        main_hand_count: main_hand.map_or(0, |stack| stack.count as i32),
+                        leather_boots: worn_boots::leather_boots(&self.armor),
+                    }
+                })
             })
-            .collect();
-        let guest_boxes = self.lan_block_trigger_boxes();
-        let building_player_boxes = self
-            .lan_acting
-            .is_some()
+            .flatten();
+        let cart_boxes = if include_entities {
+            self.carts
+                .iter()
+                .map(|c| {
+                    let p = c.position;
+                    (
+                        [p.x - 0.49, p.y, p.z - 0.49],
+                        [p.x + 0.49, p.y + 0.7, p.z + 0.49],
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let arrow_boxes = if include_entities {
+            self.creatures
+                .projectiles
+                .iter()
+                .filter(|p| p.arrow.is_some())
+                .map(|p| p.position)
+                .chain(self.tridents.iter().map(|t| t.position))
+                .map(|at| {
+                    let b = horizon_client::arrows::arrow_bounds(at);
+                    (b.min_position().components(), b.max_position().components())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let guest_boxes = if include_entities {
+            let mut buf = std::mem::take(&mut self.level_guest_boxes);
+            buf.clear();
+            self.lan_block_trigger_boxes_into(&mut buf);
+            buf
+        } else {
+            Vec::new()
+        };
+        let building_player_boxes = (include_entities && self.lan_acting.is_some())
             .then(|| self.lan_building_boxes.boxes(self.dim));
         let dimension = self.dim.level();
         let rules = self.level_rules();
-        let fire_players: Vec<[f64; 3]> = self
-            .player
-            .iter()
-            .filter(|_| !spectator)
-            .map(|p| [p.position.x, p.position.y, p.position.z])
-            .chain(self.lan.iter().flat_map(|h| {
-                h.hub
-                    .guests
-                    .simulation_iter()
-                    .filter(|g| h.hub.here(g) && !g.spectator())
-                    .map(|g| g.position)
-            }))
-            .collect();
-        let mut trigger_hooks: Vec<(Aabb, bool)> = self
-            .hook
-            .iter()
-            .map(|h| (h.bounds(), h.applies_block_effects()))
-            .collect();
-        self.lan_hook_triggers(&mut trigger_hooks);
+        let fire_players: Vec<[f64; 3]> = if include_entities {
+            let mut buf = std::mem::take(&mut self.level_fire_players);
+            buf.clear();
+            buf.extend(
+                self.player
+                    .iter()
+                    .filter(|_| !spectator)
+                    .map(|p| [p.position.x, p.position.y, p.position.z])
+                    .chain(self.lan.iter().flat_map(|h| {
+                        h.hub
+                            .guests
+                            .simulation_iter()
+                            .filter(|g| h.hub.here(g) && !g.spectator())
+                            .map(|g| g.position)
+                    })),
+            );
+            buf
+        } else {
+            Vec::new()
+        };
+        let trigger_hooks: Vec<(Aabb, bool)> = if include_entities {
+            let mut hooks: Vec<(Aabb, bool)> = self
+                .hook
+                .iter()
+                .map(|h| (h.bounds(), h.applies_block_effects()))
+                .collect();
+            self.lan_hook_triggers(&mut hooks);
+            hooks
+        } else {
+            Vec::new()
+        };
         // EntityType.LIGHTNING_BOLT: 0 x 0.
-        let trigger_extras: Vec<Aabb> = self
-            .bolts
-            .iter()
-            .map(|b| {
-                let at = Vec3::new(b.at[0], b.at[1], b.at[2]);
-                Aabb::new(at, at)
-            })
-            .collect();
+        let trigger_extras: Vec<Aabb> = if include_entities {
+            self.bolts
+                .iter()
+                .map(|b| {
+                    let at = Vec3::new(b.at[0], b.at[1], b.at[2]);
+                    Aabb::new(at, at)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // `ContainerOpenersCounter.getEntitiesWithContainerOpen`: the players
         // whose menu still holds a container of the block at a position. A
         // double chest answers for both halves (`ChestBlockEntity$1` takes a
         // `CompoundContainer`), and a spectator's menu counts for nothing.
         let mut open_containers: Vec<(i32, i32, i32)> = Vec::new();
-        for key in self.container.into_iter().filter(|_| !spectator).chain(
-            self.lan
-                .iter()
-                .flat_map(|h| {
-                    h.hub
-                        .guests
-                        .simulation_iter()
-                        .filter(|g| h.hub.here(g) && !g.spectator())
-                })
-                .filter_map(|g| g.menu.as_ref().and_then(|m| m.pos)),
-        ) {
-            open_containers.push(key);
-            if let Some(other) = self.chest_other_half(key) {
-                open_containers.push(other);
+        if include_entities {
+            for key in self.container.into_iter().filter(|_| !spectator).chain(
+                self.lan
+                    .iter()
+                    .flat_map(|h| {
+                        h.hub
+                            .guests
+                            .simulation_iter()
+                            .filter(|g| h.hub.here(g) && !g.spectator())
+                    })
+                    .filter_map(|g| g.menu.as_ref().and_then(|m| m.pos)),
+            ) {
+                open_containers.push(key);
+                if let Some(other) = self.chest_other_half(key) {
+                    open_containers.push(other);
+                }
             }
         }
         // CopperGolem.hasContainerOpen: the chest a golem opened, and its other half.
         let mut golem_chests: Vec<(i32, i32, i32)> = Vec::new();
-        for &key in self.world.chest_openers.keys() {
-            golem_chests.push(key);
-            golem_chests.extend(self.chest_other_half(key));
+        if include_entities {
+            for &key in self.world.chest_openers.keys() {
+                golem_chests.push(key);
+                golem_chests.extend(self.chest_other_half(key));
+            }
         }
         let native_authoritative = self.native_authoritative();
         let environment = self.res.environment_of(&self.dimension_type().id);
@@ -2860,6 +2919,17 @@ impl Game<'_> {
             drop_into: None,
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
+        let GameLevel {
+            mut guest_boxes,
+            mut fire_players,
+            ..
+        } = level;
+        if include_entities {
+            guest_boxes.clear();
+            self.level_guest_boxes = guest_boxes;
+            fire_players.clear();
+            self.level_fire_players = fire_players;
+        }
         self.flush_spill();
         if self.lan.is_some() {
             self.flush_lan_particles();
@@ -10969,6 +11039,8 @@ impl<'a> Game<'a> {
             acting_abilities: None,
             native_commands: Default::default(),
             lan_building_boxes: Default::default(),
+            level_guest_boxes: Vec::new(),
+            level_fire_players: Vec::new(),
             save_after_guest_turn: false,
             lan_guest_swaps: Vec::new(),
             lan_interrupted_turns: Vec::new(),

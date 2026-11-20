@@ -1534,7 +1534,7 @@ impl Game<'_> {
                         .push(super::server_travel::TeleportNote {
                             conn,
                             uuid,
-                            name,
+                            name: name.to_string(),
                             from,
                             to: pos,
                             dimension: self.dim.id().to_owned(),

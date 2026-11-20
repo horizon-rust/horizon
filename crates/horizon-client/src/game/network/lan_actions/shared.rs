@@ -135,8 +135,8 @@ pub(super) struct GuestSwap {
     attachments: horizon_mod_runtime::attachments::ResidentAttachments,
     conn: u32,
     i: usize,
-    play: GuestPlay,
-    player: Option<PlayerMotion>,
+    play: Box<GuestPlay>,
+    player: Option<Box<PlayerMotion>>,
     player_save_projection: (Option<i32>, Option<bool>),
     /// The guest's eye height and the game's.
     eye: (f32, f32),
@@ -200,11 +200,11 @@ pub(super) struct GuestSwap {
     marks: super::advancements::TravelMarks,
     death_cause: Option<String>,
     /// The guest's own damage record, in place while they act.
-    combat: super::combat::CombatTracker,
+    combat: Box<super::combat::CombatTracker>,
     /// The guest whose turn this one nests in, if any.
     acting: (
         Option<u32>,
-        Option<String>,
+        Option<std::sync::Arc<str>>,
         Option<u128>,
         Option<u8>,
         Option<u32>,
@@ -351,10 +351,7 @@ pub(super) fn built_bodies(guests: &GuestList) -> (u64, HubBodies) {
 
 /// The cached bodies, if they were built for these guests as they are laid out, else bodies
 /// built afresh from the guests.
-pub(super) fn bodies_of(
-    guests: &GuestList,
-    cache: Option<&(u64, HubBodies)>,
-) -> HubBodies {
+pub(super) fn bodies_of(guests: &GuestList, cache: Option<&(u64, HubBodies)>) -> HubBodies {
     match cache {
         Some((built_for, bodies)) if *built_for == guests.layout() => bodies.clone(),
         _ => shared(guests.simulation_iter().map(building_player)),
@@ -409,10 +406,7 @@ thread_local! {
 
 /// Test only: the refresh of every body, whatever was written.
 #[cfg(test)]
-fn refresh_every_guest(
-    guests: &GuestList,
-    (built_for, bodies): &(u64, HubBodies),
-) {
+fn refresh_every_guest(guests: &GuestList, (built_for, bodies): &(u64, HubBodies)) {
     if *built_for == guests.layout() {
         for (cell, g) in bodies.iter().zip(guests.simulation_iter()) {
             cell.set(building_player(g));

@@ -292,7 +292,7 @@ impl Game<'_> {
         living: LivingRef,
         style: &Identifier,
     ) -> bool {
-        self.native_edit_waypoint_icon(living, |icon| icon.style = style.to_string())
+        self.native_edit_waypoint_icon(living, |icon| icon.style = style.to_string().into())
     }
     /// `Waypoint.Icon.color` of the waypoint a handle names: the RGB colour,
     /// or none to show a player in their team's colour. False for the dragon.
@@ -742,7 +742,7 @@ mod tests {
             assert_eq!(game.waypoint_icon(Target::Mob(13)), Icon::default());
             assert!(game.living_set_waypoint_color(zombie, None));
             let icon = game.waypoint_icon(Target::Mob(12));
-            assert_eq!((icon.style.as_str(), icon.color), ("example:flag", None));
+            assert_eq!((&*icon.style, icon.color), ("example:flag", None));
         });
     }
 

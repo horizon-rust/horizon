@@ -1529,7 +1529,7 @@ mod tests {
         };
         for (restore_all, step) in [(false, 0.6), (true, 1.0)] {
             let mut g = guest();
-            g.motion = Some(Box::new(small_body(&resources)));
+            g.motion.set(small_body(&resources));
             g.new_body(restore_all);
             assert!(g.motion.is_none());
             let mut m = next(&g);
@@ -1555,7 +1555,7 @@ mod tests {
             return;
         };
         let mut g = guest();
-        g.motion = Some(Box::new(small_body(&resources)));
+        g.motion.set(small_body(&resources));
         g.new_body(false);
         let mut level = Level::default();
         store(&g, &mut level, None);
@@ -1585,7 +1585,7 @@ mod tests {
             crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
                 .expect("a body");
         motion.air = 99;
-        g.motion = Some(Box::new(motion));
+        g.motion.set(motion);
         let mut level = Level::default();
         store(&g, &mut level, None);
         let tag = level.player_tag();

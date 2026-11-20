@@ -1534,7 +1534,7 @@ impl Game<'_> {
                     g.vehicle = t.vehicle;
                     if let Some(mut body) = passenger_body {
                         body.position = Vec3::new(t.at[0], t.at[1], t.at[2]);
-                        g.motion = Some(body);
+                        g.motion.set(body);
                     }
                 });
             }
@@ -1652,15 +1652,17 @@ mod tests {
                     g.position = [3.5, 64.0, 5.5];
                     g.sleeping = sleeping;
                     g.vehicle = riding.then_some(99);
-                    g.motion = body.then(|| {
-                        Box::new(
+                    if body {
+                        g.motion.set(
                             horizon_client::motion::PlayerMotion::new(
                                 game.motion,
                                 Vec3::new(3.5, 64.0, 5.5),
                             )
                             .unwrap(),
-                        )
-                    });
+                        );
+                    } else {
+                        g.motion.clear();
+                    }
                     if dead {
                         g.motion.as_mut().unwrap().set_health(0.0, false).unwrap();
                     }

@@ -62,14 +62,14 @@ pub fn team_rgb(color: &str) -> Option<i32> {
 /// Waypoint.Icon.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Icon {
-    pub style: String,
+    pub style: std::borrow::Cow<'static, str>,
     pub color: Option<i32>,
 }
 
 impl Default for Icon {
     fn default() -> Self {
         Self {
-            style: "minecraft:default".into(),
+            style: std::borrow::Cow::Borrowed("minecraft:default"),
             color: None,
         }
     }
@@ -429,7 +429,7 @@ fn waypoint(source: u128, operation: i32, icon: &Icon, target: WaypointTarget) -
     C::TrackedWaypoint(TrackedWaypoint {
         operation,
         id: WaypointId::Uuid(source),
-        style: icon.style.clone(),
+        style: icon.style.clone().into_owned(),
         color: icon.color,
         target,
     })

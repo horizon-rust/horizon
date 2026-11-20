@@ -420,8 +420,9 @@ impl Game<'_> {
     fn write_book(&mut self, slot: usize, pages: Vec<String>, title: Option<String>) {
         let author = self
             .lan_acting_name
-            .clone()
-            .unwrap_or_else(|| super::chat::PLAYER_NAME.to_owned());
+            .as_deref()
+            .unwrap_or(super::chat::PLAYER_NAME)
+            .to_owned();
         let Some(stack) = self
             .stack_in_mut(slot)
             .as_mut()

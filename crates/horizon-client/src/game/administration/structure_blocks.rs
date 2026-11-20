@@ -138,7 +138,8 @@ impl Game<'_> {
     pub(super) fn structure_block_placed(&mut self, pos: Pos) {
         let author = self
             .lan_acting_name
-            .clone()
+            .as_deref()
+            .map(str::to_owned)
             .unwrap_or_else(|| self.options.player_name());
         if let Some(b) = self.structure_block_mut(pos) {
             b.author = author;

@@ -172,26 +172,134 @@ fn guest_view(mut v: PlayerView, uuid: u128, moved: [f64; 3]) -> PlayerView {
 }
 
 impl Game<'_> {
-    /// How mobs see each guest in play (`player_view` with the guest swapped
-    /// in).
+    /// How mobs see each guest in play (`player_view` without swapping every
+    /// guest through `as_guest`, falling back only for nested swaps or custom
+    /// piglin-neutral armor hooks).
     pub(super) fn lan_guest_views(&mut self) -> GuestViews {
         let Some(host) = self.lan.as_ref() else {
             return Vec::new();
         };
-        let conns: Vec<(u32, u128, [f64; 3])> = host
-            .hub
-            .guests
-            .iter()
-            .filter(|g| host.hub.here(g) && g.loaded && !g.dead && !g.is_fake())
-            .map(|g| {
-                let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
-                (g.conn, g.uuid, moved)
-            })
-            .collect();
-        let mut views = Vec::new();
-        for (conn, uuid, moved) in conns {
+        let game_time = self.world.game_time;
+        let hand_main = matches!(self.hand, horizon_client::first_person::Hand::Main);
+        let piglin_safe = self
+            .res
+            .items()
+            .item_tags
+            .get("minecraft:piglin_safe_armor");
+        let mut views = Vec::with_capacity(host.hub.guests.len());
+        let mut fallbacks: Vec<(usize, u32, u128, [f64; 3])> = Vec::new();
+        for g in host.hub.guests.iter() {
+            if !host.hub.here(g) || !g.loaded || g.dead || g.is_fake() {
+                continue;
+            }
+            let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+            let Some(motion) = g.motion.as_deref() else {
+                fallbacks.push((views.len(), g.conn, g.uuid, moved));
+                continue;
+            };
+            if !hand_main
+                || self.lan_guest_swaps.contains(&g.conn)
+                || g.armor.iter().flatten().any(|s| {
+                    mod_api::__private::item_listens(mod_api::HookId::MakesPiglinsNeutral, &s.item)
+                })
+            {
+                fallbacks.push((views.len(), g.conn, g.uuid, moved));
+                continue;
+            }
+            let pos = Vec3::new(g.position[0], g.position[1], g.position[2]);
+            let w = f64::from(motion.dimensions.width) / 2.0;
+            let bounds = Aabb::new(
+                Vec3::new(pos.x - w, pos.y, pos.z - w),
+                Vec3::new(
+                    pos.x + w,
+                    pos.y + f64::from(motion.dimensions.height),
+                    pos.z + w,
+                ),
+            );
+            let combat = self.guest_combat.get(&g.conn);
+            let vehicle = g.vehicle.and_then(|id| {
+                if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+                    let bw = 0.6875;
+                    return Some(horizon_client::mobs::Vehicle {
+                        nautilus: false,
+                        bounds: Aabb::new(
+                            Vec3::new(b.position.x - bw, b.position.y, b.position.z - bw),
+                            Vec3::new(b.position.x + bw, b.position.y + 0.5625, b.position.z + bw),
+                        ),
+                        velocity: b.velocity,
+                    });
+                }
+                let m = self.mobs.iter().find(|m| m.id == id)?;
+                matches!(m.species(), Species::Nautilus | Species::ZombieNautilus).then(|| {
+                    horizon_client::mobs::Vehicle {
+                        nautilus: true,
+                        bounds: m.bounds(),
+                        velocity: m.velocity,
+                    }
+                })
+            });
+            views.push((
+                g.conn,
+                PlayerView {
+                    position: pos,
+                    bounds,
+                    eye: [
+                        pos.x,
+                        pos.y + f64::from(motion.dimensions.eye_height),
+                        pos.z,
+                    ],
+                    alive: !(g.health <= 0.0 || motion.health.dead),
+                    invulnerable: g.abilities.invulnerable
+                        || g.handover.is_some()
+                        || motion.health.permanently_invulnerable
+                        || motion.health.invulnerable_time > 0,
+                    creative: g.creative() || g.spectator(),
+                    sneaking: g.sneaking,
+                    swimming: motion.swimming,
+                    look: super::view_vector(g.yaw, g.pitch),
+                    main_hand: g
+                        .inventory
+                        .get(g.selected)
+                        .and_then(|s| s.as_ref())
+                        .map(|s| s.item.clone()),
+                    off_hand: g.offhand.as_ref().map(|s| s.item.clone()),
+                    head: g.armor[0].as_ref().map(|s| s.item.clone()),
+                    chest: g.armor[1].as_ref().map(|s| s.item.clone()),
+                    legs: g.armor[2].as_ref().map(|s| s.item.clone()),
+                    feet: g.armor[3].as_ref().map(|s| s.item.clone()),
+                    armor_cover: g.armor.iter().filter(|a| a.is_some()).count() as f32 / 4.0,
+                    invisible: g.effects.get("invisibility").is_some(),
+                    spectator: g.spectator(),
+                    gold_armor: g
+                        .armor
+                        .iter()
+                        .rev()
+                        .flatten()
+                        .any(|s| piglin_safe.is_some_and(|t| t.contains(&*s.item))),
+                    hurt_by: combat.and_then(|c| c.hurt_by(game_time)),
+                    last_hurt: combat
+                        .and_then(|c| c.last_hurt_mob)
+                        .map(|(id, at)| (Who::Mob(id), at)),
+                    velocity: Vec3::new(moved[0], moved[1], moved[2]),
+                    yaw: g.yaw,
+                    sprinting: g.sprinting,
+                    riding: g.vehicle.is_some(),
+                    hero: false,
+                    effects: g.effects.list.iter().map(|e| e.id).collect(),
+                    uuid: horizon_client::lan::playerdata::uuid_ints(g.uuid),
+                    allies: Default::default(),
+                    remote: true,
+                    sleeping: g.bed.is_some(),
+                    sleep_timer: g.sleep_timer,
+                    passenger: g.vehicle.is_some(),
+                    riding_vehicle: g.vehicle,
+                    vehicle,
+                },
+            ));
+        }
+        for (idx, conn, uuid, moved) in fallbacks.into_iter().rev() {
             if let Some(Some(v)) = self.as_guest(conn, |g| g.player_view()) {
-                views.push((conn, guest_view(v, uuid, moved)));
+                views.insert(idx, (conn, guest_view(v, uuid, moved)));
             }
         }
         views
@@ -278,19 +386,26 @@ impl Game<'_> {
     /// `Level.getEntities` see every player in the level, but not spectators
     /// (`Entity.isIgnoringBlockTriggers`).
     pub(super) fn lan_block_trigger_boxes(&self) -> Vec<([f64; 3], [f64; 3])> {
+        let mut out = Vec::new();
+        self.lan_block_trigger_boxes_into(&mut out);
+        out
+    }
+    pub(super) fn lan_block_trigger_boxes_into(&self, out: &mut Vec<([f64; 3], [f64; 3])>) {
+        out.clear();
         let Some(host) = self.lan.as_ref() else {
-            return Vec::new();
+            return;
         };
-        host.hub
-            .guests
-            .simulation_iter()
-            .filter(|g| host.hub.here(g) && g.loaded && !g.dead && !g.spectator())
-            .map(|g| {
-                let b = g.bounds();
-                let (lo, hi) = (b.min_position(), b.max_position());
-                ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
-            })
-            .collect()
+        out.extend(
+            host.hub
+                .guests
+                .simulation_iter()
+                .filter(|g| host.hub.here(g) && g.loaded && !g.dead && !g.spectator())
+                .map(|g| {
+                    let b = g.bounds();
+                    let (lo, hi) = (b.min_position(), b.max_position());
+                    ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
+                }),
+        );
     }
     /// The same guests' cast fishing hooks, for `GameLevel::trigger_projectiles`.
     pub(super) fn lan_hook_triggers(&self, out: &mut Vec<(Aabb, bool)>) {
@@ -306,6 +421,7 @@ impl Game<'_> {
                 .map(|hook| (hook.bounds(), hook.applies_block_effects())),
         );
     }
+
     /// The same guests' feet and whether they stand on the ground, for the
     /// blocks that also ask that (`BigDripleafBlock.canEntityTilt`).
     pub(super) fn lan_guest_feet(&self) -> Vec<([f64; 3], bool)> {

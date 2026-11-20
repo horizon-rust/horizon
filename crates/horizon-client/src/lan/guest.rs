@@ -157,6 +157,76 @@ impl InboxItem {
     }
 }
 
+/// Reuses the heap allocation of `PlayerMotion` across guest turns.
+#[derive(Default)]
+pub struct GuestMotion(Option<Box<Option<PlayerMotion>>>);
+
+impl GuestMotion {
+    pub fn is_some(&self) -> bool {
+        self.0.as_deref().is_some_and(Option::is_some)
+    }
+    pub fn is_none(&self) -> bool {
+        !self.is_some()
+    }
+    pub fn as_ref(&self) -> Option<&PlayerMotion> {
+        self.0.as_deref()?.as_ref()
+    }
+    pub fn as_mut(&mut self) -> Option<&mut PlayerMotion> {
+        self.0.as_deref_mut()?.as_mut()
+    }
+    pub fn as_deref(&self) -> Option<&PlayerMotion> {
+        self.as_ref()
+    }
+    pub fn as_deref_mut(&mut self) -> Option<&mut PlayerMotion> {
+        self.as_mut()
+    }
+    pub fn set(&mut self, motion: PlayerMotion) {
+        match &mut self.0 {
+            Some(slot) => **slot = Some(motion),
+            None => self.0 = Some(Box::new(Some(motion))),
+        }
+    }
+    pub fn clear(&mut self) {
+        if let Some(slot) = &mut self.0 {
+            **slot = None;
+        }
+    }
+    pub fn take(&mut self) -> Option<PlayerMotion> {
+        self.0.as_deref_mut()?.take()
+    }
+    pub fn is_present(&self) -> bool {
+        self.0.as_deref().is_some_and(Option::is_some)
+    }
+    /// Swap this guest's boxed `PlayerMotion` slot directly with `target`
+    /// while keeping the outer `Box` allocation reusable in `self`.
+    pub fn swap_with_option(&mut self, target: &mut Option<PlayerMotion>) -> bool {
+        let Some(inner) = self.0.as_deref_mut() else {
+            return false;
+        };
+        if inner.is_none() {
+            return false;
+        }
+        std::mem::swap(inner, target);
+        true
+    }
+    /// Return a `PlayerMotion` taken from `swap_with_option` into the existing
+    /// `Box` allocation without allocating on the heap.
+    pub fn restore_from(&mut self, slot: &mut Option<PlayerMotion>) {
+        if let Some(inner) = self.0.as_deref_mut() {
+            if inner.is_some() {
+                *inner = slot.take();
+            } else {
+                std::mem::swap(inner, slot);
+            }
+        } else if let Some(motion) = slot.take() {
+            self.0 = Some(Box::new(Some(motion)));
+        }
+    }
+    pub fn swap_opt(&mut self, target: &mut Option<Box<Option<PlayerMotion>>>) {
+        std::mem::swap(&mut self.0, target);
+    }
+}
+
 pub struct Guest {
     /// Identity generation and journal binding travel with the actual player record.
     pub residency: crate::join_seq::residency::member::Member,
@@ -199,6 +269,9 @@ pub struct Guest {
     pub personal_sidebar: bool,
     pub uuid: u128,
     pub name: String,
+    /// Immutable shared copy of `name` so acting-player turns can retain it via
+    /// atomic refcount bump instead of cloning a heap `String` every tick.
+    pub name_shared: Arc<str>,
     /// The properties the player logged in with (`ServerPlayer.getGameProfile`).
     pub properties: Vec<horizon_protocol::packets::login::Property>,
     /// The properties a native mod set (`player_set_profile_property`): overrides by name over the login
@@ -365,7 +438,7 @@ pub struct Guest {
     // Entities.
     pub tracker: Tracker,
     // Player state the gameplay code reads and writes.
-    pub motion: Option<Box<PlayerMotion>>,
+    pub motion: GuestMotion,
     /// What the player's file says of the body (`Entity.load`: fire, air, fall distance), for its first.
     pub loaded_body: Option<SavedBody>,
     /// The attribute list a body hands to the next (`ServerPlayer.restoreFrom`,
@@ -395,6 +468,11 @@ pub struct Guest {
     pub equipment: horizon_items::equipment::Equipment,
     /// Converted tracking stacks, invalidated when their full source stack changes.
     pub equipment_cache: super::equipment_cache::EquipmentCache,
+    /// Cached client-syncable attribute snapshots keyed by `LiveAttributes::version()`.
+    pub syncable_attrs_cache: (
+        Option<u64>,
+        Vec<horizon_protocol::packets::play::AttributeSnapshot>,
+    ),
     pub selected: usize,
     pub carried: Option<ItemStack>,
     /// The inventory menu's crafting grid (2x2) and its result
@@ -635,7 +713,7 @@ impl Guest {
         guest.loaded = true;
         guest.loading = false;
         guest.load_timeout = 0;
-        guest.motion = Some(Box::new(motion));
+        guest.motion.set(motion);
         guest
     }
 
@@ -718,6 +796,7 @@ impl Guest {
             disconnect_pending: false,
             personal_sidebar: false,
             uuid: j.uuid,
+            name_shared: Arc::from(j.name.as_str()),
             name: j.name,
             properties: j.properties,
             profile_overrides: Vec::new(),
@@ -797,7 +876,7 @@ impl Guest {
             batch_quota: 0.0,
             collision_exclusions: Default::default(),
             tracker: Tracker::default(),
-            motion: None,
+            motion: GuestMotion::default(),
             loaded_body: None,
             carried_attributes: None,
             carried_hit: None,
@@ -810,6 +889,7 @@ impl Guest {
             offhand: None,
             equipment: Default::default(),
             equipment_cache: Default::default(),
+            syncable_attrs_cache: (None, Vec::new()),
             selected: 0,
             carried: None,
             craft_grid: Default::default(),
@@ -1095,7 +1175,7 @@ impl Guest {
             Pose::Sleeping
         } else if self.fall_flying {
             Pose::FallFlying
-        } else if let Some(m) = &self.motion {
+        } else if let Some(m) = self.motion.as_ref() {
             m.pose
         } else if self.sneaking && !self.abilities.flying {
             Pose::Crouching
@@ -1108,7 +1188,7 @@ impl Guest {
     /// has taken it.
     pub fn dimensions(&self) -> Dimensions {
         let pose = self.pose();
-        match &self.motion {
+        match self.motion.as_ref() {
             Some(m) if m.pose == pose => m.dimensions,
             Some(m) => pose.dimensions(m.scale),
             None => pose.dimensions(1.0),
@@ -1118,7 +1198,7 @@ impl Guest {
     /// one starts from the old one's attributes, all of them when it is the
     /// same player in another level (`restore_all`), only their base values
     /// after a death. The old body, for what else it hands over.
-    pub fn new_body(&mut self, restore_all: bool) -> Option<Box<PlayerMotion>> {
+    pub fn new_body(&mut self, restore_all: bool) -> Option<PlayerMotion> {
         if !restore_all {
             self.carried_hit = None;
             self.carried_ticks = None;
@@ -3309,7 +3389,7 @@ mod tests {
             m.attributes
                 .edit(&handle, |a, o| a.add_permanent(bonus, o))
                 .unwrap();
-            g.motion = Some(Box::new(m));
+            g.motion.set(m);
             assert!(g.new_body(false).is_some());
             assert_eq!(g.respawn_health(&resources), want, "base {base}");
         }
@@ -3332,7 +3412,7 @@ mod tests {
             let mut m = PlayerMotion::new(&resources, Vec3::new(0.5, 64.0, 0.5)).unwrap();
             set_base(&mut m, "minecraft:scale", scale);
             m.set_pose(Pose::Standing).unwrap();
-            g.motion = Some(Box::new(m));
+            g.motion.set(m);
             g.fall_flying = true;
             assert_eq!(g.pose(), Pose::FallFlying);
             assert_ne!(g.motion.as_ref().unwrap().pose, Pose::FallFlying);

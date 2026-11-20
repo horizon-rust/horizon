@@ -118,6 +118,11 @@ pub struct ChunkEncoder {
     cache: std::sync::Mutex<FxHashMap<usize, Encoded>>,
     /// Each column's heightmaps, with the sections they were made from.
     heights: std::sync::Mutex<HashMap<(i32, i32), Heights>>,
+    /// Whole encoded `LevelChunkWithLight` bodies keyed by dimension, shape and chunk coords,
+    /// self-validated against the live `Weak<Section>` pointers and neighbour mask.
+    columns: std::sync::Mutex<FxHashMap<ColumnCacheKey, CachedColumn>>,
+    /// Level id scoping cached wire bodies per dimension (`minecraft:overworld`, etc.).
+    level_name: Arc<str>,
     /// The level's sections among a column's: all of them in the Overworld,
     /// y 0 to 255 in the Nether and the End (`DimensionType` min_y and height).
     sections: std::ops::Range<usize>,
@@ -146,6 +151,16 @@ struct Heights {
 
 /// Heightmap type ids with their packed long arrays.
 type ColumnHeightmaps = Arc<Vec<(i32, Vec<i64>)>>;
+
+type ColumnCacheKey = (Arc<str>, bool, usize, usize, i32, i32);
+
+struct CachedColumn {
+    sections: Vec<std::sync::Weak<Section>>,
+    around: SectionMask,
+    body: Arc<[u8]>,
+}
+
+const MAX_CACHED_COLUMNS: usize = 4096;
 
 /// A column's cached heightmaps, while it holds the sections they were made
 /// from.
@@ -651,6 +666,8 @@ impl ChunkEncoder {
             tables: None,
             cache: Default::default(),
             heights: Default::default(),
+            columns: Default::default(),
+            level_name: Arc::from(""),
             sections: 0..ColumnLayout::VANILLA.sections(),
             column: ColumnLayout::VANILLA,
             sky: true,
@@ -699,6 +716,38 @@ impl ChunkEncoder {
     pub fn forget_cache(&self) {
         *self.cache.lock().unwrap() = FxHashMap::default();
         *self.heights.lock().unwrap() = HashMap::new();
+        *self.columns.lock().unwrap() = FxHashMap::default();
+    }
+
+    fn column_key(&self, x: i32, z: i32) -> ColumnCacheKey {
+        (
+            Arc::clone(&self.level_name),
+            self.sky,
+            self.sections.start,
+            self.sections.end,
+            x,
+            z,
+        )
+    }
+
+    /// Identify the active level so cached wire bodies stay isolated per dimension.
+    pub fn set_level_name(&mut self, name: &str) {
+        if self.level_name.as_ref() != name {
+            self.level_name = Arc::from(name);
+        }
+    }
+
+    /// Drop any cached wire packet for column `(x, z)` (block entity or light changes).
+    pub fn invalidate_column(&self, x: i32, z: i32) {
+        self.columns.lock().unwrap().remove(&self.column_key(x, z));
+    }
+
+    /// Drop cached wire column packets for the active level without flushing other levels.
+    pub fn forget_columns(&self) {
+        self.columns
+            .lock()
+            .unwrap()
+            .retain(|k, _| k.0 != self.level_name);
     }
 
     /// The section entries and the column heightmaps cached, each as (entries, bytes).
@@ -972,6 +1021,8 @@ impl ChunkEncoder {
             tables: self.tables.clone(),
             cache: Default::default(),
             heights: Default::default(),
+            columns: Default::default(),
+            level_name: Arc::clone(&self.level_name),
             sections: self.sections.clone(),
             column: self.column,
             sky: self.sky,
@@ -1096,38 +1147,37 @@ impl ChunkEncoder {
         block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
         around: SectionMask,
     ) -> Prepared {
-        let (wires, entities) = self.blocks(chunk, block_entities);
+        self.prepare_checked(chunk, block_entities, around).0
+    }
+
+    fn prepare_checked(
+        &self,
+        chunk: &Chunk,
+        block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
+        around: SectionMask,
+    ) -> (Prepared, bool) {
+        let (wires, entities, has_dynamic_entity) = self.blocks_checked(chunk, block_entities);
         let heightmaps = self.heightmaps_of(chunk);
         // Before the light: their tags' size is only known once written.
         let mut tags = Writer::new();
         List::<BlockEntityInfo>::write(&entities, &mut tags);
-        Prepared {
-            x: chunk.x,
-            z: chunk.z,
-            heightmaps,
-            wires,
-            tags: tags.data,
-            sections: chunk.sections[self.sections.clone()].to_vec(),
-            around,
-            sky: self.sky,
-        }
+        let cacheable = !has_dynamic_entity;
+        (
+            Prepared {
+                x: chunk.x,
+                z: chunk.z,
+                heightmaps,
+                wires,
+                tags: tags.data,
+                sections: chunk.sections[self.sections.clone()].to_vec(),
+                around,
+                sky: self.sky,
+            },
+            cacheable,
+        )
     }
 
-    /// [`Self::body_with`] for each of `chunks`, in their order. What reads
-    /// the level is done here, column by column as `body_with` does; the
-    /// light layers and the writing, most of a body's cost, go to the warm-up
-    /// threads too when there are enough columns. This thread takes bodies
-    /// as well and waits only for the ones still being written.
-    pub fn bodies_with(
-        &self,
-        chunks: &[&Chunk],
-        world: &crate::world::World,
-        protos: &dyn Fn(i32, i32) -> Option<SectionMask>,
-    ) -> Vec<Vec<u8>> {
-        let columns: Vec<Prepared> = chunks
-            .iter()
-            .map(|c| self.prepare(c, &world.block_entities, self.around(c, world, protos)))
-            .collect();
+    fn finish_bodies(&self, columns: Vec<Prepared>) -> Vec<Vec<u8>> {
         let pool = if columns.len() >= BODIES_MIN {
             warm_pool()
         } else {
@@ -1152,6 +1202,100 @@ impl ChunkEncoder {
                 std::mem::take(&mut *body.lock().unwrap())
             })
             .collect()
+    }
+
+    /// [`Self::body_with`] for each of `chunks`, in their order. What reads
+    /// the level is done here, column by column as `body_with` does; the
+    /// light layers and the writing, most of a body's cost, go to the warm-up
+    /// threads too when there are enough columns. This thread takes bodies
+    /// as well and waits only for the ones still being written.
+    pub fn bodies_with(
+        &self,
+        chunks: &[&Chunk],
+        world: &crate::world::World,
+        protos: &dyn Fn(i32, i32) -> Option<SectionMask>,
+    ) -> Vec<Vec<u8>> {
+        let columns: Vec<Prepared> = chunks
+            .iter()
+            .map(|c| self.prepare(c, &world.block_entities, self.around(c, world, protos)))
+            .collect();
+        self.finish_bodies(columns)
+    }
+
+    /// Shared immutable wire bodies for `chunks`, reading unchanged columns directly from cache
+    /// so mass joins and view batches avoid re-encoding and cloning bytes per recipient.
+    pub fn bodies_with_shared(
+        &self,
+        chunks: &[&Chunk],
+        world: &crate::world::World,
+        protos: &dyn Fn(i32, i32) -> Option<SectionMask>,
+    ) -> Vec<Arc<[u8]>> {
+        if chunks.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<Option<Arc<[u8]>>> = vec![None; chunks.len()];
+        let mut misses: Vec<(usize, &Chunk, SectionMask)> = Vec::new();
+        {
+            let columns = self.columns.lock().unwrap();
+            for (idx, &chunk) in chunks.iter().enumerate() {
+                let around = self.around(chunk, world, protos);
+                let key = self.column_key(chunk.x, chunk.z);
+                let slice = &chunk.sections[self.sections.clone()];
+                if let Some(entry) = columns.get(&key)
+                    && entry.around == around
+                    && entry.sections.len() == slice.len()
+                    && entry
+                        .sections
+                        .iter()
+                        .zip(slice)
+                        .all(|(w, s)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(s)))
+                {
+                    out[idx] = Some(Arc::clone(&entry.body));
+                } else {
+                    misses.push((idx, chunk, around));
+                }
+            }
+        }
+        if misses.is_empty() {
+            return out.into_iter().map(Option::unwrap).collect();
+        }
+        let miss_chunks: Vec<&Chunk> = misses.iter().map(|&(_, chunk, _)| chunk).collect();
+        self.warm(&miss_chunks);
+        let mut prepared = Vec::with_capacity(misses.len());
+        let mut cacheable = Vec::with_capacity(misses.len());
+        for &(_, chunk, around) in &misses {
+            let (column, can_cache) = self.prepare_checked(chunk, &world.block_entities, around);
+            prepared.push(column);
+            cacheable.push(can_cache);
+        }
+        let bodies = self.finish_bodies(prepared);
+        let mut columns = self.columns.lock().unwrap();
+        if columns.len() >= MAX_CACHED_COLUMNS {
+            columns.retain(|_, entry| entry.sections.iter().all(|s| s.strong_count() > 0));
+            if columns.len() >= MAX_CACHED_COLUMNS / 2 {
+                columns.clear();
+            }
+        }
+        for (((idx, chunk, around), body), can_cache) in
+            misses.into_iter().zip(bodies).zip(cacheable)
+        {
+            let shared: Arc<[u8]> = body.into();
+            if can_cache && columns.len() < MAX_CACHED_COLUMNS {
+                columns.insert(
+                    self.column_key(chunk.x, chunk.z),
+                    CachedColumn {
+                        sections: chunk.sections[self.sections.clone()]
+                            .iter()
+                            .map(Arc::downgrade)
+                            .collect(),
+                        around,
+                        body: Arc::clone(&shared),
+                    },
+                );
+            }
+            out[idx] = Some(shared);
+        }
+        out.into_iter().map(Option::unwrap).collect()
     }
 
     /// ClientboundLightUpdatePacket for the light sections over `changed` (a
@@ -1228,8 +1372,18 @@ impl ChunkEncoder {
         chunk: &Chunk,
         block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
     ) -> (Vec<Arc<[u8]>>, Vec<BlockEntityInfo>) {
+        let (wires, entity_infos, _) = self.blocks_checked(chunk, block_entities);
+        (wires, entity_infos)
+    }
+
+    fn blocks_checked(
+        &self,
+        chunk: &Chunk,
+        block_entities: &HashMap<(i32, i32, i32), BlockEntity>,
+    ) -> (Vec<Arc<[u8]>>, Vec<BlockEntityInfo>, bool) {
         let mut wires = Vec::with_capacity(self.sections.len());
         let mut entity_infos = Vec::new();
+        let mut has_dynamic_entity = false;
         for (i, s) in chunk
             .sections
             .iter()
@@ -1255,6 +1409,28 @@ impl ChunkEncoder {
                 if !self.entity_matches(state, entity) {
                     continue;
                 }
+                if matches!(
+                    entity,
+                    Some(
+                        BlockEntity::Mod(_)
+                            | BlockEntity::Spawner(_)
+                            | BlockEntity::Brushable(_)
+                            | BlockEntity::StructureBlock(_)
+                            | BlockEntity::JigsawBlock(_)
+                            | BlockEntity::TestBlock(_)
+                            | BlockEntity::TestInstanceBlock(_)
+                            | BlockEntity::Shelf(_)
+                            | BlockEntity::Vault(_)
+                            | BlockEntity::TrialSpawner(_)
+                            | BlockEntity::Beacon(_)
+                            | BlockEntity::EndGateway(_)
+                            | BlockEntity::CreakingHeart(_)
+                            | BlockEntity::Conduit(_)
+                            | BlockEntity::Campfire(_)
+                    )
+                ) {
+                    has_dynamic_entity = true;
+                }
                 entity_infos.push(BlockEntityInfo {
                     packed_xz: ((x << 4) | z) as i8,
                     y: wy as i16,
@@ -1274,16 +1450,30 @@ impl ChunkEncoder {
         // keys that share a bucket keep that order. Others follow in scan order.
         if let Some(order) = chunk.saved.as_ref().map(|s| &s.block_entity_order)
             && !order.is_empty()
+            && entity_infos.len() > 1
         {
-            let at = |e: &BlockEntityInfo| {
-                let pos = (
+            let pos_of = |e: &BlockEntityInfo| {
+                (
                     chunk.x * 16 + i32::from(e.packed_xz as u8 >> 4),
                     i32::from(e.y),
                     chunk.z * 16 + i32::from(e.packed_xz as u8 & 15),
-                );
-                order.iter().position(|p| *p == pos).unwrap_or(usize::MAX)
+                )
             };
-            entity_infos.sort_by_key(at);
+            if order.len() <= 16 {
+                entity_infos.sort_by_cached_key(|e| {
+                    let pos = pos_of(e);
+                    order.iter().position(|p| *p == pos).unwrap_or(usize::MAX)
+                });
+            } else {
+                let mut positions: FxHashMap<(i32, i32, i32), usize> =
+                    FxHashMap::with_capacity_and_hasher(order.len(), Default::default());
+                for (idx, &pos) in order.iter().enumerate() {
+                    positions.entry(pos).or_insert(idx);
+                }
+                entity_infos.sort_by_cached_key(|e| {
+                    positions.get(&pos_of(e)).copied().unwrap_or(usize::MAX)
+                });
+            }
         }
         java_hash_order(&mut entity_infos, |e| {
             (
@@ -1292,7 +1482,7 @@ impl ChunkEncoder {
                 chunk.z * 16 + i32::from(e.packed_xz as u8 & 15),
             )
         });
-        (wires, entity_infos)
+        (wires, entity_infos, has_dynamic_entity)
     }
 
     /// ClientboundLightUpdatePacketData: the light layers of the sections
@@ -2650,5 +2840,29 @@ mod tests {
             Some(Tag::Long(7))
         );
         assert_eq!(encoder.update_tag(at, 1, &spawner(7)), None);
+    }
+
+    #[test]
+    fn bodies_with_shared_caches_reuses_and_invalidates() {
+        let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.set(2, 64, 3, 1);
+        world.chunks.insert((0, 0), Arc::new(chunk));
+        let encoder = encoder();
+        let ref_chunk = world.chunks.get(&(0, 0)).unwrap().as_ref();
+        let first = encoder.bodies_with_shared(&[ref_chunk], &world, &|_, _| None);
+        let second = encoder.bodies_with_shared(&[ref_chunk], &world, &|_, _| None);
+        assert_eq!(first.len(), 1);
+        assert!(Arc::ptr_eq(&first[0], &second[0]));
+        assert_eq!(&*first[0], &encoder.body_in(ref_chunk, &world)[..]);
+
+        // Editing a section creates a new Arc<Section> and invalidates the cached column body.
+        let mut next = (*world.chunks[&(0, 0)]).clone();
+        next.set(2, 65, 3, 1);
+        world.chunks.insert((0, 0), Arc::new(next));
+        let updated = world.chunks.get(&(0, 0)).unwrap().as_ref();
+        let third = encoder.bodies_with_shared(&[updated], &world, &|_, _| None);
+        assert!(!Arc::ptr_eq(&first[0], &third[0]));
+        assert_eq!(&*third[0], &encoder.body_in(updated, &world)[..]);
     }
 }

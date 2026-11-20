@@ -1701,6 +1701,9 @@ impl Entities {
         });
         // Nothing to send and nobody to pair with.
         made.retain(|m| !m.changes.all.is_empty() || m.pairing.is_some());
+        if made.is_empty() {
+            return;
+        }
         let made = &made;
         let mut clients: Vec<(&mut Viewer, &Vec<u8>)> = viewers.iter_mut().zip(&*flags).collect();
         horizon_threads::par_chunks_mut(&mut clients, 4, |part| {

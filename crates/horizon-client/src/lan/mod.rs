@@ -112,7 +112,7 @@ pub(crate) fn event_channel() -> (
     crate::net::ingress::Producer<NetEvent>,
     crate::net::ingress::Consumer<NetEvent>,
 ) {
-    crate::net::ingress::channel(96 << 20, NetEvent::ingress_charge)
+    crate::net::ingress::channel(256 << 20, NetEvent::ingress_charge)
         .expect("positive incoming byte budget")
 }
 #[cfg(test)]
@@ -556,7 +556,7 @@ impl Shared {
             }
         }
         if self.is_online(uuid) {
-            let _ = self.events.send(NetEvent::Duplicate(uuid));
+            let _ = self.events.send_over_budget(NetEvent::Duplicate(uuid));
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
             while self.is_online(uuid) {
                 if std::time::Instant::now() > deadline {
@@ -883,6 +883,10 @@ impl Lan {
             }
         })?;
         Ok(client)
+    }
+    /// Everything the connection threads reported since the last call, into `out`.
+    pub fn poll_into(&self, out: &mut Vec<crate::net::ingress::OwnedReceipt<NetEvent>>) {
+        self.events.take_turn_into(out);
     }
     /// Everything the connection threads reported since the last call.
     pub fn poll(&self) -> Vec<crate::net::ingress::OwnedReceipt<NetEvent>> {
