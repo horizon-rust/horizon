@@ -9,9 +9,93 @@ use std::path::Path;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone)]
+enum AnimationFrames {
+    Raw(Arc<Vec<Vec<u8>>>),
+    Packed(Arc<PackedFrames>),
+}
+struct PackedFrames {
+    frame_lens: Vec<usize>,
+    compressed: Vec<u8>,
+    /// Decompressed lazily if [`SpriteAnimation::pixels`] is ever called after
+    /// [`SpriteAnimation::pack`] (for example, on renderer rebuild after device loss).
+    unpacked: std::sync::OnceLock<Vec<Vec<u8>>>,
+}
+impl PackedFrames {
+    fn compress(frames: &[Vec<u8>]) -> Self {
+        let frame_lens: Vec<usize> = frames.iter().map(Vec::len).collect();
+        let total: usize = frame_lens.iter().sum();
+        let mut flat = Vec::with_capacity(total);
+        for frame in frames {
+            flat.extend_from_slice(frame);
+        }
+        let mut compressed = lz4_flex::compress_prepend_size(&flat);
+        compressed.shrink_to_fit();
+        Self {
+            frame_lens,
+            compressed,
+            unpacked: std::sync::OnceLock::new(),
+        }
+    }
+    fn frames(&self) -> &[Vec<u8>] {
+        self.unpacked.get_or_init(|| {
+            let expected: usize = self.frame_lens.iter().sum();
+            let raw = lz4_flex::decompress_size_prepended(&self.compressed)
+                .ok()
+                .filter(|b| b.len() == expected)
+                .unwrap_or_else(|| vec![0; expected]);
+            let mut out = Vec::with_capacity(self.frame_lens.len());
+            let mut offset = 0;
+            for &len in &self.frame_lens {
+                out.push(raw[offset..offset + len].to_vec());
+                offset += len;
+            }
+            out
+        })
+    }
+}
+impl AnimationFrames {
+    fn len(&self) -> usize {
+        match self {
+            Self::Raw(frames) => frames.len(),
+            Self::Packed(packed) => packed.frame_lens.len(),
+        }
+    }
+    fn pixels(&self, frame: usize) -> &[u8] {
+        match self {
+            Self::Raw(frames) => &frames[frame],
+            Self::Packed(packed) => &packed.frames()[frame],
+        }
+    }
+    fn is_packed(&self) -> bool {
+        matches!(self, Self::Packed(_))
+    }
+    fn ram_bytes(&self) -> usize {
+        match self {
+            Self::Raw(frames) => frames.iter().map(Vec::capacity).sum(),
+            Self::Packed(packed) => {
+                let base = packed.compressed.capacity()
+                    + packed.frame_lens.capacity() * std::mem::size_of::<usize>();
+                let unpacked = packed
+                    .unpacked
+                    .get()
+                    .map_or(0, |v| v.iter().map(Vec::capacity).sum());
+                base + unpacked
+            }
+        }
+    }
+    #[cfg(test)]
+    fn raw_arc(&self) -> Option<&Arc<Vec<Vec<u8>>>> {
+        match self {
+            Self::Raw(frames) => Some(frames),
+            Self::Packed(_) => None,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct SpriteAnimation {
     pub layer: u32,
-    frames: Arc<Vec<Vec<u8>>>,
+    frames: AnimationFrames,
     clip: Arc<AnimationClip>,
     materials: [Option<Arc<Vec<Vec<u8>>>>; 2],
 }
@@ -81,20 +165,49 @@ impl SpriteAnimation {
     pub fn resized_pixels(&self, frame: usize, width: u32, height: u32) -> Vec<u8> {
         let source = self.pixels(frame);
         let side = (source.len() / 4).isqrt() as u32;
+        if width == side && height == side {
+            return source.to_vec();
+        }
         let mut out = Vec::with_capacity((width * height * 4) as usize);
+        if width == 0 || height == 0 || side == 0 {
+            return out;
+        }
+        if width == height {
+            resample_into(source, side, width, &mut out);
+            return out;
+        }
+        let col_map: smallvec::SmallVec<[usize; 64]> =
+            (0..width).map(|x| (x * side / width) as usize).collect();
+        let side_usize = side as usize;
         for y in 0..height {
-            for x in 0..width {
-                let offset = ((y * side / height * side + x * side / width) * 4) as usize;
+            let row_base = (y * side / height) as usize * side_usize;
+            for &sx in &col_map {
+                let offset = (row_base + sx) * 4;
                 out.extend_from_slice(&source[offset..offset + 4]);
             }
         }
         out
     }
     pub fn pixels(&self, frame: usize) -> &[u8] {
-        &self.frames[frame]
+        self.frames.pixels(frame)
     }
     pub fn frame_count(&self) -> usize {
         self.frames.len()
+    }
+    /// Compress CPU frame buffers with LZ4 once the GPU holds the animation frames.
+    /// Subsequent [`Self::pixels`] calls transparently decompress on demand.
+    pub fn pack(&mut self) {
+        if let AnimationFrames::Raw(frames) = &self.frames {
+            self.frames = AnimationFrames::Packed(Arc::new(PackedFrames::compress(frames)));
+        }
+    }
+    /// Whether this animation's CPU frame buffers are LZ4-packed.
+    pub fn is_packed(&self) -> bool {
+        self.frames.is_packed()
+    }
+    /// Heap bytes currently retained by this animation's colour frames.
+    pub fn frame_ram_bytes(&self) -> usize {
+        self.frames.ram_bytes()
     }
 }
 
@@ -216,11 +329,63 @@ fn side_within(start: u32, layers: u64, bytes: u64) -> u32 {
     size
 }
 /// Reduce data maps by selecting whole texels: material IDs and sentinel bytes cannot be averaged.
+#[cfg(test)]
 fn shrink_map(frame: Vec<u8>, side: u32, max: u32) -> (u32, Vec<u8>) {
     if side <= max || !side.is_power_of_two() || !max.is_power_of_two() {
         return (side, frame);
     }
     (max, resample(&frame, side, max))
+}
+/// Nearest-resample a square RGBA frame directly into `out`.
+fn resample_into(frame: &[u8], from: u32, to: u32, out: &mut Vec<u8>) {
+    if from == to {
+        out.extend_from_slice(frame);
+        return;
+    }
+    if from == 0 || to == 0 {
+        return;
+    }
+    let from_usize = from as usize;
+    let to_usize = to as usize;
+    if to > from && to.is_multiple_of(from) {
+        let scale = to_usize / from_usize;
+        let row_bytes = to_usize * 4;
+        for src_row in 0..from_usize {
+            let row_start = out.len();
+            let base = src_row * from_usize * 4;
+            for src_col in 0..from_usize {
+                let px = &frame[base + src_col * 4..base + src_col * 4 + 4];
+                for _ in 0..scale {
+                    out.extend_from_slice(px);
+                }
+            }
+            for _ in 1..scale {
+                out.extend_from_within(row_start..row_start + row_bytes);
+            }
+        }
+        return;
+    }
+    if from > to && from.is_multiple_of(to) {
+        let step = from_usize / to_usize;
+        for row in 0..to_usize {
+            let row_base = row * step * from_usize;
+            for column in 0..to_usize {
+                let offset = (row_base + column * step) * 4;
+                out.extend_from_slice(&frame[offset..offset + 4]);
+            }
+        }
+        return;
+    }
+    let col_map: smallvec::SmallVec<[usize; 64]> = (0..to)
+        .map(|column| (column * from / to) as usize)
+        .collect();
+    for row in 0..to {
+        let row_base = (row * from / to) as usize * from_usize;
+        for &src_col in &col_map {
+            let offset = (row_base + src_col) * 4;
+            out.extend_from_slice(&frame[offset..offset + 4]);
+        }
+    }
 }
 /// Nearest-resample a square RGBA frame to another square size.
 pub(crate) fn resample(frame: &[u8], from: u32, to: u32) -> Vec<u8> {
@@ -228,13 +393,7 @@ pub(crate) fn resample(frame: &[u8], from: u32, to: u32) -> Vec<u8> {
         return frame.to_vec();
     }
     let mut out = Vec::with_capacity((to * to * 4) as usize);
-    for row in 0..to {
-        let source_row = row * from / to;
-        for column in 0..to {
-            let offset = ((source_row * from + column * from / to) * 4) as usize;
-            out.extend_from_slice(&frame[offset..offset + 4]);
-        }
-    }
+    resample_into(frame, from, to, &mut out);
     out
 }
 impl Sprites {
@@ -328,21 +487,44 @@ impl Sprites {
             self.size = size;
             return;
         }
-        let mut resized = Vec::with_capacity(self.native.len());
+        let layer_count = self.native.len();
+        let layer_bytes = (size as usize) * (size as usize) * 4;
         self.pixels.clear();
-        for (from, frames, initial) in &self.native {
-            // Native frames already match the atlas size: share the immutable
-            // buffers with animations rather than copying every frame again.
-            let frames: Arc<Vec<Vec<u8>>> = if *from == size {
-                Arc::clone(frames)
+        self.pixels.reserve_exact(layer_count * layer_bytes);
+        // Only animated layers need retained resampled frame arrays; still layers stream
+        // directly into `self.pixels` without allocating intermediate buffers.
+        let mut animated_layers = vec![false; layer_count];
+        for animation in &self.animations {
+            if let Some(slot) = animated_layers.get_mut(animation.layer as usize) {
+                *slot = true;
+            }
+        }
+        let mut resized_animated: crate::fast_hash::FxHashMap<u32, Arc<Vec<Vec<u8>>>> =
+            crate::fast_hash::FxHashMap::with_capacity_and_hasher(
+                self.animations.len(),
+                Default::default(),
+            );
+        for (layer, (from, frames, initial)) in self.native.iter().enumerate() {
+            if animated_layers[layer] {
+                // Native frames already match the atlas size: share the immutable
+                // buffers with animations rather than copying every frame again.
+                let frames: Arc<Vec<Vec<u8>>> = if *from == size {
+                    Arc::clone(frames)
+                } else {
+                    Arc::new(frames.iter().map(|f| resample(f, *from, size)).collect())
+                };
+                self.pixels.extend_from_slice(&frames[*initial]);
+                resized_animated.insert(layer as u32, frames);
+            } else if *from == size {
+                self.pixels.extend_from_slice(&frames[*initial]);
             } else {
-                Arc::new(frames.iter().map(|f| resample(f, *from, size)).collect())
-            };
-            self.pixels.extend_from_slice(&frames[*initial]);
-            resized.push(frames);
+                resample_into(&frames[*initial], *from, size, &mut self.pixels);
+            }
         }
         for animation in &mut self.animations {
-            animation.frames = resized[animation.layer as usize].clone();
+            if let Some(frames) = resized_animated.get(&animation.layer) {
+                animation.frames = AnimationFrames::Raw(Arc::clone(frames));
+            }
         }
         self.size = size;
         self.normals.clear();
@@ -354,32 +536,70 @@ impl Sprites {
         if largest_map.is_some() {
             let pbr_size = self.pbr_size;
             log::info!("Horizon: LabPBR maps at {pbr_size} px, {layers} layers");
-            for animation in &mut self.animations {
-                animation.materials = self.pbr[animation.layer as usize].each_ref().map(|map| {
-                    map.as_ref().map(|(from, frames)| {
-                        Arc::new(
-                            frames
-                                .iter()
-                                .map(|frame| resample(frame, *from, pbr_size))
-                                .collect(),
-                        )
-                    })
-                });
-            }
-            for (layer, maps) in std::mem::take(&mut self.pbr).into_iter().enumerate() {
-                for (map, (out, none)) in maps.into_iter().zip([
-                    (&mut self.normals, FLAT_NORMAL),
-                    (&mut self.specular, NO_SPECULAR),
-                ]) {
+            let pbr_layers = std::mem::take(&mut self.pbr);
+            let map_layer_bytes = (pbr_size as usize) * (pbr_size as usize) * 4;
+            self.normals
+                .reserve_exact(pbr_layers.len() * map_layer_bytes);
+            self.specular
+                .reserve_exact(pbr_layers.len() * map_layer_bytes);
+            let mut animated_materials: crate::fast_hash::FxHashMap<
+                u32,
+                [Option<Arc<Vec<Vec<u8>>>>; 2],
+            > = crate::fast_hash::FxHashMap::with_capacity_and_hasher(
+                self.animations.len(),
+                Default::default(),
+            );
+            for (layer, maps) in pbr_layers.into_iter().enumerate() {
+                let is_anim = animated_layers.get(layer).copied().unwrap_or(false);
+                let mut mats: [Option<Arc<Vec<Vec<u8>>>>; 2] = [None, None];
+                for (kind, (map, (out, none))) in maps
+                    .into_iter()
+                    .zip([
+                        (&mut self.normals, FLAT_NORMAL),
+                        (&mut self.specular, NO_SPECULAR),
+                    ])
+                    .enumerate()
+                {
                     match map {
                         Some((from, frames)) => {
                             let initial = self.native[layer].2 % frames.len();
-                            let (from, pixels) =
-                                shrink_map(frames[initial].clone(), from, pbr_size);
-                            out.extend(resample(&pixels, from, pbr_size));
+                            if is_anim {
+                                let resampled = if from == pbr_size {
+                                    Arc::new(frames)
+                                } else {
+                                    Arc::new(
+                                        frames
+                                            .iter()
+                                            .map(|frame| resample(frame, from, pbr_size))
+                                            .collect(),
+                                    )
+                                };
+                                out.extend_from_slice(&resampled[initial]);
+                                mats[kind] = Some(resampled);
+                            } else if from == pbr_size {
+                                out.extend_from_slice(&frames[initial]);
+                            } else {
+                                resample_into(&frames[initial], from, pbr_size, out);
+                            }
                         }
-                        None => out.extend(none.repeat((pbr_size * pbr_size) as usize)),
+                        None => {
+                            let start = out.len();
+                            out.resize(start + map_layer_bytes, 0);
+                            if none != [0, 0, 0, 0] {
+                                for px in out[start..].as_chunks_mut::<4>().0 {
+                                    *px = none;
+                                }
+                            }
+                        }
                     }
+                }
+                if is_anim {
+                    animated_materials.insert(layer as u32, mats);
+                }
+            }
+            for animation in &mut self.animations {
+                if let Some(mats) = animated_materials.get(&animation.layer) {
+                    animation.materials = mats.clone();
                 }
             }
         }
@@ -790,21 +1010,64 @@ impl Sprites {
         // Layers are square; a frame of another shape is nearest-resampled to
         // its longer side so UVs (normalized per layer) are unchanged.
         let side = width.max(height);
-        let mut frames = Vec::new();
-        for index in 0..count {
-            let x = index % columns * width;
-            let y = index / columns * height;
-            let mut frame = Vec::with_capacity((side * side * 4) as usize);
-            for row in 0..side {
-                let source_row = y + row * height / side;
-                for column in 0..side {
-                    let offset =
-                        ((source_row * png_width + x + column * width / side) * 4) as usize;
-                    frame.extend_from_slice(&pixels[offset..offset + 4]);
-                }
+        let mut has_transparent = false;
+        let mut opaque = true;
+        let mut translucent = false;
+        for p in pixels.as_chunks::<4>().0 {
+            let a = p[3];
+            if a == 0 {
+                has_transparent = true;
+                opaque = false;
+            } else if a != 255 {
+                translucent = true;
+                opaque = false;
             }
-            frames.push(frame);
         }
+        let frames = if width == side && height == side {
+            if count == 1 {
+                vec![pixels]
+            } else if columns == 1 {
+                let frame_bytes = (side * side * 4) as usize;
+                pixels
+                    .chunks_exact(frame_bytes)
+                    .take(count as usize)
+                    .map(<[u8]>::to_vec)
+                    .collect()
+            } else {
+                let mut frames = Vec::with_capacity(count as usize);
+                let row_bytes = (side * 4) as usize;
+                let stride = (png_width * 4) as usize;
+                for index in 0..count {
+                    let x = (index % columns * width * 4) as usize;
+                    let y = (index / columns * height) as usize;
+                    let mut frame = Vec::with_capacity((side * side * 4) as usize);
+                    for row in 0..side as usize {
+                        let start = (y + row) * stride + x;
+                        frame.extend_from_slice(&pixels[start..start + row_bytes]);
+                    }
+                    frames.push(frame);
+                }
+                frames
+            }
+        } else {
+            let mut frames = Vec::with_capacity(count as usize);
+            let col_map: smallvec::SmallVec<[u32; 64]> =
+                (0..side).map(|column| column * width / side).collect();
+            for index in 0..count {
+                let x = index % columns * width;
+                let y = index / columns * height;
+                let mut frame = Vec::with_capacity((side * side * 4) as usize);
+                for row in 0..side {
+                    let source_row = (y + row * height / side) * png_width + x;
+                    for &src_col in &col_map {
+                        let offset = ((source_row + src_col) * 4) as usize;
+                        frame.extend_from_slice(&pixels[offset..offset + 4]);
+                    }
+                }
+                frames.push(frame);
+            }
+            frames
+        };
         let texture = texture_section(metadata.as_ref());
         Ok(crate::sprite_cache::Decoded {
             side,
@@ -819,13 +1082,9 @@ impl Sprites {
                 .as_ref()
                 .and_then(|t| t["alpha_cutoff_bias"].as_f64())
                 .unwrap_or(0.0) as f32,
-            has_transparent: pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 0),
-            opaque: pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
-            translucent: pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .any(|p| p[3] != 0 && p[3] != 255),
+            has_transparent,
+            opaque,
+            translucent,
         })
     }
     /// Give a decoded texture its layer (or the one an identical still has).
@@ -912,7 +1171,7 @@ impl Sprites {
             initial = clip.sample(0).frame as usize;
             self.animations.push(SpriteAnimation {
                 layer,
-                frames: frames.clone(),
+                frames: AnimationFrames::Raw(frames.clone()),
                 clip: Arc::new(clip),
                 materials: [None, None],
             });
@@ -933,6 +1192,14 @@ impl Sprites {
 fn read_rgba(source: &ResourceSource, path: &str) -> Result<(u32, u32, Vec<u8>)> {
     decode_rgba(&source.read(path)?)
 }
+fn read_png_dimensions(source: &ResourceSource, path: &str) -> Result<(u32, u32)> {
+    let bytes = source.read(path)?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    decoder.ignore_checksums(true);
+    let reader = decoder.read_info()?;
+    let info = reader.info();
+    Ok((info.width, info.height))
+}
 pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.ignore_checksums(true);
@@ -945,17 +1212,29 @@ pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
             .ok_or("sprite exceeds decoder limits")?
     ];
     let info = reader.next_frame(&mut bytes)?;
-    let channels = info.color_type.samples();
+    if info.color_type == png::ColorType::Rgba {
+        bytes.truncate(info.buffer_size());
+        return Ok((info.width, info.height, bytes));
+    }
+    let raw = &bytes[..info.buffer_size()];
     let mut pixels = Vec::with_capacity(info.width as usize * info.height as usize * 4);
-    for pixel in bytes[..info.buffer_size()].chunks_exact(channels) {
-        let rgba = match info.color_type {
-            png::ColorType::Rgba => [pixel[0], pixel[1], pixel[2], pixel[3]],
-            png::ColorType::Rgb => [pixel[0], pixel[1], pixel[2], 255],
-            png::ColorType::Grayscale => [pixel[0], pixel[0], pixel[0], 255],
-            png::ColorType::GrayscaleAlpha => [pixel[0], pixel[0], pixel[0], pixel[1]],
-            _ => return Err("unsupported expanded sprite format".into()),
-        };
-        pixels.extend(rgba);
+    match info.color_type {
+        png::ColorType::Rgb => {
+            for pixel in raw.as_chunks::<3>().0 {
+                pixels.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+            }
+        }
+        png::ColorType::Grayscale => {
+            for &g in raw {
+                pixels.extend_from_slice(&[g, g, g, 255]);
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for pixel in raw.as_chunks::<2>().0 {
+                pixels.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+            }
+        }
+        _ => return Err("unsupported expanded sprite format".into()),
     }
     Ok((info.width, info.height, pixels))
 }
@@ -971,7 +1250,7 @@ fn pbr_map(
     let stem = path.strip_suffix(".png")?;
     let map = format!("{stem}{suffix}.png");
     let (map_width, map_height, pixels) = read_rgba(source, &map).ok()?;
-    let (width, height, _) = read_rgba(source, path).ok()?;
+    let (width, height) = read_png_dimensions(source, path).ok()?;
     let [frame_width, frame_height] = animation.map_or([width as i32, height as i32], |a| {
         a.frame_size(width as i32, height as i32)
     });
@@ -994,7 +1273,11 @@ fn pbr_map(
     } else {
         return None;
     };
-    if columns == 0 || rows == 0 || map_width % columns != 0 || map_height % rows != 0 {
+    if columns == 0
+        || rows == 0
+        || !map_width.is_multiple_of(columns)
+        || !map_height.is_multiple_of(rows)
+    {
         return None;
     }
     let (w, h) = (map_width / columns, map_height / rows);
@@ -1003,20 +1286,39 @@ fn pbr_map(
     }
     let side = w.max(h);
     let output_side = side_within(side, LAYERS_AT_LEAST, max_map_bytes()).min(side);
-    let frames = (0..columns * rows)
-        .map(|index| {
-            let (x, y) = (index % columns * w, index / columns * h);
-            let mut frame = Vec::with_capacity((side * side * 4) as usize);
-            for row in 0..side {
-                for column in 0..side {
-                    let offset =
-                        (((y + row * h / side) * map_width + x + column * w / side) * 4) as usize;
-                    frame.extend_from_slice(&pixels[offset..offset + 4]);
+    let total = columns * rows;
+    let frames = if total == 1 && w == side && h == side && side == output_side {
+        vec![pixels]
+    } else {
+        let col_map: smallvec::SmallVec<[u32; 64]> = (0..side).map(|col| col * w / side).collect();
+        (0..total)
+            .map(|index| {
+                let (x, y) = (index % columns * w, index / columns * h);
+                let mut frame = Vec::with_capacity((side * side * 4) as usize);
+                if w == side && h == side {
+                    let row_bytes = (side * 4) as usize;
+                    let stride = (map_width * 4) as usize;
+                    for row in 0..side as usize {
+                        let start = (y as usize + row) * stride + (x * 4) as usize;
+                        frame.extend_from_slice(&pixels[start..start + row_bytes]);
+                    }
+                } else {
+                    for row in 0..side {
+                        let src_row = (y + row * h / side) * map_width + x;
+                        for &src_col in &col_map {
+                            let offset = ((src_row + src_col) * 4) as usize;
+                            frame.extend_from_slice(&pixels[offset..offset + 4]);
+                        }
+                    }
                 }
-            }
-            resample(&frame, side, output_side)
-        })
-        .collect();
+                if side == output_side {
+                    frame
+                } else {
+                    resample(&frame, side, output_side)
+                }
+            })
+            .collect()
+    };
     Some((output_side, frames))
 }
 /// SpriteContents: the `.mcmeta` `texture` section (TextureMetadataSection's
@@ -1048,7 +1350,7 @@ pub(crate) fn test_frames(layer: u32, frames: Vec<Vec<u8>>, metadata: &str) -> S
     SpriteAnimation {
         layer,
         clip: Arc::new(metadata.clip(frames.len() as u32).unwrap().unwrap()),
-        frames: Arc::new(frames),
+        frames: AnimationFrames::Raw(Arc::new(frames)),
         materials: [None, None],
     }
 }
@@ -1228,8 +1530,14 @@ mod tests {
             ..Default::default()
         };
         sprites.finish();
-        assert!(Arc::ptr_eq(&sprites.animations[0].frames, &native));
-        assert!(!Arc::ptr_eq(&sprites.animations[1].frames, &smaller));
+        assert!(Arc::ptr_eq(
+            sprites.animations[0].frames.raw_arc().unwrap(),
+            &native
+        ));
+        assert!(!Arc::ptr_eq(
+            sprites.animations[1].frames.raw_arc().unwrap(),
+            &smaller
+        ));
         assert_eq!(sprites.animations[0].pixels(1), pixels[1].as_slice());
         let resized = resample(&smaller[0], 8, SPRITE_SIZE);
         assert_eq!(sprites.animations[1].pixels(0), resized.as_slice());
@@ -1818,7 +2126,7 @@ mod tests {
         let animation = SpriteAnimation {
             layer: 0,
             materials: [None, None],
-            frames: Arc::new(vec![vec![], vec![], vec![]]),
+            frames: AnimationFrames::Raw(Arc::new(vec![vec![], vec![], vec![]])),
             clip: Arc::new(AnimationMetadata::from_json(r#"{"frames":[{"index":2,"time":8},{"index":1,"time":3},{"index":1,"time":2},0]}"#).unwrap().clip(3).unwrap().unwrap()),
         };
         for (tick, frame) in [
@@ -1858,5 +2166,73 @@ mod tests {
         let stepped = test_clip(16, 0, r#"{"frametime":4}"#);
         assert_eq!(stepped.blend(1), blend(0, 0, 0));
         assert_eq!(stepped.blend(5), blend(1, 1, 0));
+    }
+
+    #[test]
+    fn animation_pack_compresses_frames_and_round_trips_pixels() {
+        let frames: Vec<Vec<u8>> = (0..16u8)
+            .map(|f| {
+                let mut buf = Vec::with_capacity(64 * 64 * 4);
+                for i in 0..64 * 64 {
+                    buf.extend_from_slice(&[(i & 3) as u8, ((i >> 6) & 3) as u8, f, 255]);
+                }
+                buf
+            })
+            .collect();
+        let mut animation = test_frames(3, frames.clone(), r#"{"frametime":1}"#);
+        let raw_bytes = animation.frame_ram_bytes();
+        assert!(!animation.is_packed());
+        assert_eq!(raw_bytes, 16 * 64 * 64 * 4);
+
+        animation.pack();
+        assert!(animation.is_packed());
+        let packed_bytes = animation.frame_ram_bytes();
+        assert!(
+            packed_bytes * 4 < raw_bytes,
+            "expected LZ4 pack to shrink repeated animation frames: packed={packed_bytes} raw={raw_bytes}"
+        );
+        // Packing again is idempotent.
+        animation.pack();
+        assert_eq!(animation.frame_count(), frames.len());
+        for (i, expected) in frames.iter().enumerate() {
+            assert_eq!(animation.pixels(i), expected.as_slice());
+        }
+        assert_eq!(animation.resized_pixels(2, 64, 64), frames[2]);
+        assert_eq!(
+            animation.resized_pixels(2, 32, 32),
+            resample(&frames[2], 64, 32)
+        );
+    }
+
+    #[test]
+    fn fast_resample_paths_match_nearest_formula() {
+        let reference = |frame: &[u8], from: u32, to: u32| -> Vec<u8> {
+            let mut out = Vec::with_capacity((to * to * 4) as usize);
+            for row in 0..to {
+                let source_row = row * from / to;
+                for column in 0..to {
+                    let offset = ((source_row * from + column * from / to) * 4) as usize;
+                    out.extend_from_slice(&frame[offset..offset + 4]);
+                }
+            }
+            out
+        };
+        for (from, to) in [
+            (8u32, 32u32),
+            (16, 64),
+            (32, 16),
+            (64, 16),
+            (24, 32),
+            (16, 16),
+        ] {
+            let src: Vec<u8> = (0..from * from)
+                .flat_map(|i| [i as u8, (i >> 2) as u8, (i >> 4) as u8, 255])
+                .collect();
+            assert_eq!(
+                resample(&src, from, to),
+                reference(&src, from, to),
+                "{from}->{to}"
+            );
+        }
     }
 }
