@@ -38,6 +38,18 @@ impl Game<'_> {
             _ => None,
         }
     }
+    /// The calling mod's old `horizon-extras.txt` settings, when it is the official mod that
+    /// took over an extra (`extras::MOVED_KEYS`); the file sits beside `options.txt`.
+    pub(in crate::game) fn official_extra_settings(&self) -> Vec<(String, String)> {
+        let Some(mod_id) = mod_api::content::crash::current_native_mod() else {
+            return Vec::new();
+        };
+        let text = Self::options_path()
+            .parent()
+            .and_then(|dir| fs::read_to_string(dir.join(horizon_client::extras::FILE)).ok())
+            .unwrap_or_default();
+        horizon_client::extras::Extras::moved_settings(&text, mod_id)
+    }
     /// The calling mod's colour `key`, `0xRRGGBB`, or its default.
     pub(in crate::game) fn setting_color(&self, key: &str) -> Option<u32> {
         match self.own_setting(key)? {

@@ -197,4 +197,13 @@ pub trait ConfigClientHost {
     /// when the mod registered no colour by that key.
     #[access(WorldOnly)]
     fn setting_color(&self, key: &str) -> Option<u32>;
+    /// Side: client.
+    /// The calling mod's old settings from `horizon-extras.txt`, when it is the official mod
+    /// that took over a built-in extra (`fps_overlay`, `keystrokes`, `minimap`, `zoom`): each
+    /// of that extra's keys the file has a line for, with the value the extra used, as it wrote
+    /// it (`("fpsCorner", "top_left")`). Empty for any other mod, outside a mod's call, and for
+    /// a player who never changed the extras. Read-only and read from disk on each call: a
+    /// port reads it once, keeps what it takes in its own settings, and remembers that it did.
+    #[access(ClientSetup)]
+    fn official_extra_settings(&self) -> Vec<(String, String)>;
 }
