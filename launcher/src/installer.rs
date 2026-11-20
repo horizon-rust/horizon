@@ -6,8 +6,7 @@
 //! and starts the installed copy. `horizon-launcher.exe uninstall` takes it all away again: the
 //! launcher's data folder only when asked, the game's folder never.
 //!
-//! Nothing here deletes a folder it didn't make: the install folder is always called
-//! "Horizon Launcher" ([`folder_for`]) and is removed with `remove_dir`, which only takes an empty one.
+//! Uninstall keeps custom folders and removes the standard "Horizon Launcher" folder only if empty.
 //!
 //! Command lines (handled in `main` before the CLI parser, so MCP never sees them):
 //! `horizon-launcher-setup.exe` (window), `... setup --quiet [--dir <folder>] [--desktop-shortcut]`,
@@ -46,7 +45,7 @@ pub enum Step {
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Where the launcher goes (always a folder called "Horizon Launcher").
+    /// The directory containing the installed executable.
     pub dir: PathBuf,
     pub desktop: bool,
     /// Uninstall only: also delete the launcher's data folder.
@@ -116,13 +115,9 @@ pub fn default_dir() -> PathBuf {
         .join(APP_NAME)
 }
 
-/// The install folder for a folder the player picked: always one called "Horizon Launcher", so
-/// uninstalling never has to guess what is ours.
+/// Scripted setup accepts either the parent directory or the standard install directory itself.
 pub fn folder_for(chosen: &Path) -> PathBuf {
-    if chosen
-        .file_name()
-        .is_some_and(|n| n.eq_ignore_ascii_case(APP_NAME))
-    {
+    if named(chosen, APP_NAME) {
         chosen.to_path_buf()
     } else {
         chosen.join(APP_NAME)
@@ -269,7 +264,12 @@ fn clean_aside(install: &Path) {
     for place in std::iter::once(temp).chain(places.into_iter().map(PathBuf::from)) {
         for entry in fs::read_dir(&place).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(ASIDE_PREFIX) && name.ends_with(".exe") && name != own {
+            let pid = name
+                .strip_prefix(ASIDE_PREFIX)
+                .and_then(|s| s.strip_suffix(".exe"));
+            if name != own
+                && pid.is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            {
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -325,10 +325,10 @@ fn delete_at_restart(path: &Path) {
 pub fn install(options: &Options, progress: impl Fn(Step, f32)) -> Result<PathBuf, String> {
     let source = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = options.dir.clone();
-    clean_aside(&dir);
     if dir.file_name().is_none() {
         return Err(format!("{} is not a folder to install in.", dir.display()));
     }
+    clean_aside(&dir);
     let exe = dir.join(BINARY);
     progress(Step::Files, 0.05);
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -355,6 +355,35 @@ fn remove_file(path: &Path, left: &mut Vec<String>) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => left.push(format!("{}: {e}", path.display())),
+    }
+}
+
+fn remove_install_files(dir: &Path, left: &mut Vec<String>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+        Err(e) => {
+            left.push(format!("{}: {e}", dir.display()));
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if name.strip_prefix(BINARY).is_some_and(|suffix| {
+            matches!(suffix, "" | ".lock") || backend::is_windows_update_copy(suffix)
+        }) {
+            remove_file(&entry.path(), left);
+        }
+    }
+    if named(dir, APP_NAME) {
+        if let Err(e) = fs::remove_dir(dir) {
+            if !matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+            ) {
+                left.push(format!("{}: {e}", dir.display()));
+            }
+        }
     }
 }
 
@@ -502,26 +531,12 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
 
     progress(Step::Removing, 0.55);
     // The running file can be renamed but not deleted: it steps out of the folder ([`step_aside`]).
-    if own.starts_with(&dir) {
+    if own == exe || same_path(&own, &exe) {
         if let Err(e) = step_aside(&own, &dir) {
             left.push(format!("{}: {e}", own.display()));
         }
     }
-    // Only what setup and self-updates put there: the launcher and what they moved aside.
-    for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if name == BINARY || name.starts_with("horizon-launcher.exe.") {
-            remove_file(&entry.path(), &mut left);
-        }
-    }
-    if let Err(e) = fs::remove_dir(&dir) {
-        // Something else lives there now (a file the launcher didn't make): say so.
-        if !dir.exists() || !left.is_empty() {
-            // Gone already, or what stayed is listed above.
-        } else {
-            left.push(format!("{}: {e}", dir.display()));
-        }
-    }
+    remove_install_files(&dir, &mut left);
 
     if remove_data {
         progress(Step::Data, 0.8);
@@ -623,7 +638,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_install_folder_is_always_ours() {
+    fn scripted_setup_accepts_the_standard_folder_or_its_parent() {
         assert_eq!(
             folder_for(Path::new(r"C:\Games")),
             PathBuf::from(r"C:\Games\Horizon Launcher")
@@ -632,6 +647,43 @@ mod tests {
             folder_for(Path::new(r"C:\Games\horizon launcher")),
             PathBuf::from(r"C:\Games\horizon launcher")
         );
+    }
+
+    #[test]
+    fn uninstall_keeps_the_custom_folder_and_its_other_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("horizon_launcher");
+        fs::create_dir(&dir).unwrap();
+        for suffix in [
+            "",
+            ".lock",
+            ".old-7-0",
+            ".update-7",
+            ".old-notes",
+            ".config",
+        ] {
+            fs::write(dir.join(format!("{BINARY}{suffix}")), b"x").unwrap();
+        }
+        let mut left = Vec::new();
+        remove_install_files(&dir, &mut left);
+        assert!(left.is_empty(), "{left:?}");
+        let mut kept: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            [
+                "horizon-launcher.exe.config",
+                "horizon-launcher.exe.old-notes"
+            ]
+        );
+        for file in kept {
+            fs::remove_file(dir.join(file)).unwrap();
+        }
+        remove_install_files(&dir, &mut left);
+        assert!(dir.is_dir());
     }
 
     fn moved_to(folder: &str) -> Roots {

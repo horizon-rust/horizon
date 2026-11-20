@@ -3707,6 +3707,16 @@ pub fn remove_replaced_binaries() {
     });
 }
 
+/// Suffixes written by Windows setup and self-update beside the launcher executable.
+pub(crate) fn is_windows_update_copy(suffix: &str) -> bool {
+    let number = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    suffix.strip_prefix(".update-").is_some_and(number)
+        || suffix
+            .strip_prefix(".old-")
+            .and_then(|old| old.split_once('-'))
+            .is_some_and(|(pid, sequence)| number(pid) && number(sequence))
+}
+
 /// One pass of [`remove_replaced_binaries`]: true when nothing is left. Nothing goes while a
 /// launcher holds the update lock, whose `.update-<pid>` copy and the `.old-` file it would put
 /// back after a failure are in use.
@@ -3726,14 +3736,12 @@ pub(crate) fn remove_replaced_once(dir: &Path, name: &str, own_pid: u32, lock: &
     let Ok(entries) = fs::read_dir(dir) else {
         return true;
     };
-    let old = format!("{name}.old-");
-    let update = format!("{name}.update-");
-    let own = format!("{update}{own_pid}");
+    let own = format!("{name}.update-{own_pid}");
     let mut left = false;
     for entry in entries.flatten() {
         let file = entry.file_name();
         let file = file.to_string_lossy();
-        if file.starts_with(&old) || (file.starts_with(&update) && file != own) {
+        if file != own && file.strip_prefix(name).is_some_and(is_windows_update_copy) {
             left |= fs::remove_file(entry.path()).is_err();
         }
     }
