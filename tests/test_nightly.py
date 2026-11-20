@@ -281,6 +281,34 @@ class PruneBuildsTests(unittest.TestCase):
         self.assertIn("GITHUB_STEP_SUMMARY", step)
 
 
+class ConcurrencyTests(unittest.TestCase):
+    """A dry run never waits for, holds up or replaces a real cut or another dry run (#18779)."""
+
+    def setUp(self):
+        self.build = (WORKFLOWS / "nightly-build.yml").read_text()
+        # The rule `pick` publishes by: a dry run is the `dry_run` input or any dispatch off main.
+        mode = self.build.split("\n  pick:", 1)[1].split("- id: mode", 1)[1].split("- id: pick", 1)[0]
+        self.dry = mode.split('run: echo "dry_run=${{ ', 1)[1].split(" }}", 1)[0]
+
+    def test_real_runs_keep_the_shared_group_and_dry_runs_get_one_each(self):
+        concurrency = self.build.split("\nconcurrency:\n", 1)[1].split("\njobs:", 1)[0]
+        settings = [line.strip() for line in concurrency.splitlines() if not line.strip().startswith("#")]
+        # Not a dry run: the suffix is '', so the group is `nightly-build` as before, never cancelling.
+        self.assertEqual(settings, [
+            f"group: nightly-build${{{{ ({self.dry}) && format('-dry-{{0}}', github.run_id) || '' }}}}",
+            "cancel-in-progress: false",
+        ])
+        self.assertIn("inputs.dry_run", self.dry)
+        self.assertIn("github.ref != 'refs/heads/main'", self.dry)
+
+    def test_the_run_name_says_dry_run_or_real_and_keeps_the_request(self):
+        run_name = self.build.split("\nrun-name: ", 1)[1].split("\n", 1)[0]
+        self.assertIn(f"${{{{ ({self.dry}) && ' (dry run)' || ' (real)' }}}}", run_name)
+        self.assertIn("format(' on {0}', inputs.base)", run_name)
+        # nightly_set.dispatch finds the run it started by its request id in the run's name.
+        self.assertIn("format(' (request {0})', inputs.request)", run_name)
+
+
 
 class SdkPairTests(unittest.TestCase):
     def test_only_complete_published_exact_pair_is_eligible(self):
