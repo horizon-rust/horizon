@@ -198,13 +198,17 @@ impl Game<'_> {
         &self,
         mob: &Mob,
         who: Option<PlayerRender<'_>>,
+        listened: bool,
         partial: f32,
         camera: DVec3,
         light: u32,
         out: &mut Vec<Vertex>,
     ) -> Option<HiddenParts> {
-        let hooks = MobRenderHooks::current();
         let mut hidden = HiddenParts::default();
+        if !listened {
+            return Some(hidden);
+        }
+        let hooks = MobRenderHooks::current();
         if !hooks.any_pre() {
             return Some(hidden);
         }

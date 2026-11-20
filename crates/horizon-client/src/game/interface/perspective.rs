@@ -818,7 +818,7 @@ impl Game<'_> {
         };
         let hooks = crate::game::native_mob_draw::MobRenderHooks::current();
         let pre = if hooks.any_pre() {
-            self.mod_render_pre(m, Some(who), alpha as f32, camera, packed, out)
+            self.mod_render_pre(m, Some(who), true, alpha as f32, camera, packed, out)
         } else {
             Some(Default::default())
         };

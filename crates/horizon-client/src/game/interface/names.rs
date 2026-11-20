@@ -649,7 +649,7 @@ impl Game<'_> {
             if tag.discrete {
                 self.mark_translucent_entity(out.len(), "minecraft:name_tag");
                 let light = vertex_light(tag.light);
-                self.styled_name_tag_quads(
+                self.styled_name_tag_quads_batched(
                     o,
                     &tag.lines,
                     FADED,
@@ -668,7 +668,7 @@ impl Game<'_> {
             let lit = (tag.light >> 4).max(2) << 4 | (tag.light & 15).max(2);
             self.mark_entity(out.len(), "minecraft:name_tag");
             let light = vertex_light(lit);
-            self.styled_name_tag_quads(
+            self.styled_name_tag_quads_batched(
                 o,
                 &tag.lines,
                 0xFF,
@@ -682,7 +682,7 @@ impl Game<'_> {
                 &mut batch,
             );
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
-            self.styled_name_tag_quads(
+            self.styled_name_tag_quads_batched(
                 o,
                 &tag.lines,
                 FADED,
@@ -742,8 +742,35 @@ impl Game<'_> {
     /// [`Self::name_tag_quads`], with Horizon's marks on the last line (the name): the Horizon
     /// player's mark before the text, a name tag style's badge after it and its line under the
     /// background.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     fn styled_name_tag_quads(
+        &self,
+        o: glam::DVec3,
+        lines: &[(Text, f64)],
+        text_alpha: u32,
+        background: bool,
+        text_layer: u32,
+        light: u32,
+        unit: f32,
+        out: &mut Vec<Vertex>,
+        marks: Marks,
+        layouts: Option<&mut NameTagLayouts>,
+    ) -> Vec<horizon_client::font::Patch> {
+        let mut batch = HudBatch::new(
+            [1, 1],
+            horizon_client::hud::GuiScale {
+                requested: 1,
+                unicode: false,
+            },
+        );
+        self.styled_name_tag_quads_batched(
+            o, lines, text_alpha, background, text_layer, light, unit, out, marks, layouts,
+            &mut batch,
+        );
+        Vec::new()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn styled_name_tag_quads_batched(
         &self,
         o: glam::DVec3,
         lines: &[(Text, f64)],

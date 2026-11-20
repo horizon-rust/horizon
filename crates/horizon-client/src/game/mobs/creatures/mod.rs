@@ -8007,7 +8007,7 @@ impl Game<'_> {
                 .flatten()
                 .map(|name| PlayerRender { name, local: false });
             let pre = if hooks.any_pre() {
-                self.mod_render_pre(mob, who, alpha as f32, camera, packed, out)
+                self.mod_render_pre(mob, who, true, alpha as f32, camera, packed, out)
             } else {
                 Some(Default::default())
             };
