@@ -2290,8 +2290,7 @@ dependencies = [
 [[package]]
 name = "gpui-fast"
 version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ee67914f779fdcfce4c7f59f6ba8fa68f680bd137648b25a801cd5d9cb1b8ab"
+source = "git+https://github.com/MausRundung/gpui-fast?rev=287641e07802b6cd83befc80fadbf7ec16421ea0#287641e07802b6cd83befc80fadbf7ec16421ea0"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2508,6 +2507,7 @@ dependencies = [
  "gpui-fast-linux",
  "gpui-fast-macos",
  "gpui-fast-web",
+ "gpui-fast-wgpu",
  "gpui-fast-windows",
  "gpui-pre-ios",
 ]
@@ -2555,6 +2555,7 @@ dependencies = [
  "gpui-fast",
  "gpui-pre-collections",
  "gpui-pre-util",
+ "image",
  "itertools 0.14.0",
  "log",
  "parking_lot",
