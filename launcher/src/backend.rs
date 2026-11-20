@@ -2783,9 +2783,26 @@ pub fn switch_after_start_crash(
     Ok(true)
 }
 
-/// Sets `graphicsApi:<api>` in `home`'s graphics settings when it is unset or `auto`, keeping
-/// every other line. True when it changed; a player's own choice stays.
+/// Whether `home`'s options.txt names a graphics API the player chose in Video Settings
+/// (`preferredGraphicsBackend:"opengl"` or `"vulkan"`), which the game runs when `graphicsApi` is
+/// unset or `auto` (the game's `settings.rs`).
+fn options_choose_api(home: &Path) -> bool {
+    fs::read_to_string(home.join("options.txt")).is_ok_and(|text| {
+        text.lines().any(|line| {
+            line.split_once(':').is_some_and(|(key, value)| {
+                key.trim() == "preferredGraphicsBackend"
+                    && matches!(value.trim().trim_matches('"'), "opengl" | "vulkan")
+            })
+        })
+    })
+}
+
+/// Sets `graphicsApi:<api>` in `home`'s graphics settings when it is unset or `auto` and options.txt
+/// names no API either, keeping every other line. True when it changed; a player's own choice stays.
 pub fn switch_from_auto(home: &Path, api: &str) -> Result<bool, String> {
+    if options_choose_api(home) {
+        return Ok(false);
+    }
     let path = home.join(GRAPHICS_FILE);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -5762,6 +5779,32 @@ pub fn {f}("
             assert!(!exit(libc::SIGTERM));
             assert!(!exit(2 << 8));
         }
+    }
+
+    /// Video Settings' Graphics API (options.txt) is the player's own choice under `graphicsApi:auto`.
+    #[test]
+    fn an_api_chosen_in_options_txt_is_not_switched() {
+        let home = std::env::temp_dir().join(format!("horizon-options-api-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(GRAPHICS_FILE), "graphicsApi:auto\n").unwrap();
+        fs::write(
+            home.join("options.txt"),
+            "version:4790\npreferredGraphicsBackend:\"opengl\"\n",
+        )
+        .unwrap();
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(false));
+        assert_eq!(
+            fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
+            "graphicsApi:auto\n"
+        );
+        fs::write(
+            home.join("options.txt"),
+            "version:4790\npreferredGraphicsBackend:\"default\"\n",
+        )
+        .unwrap();
+        assert_eq!(switch_from_auto(&home, "dx12"), Ok(true));
+        let _ = fs::remove_dir_all(&home);
     }
 
     /// An instance that chose its own API crashes: neither its home nor the game home switches.
