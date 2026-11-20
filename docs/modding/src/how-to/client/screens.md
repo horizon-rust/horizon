@@ -39,3 +39,22 @@ with its own inventory (a tamed mount or a chest boat), it sends the open-invent
 the sign's block position and whether its front side is being edited. It returns `None` with no sign
 editor open, or outside a world. A close of the sign editor always sends the sign update, however it
 closes; there is no close that skips it, because the vanilla client never omits that packet.
+
+## Taking a screenshot
+
+`ClientHost::request_screenshot(None)` takes a screenshot as the screenshot key (F2) does. The next
+frame is read back at the size F2 saves, the `screenshot` hook runs on it as it does for F2 (so every
+mod's screenshot listener sees mod-started screenshots too, and may change, rename or cancel them), and
+the PNG is written to the player's `screenshots` folder under vanilla's file name with F2's chat line.
+`Ok(())` means the screenshot is queued, not yet written.
+
+It returns `Err(ScreenshotError)` and queues nothing:
+
+| Error | When |
+|---|---|
+| `UnsupportedSize` | `size` is `Some`: only the frame F2 saves is supported |
+| `Busy` | a screenshot is still in progress (until its chat line is posted, the hook's own run included), another capture is queued, or a screenshot sequence runs |
+| `Folder` | the `screenshots` folder could not be created |
+| `Unavailable` | no window renders here: a server's thread or a client without a renderer |
+
+One screenshot runs at a time, so a mod cannot queue a burst: call again after the last one finished.

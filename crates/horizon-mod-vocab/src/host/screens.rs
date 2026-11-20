@@ -124,4 +124,17 @@ pub trait ScreensClientHost {
     /// Unknown names are not down. Modifier combinations use `ClientHost::modifiers`.
     #[access(ClientSetup)]
     fn is_key_down(&self, key: &str) -> bool;
+    /// Side: client.
+    /// Takes a screenshot as the screenshot key (F2) does (`Screenshot.grab`): the
+    /// next frame is read back at the size F2 saves (the game's resolution times the
+    /// screenshot quality), the `screenshot` hook runs on it as for F2, so every mod's
+    /// screenshot listener sees it, and it is written to the player's `screenshots`
+    /// folder under vanilla's file name, with F2's chat line. `size` must be `None`;
+    /// another size is not supported. `Ok` means queued: the files are written, or
+    /// the hook cancels them, after the next frame. Refused with nothing queued, by
+    /// name, as [`ScreenshotError`] lists: a size, a screenshot still in progress
+    /// (one call per screenshot: the next is accepted once the last one's chat line
+    /// is posted), no screenshots folder, or no window here. Native and wasm alike.
+    #[access(ClientSetup)]
+    fn request_screenshot(&mut self, size: Option<[u32; 2]>) -> Result<(), ScreenshotError>;
 }
