@@ -185,7 +185,7 @@ fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
         body.impulse.apply_grace_time(7);
         assert_eq!(body.impulse.reset_grace_time, 7);
         assert!(!body.spawn_extra_particles_on_fall);
-        guest.motion = Some(Box::new(body));
+        guest.motion.set(body);
         game.lan.as_mut().unwrap().hub.guests.push(guest);
         let guest_tag = game
             .for_player(commands::Target::Guest(2), |g| {

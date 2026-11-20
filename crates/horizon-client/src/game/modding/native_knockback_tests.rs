@@ -391,7 +391,7 @@ fn a_guest_blow_on_a_guest_names_the_attacker_and_the_sword() {
                 .unwrap()
                 .hub
                 .update_guest(13, |victim_guest| {
-                    victim_guest.motion = Some(Box::new(victim));
+                    victim_guest.motion.set(victim);
                     // The guest has finished loading in.
                     victim_guest.load_timeout = 0;
                 })

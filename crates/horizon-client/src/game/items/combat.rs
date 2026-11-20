@@ -204,6 +204,12 @@ impl CombatTracker {
         self.blast_hit_list.is_none() || self.blast_hit_ids.contains(&id)
     }
 
+    /// `LivingEntity.getLastHurtByMob`: the last mob to hurt the player, for 100 ticks.
+    pub(super) fn hurt_by(&self, now: i64) -> Option<(Who, i64)> {
+        let ((id, _), at) = self.last_hurt_by.as_ref()?;
+        (now - at <= 100).then_some((Who::Mob(*id), *at))
+    }
+
     /// The attack lent by the enclosing [`Game::with_attack`] (`damage_level_of!(game, scoped)`).
     pub(super) fn attack(&self) -> &Attack {
         &self.attack
@@ -883,9 +889,9 @@ impl Game<'_> {
             last_hurt_by: credit.map(|c| (c, now)),
             ..CombatTracker::default()
         };
-        std::mem::swap(&mut self.combat, &mut tracker);
+        std::mem::swap(&mut *self.combat, &mut tracker);
         let text = self.combat_death_message_for(me);
-        std::mem::swap(&mut self.combat, &mut tracker);
+        std::mem::swap(&mut *self.combat, &mut tracker);
         text
     }
 }

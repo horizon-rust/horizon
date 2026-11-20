@@ -889,7 +889,7 @@ mod tests {
                 .as_mut()
                 .unwrap()
                 .hub
-                .update_guest(20, |guest| guest.motion = Some(Box::new(motion)))
+                .update_guest(20, |guest| guest.motion.set(motion))
                 .unwrap();
             game.as_guest(20, |game| {
                 assert!(game.interact_leash(0, "minecraft:lead"));

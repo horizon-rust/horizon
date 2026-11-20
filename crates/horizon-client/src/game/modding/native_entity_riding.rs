@@ -1333,7 +1333,7 @@ mod tests {
             for conn in [1, 2] {
                 let motion = PlayerMotion::new(game.motion, at).unwrap();
                 let hub = &mut game.lan.as_mut().unwrap().hub;
-                hub.update_guest(conn, |g| g.motion = Some(Box::new(motion)))
+                hub.update_guest(conn, |g| g.motion.set(motion))
                     .unwrap();
             }
             let two = game.player(456).unwrap().entity();
@@ -1515,7 +1515,7 @@ mod tests {
             let motion = PlayerMotion::new(game.motion, at).unwrap();
             let hub = &mut game.lan.as_mut().unwrap().hub;
             hub.update_guest(1, |g| {
-                g.motion = Some(Box::new(motion));
+                g.motion.set(motion);
                 g.position = [at.x, at.y, at.z];
             })
             .unwrap();
@@ -1604,7 +1604,7 @@ mod tests {
             let player = super::super::native_player_death::tests::add_guest(game).entity();
             let motion = PlayerMotion::new(game.motion, at).unwrap();
             let hub = &mut game.lan.as_mut().unwrap().hub;
-            hub.update_guest(1, |g| g.motion = Some(Box::new(motion)))
+            hub.update_guest(1, |g| g.motion.set(motion))
                 .unwrap();
 
             // Animal searches neighbouring block centres, then the other side past a wall.
@@ -1648,7 +1648,7 @@ mod tests {
             let motion = PlayerMotion::new(game.motion, at).unwrap();
             let hub = &mut game.lan.as_mut().unwrap().hub;
             hub.update_guest(1, |g| {
-                g.motion = Some(Box::new(motion));
+                g.motion.set(motion);
                 g.yaw = 45.0;
             })
             .unwrap();
@@ -1797,7 +1797,7 @@ mod tests {
                 assert_eq!(player.leash_holder(game), None);
                 let motion = PlayerMotion::new(game.motion, at).unwrap();
                 let hub = &mut game.lan.as_mut().unwrap().hub;
-                hub.update_guest(1, |g| g.motion = Some(Box::new(motion)))
+                hub.update_guest(1, |g| g.motion.set(motion))
                     .unwrap();
                 assert!(cow.detach_leash(game, false));
                 game.as_guest(1, |game| {

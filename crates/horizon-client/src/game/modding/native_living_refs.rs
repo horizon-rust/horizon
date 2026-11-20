@@ -2944,13 +2944,13 @@ mod tests {
             // The fixture leaves the guest without a body: give one, as a
             // joined player's server record keeps.
             game.lan.as_mut().unwrap().hub.update_guest(12, |g| {
-                g.motion = Some(Box::new(
+                g.motion.set(
                     horizon_client::motion::PlayerMotion::new(
                         game.motion,
                         horizon_core::geometry::Vec3::new(3.0, 64.0, 5.0),
                     )
                     .unwrap(),
-                ))
+                )
             });
             let living = game.living(game.entity(12).unwrap()).unwrap();
             let host: &dyn Host = game;

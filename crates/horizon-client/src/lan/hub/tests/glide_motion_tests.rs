@@ -46,7 +46,7 @@ fn a_gliding_guests_motion_goes_to_the_others() {
     let (mut hub, glider_rx) = hub_with_sync(sync);
     hub.guests.update(0, |g| {
         g.sent_chunks.insert((0, 0));
-        g.motion = Some(Box::new(body));
+        g.motion.set(body);
         g.fall_flying = true;
     });
     let (tx, watcher_rx) = std::sync::mpsc::channel();

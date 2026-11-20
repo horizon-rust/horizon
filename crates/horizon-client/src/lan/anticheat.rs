@@ -417,7 +417,7 @@ impl Hub {
         agreed: [f64; 3],
     ) -> Vec<HostEvent> {
         let mut events = Vec::new();
-        if let Some(i) = self.guests.iter().position(|g| g.conn == conn) {
+        if let Some(i) = self.guests.connection_index(conn) {
             let ticks = if over.ticks == 1 { "tick" } else { "ticks" };
             // The worst tick as played, so the log tells a lag, a glide or a ladder from a cheat.
             let worst = over

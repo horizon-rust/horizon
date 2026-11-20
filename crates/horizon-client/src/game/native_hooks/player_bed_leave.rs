@@ -20,8 +20,14 @@ impl Game<'_> {
         if let (Some(head), Some(player)) = (self.sleeping, self.lan_acting_uuid)
             && mod_api::__private::listened(mod_api::HookId::PlayerBedLeave)
         {
-            let name = self.lan_acting_name.clone().unwrap_or_default();
-            self.native_player_bed_leave(player, &name, head, wake_immediately, update_level);
+            let name = self.lan_acting_name.clone();
+            self.native_player_bed_leave(
+                player,
+                name.as_deref().unwrap_or(""),
+                head,
+                wake_immediately,
+                update_level,
+            );
         }
     }
 

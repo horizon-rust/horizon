@@ -156,7 +156,7 @@ fn refused_body_construction_does_not_begin_guest_or_hook_loans() {
             .unwrap()
             .hub
             .guests
-            .update_connection(12, |g| g.motion = None);
+            .update_connection(12, |g| g.motion.clear());
         let permission = game.ui.registries.permission;
         assert!(game.as_guest(12, |_| panic!("refused turn ran")).is_none());
         game.motion = original;

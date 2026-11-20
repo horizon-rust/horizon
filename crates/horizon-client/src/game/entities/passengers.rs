@@ -519,6 +519,13 @@ impl Game<'_> {
     /// horse is a trap for fifteen minutes; a player within ten blocks springs
     /// it.
     pub(super) fn tick_skeleton_traps(&mut self) {
+        if !self
+            .mobs
+            .iter()
+            .any(|m| m.species() == Species::SkeletonHorse && m.extra.trap && m.alive())
+        {
+            return;
+        }
         // `Level.hasNearbyAlivePlayer`: alive, not a spectator, in the level.
         let players: Vec<_> = self
             .level_players()

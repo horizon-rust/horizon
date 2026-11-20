@@ -16,8 +16,13 @@ pub(crate) fn closest_space_nudge(
     let mut out = [None; 2];
     let body = p.bounds();
     let (min_y, max_y) = (body.min(Axis::Y) + 1.0e-7, body.max(Axis::Y) - 1.0e-7);
-    let suffocates_at = |x: i32, z: i32| {
-        ((min_y.floor() as i32 - 1)..=(max_y.ceil() as i32 + 1)).any(|y| {
+    let mut seen = [((0i32, 0i32), false); 16];
+    let mut seen_len = 0usize;
+    let mut suffocates_at = |x: i32, z: i32| {
+        if let Some(&(_, cached)) = seen[..seen_len].iter().find(|&&(k, _)| k == (x, z)) {
+            return cached;
+        }
+        let suffocates = ((min_y.floor() as i32 - 1)..=(max_y.ceil() as i32 + 1)).any(|y| {
             f64::from(y) < max_y
                 && f64::from(y + 1) > min_y
                 && !p.collision_exclusions.spares(BlockPos::new(x, y, z))
@@ -25,7 +30,12 @@ pub(crate) fn closest_space_nudge(
                     let f = facts.get(world.block(x, y, z));
                     f.full_collision && f.solid_render
                 }
-        })
+        });
+        if seen_len < seen.len() {
+            seen[seen_len] = ((x, z), suffocates);
+            seen_len += 1;
+        }
+        suffocates
     };
     let side = f64::from(p.dimensions.width) * 0.35;
     let (px, pz) = (p.position.x, p.position.z);

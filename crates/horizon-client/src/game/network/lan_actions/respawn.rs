@@ -127,7 +127,6 @@ impl Game<'_> {
             // ServerPlayer.restoreFrom(old, false): the base values come back,
             // and the new player has the max health they give.
             if let Some(m) = g.new_body(false) {
-                let m = *m;
                 g.logs_kept = Some((m.hurt_log, m.attack_log));
             }
             g.health = g.respawn_health(self.motion);

@@ -18,7 +18,7 @@ fn guest_replay_synchronizes_worn_boots() {
                 .unwrap()
                 .hub
                 .update_guest(12, |guest| {
-                    guest.motion = Some(Box::new(body));
+                    guest.motion.set(body);
                 })
                 .unwrap();
             for (item, count, expected) in [
@@ -117,7 +117,7 @@ fn powder_snow_walk(boots: &str) -> Vec<f64> {
                     guest.load_timeout = 0;
                     guest.loading = false;
                     guest.position = [start.x, start.y, start.z];
-                    guest.motion = Some(Box::new(server));
+                    guest.motion.set(server);
                     guest.armor[3] = Some(crate::game::ItemStack::new(boots, 1));
                     let mut record = horizon_client::lan::prediction::record::Record::default();
                     record.teleported(guest.position, false);

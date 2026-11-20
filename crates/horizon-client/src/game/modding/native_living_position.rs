@@ -472,7 +472,7 @@ pub(in crate::game) mod tests {
             let motion =
                 horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(3.0, 64.0, 5.0))
                     .unwrap();
-            guest.motion = Some(Box::new(motion));
+            guest.motion.set(motion);
             game.lan.as_mut().unwrap().hub.guests.push(guest);
             let living = game.living(game.entity(12).unwrap()).unwrap();
             // Avatar.POSES: the box of each stance a player takes.

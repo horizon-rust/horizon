@@ -1589,14 +1589,18 @@ impl Game<'_> {
     /// does not tick effects or clear absorption while a hit is in progress.
     pub(in crate::game) fn refresh_armor_protection(&mut self) {
         // EnchantmentHelper.getDamageProtection per damage type, recomputed on armor change.
-        let armor: Vec<Option<ItemStack>> = self.armor.to_vec();
-        if !self
+        if self
             .potions
             .protection_for
             .as_ref()
             .is_some_and(|(generation, cached)| {
-                *generation == self.damage_tag_generation && cached == &armor
+                *generation == self.damage_tag_generation
+                    && cached.as_slice() == self.armor.as_slice()
             })
+        {
+            return;
+        }
+        let armor: Vec<Option<ItemStack>> = self.armor.to_vec();
         {
             let mut table = Vec::new();
             let e = &self.stations().enchantments;

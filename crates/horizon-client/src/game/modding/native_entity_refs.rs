@@ -1180,7 +1180,11 @@ pub(super) mod tests {
         let conn = game.lan_acting.unwrap();
         let id = game.lan_acting_entity.unwrap();
         let uuid = game.lan_acting_uuid.unwrap();
-        let name = game.lan_acting_name.clone().unwrap();
+        let name = game
+            .lan_acting_name
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap();
         let at = game.player.as_ref().unwrap().position;
         game.next_entity = game.next_entity.max(id);
         game.lan_host(
@@ -2560,7 +2564,7 @@ pub(super) mod tests {
                 .as_mut()
                 .unwrap()
                 .hub
-                .update_guest(12, |guest| guest.motion = Some(Box::new(motion)))
+                .update_guest(12, |guest| guest.motion.set(motion))
                 .unwrap();
             let player = game.player(12).unwrap();
             assert_eq!(
@@ -2584,7 +2588,7 @@ pub(super) mod tests {
                 .as_mut()
                 .unwrap()
                 .hub
-                .update_guest(12, |guest| guest.motion = None)
+                .update_guest(12, |guest| guest.motion.clear())
                 .unwrap();
             // Body and saddle are stored on a guest like on a mob.
             let living = game.living(player.fields().entity).unwrap();

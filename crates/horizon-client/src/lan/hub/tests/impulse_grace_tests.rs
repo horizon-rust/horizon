@@ -59,7 +59,7 @@ fn a_wind_charged_guest_is_not_sent_back_for_moving_wrongly() {
         body.impulse.apply_grace_time(grace);
         hub.guests.update(0, |g| {
             g.position = start;
-            g.motion = Some(Box::new(body));
+            g.motion.set(body);
         });
         let mut events = Vec::new();
         hub.position_change(0, to, (0.0, 0.0), 0, Hearing::Heard, &ctx, &mut events);

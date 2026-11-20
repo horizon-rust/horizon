@@ -367,7 +367,7 @@ impl Hub {
             .builtin
             .get("minecraft:menu")
             .and_then(|m| m.id(menu_kind))?;
-        let i = self.guests.iter().position(|g| g.conn == conn)?;
+        let i = self.guests.connection_index(conn)?;
         self.close_container_at(i);
         let window = self.guests.update(i, |g| {
             let window = g.next_menu_window();
@@ -451,7 +451,7 @@ impl Hub {
             .builtin
             .get("minecraft:menu")
             .and_then(|m| m.id(&format!("minecraft:generic_9x{rows}")))?;
-        let i = self.guests.iter().position(|g| g.conn == conn)?;
+        let i = self.guests.connection_index(conn)?;
         self.close_container_at(i);
         let size = usize::from(rows) * 9;
         items.resize(size, None);
@@ -496,7 +496,7 @@ impl Hub {
         window: i32,
         mut items: Vec<Option<ItemStack>>,
     ) -> bool {
-        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
+        let Some(i) = self.guests.connection_index(conn) else {
             return false;
         };
         let Some(size) = self.guests[i]
@@ -527,7 +527,7 @@ impl Hub {
             .builtin
             .get("minecraft:menu")
             .and_then(|m| m.id(menu))?;
-        let i = self.guests.iter().position(|g| g.conn == conn)?;
+        let i = self.guests.connection_index(conn)?;
         self.close_container_at(i);
         Some(self.guests.update(i, |g| {
             let window = g.next_menu_window();
@@ -544,7 +544,7 @@ impl Hub {
     /// window id opens mount `entity`'s inventory with its chest's columns
     /// (ClientboundMountScreenOpenPacket).
     pub fn open_mount_window(&mut self, conn: u32, columns: i32, entity: i32) -> Option<i32> {
-        let i = self.guests.iter().position(|g| g.conn == conn)?;
+        let i = self.guests.connection_index(conn)?;
         self.close_container_at(i);
         Some(self.guests.update(i, |g| {
             let window = g.next_menu_window();
@@ -584,7 +584,7 @@ impl Hub {
     /// `AbstractContainerMenu.sendAllDataToRemote` for the guest's open
     /// block container `window`: every slot and the carried stack again.
     pub fn resend_menu(&mut self, conn: u32, window: i32, world: &World) {
-        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
+        let Some(i) = self.guests.connection_index(conn) else {
             return;
         };
         let g = &self.guests[i];
@@ -623,7 +623,7 @@ impl Hub {
     }
 
     pub fn close_container(&mut self, conn: u32) {
-        if let Some(i) = self.guests.iter().position(|g| g.conn == conn) {
+        if let Some(i) = self.guests.connection_index(conn) {
             self.close_container_at(i);
         }
     }
@@ -704,7 +704,7 @@ impl Hub {
         p: &play::ContainerClick,
         world: &World,
     ) -> Option<PreparedClick> {
-        let i = self.guests.iter().position(|g| g.conn == conn)?;
+        let i = self.guests.connection_index(conn)?;
         let in_menu = p.container != 0;
         let window_ok = !in_menu
             || self.guests[i]
@@ -917,7 +917,7 @@ impl Hub {
         world: &World,
         changed: &[usize],
     ) {
-        if let Some(i) = self.guests.iter().position(|g| g.conn == conn) {
+        if let Some(i) = self.guests.connection_index(conn) {
             self.answer_click(i, p, world, changed);
         }
     }

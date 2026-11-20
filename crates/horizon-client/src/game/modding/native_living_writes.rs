@@ -292,7 +292,7 @@ impl Game<'_> {
         living: LivingRef,
         style: &Identifier,
     ) -> bool {
-        self.native_edit_waypoint_icon(living, |icon| icon.style = style.to_string())
+        self.native_edit_waypoint_icon(living, |icon| icon.style = style.to_string().into())
     }
     /// `Waypoint.Icon.color` of the waypoint a handle names: the RGB colour,
     /// or none to show a player in their team's colour. False for the dragon.

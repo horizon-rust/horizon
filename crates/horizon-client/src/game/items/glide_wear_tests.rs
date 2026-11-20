@@ -34,7 +34,7 @@ fn glide(hand: usize, creative: bool, components: Option<&str>) -> u32 {
                     g.game_mode = if creative { 1 } else { 0 };
                     g.on_ground = false;
                     g.fall_flying = true;
-                    g.motion = Some(Box::new(body));
+                    g.motion.set(body);
                     g.armor = Default::default();
                     if elytra {
                         g.armor[1] = Some(stack);

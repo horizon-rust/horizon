@@ -244,7 +244,7 @@ mod tests {
             host.hub.guests.push(guest);
             let mut play = super::super::lan_actions::GuestPlay::default();
             play.stats.add("custom", "minecraft:jump", 7);
-            host.play.insert(1, play);
+            host.play.insert(1, Box::new(play));
             game.stats.add("custom", "minecraft:jump", 3);
 
             let player = game.player(123).unwrap();
