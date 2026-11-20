@@ -141,12 +141,14 @@ impl Game<'_> {
         else {
             return;
         };
+        static SILENT_KEY: OnceLock<JavaString> = OnceLock::new();
+        static ID_KEY: OnceLock<JavaString> = OnceLock::new();
         let silent = matches!(
-            horizon_core::nbt::compound_get(tag, "Silent"),
+            tag.get(SILENT_KEY.get_or_init(|| JavaString::from("Silent"))),
             Some(Tag::Byte(b)) if *b != 0
         );
         let parrot = matches!(
-            horizon_core::nbt::compound_get(tag, "id"),
+            tag.get(ID_KEY.get_or_init(|| JavaString::from("id"))),
             Some(Tag::String(id)) if id.to_string_lossy() == "minecraft:parrot"
         );
         if tag.is_empty() || silent || self.world.random.next_int_bound(200).unwrap_or(1) != 0 {
