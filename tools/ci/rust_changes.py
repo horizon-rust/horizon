@@ -3,7 +3,7 @@
 
 The default answers Rust selection; --launcher uses the launcher's dependency paths.
 --all emits the shared Rust, launcher and tooling decisions in one answer.
-server_build: whether verify's clippy of the server build has anything new to check (needs_server_build).
+server_build: needs_server_build's answer, which no job reads (see SERVER_BUILD_CHECK).
 """
 
 import argparse
@@ -60,8 +60,9 @@ def needs_rust_alone(paths):
 
 
 # verify's second clippy, the server build (horizon-client without default features): what it checks differently from
-# the first is the feature-gated code of the client crates and the features the manifests choose. Pull requests that
-# change neither skip it; main's pushes and the merge queue always run it.
+# the first is the feature-gated code of the client crates and the features the manifests choose. ci.yml does not read
+# the answer: verify-server runs on every pull request that changes Rust, because a crate below the client can break
+# the server build without touching either, and not in the merge queue.
 SERVER_BUILD_CHECK = {".github/workflows/ci.yml", "tools/ci/rust_changes.py"}
 
 
