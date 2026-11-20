@@ -102,6 +102,41 @@ class CargoIsolationTests(unittest.TestCase):
                                                      RUSTC_WRAPPER="", RUSTC_WORKSPACE_WRAPPER="")), [])
         self.assertEqual(self.problems(clean_environ(CARGO_INCREMENTAL="1")), ["variable set: CARGO_INCREMENTAL"])
 
+    def test_the_runners_job_count_is_accepted_as_a_plain_positive_integer(self):
+        for value in ("1", "6", "10", "9999"):
+            with self.subTest(value=value):
+                self.assertEqual(self.problems(clean_environ(CARGO_BUILD_JOBS=value)), [])
+        result, _, _ = self.run_guard(CARGO_BUILD_JOBS="10")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("allowed: CARGO_BUILD_JOBS\n", result.stdout)
+        self.assertTrue(result.stdout.endswith(cargo_isolation.CLEAN + "\n"))
+        # Anything else, an empty value too (unlike every other variable, where empty means unset).
+        for value in ("0", "-1", "default", "", "4 x", "4; x", " 4", "4\n", "04", "10000", "+4", "4.0"):
+            with self.subTest(value=value):
+                self.assertEqual(self.problems(clean_environ(CARGO_BUILD_JOBS=value)),
+                                 ["variable set: CARGO_BUILD_JOBS (not a plain job count)"])
+        result, _, _ = self.run_guard(CARGO_BUILD_JOBS="default")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("allowed:", result.stdout)
+        self.assertNotIn("default", result.stdout + result.stderr)
+        self.assertNotIn(cargo_isolation.CLEAN, result.stdout)
+        # Other empty variables still count as unset.
+        self.assertEqual(self.problems(clean_environ(RUSTC_WRAPPER="", CARGO_BUILD_TARGET="")), [])
+
+    def test_only_cargos_documented_family_names_are_printed(self):
+        for name in ("CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_RUSTFLAGS",
+                     "CARGO_PROFILE_RELEASE_LTO", "CARGO_PROFILE_DEV_OPT_LEVEL", "CARGO_TARGET_DIR"):
+            with self.subTest(name=name):
+                self.assertEqual(self.problems(clean_environ(**{name: "x"})), [f"variable set: {name}"])
+        for name, family in (("CARGO_BUILD_UNKNOWN", "CARGO_BUILD_"), ("CARGO_PROFILE_CUSTOM_LTO", "CARGO_PROFILE_"),
+                             ("CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL", "CARGO_PROFILE_"),
+                             ("CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER", "CARGO_TARGET_"),
+                             ("CARGO_NET_OFFLINE", "CARGO_NET_"), ("CARGO_REGISTRY_TOKEN", "CARGO_REGISTRY_")):
+            with self.subTest(name=name):
+                found = self.problems(clean_environ(**{name: "x"}))
+                self.assertEqual(found, [f"variables set: {family}* (1)"])
+                self.assertNotIn(name, found[0])
+
     def test_no_value_ever_reaches_the_output(self):
         (self.top / ".cargo").mkdir()
         # A secret as a value, as a registry's name, inside a URL used as a [patch] key, and as a top-level name.
@@ -117,7 +152,8 @@ class CargoIsolationTests(unittest.TestCase):
         in_name = SECRET.upper().replace("-", "_")
         result, home, github_env = self.run_guard(**{
             "CARGO_REGISTRY_TOKEN": SECRET, "RUSTC_WRAPPER": f"/{SECRET}",
-            f"CARGO_REGISTRIES_{in_name}_TOKEN": "x", f"CARGO_ALIAS_{in_name}": "build"})
+            f"CARGO_REGISTRIES_{in_name}_TOKEN": "x", f"CARGO_ALIAS_{in_name}": "build",
+            f"CARGO_BUILD_{in_name}": "x", f"CARGO_PROFILE_{in_name}_LTO": "x", "CARGO_BUILD_JOBS": f"4{SECRET}"})
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 1)
         self.assertNotIn(cargo_isolation.CLEAN, output)
@@ -125,7 +161,9 @@ class CargoIsolationTests(unittest.TestCase):
         self.assertNotIn("4711", output)
         for expected in ("(tables: build, patch, registries, other (1))", "could not be parsed",
                          "variables set: CARGO_REGISTRY_* (1)", "variables set: CARGO_REGISTRIES_* (1)",
-                         "variables set: CARGO_ALIAS_* (1)", "variable set: RUSTC_WRAPPER"):
+                         "variables set: CARGO_ALIAS_* (1)", "variable set: RUSTC_WRAPPER",
+                         "variables set: CARGO_BUILD_* (1)", "variables set: CARGO_PROFILE_* (1)",
+                         "variable set: CARGO_BUILD_JOBS (not a plain job count)"):
             self.assertIn(expected, output)
         self.assertFalse(home.exists())
         self.assertEqual(github_env, "")
