@@ -460,7 +460,7 @@ class NightlyTrainTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         arguments = calls[0]
         self.assertNotIn("--status", arguments)
-        self.assertEqual(arguments[arguments.index("--created") + 1], ">=2026-10-08")
+        self.assertEqual(arguments[arguments.index("--created") + 1], ">=2026-09-10")
         self.assertEqual(arguments[arguments.index("--limit") + 1], str(train.NIGHTLY_LISTING))
         calls, patch = self.listing([(n, "completed") for n in range(10)])
         with patch:

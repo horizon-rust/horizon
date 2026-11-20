@@ -486,11 +486,12 @@ def published_nightly():
     return json.loads(out) if out.strip() else None
 
 
-# How far back `nightly_building` looks, and the most runs it lists. A real cut can wait days for parity-main before
-# its `sdk-publish` rerun (a rerun keeps the run's creation date); GitHub returns at most 1000 runs for a filtered
-# listing, and a week of Nightlies and dry runs is far below that.
+# How far back `nightly_building` looks, and the most runs it lists. GitHub allows a run to be rerun for 30 days and
+# the rerun keeps the run's creation date (a real cut's `sdk-publish` rerun after parity-main passes), so any run
+# created in the last 35 days may be active again. GitHub returns at most 1000 runs for a filtered listing; a full
+# one counts as building.
 NIGHTLY_ACTIVE = ("queued", "in_progress", "waiting", "pending", "requested")
-NIGHTLY_LOOKBACK_DAYS = 7
+NIGHTLY_LOOKBACK_DAYS = 35
 NIGHTLY_LISTING = 1000
 
 
