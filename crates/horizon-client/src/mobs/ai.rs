@@ -1320,7 +1320,7 @@ pub fn finish_tick(
                 at.z.floor() as i32,
             );
             let inert = !matches!(
-                w.facts.get(below).name.as_str(),
+                &*w.facts.get(below).name,
                 "minecraft:turtle_egg"
                     | "minecraft:magma_block"
                     | "minecraft:cactus"
@@ -1330,7 +1330,7 @@ pub fn finish_tick(
                     | "minecraft:pointed_dripstone"
                     | "minecraft:wither_rose"
             ) && !matches!(
-                w.facts.get(inside).name.as_str(),
+                &*w.facts.get(inside).name,
                 "minecraft:cactus"
                     | "minecraft:sweet_berry_bush"
                     | "minecraft:wither_rose"
