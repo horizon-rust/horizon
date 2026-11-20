@@ -58,6 +58,7 @@ LOCK_DIR = "/Users/Shared/horizon-compile-lock"
 WAIT = {"main": 20 * 60, "build": 60 * 60, "pr": 60 * 60}
 PRIORITY = {"main", "build"}
 BUDGET_FILE = "horizon-compile-lock-waited"  # under RUNNER_TEMP: the seconds this job's priority waits took
+BUDGET_MAX = 16  # bytes a budget record may have
 POLL = 2.0
 ARRIVE_POLL = 0.1  # a pull request holds `priority` exclusively only for an instant
 INFO_MAX = 300
@@ -266,11 +267,15 @@ class Turn:
         if not self.budget_file:
             return 0
         try:
-            with open(self.budget_file, encoding="utf-8") as handle:
-                value = int(handle.read(32).strip())
-            return value if 0 <= value <= 10 ** 7 else 0
-        except (OSError, ValueError):
+            with open(self.budget_file, "rb") as handle:
+                data = handle.read(BUDGET_MAX + 1)
+        except OSError:
             return 0
+        # Digits only, one trailing newline at most; anything longer than BUDGET_MAX is not a record of ours.
+        text = data[:-1] if data.endswith(b"\n") else data
+        if len(data) > BUDGET_MAX or not re.fullmatch(rb"[0-9]{1,8}", text):
+            return 0
+        return int(text)
 
     def record(self, seconds):
         if not self.budget_file:
@@ -351,14 +356,20 @@ class Turn:
         return False
 
 
+# Set by a signal that arrives during cleanup (Hurry): every group stop under way, in any thread (parity.py's
+# watchdog), skips the rest of its grace and sends SIGKILL. Never cleared: a process that got it is ending.
+ESCALATE = threading.Event()
+
+
 class Hurry:
-    """While a group is being stopped in the main thread, SIGINT, SIGTERM and SIGHUP only cut the grace short: a
-    second signal from a cancelled job never interrupts the cleanup itself. Elsewhere (a watchdog thread) a no-op."""
+    """While cleanup runs in the main thread, SIGINT, SIGTERM and SIGHUP only set ESCALATE, which cuts every group
+    stop's grace short: a second signal from a cancelled job never interrupts the cleanup itself. Entered in another
+    thread, it installs nothing."""
 
     NAMES = ("SIGINT", "SIGTERM", "SIGHUP")
 
     def __init__(self):
-        self.event = threading.Event()
+        self.event = ESCALATE
         self.saved = {}
 
     def __enter__(self):

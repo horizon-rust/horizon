@@ -336,10 +336,15 @@ class CompileLockTests(unittest.TestCase):
         self.assertEqual(len(self.lines), 2, self.lines)
         self.assertIn("this job's 60 min of waiting are used up", self.lines[0])
         self.assertTrue(self.lines[1].startswith("  compile lock: compiling without the turn while parity-main"))
-        for text in ("x", "-5", "\x00", "99999999999"):
+        # Digits only, at most one trailing newline, within BUDGET_MAX bytes; an overlong record with a numeric
+        # prefix counts as 0 too.
+        for text in ("x", "-5", "\x00", "123456789", "12 ", "12\n\n", "١٢", "60" + "0" * 30,
+                     "600" + "x" * 40):
             with self.subTest(text):
-                budget.write_text(text)
+                budget.write_text(text, encoding="utf-8")
                 self.assertEqual(self.turn("build", environ=environ).spent(), 0)
+        budget.write_bytes(b"125\n")
+        self.assertEqual(self.turn("build", environ=environ).spent(), 125)
         # A pull request's job keeps its own limit per wait and leaves the record alone.
         budget.write_text("3600")
         self.clock.slept = 0
@@ -474,6 +479,38 @@ class CompileLockTests(unittest.TestCase):
         self.assertLess(seconds, 4)
         self.assert_gone(pid)
         self.assertTrue(self.turn("pr").acquire())
+
+    @unittest.skipUnless(os.name == "posix", "process groups and signals")
+    def test_a_signal_during_cleanup_hurries_a_group_stop_in_another_thread(self):
+        # parity.py's watchdog stops the group on its own thread while the main thread's cleanup waits for it: a
+        # signal then must end that stop's grace (the normal 10 s) at once. In a process of its own, as the
+        # escalation is never cleared.
+        script = textwrap.dedent("""
+            import os, signal, subprocess, sys, threading, time
+            sys.path.insert(0, sys.argv[1])
+            from tools import compile_lock
+            assert compile_lock.GRACE == 10
+            child = ("import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                     "print(os.getpid(), flush=True); time.sleep(60)")
+            group = subprocess.Popen([sys.executable, "-c", child], stdout=subprocess.PIPE, text=True,
+                                     start_new_session=True)
+            print(group.stdout.readline().strip(), flush=True)
+            stopper = threading.Thread(target=compile_lock.stop_group, args=(group,))
+            with compile_lock.Hurry():
+                stopper.start()
+                time.sleep(1)
+                signalled = time.monotonic()
+                os.kill(os.getpid(), signal.SIGTERM)
+                stopper.join()
+            print(f"{time.monotonic() - signalled:.2f}", flush=True)
+            group.wait()
+        """)
+        runner = subprocess.run([sys.executable, "-c", script, str(ROOT)], capture_output=True, text=True,
+                                timeout=60)
+        self.assertEqual(runner.returncode, 0, runner.stderr)
+        pid, seconds = runner.stdout.split()
+        self.assertLess(float(seconds), 3)  # without the signal reaching the thread: about 9
+        self.assertTrue(process_gone(int(pid)))
 
     def test_the_module_runs_on_the_macs_system_python(self):
         ast.parse(Path(compile_lock.__file__).read_text(encoding="utf-8"), feature_version=(3, 9))

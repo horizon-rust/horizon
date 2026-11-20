@@ -198,9 +198,11 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertTrue(printed.call_args_list[-1].args[0].startswith("::error::The probe prebuild passed its"))
 
     @unittest.skipUnless(os.name == "posix", "process groups and signals")
-    def test_signals_while_the_watchdog_stops_the_group_never_cut_the_cleanup_short(self):
-        # The limit fires; Cargo dies on SIGTERM, its child (stderr closed, SIGTERM ignored) lives on through the
-        # grace. Two SIGTERMs reach parity.py while it waits for that cleanup: the child is still gone at the end.
+    def test_a_second_signal_hurries_the_watchdogs_group_stop(self):
+        # The limit fires; Cargo dies on SIGTERM, its child (stderr closed, SIGTERM ignored) lives on into the
+        # watchdog's grace, the normal 10 s. A first SIGTERM to parity.py starts its own cleanup, which waits for the
+        # watchdog; a second one ends the cleanup at once, not when the grace ends, and the child is gone. (That the
+        # watchdog's own group stop is hurried is tested in test_compile_lock.)
         folder = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, folder, True)
         pid_file = folder / "child.pid"
@@ -213,7 +215,7 @@ class ParityRunnerTests(unittest.TestCase):
             sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
             from tools import parity
             parity.exit_on_termination()
-            parity.compile_lock.GRACE = 4
+            assert parity.compile_lock.GRACE == 10
             parity.PREBUILD_LIMIT = {{"main": 1}}
             with mock.patch.object(parity, "target_packages", return_value={{}}), \\
                     mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", {cargo!r}]]), \\
@@ -229,11 +231,14 @@ class ParityRunnerTests(unittest.TestCase):
                 break
             time.sleep(0.1)
         pid = int(pid_file.read_text())
-        time.sleep(2)  # past the 1 s limit: the watchdog is in its 4 s grace
+        time.sleep(2)  # past the 1 s limit: the watchdog is about 1 s into its 10 s grace
         process.send_signal(signal.SIGTERM)
         time.sleep(0.5)
+        second = time.monotonic()
         process.send_signal(signal.SIGTERM)
         self.assertEqual(process.wait(timeout=30), 128 + signal.SIGTERM)
+        # Without the second signal reaching the watchdog, the exit would come ~8.5 s later, at the grace's end.
+        self.assertLess(time.monotonic() - second, 4)
         from tests.test_compile_lock import process_gone
         gone = process_gone(pid)
         if not gone:
