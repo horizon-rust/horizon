@@ -513,36 +513,42 @@ class CompileLockTests(unittest.TestCase):
         self.assertTrue(process_gone(int(pid)))
 
     @unittest.skipUnless(os.name == "posix", "process groups and signals")
-    def test_a_slow_process_listing_holds_up_a_hurried_group_stop_only_briefly(self):
-        # ps hangs until its time limit while the stop is hurried: SIGKILL follows that one probe, not the grace.
+    def test_a_hurried_group_stop_ends_soon_even_when_ps_never_answers(self):
+        # Every ps stalls, after SIGKILL too, and the group ignores SIGTERM: a signal during the grace (normal 10 s,
+        # probes normally 5 s each) ends the probe under way, SIGKILL follows, and the stop returns within
+        # HURRIED_KILL_WAIT of it, though kill(-pgid, 0) keeps answering for the unreaped leader.
         script = textwrap.dedent("""
             import os, signal, subprocess, sys, threading, time
             sys.path.insert(0, sys.argv[1])
             from tools import compile_lock
-            run = subprocess.run
-            def slow(command, **options):
-                if command[0] == "ps" and not compile_lock.ESCALATE.is_set():
-                    compile_lock.ESCALATE.wait(options["timeout"])
-                    time.sleep(options["timeout"])
-                    raise subprocess.TimeoutExpired(command, options["timeout"])
-                return run(command, **options)
-            compile_lock.subprocess.run = slow
+            assert (compile_lock.GRACE, compile_lock.PROBE_TIMEOUT, compile_lock.HURRIED_KILL_WAIT) == (10, 5, 2)
             child = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(1, flush=True); "
                      "time.sleep(60)")
             group = subprocess.Popen([sys.executable, "-c", child], stdout=subprocess.PIPE, text=True,
                                      start_new_session=True)
             group.stdout.readline()
-            threading.Timer(0.5, compile_lock.ESCALATE.set).start()
-            started = time.monotonic()
+            popen, probes = subprocess.Popen, []
+            def stalled(command, *args, **options):
+                if command[0] == "ps":
+                    probes.append(time.monotonic())
+                    command = [sys.executable, "-c", "import time; time.sleep(60)"]
+                return popen(command, *args, **options)
+            compile_lock.subprocess.Popen = stalled
+            signalled = []
+            def second_signal():
+                signalled.append(time.monotonic())
+                os.kill(os.getpid(), signal.SIGTERM)
+            threading.Timer(1, second_signal).start()
             compile_lock.stop_group(group)
-            print(f"{time.monotonic() - started:.2f}", flush=True)
-            group.wait()
+            print(f"{time.monotonic() - signalled[0]:.2f} {len(probes)} {group.wait()}", flush=True)
         """)
         runner = subprocess.run([sys.executable, "-c", script, str(ROOT)], capture_output=True, text=True,
                                 timeout=60)
         self.assertEqual(runner.returncode, 0, runner.stderr)
-        # Hurried at 0.5 s; the probe under way then ends within its 1 s limit, and SIGKILL ends the group.
-        self.assertLess(float(runner.stdout.split()[-1]), 3)
+        seconds, probes, status = runner.stdout.split()
+        self.assertLess(float(seconds), 3)
+        self.assertGreater(int(probes), 1, "no probe ran after SIGKILL")
+        self.assertEqual(int(status), -signal.SIGKILL)
 
     def test_the_module_runs_on_the_macs_system_python(self):
         ast.parse(Path(compile_lock.__file__).read_text(encoding="utf-8"), feature_version=(3, 9))

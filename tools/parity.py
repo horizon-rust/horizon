@@ -825,8 +825,7 @@ def prebuild(artifacts, jobs):
                            f"{describe_cargo_build(command, lines, started, time.monotonic())}")
             if expired.is_set():
                 print(f"::error::The probe prebuild passed its {limit // 60:.0f} min limit at cargo {number}/"
-                      f"{len(commands)} (stopped there). The machine is likely loaded by other jobs' compiles: "
-                      "see the compile lock lines above.", flush=True)
+                      f"{len(commands)} and was stopped there.", flush=True)
                 sys.exit(1)
         report(lambda: describe_machine(os.cpu_count(), load, machine_load()))
         report(lambda: describe_sccache(stats, sccache_stats(environment)))
