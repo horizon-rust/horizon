@@ -445,7 +445,7 @@ impl Game<'_> {
                 "minecraft:default".into()
             } else {
                 match ctx.get("style") {
-                    Some(Arg::Resource(s)) => s.clone(),
+                    Some(Arg::Resource(s)) => s.clone().into(),
                     _ => "minecraft:default".into(),
                 }
             };
@@ -1141,7 +1141,7 @@ impl Game<'_> {
             _ => None,
         };
         Some(Icon {
-            style: style.to_string_lossy(),
+            style: style.to_string_lossy().into(),
             color,
         })
     }
@@ -1154,7 +1154,7 @@ impl Game<'_> {
             }
             return;
         }
-        let mut fields = vec![("style", Tag::String(icon.style.as_str().into()))];
+        let mut fields = vec![("style", Tag::String((&*icon.style).into()))];
         if let Some(rgb) = icon.color {
             fields.push(("color", Tag::Int(rgb)));
         }
@@ -1172,7 +1172,7 @@ mod waypoint_icon_save_tests {
 
     fn icon(style: &str, color: Option<i32>) -> Icon {
         Icon {
-            style: style.into(),
+            style: style.to_owned().into(),
             color,
         }
     }
