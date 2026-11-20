@@ -52,6 +52,7 @@ class CargoIsolationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(list(home.iterdir()), [])
         self.assertEqual(github_env, f"CARGO_HOME={home}\n")
+        self.assertTrue(result.stdout.endswith(cargo_isolation.CLEAN + "\n"), result.stdout)
 
     def test_a_config_at_each_ancestor_fails(self):
         levels = [self.checkout.parent, self.checkout.parent.parent, self.top]
@@ -119,6 +120,7 @@ class CargoIsolationTests(unittest.TestCase):
             f"CARGO_REGISTRIES_{in_name}_TOKEN": "x", f"CARGO_ALIAS_{in_name}": "build"})
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 1)
+        self.assertNotIn(cargo_isolation.CLEAN, output)
         self.assertNotIn("s3cret", output.lower())
         self.assertNotIn("4711", output)
         for expected in ("(tables: build, patch, registries, other (1))", "could not be parsed",

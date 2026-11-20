@@ -22,10 +22,9 @@ on:
         default: ''
       trusted:
         # No caller passes true today: release.yml starts nightly-build.yml, which passes false here and for
-        # Developer ID signing, so releases build on the Nightly's runner and their checksums are signed in a hosted
-        # job. An untrusted build never runs on the release runner and never saves the Rust cache (its key is its
-        # own anyway). Mac jobs, trusted or not, don't read machine-shared caches or cargo configuration from outside
-        # the checkout (tools/ci/cargo_isolation.py; tests/test_nightly.py pins all of it).
+        # developer_id. With false, the build never runs on the release runner and never saves the Rust cache (its
+        # key is its own anyway). Mac jobs, true or false, don't read machine-shared caches or cargo configuration
+        # from outside the checkout (tools/ci/cargo_isolation.py; tests/test_nightly.py pins all of it).
         description: The source is main (a release); false for anything else (a nightly)
         type: boolean
         default: false
@@ -88,14 +87,19 @@ jobs:
           toolchain: stable
       - name: A fresh cargo home and no cargo configuration from outside the checkout
         # The guard comes from this workflow's commit (GITHUB_WORKFLOW_SHA: the caller's, whose ./ copy of this file
-        # runs), never from the checkout it guards, which may be an older commit without it. curl -q: no curlrc.
+        # runs), never from the checkout it checks, which may be an older commit without it. It is fetched into a new
+        # folder and run by the system's own curl and Python (curl -q: no curlrc; python3 -I -S: no environment, no
+        # site), and the step passes only when its last line says it finished.
         run: |
           set -euo pipefail
-          guard="$RUNNER_TEMP/workflow-tools/cargo_isolation.py"
-          mkdir -p "${guard%/*}"
+          [ -x /usr/bin/python3 ] || { echo "::error::/usr/bin/python3 is missing"; exit 1; }
+          dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
           url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
-          curl -q -fsSL --retry 5 -o "$guard" "$url"
-          "$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" -E -s "$guard" "$GITHUB_WORKSPACE"
+          /usr/bin/curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' --max-redirs 0 \
+            --noproxy '*' --max-time 60 --retry 5 -o "$dir/cargo_isolation.py" "$url"
+          out="$(/usr/bin/python3 -I -S "$dir/cargo_isolation.py" "$GITHUB_WORKSPACE")" || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          [ "${out##*$'\n'}" = "cargo isolation: clean" ] || { echo "::error::the cargo guard did not finish"; exit 1; }
       - run: bash tools/ci/runner-env.sh
         env:
           # Nightly, dry-run and release Mac jobs don't read machine-shared caches: no sccache, and a fresh cargo home
@@ -252,14 +256,19 @@ jobs:
       - name: A fresh cargo home and no cargo configuration from outside the checkout
         if: runner.environment == 'self-hosted'
         # The guard comes from this workflow's commit (GITHUB_WORKFLOW_SHA: the caller's, whose ./ copy of this file
-        # runs), never from the checkout it guards, which may be an older commit without it. curl -q: no curlrc.
+        # runs), never from the checkout it checks, which may be an older commit without it. It is fetched into a new
+        # folder and run by the system's own curl and Python (curl -q: no curlrc; python3 -I -S: no environment, no
+        # site), and the step passes only when its last line says it finished.
         run: |
           set -euo pipefail
-          guard="$RUNNER_TEMP/workflow-tools/cargo_isolation.py"
-          mkdir -p "${guard%/*}"
+          [ -x /usr/bin/python3 ] || { echo "::error::/usr/bin/python3 is missing"; exit 1; }
+          dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
           url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
-          curl -q -fsSL --retry 5 -o "$guard" "$url"
-          "$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" -E -s "$guard" "$GITHUB_WORKSPACE"
+          /usr/bin/curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' --max-redirs 0 \
+            --noproxy '*' --max-time 60 --retry 5 -o "$dir/cargo_isolation.py" "$url"
+          out="$(/usr/bin/python3 -I -S "$dir/cargo_isolation.py" "$GITHUB_WORKSPACE")" || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          [ "${out##*$'\n'}" = "cargo isolation: clean" ] || { echo "::error::the cargo guard did not finish"; exit 1; }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted' && !matrix.musl
         with:

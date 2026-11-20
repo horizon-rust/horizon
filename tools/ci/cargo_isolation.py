@@ -8,8 +8,9 @@ table names and variable names only, never a value: these logs are public and a 
 tokens. The checkout's own .cargo/config.toml is the repository's. On success it empties $RUNNER_TEMP/cargo-home
 and writes CARGO_HOME to $GITHUB_ENV.
 
-game-build.yml runs this file from its own commit, never from the checkout it guards, so it must keep working for
-any commit being built: standard library only, nothing read from the checkout.
+game-build.yml runs this file from its own commit, never from the checkout it guards, with macOS's /usr/bin/python3
+(3.9 with the Command Line Tools) as `python3 -I -S`: so standard library only, no site, nothing from the checkout,
+and nothing newer than Python 3.9 except tomllib, which is optional (without it a config is "could not be parsed").
 
 Usage: cargo_isolation.py <checkout> [--top <dir>]  (--top stops the ancestor walk; for tests)
 """
@@ -17,6 +18,7 @@ import os
 import shutil
 import sys
 
+CLEAN = "cargo isolation: clean"
 CONFIG_NAMES = ("config", "config.toml")
 FORBIDDEN = {
     "RUSTC", "RUSTDOC", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
@@ -120,6 +122,8 @@ def main(argv):
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
         env.write(f"CARGO_HOME={home}\n")
     print(f"CARGO_HOME={home}")
+    # game-build.yml accepts the run only when this is its last line: an empty or cut-off download prints nothing.
+    print(CLEAN)
     return 0
 
 

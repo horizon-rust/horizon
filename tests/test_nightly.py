@@ -221,12 +221,15 @@ def polytone_gate_bypasses(game, nightly_build):
 
 
 # The guard comes from the workflow's own commit into RUNNER_TEMP, never from the checkout being built.
-SETUP_RUN = """set -euo pipefail
-guard="$RUNNER_TEMP/workflow-tools/cargo_isolation.py"
-mkdir -p "${guard%/*}"
+SETUP_RUN = r"""set -euo pipefail
+[ -x /usr/bin/python3 ] || { echo "::error::/usr/bin/python3 is missing"; exit 1; }
+dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
 url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
-curl -q -fsSL --retry 5 -o "$guard" "$url"
-"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" -E -s "$guard" "$GITHUB_WORKSPACE"
+/usr/bin/curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' --max-redirs 0 \
+  --noproxy '*' --max-time 60 --retry 5 -o "$dir/cargo_isolation.py" "$url"
+out="$(/usr/bin/python3 -I -S "$dir/cargo_isolation.py" "$GITHUB_WORKSPACE")" || { printf '%s\n' "$out"; exit 1; }
+printf '%s\n' "$out"
+[ "${out##*$'\n'}" = "cargo isolation: clean" ] || { echo "::error::the cargo guard did not finish"; exit 1; }
 """
 SETUP_IFS = (None, "runner.environment == 'self-hosted'")
 CLEANUP_RUN = 'rm -rf "$RUNNER_TEMP/cargo-home"'
@@ -459,44 +462,65 @@ class UntrustedBuildTests(unittest.TestCase):
         env = (Path(__file__).resolve().parents[1] / "tools/ci/runner-env.sh").read_text()
         self.assertEqual(env.count('-z "${HORIZON_NO_SCCACHE:-}"'), 2)
 
-    def test_the_guard_never_comes_from_the_checkout_it_guards(self):
-        # Run from RUNNER_TEMP at the workflow's own commit, so a Nightly of an older commit still has it.
-        self.assertIn('guard="$RUNNER_TEMP/', SETUP_RUN)
+    def test_the_guard_never_comes_from_the_checkout_it_checks(self):
+        # Fetched at the workflow's own commit into a new RUNNER_TEMP folder, so a Nightly of an older commit still
+        # has it, and run by the system's curl and Python with nothing from the environment.
+        self.assertIn('dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"', SETUP_RUN)
         self.assertIn("/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py", SETUP_RUN)
-        self.assertIn('-E -s "$guard"', SETUP_RUN)
+        self.assertIn('/usr/bin/python3 -I -S "$dir/cargo_isolation.py"', SETUP_RUN)
+        for flag in ("/usr/bin/curl -q ", "--fail", "--proto '=https'", "--proto-redir '=https'", "--max-redirs 0",
+                     "--noproxy '*'", "--max-time "):
+            self.assertIn(flag, SETUP_RUN)
+        self.assertNotIn("command -v", SETUP_RUN)
+        self.assertNotRegex(SETUP_RUN, r"\s-[a-zA-Z]*L")
+        self.assertIn(f'= "{cargo_isolation.CLEAN}" ]', SETUP_RUN)
         # No relative path at all: nothing in the step reads a file of the built commit.
-        for word in re.findall(r"[^\s\"']+", SETUP_RUN):
+        for word in re.findall(r"[^\s\"'()]+", SETUP_RUN):
             if "/" in word:
-                self.assertTrue(word.startswith(("$RUNNER_TEMP/", "/opt/homebrew/", "https://", "${guard")), word)
+                self.assertTrue(word.startswith(("$RUNNER_TEMP/", "/usr/bin/", "https://", "$dir/", "::error::/usr/bin/")),
+                                word)
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "needs a POSIX bash")
-    def test_the_guard_step_runs_beside_a_checkout_without_any_of_its_files(self):
+    def test_the_guard_step_passes_only_when_the_guard_finished(self):
         root = Path(__file__).resolve().parents[1]
-        with tempfile.TemporaryDirectory() as temporary:
-            temporary = Path(temporary)
-            checkout, runner_temp, bin_dir = temporary / "work" / "checkout", temporary / "temp", temporary / "bin"
-            for folder in (checkout, runner_temp, bin_dir):
-                folder.mkdir(parents=True)
-            (runner_temp / "github-env").touch()
-            # curl stands in for the download at the workflow's commit: it serves this tree's copy of the guard.
-            fake_curl = bin_dir / "curl"
-            fake_curl.write_text('#!/usr/bin/env bash\nwhile [ "$1" != -o ]; do shift; done\n'
-                                 f'case "$3" in */abc123/tools/ci/cargo_isolation.py) '
-                                 f'cp "{(root / "tools/ci/cargo_isolation.py").as_posix()}" "$2" ;; *) exit 22 ;; esac\n')
-            fake_curl.chmod(0o755)
-            python = bin_dir / "python3"
-            python.write_text(f'#!/usr/bin/env bash\nexec "{Path(sys.executable).as_posix()}" "$@"\n')
-            python.chmod(0o755)
-            environ = {key: value for key, value in os.environ.items() if not cargo_isolation.forbidden(key)}
-            environ.update(PATH=f"{bin_dir}{os.pathsep}{environ['PATH']}", RUNNER_TEMP=str(runner_temp),
-                           GITHUB_ENV=str(runner_temp / "github-env"), GITHUB_WORKSPACE=str(checkout),
-                           GITHUB_REPOSITORY="horizon-rust/horizon", GITHUB_WORKFLOW_SHA="abc123")
-            # The ancestor walk ends at the temporary folder's parents, which a developer machine may hold configs in.
-            run = SETUP_RUN.replace('"$GITHUB_WORKSPACE"', f'"$GITHUB_WORKSPACE" --top "{temporary.as_posix()}"')
-            result = subprocess.run(["bash", "-c", run], cwd=checkout, env=environ, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(list(checkout.iterdir()), [])
-            self.assertIn("CARGO_HOME=", (runner_temp / "github-env").read_text())
+        guard = (root / "tools/ci/cargo_isolation.py").read_text()
+        cases = {
+            "the guard": (guard, 0),
+            "an empty file": ("", 1),
+            "a file that exits 0 without the line": ("print('hello')\n", 1),
+            "a cut-off file": (guard[:len(guard) // 2], 1),
+        }
+        for label, (served, expected) in cases.items():
+            with self.subTest(served=label), tempfile.TemporaryDirectory() as temporary:
+                temporary = Path(temporary)
+                checkout, runner_temp, bin_dir = temporary / "work" / "checkout", temporary / "temp", temporary / "bin"
+                for folder in (checkout, runner_temp, bin_dir):
+                    folder.mkdir(parents=True)
+                (runner_temp / "github-env").touch()
+                (temporary / "served.py").write_text(served)
+                # Stand-ins for /usr/bin/curl (the download at the workflow's commit) and /usr/bin/python3.
+                curl = bin_dir / "curl"
+                curl.write_text('#!/usr/bin/env bash\nwhile [ "$1" != -o ]; do shift; done\n'
+                                f'case "$3" in */abc123/tools/ci/cargo_isolation.py) '
+                                f'cp "{(temporary / "served.py").as_posix()}" "$2" ;; *) exit 22 ;; esac\n')
+                python = bin_dir / "python3"
+                python.write_text(f'#!/usr/bin/env bash\nexec "{Path(sys.executable).as_posix()}" "$@"\n')
+                for tool in (curl, python):
+                    tool.chmod(0o755)
+                environ = {key: value for key, value in os.environ.items() if not cargo_isolation.forbidden(key)}
+                environ.update(RUNNER_TEMP=str(runner_temp), GITHUB_ENV=str(runner_temp / "github-env"),
+                               GITHUB_WORKSPACE=str(checkout), GITHUB_REPOSITORY="horizon-rust/horizon",
+                               GITHUB_WORKFLOW_SHA="abc123")
+                # The ancestor walk ends at the temporary folder: a developer machine may hold configs above it.
+                run = (SETUP_RUN.replace("/usr/bin/curl", str(curl)).replace("/usr/bin/python3", str(python))
+                       .replace('"$GITHUB_WORKSPACE"', f'"$GITHUB_WORKSPACE" --top "{temporary.as_posix()}"'))
+                result = subprocess.run(["bash", "-c", run], cwd=checkout, env=environ, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                # Nothing is written into the checkout, and the guard runs from a new folder each time.
+                self.assertEqual(list(checkout.iterdir()), [])
+                if expected == 0:
+                    self.assertTrue(result.stdout.endswith(cargo_isolation.CLEAN + "\n"))
+                    self.assertIn("CARGO_HOME=", (runner_temp / "github-env").read_text())
 
 
 class PruneBuildsTests(unittest.TestCase):
