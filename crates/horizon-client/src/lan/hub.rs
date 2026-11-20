@@ -5,7 +5,7 @@
 //! turns what they send into events for the gameplay code. It runs on the
 //! game thread inside the tick, only when the world is open to the network.
 use super::{
-    Lan, NetEvent,
+    Body, Lan, NetEvent,
     chunk_watch::{ChunkWatchKind, ChunkWatchLog},
     chunks::ChunkEncoder,
     data::SyncData,
@@ -729,10 +729,10 @@ enum Column<'w> {
     Saved(Arc<[u8]>),
 }
 
-/// A body in a batch: a column of `Columns`, or one read from the save.
-enum Body {
+/// A body in a batch: a near column of `Columns`, or an already encoded far column.
+enum BatchBody {
     Level(usize),
-    Saved(Arc<[u8]>),
+    Far(Arc<[u8]>),
 }
 
 /// The level's columns a tick's batches send, each once, with the number of batches taking it.
@@ -2824,7 +2824,7 @@ impl Hub {
                 let (taken, mut bodies): (Vec<_>, Vec<_>) = batch
                     .near
                     .into_iter()
-                    .map(|(idx, chunk)| (idx, Body::Level(columns.add(chunk))))
+                    .map(|(idx, chunk)| (idx, BatchBody::Level(columns.add(chunk))))
                     .unzip();
                 let mut far = Vec::new();
                 for (idx, column) in batch.far {
@@ -2838,17 +2838,30 @@ impl Hub {
                             .clone(),
                         Column::Saved(body) => body,
                     };
-                    bodies.push(Body::Saved(body));
+                    bodies.push(BatchBody::Far(body));
                 }
                 (i, taken, far, bodies)
             })
             .collect();
-        self.encoder.warm(&columns.chunks);
-        let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
-            ctx.streaming.and_then(|s| s.proto_sections(x, z))
-        });
-        let uses = &mut columns.uses;
         let chunks = &columns.chunks;
+        self.encoder.warm(chunks);
+        // Preserve the original buffer for a single recipient. For overlapping views,
+        // copy into shared storage once and queue a reference for each recipient.
+        let mut encoded: Vec<_> = self
+            .encoder
+            .bodies_with(chunks, world, &|x, z| {
+                ctx.streaming.and_then(|s| s.proto_sections(x, z))
+            })
+            .into_iter()
+            .zip(columns.uses)
+            .map(|(body, uses)| {
+                if uses == 1 {
+                    Body::Owned(body)
+                } else {
+                    Body::shared(body)
+                }
+            })
+            .collect();
         for (i, taken, far, batch) in batches {
             self.guests.update(i, |g| {
                 let size = batch.len();
@@ -2858,18 +2871,16 @@ impl Hub {
                     g.batch_quota -= size as f32;
                     g.send(&C::ChunkBatchStart(horizon_protocol::packets::Empty));
                     g.sender.send_many(batch.into_iter().map(|body| match body {
-                        Body::Level(j) => {
+                        BatchBody::Level(j) => {
                             if memory {
                                 super::handoff::offer(chunks[j]);
                             }
-                            uses[j] -= 1;
-                            if uses[j] == 0 {
-                                std::mem::take(&mut encoded[j])
-                            } else {
-                                encoded[j].clone()
+                            match &mut encoded[j] {
+                                Body::Owned(body) => Body::Owned(std::mem::take(body)),
+                                Body::Shared(body) => Body::Shared(Arc::clone(body)),
                             }
                         }
-                        Body::Saved(body) => body.to_vec(),
+                        BatchBody::Far(body) => Body::Shared(body),
                     }));
                     g.send(&C::ChunkBatchFinished(play::ChunkBatchFinished {
                         size: size as i32,
