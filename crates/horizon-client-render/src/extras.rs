@@ -221,6 +221,29 @@ impl Default for Extras {
         }
     }
 }
+/// The largest file `Extras::moved_settings_in` reads: far above any extras file the game
+/// writes (a few KiB), so a huge or hostile file can't exhaust memory.
+pub const MOVED_READ_MAX: u64 = 1 << 20;
+/// `path` as text when it is a regular file (a link to one counts) of at most
+/// `MOVED_READ_MAX` bytes in UTF-8. Checked before opening, so a device or pipe is never
+/// opened, and again on the open file, in case it was swapped in between.
+fn read_bounded(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let small = |meta: fs::Metadata| meta.is_file() && meta.len() <= MOVED_READ_MAX;
+    if !small(fs::metadata(path).ok()?) {
+        return None;
+    }
+    let file = fs::File::open(path).ok()?;
+    if !small(file.metadata().ok()?) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MOVED_READ_MAX + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MOVED_READ_MAX {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
 fn bool_text(v: bool) -> &'static str {
     if v { "true" } else { "false" }
 }
@@ -245,6 +268,22 @@ impl Extras {
             .filter(|(key, _)| keys.contains(key) && written(key))
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
             .collect()
+    }
+    /// `moved_settings` of this file in `dir`. The file is read only for a mod with a
+    /// `MOVED_KEYS` row, and only when it is a regular file of at most `MOVED_READ_MAX` bytes
+    /// in UTF-8; anything else gives nothing.
+    pub fn moved_settings_in(dir: &Path, mod_id: &str) -> Vec<(String, String)> {
+        Self::moved_settings_read(dir, mod_id, read_bounded)
+    }
+    fn moved_settings_read(
+        dir: &Path,
+        mod_id: &str,
+        read: fn(&Path) -> Option<String>,
+    ) -> Vec<(String, String)> {
+        if !MOVED_KEYS.iter().any(|(id, _)| *id == mod_id) {
+            return Vec::new();
+        }
+        read(&dir.join(FILE)).map_or_else(Vec::new, |text| Self::moved_settings(&text, mod_id))
     }
     pub fn load(dir: &Path) -> Self {
         fs::read_to_string(dir.join(FILE))
@@ -913,6 +952,29 @@ mod tests {
         assert!(Extras::moved_settings(text, "minimap").is_empty());
         assert!(Extras::moved_settings(text, "coords_hud").is_empty());
         assert!(Extras::moved_settings("", "fps_overlay").is_empty());
+    }
+    /// The file is read only for an official mod, and only as a small regular file.
+    #[test]
+    fn moved_settings_in_reads_only_a_small_file_for_an_official_mod() {
+        let dir = tempfile::tempdir().unwrap();
+        let unread = Extras::moved_settings_read(dir.path(), "coords_hud", |_| {
+            panic!("read for a mod without moved keys")
+        });
+        assert!(unread.is_empty());
+        let file = dir.path().join(FILE);
+        fs::write(&file, "fpsLows:true\n").unwrap();
+        assert_eq!(
+            Extras::moved_settings_in(dir.path(), "fps_overlay"),
+            [("fpsLows".to_owned(), "true".to_owned())]
+        );
+        let mut huge = "fpsLows:true\n".to_owned();
+        huge.push_str(&"#".repeat(MOVED_READ_MAX as usize));
+        fs::write(&file, huge).unwrap();
+        assert!(Extras::moved_settings_in(dir.path(), "fps_overlay").is_empty());
+        fs::remove_file(&file).unwrap();
+        assert!(Extras::moved_settings_in(dir.path(), "fps_overlay").is_empty());
+        fs::create_dir(&file).unwrap();
+        assert!(Extras::moved_settings_in(dir.path(), "fps_overlay").is_empty());
     }
     #[test]
     fn a_saved_wheel_setting_from_before_the_default_changed_is_dropped() {

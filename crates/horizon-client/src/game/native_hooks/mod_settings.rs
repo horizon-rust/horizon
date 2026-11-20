@@ -44,11 +44,11 @@ impl Game<'_> {
         let Some(mod_id) = mod_api::content::crash::current_native_mod() else {
             return Vec::new();
         };
-        let text = Self::options_path()
-            .parent()
-            .and_then(|dir| fs::read_to_string(dir.join(horizon_client::extras::FILE)).ok())
-            .unwrap_or_default();
-        horizon_client::extras::Extras::moved_settings(&text, mod_id)
+        let options = Self::options_path();
+        let Some(dir) = options.parent() else {
+            return Vec::new();
+        };
+        horizon_client::extras::Extras::moved_settings_in(dir, mod_id)
     }
     /// The calling mod's colour `key`, `0xRRGGBB`, or its default.
     pub(in crate::game) fn setting_color(&self, key: &str) -> Option<u32> {
