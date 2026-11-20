@@ -781,7 +781,10 @@ def prebuild(artifacts, jobs):
         deadline = time.monotonic() + limit if limit else None
         expired = threading.Event()
         load, stats = machine_load(), sccache_stats(environment)
+        timings = PrebuildTimings(environment, stats) if os.environ.get(PREBUILD_TIMINGS) == "1" else None
         for number, command in enumerate(commands, 1):
+            if timings:
+                timings.before_call()
             started = time.monotonic()
             # Stderr is read line by line, timed, so the summary can tell lock waits from compiling; stdout, which
             # Cargo leaves empty here, was discarded before too. Undecodable bytes are replaced: decoding as the
@@ -789,7 +792,9 @@ def prebuild(artifacts, jobs):
             # pin it.
             # Cargo leads a process group of its own, so the limit or a cancelled job ends rustc and build
             # scripts with it, and none of them keeps the stderr pipe (and this loop) open.
-            with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL,
+            # --timings is added here only: the run's line and the harnesses' records keep the command as selected.
+            cargo = timings.command(command) if timings else command
+            with subprocess.Popen(cargo, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.PIPE, text=True, encoding=locale.getpreferredencoding(False),
                                   errors="replace", start_new_session=os.name != "nt") as process:
                 # The line loop blocks while Cargo is quiet, so a timer ends a run past the limit.
@@ -821,24 +826,32 @@ def prebuild(artifacts, jobs):
                     raise
             if process.returncode:
                 errors += "".join(line for _, line in lines)
-            report(lambda: f"cargo {number}/{len(commands)}: "
-                           f"{describe_cargo_build(command, lines, started, time.monotonic())}")
+            summary = report(lambda: f"cargo {number}/{len(commands)}: "
+                                     f"{describe_cargo_build(command, lines, started, time.monotonic())}")
+            if timings:
+                timings.after_call(number, len(commands), summary)
             if expired.is_set():
+                if timings:
+                    timings.finish()
                 print(f"::error::The probe prebuild passed its {limit // 60:.0f} min limit at cargo {number}/"
                       f"{len(commands)} (stopped there). The machine is likely loaded by other jobs' compiles: "
                       "see the compile lock lines above.", flush=True)
                 sys.exit(1)
+        if timings:
+            timings.finish()
         report(lambda: describe_machine(os.cpu_count(), load, machine_load()))
         report(lambda: describe_sccache(stats, sccache_stats(environment)))
     return not errors, errors
 
 
 def report(line):
-    """Print a prebuild measurement; one that fails is left out rather than failing the run."""
+    """Print a prebuild measurement and return it; one that fails is left out (None) rather than failing the run."""
     try:
-        print(f"  {line()}", flush=True)
+        text = line()
+        print(f"  {text}", flush=True)
+        return text
     except Exception:
-        pass
+        return None
 
 
 CARGO_LOCK_WAIT = re.compile(r"^\s*Blocking waiting for file lock on (.+?)\s*$")
@@ -936,6 +949,103 @@ def describe_sccache(before, after):
     # The server is the machine's, so other builds running meanwhile count too.
     return (f"compiler cache (whole sccache server): {after['hits'] - before['hits']} hits, "
             f"{after['misses'] - before['misses']} misses")
+
+
+# parity-main.yml sets this to 1, nothing else does: its prebuild then keeps Cargo's timing report of each run
+# (--timings) and the run's compiler-cache counts, which the job uploads, to tell which crates take its minutes.
+PREBUILD_TIMINGS = "HORIZON_PARITY_PREBUILD_TIMINGS"
+PREBUILD_TIMINGS_CAP = 20 << 20
+
+
+def cargo_takes_timings(environment):
+    return "--timings" in subprocess.run(["cargo", "build", "--help"], cwd=ROOT, env=environment, capture_output=True,
+                                         text=True, timeout=60).stdout
+
+
+class PrebuildTimings:
+    """The prebuild's timing reports, collected in STATE_DIR/prebuild-timings-<PARITY_RUN_ID> (the folder
+    parity-main.yml uploads): cargo-NN.html for run NN and prebuild-calls.txt. Only that: Cargo's report holds the
+    unit names, features, profile, host, rustc version and timings, not the command line, paths or environment
+    (cargo 1.100), except a failed build's top error, which can name a path dependency's folder.
+
+    Collecting never fails or stops the prebuild: what fails prints one line and is left out."""
+
+    def __init__(self, environment, stats):
+        run = os.environ.get("PARITY_RUN_ID")
+        self.folder = STATE_DIR / (f"prebuild-timings-{run}" if run else "prebuild-timings")
+        # Cargo writes them to <target>/cargo-timings, the probe profiles' shared target folder; it outlives runs.
+        self.reports = Path(environment["CARGO_TARGET_DIR"]) / "cargo-timings"
+        self.environment, self.stats, self.on = environment, stats, False
+        try:
+            # Earlier runs' folders stay on a self-hosted runner: none of them may be uploaded as this run's.
+            for folder in STATE_DIR.glob("prebuild-timings*"):
+                if folder.is_dir():
+                    shutil.rmtree(folder)
+            if not cargo_takes_timings(environment):
+                raise RuntimeError("cargo build has no --timings")
+            self.folder.mkdir(parents=True)
+            self.on = True
+        except Exception as error:
+            self.fail("could not start", error)
+
+    def fail(self, what, error):
+        print(f"  prebuild timings: {what} ({type(error).__name__}: {error}); the prebuild goes on", flush=True)
+
+    def command(self, command):
+        return [*command, "--timings"] if self.on else command
+
+    def before_call(self):
+        """An earlier run's report (this run's, or an earlier one's) is never taken for the next run's."""
+        if self.on:
+            try:
+                shutil.rmtree(self.reports, ignore_errors=True)
+            except Exception as error:
+                self.fail("could not clear the old reports", error)
+
+    def after_call(self, number, total, line):
+        """Keeps run `number`'s report, prints its compiler-cache line and writes both lines to prebuild-calls.txt."""
+        if not self.on:
+            return
+        try:
+            shutil.copyfile(self.reports / "cargo-timing.html", self.folder / f"cargo-{number:02d}.html")
+        except Exception as error:
+            self.fail(f"no report kept for cargo {number}/{total}", error)
+        # sccache counts are for the whole server, other builds on the machine included. An unreadable server is not
+        # read again: each read can take its 10 s limit.
+        before, self.stats = self.stats, self.stats and sccache_stats(self.environment)
+        cache = report(lambda: f"cargo {number}/{total} compiler cache (whole sccache server): "
+                               f"{describe_call_sccache(before, self.stats)}")
+        try:
+            with open(self.folder / "prebuild-calls.txt", "a", encoding="utf-8") as calls:
+                calls.write("".join(f"{text}\n" for text in (line, cache) if text))
+        except Exception as error:
+            self.fail("could not write prebuild-calls.txt", error)
+
+    def finish(self):
+        """Holds the folder to PREBUILD_TIMINGS_CAP: the largest reports go first, prebuild-calls.txt stays."""
+        if not self.on:
+            return
+        try:
+            sizes = {path: path.stat().st_size for path in self.folder.iterdir() if path.is_file()}
+            total, dropped = sum(sizes.values()), []
+            for path in sorted((path for path in sizes if path.suffix == ".html"), key=sizes.get, reverse=True):
+                if total <= PREBUILD_TIMINGS_CAP:
+                    break
+                path.unlink()
+                total -= sizes[path]
+                dropped.append(path.stem.removeprefix("cargo-"))
+            if dropped:
+                with open(self.folder / "prebuild-calls.txt", "a", encoding="utf-8") as calls:
+                    calls.write(f"timing reports left out to stay under {PREBUILD_TIMINGS_CAP >> 20} MB: cargo "
+                                f"{', '.join(sorted(dropped))}\n")
+        except Exception as error:
+            self.fail("could not hold the reports to their size cap", error)
+
+
+def describe_call_sccache(before, after):
+    if not before or not after or any(after[count] < before[count] for count in before):  # restarted server
+        return "not in use"
+    return f"{after['hits'] - before['hits']} hits, {after['misses'] - before['misses']} misses"
 
 
 LARGE_OUTPUT = 64 << 20

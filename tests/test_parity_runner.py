@@ -322,6 +322,118 @@ class ParityRunnerTests(unittest.TestCase):
             with mock.patch.object(parity.subprocess, "Popen", side_effect=failure):
                 self.assertIsNone(parity.sccache_stats({"RUSTC_WRAPPER": "sccache"}))
 
+    def prebuild_with_fake_cargo(self, names, switch, takes_timings=(True,), stats=None):
+        """parity.prebuild over fake Cargo runs, one per name: each records its arguments and writes a timing report
+        as Cargo does, unless its name is "none" (a run that ended before writing one). Returns the prebuild's result,
+        the runs' arguments, the printed lines and the state folder."""
+        temp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp, True)
+        cargo, argv = temp / "cargo.py", temp / "argv.txt"
+        cargo.write_text(textwrap.dedent("""
+            import os, sys, pathlib
+            open(os.environ["FAKE_CARGO_ARGV"], "a").write(repr(sys.argv[1:]) + "\\n")
+            if sys.argv[1] != "none":
+                reports = pathlib.Path(os.environ["CARGO_TARGET_DIR"], "cargo-timings")
+                reports.mkdir(parents=True, exist_ok=True)
+                (reports / "cargo-timing.html").write_text("report " + sys.argv[1])
+                (reports / "cargo-timing-20261121T000000Z.html").write_text("report " + sys.argv[1])
+        """))
+        state, target = temp / "parity-runner", temp / "parity-target"
+        (target / "cargo-timings").mkdir(parents=True)
+        (target / "cargo-timings" / "cargo-timing.html").write_text("an earlier run's report")
+        (state / "prebuild-timings-6-1").mkdir(parents=True)
+        (state / "prebuild-timings-6-1" / "cargo-01.html").write_text("an earlier run's copy")
+        environment = {"FAKE_CARGO_ARGV": str(argv), "PARITY_RUN_ID": "7-1"}
+        if switch:
+            environment[parity.PREBUILD_TIMINGS] = "1"
+        with mock.patch.object(parity, "target_packages", return_value={}), \
+                mock.patch.object(parity, "prebuild_commands",
+                                  return_value=[[sys.executable, str(cargo), name] for name in names]), \
+                mock.patch.object(parity, "sccache_stats", side_effect=stats or (lambda environment: None)), \
+                mock.patch.object(parity, "cargo_takes_timings", side_effect=takes_timings) as asked, \
+                mock.patch.object(parity, "STATE_DIR", state), mock.patch.object(parity, "TARGET", target), \
+                mock.patch.object(parity.compile_lock, "active", return_value=False), \
+                mock.patch.dict(os.environ, environment), \
+                mock.patch("builtins.print") as printed:
+            os.environ.pop("HORIZON_COMPILE_LOCK_ROLE", None)
+            if not switch:
+                os.environ.pop(parity.PREBUILD_TIMINGS, None)
+            result = parity.prebuild([], 2)
+        if not switch:
+            asked.assert_not_called()
+        runs = [eval(line) for line in argv.read_text().splitlines()]
+        return result, runs, [call.args[0] for call in printed.call_args_list], state
+
+    def test_the_prebuild_keeps_no_timing_reports_without_its_switch(self):
+        (built, _), runs, printed, state = self.prebuild_with_fake_cargo(["one", "two"], switch=False)
+        self.assertTrue(built)
+        self.assertEqual(runs, [["one"], ["two"]])
+        self.assertEqual(printed[0], "  cargo 1/2: dev one: 0s, 0 crates compiled")
+        self.assertEqual(printed[1], "  cargo 2/2: dev two: 0s, 0 crates compiled")
+        self.assertTrue(printed[2].startswith("  machine: "), printed[2])
+        self.assertEqual(printed[3:], ["  compiler cache: not in use, or its counts could not be read"])
+        self.assertEqual(sorted(path.name for path in state.iterdir()), ["prebuild-timings-6-1"])
+
+    def test_parity_mains_prebuild_keeps_each_runs_timing_report(self):
+        (built, _), runs, printed, state = self.prebuild_with_fake_cargo(["one", "none", "three"], switch=True)
+        self.assertTrue(built, "a run without a report does not fail the prebuild")
+        self.assertEqual(runs, [["one", "--timings"], ["none", "--timings"], ["three", "--timings"]])
+        # Only this run's folder: an earlier run's is gone.
+        folder, = state.iterdir()
+        self.assertEqual(folder.name, "prebuild-timings-7-1")
+        self.assertEqual({path.name: path.read_text() for path in folder.glob("*.html")},
+                         {"cargo-01.html": "report one", "cargo-03.html": "report three"},
+                         "the run that wrote none gets no report, neither its predecessor's nor an earlier run's")
+        lines = ["cargo 1/3: dev one: 0s, 0 crates compiled",
+                 "cargo 1/3 compiler cache (whole sccache server): not in use",
+                 "cargo 2/3: dev none: 0s, 0 crates compiled",
+                 "cargo 2/3 compiler cache (whole sccache server): not in use",
+                 "cargo 3/3: dev three: 0s, 0 crates compiled",
+                 "cargo 3/3 compiler cache (whole sccache server): not in use"]
+        self.assertEqual((folder / "prebuild-calls.txt").read_text(encoding="utf-8").splitlines(), lines)
+        self.assertEqual([line for line in printed if "--timings" in line], [])
+        self.assertEqual([line.strip() for line in printed if line.strip() in lines], lines)
+        missing, = [line for line in printed if "prebuild timings" in line]
+        self.assertTrue(missing.startswith("  prebuild timings: no report kept for cargo 2/3 ("), missing)
+
+    def test_the_per_run_compiler_cache_line_keeps_its_shape(self):
+        counts = iter([{"hits": 10, "misses": 5}, {"hits": 15, "misses": 6}, {"hits": 15, "misses": 9}])
+        _, _, printed, _ = self.prebuild_with_fake_cargo(["one", "two"], switch=True,
+                                                         stats=lambda environment: next(counts, None))
+        cache = [line.strip() for line in printed if " compiler cache (whole sccache server): " in line]
+        self.assertEqual(cache, ["cargo 1/2 compiler cache (whole sccache server): 5 hits, 1 misses",
+                                 "cargo 2/2 compiler cache (whole sccache server): 0 hits, 3 misses"])
+        self.assertEqual(parity.describe_call_sccache(None, {"hits": 1, "misses": 1}), "not in use")
+        self.assertEqual(parity.describe_call_sccache({"hits": 9, "misses": 1}, {"hits": 1, "misses": 1}),
+                         "not in use")  # a server restarted meanwhile
+
+    def test_the_timing_reports_can_fail_without_the_prebuild(self):
+        for takes_timings in (False, OSError("no cargo")):
+            with self.subTest(takes_timings=takes_timings):
+                (built, _), runs, printed, state = self.prebuild_with_fake_cargo(["one"], switch=True,
+                                                                                 takes_timings=[takes_timings])
+                self.assertTrue(built)
+                self.assertEqual(runs, [["one"]])
+                self.assertTrue(printed[0].startswith("  prebuild timings: could not start ("), printed[0])
+                self.assertEqual(printed[1], "  cargo 1/1: dev one: 0s, 0 crates compiled")
+                self.assertEqual(list(state.iterdir()), [])
+
+    def test_the_timing_reports_are_held_to_their_cap_largest_first(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "STATE_DIR", Path(temp)), \
+                mock.patch.object(parity, "cargo_takes_timings", return_value=True), \
+                mock.patch.object(parity, "PREBUILD_TIMINGS_CAP", 100), \
+                mock.patch.dict(os.environ, {"PARITY_RUN_ID": "7-1"}):
+            timings = parity.PrebuildTimings({"CARGO_TARGET_DIR": str(Path(temp, "target"))}, None)
+            for name, size in (("cargo-01.html", 40), ("cargo-02.html", 60), ("cargo-03.html", 20),
+                               ("cargo-04.html", 50), ("prebuild-calls.txt", 30)):
+                (timings.folder / name).write_bytes(b"x" * size)
+            timings.finish()
+            kept = {path.name for path in timings.folder.iterdir()}
+            calls = (timings.folder / "prebuild-calls.txt").read_text(encoding="utf-8")
+        # 200 bytes: 02 (60) and 04 (50) go, which leaves 90.
+        self.assertEqual(kept, {"cargo-01.html", "cargo-03.html", "prebuild-calls.txt"})
+        self.assertEqual(calls, "x" * 30 + "timing reports left out to stay under 0 MB: cargo 02, 04\n")
+
     def test_a_probe_binary_depends_only_on_the_probes_it_ran(self):
         commands = [["/t/release/examples/world_probe", "a_fixture", "/dir"],
                     ["cargo", "run", "-p", "horizon-client", "--example", "client_probe", "--", "b_fixture"]]

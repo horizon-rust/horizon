@@ -341,6 +341,30 @@ class ParityMainTests(unittest.TestCase):
             self.assertEqual(parity_main.run_harnesses(["not_a_harness_yet"], 60), [])
             run.assert_not_called()
 
+    def test_only_parity_mains_harness_step_keeps_the_prebuild_timings(self):
+        root = Path(__file__).resolve().parents[1]
+        with mock.patch("sys.path", [str(root / "tools/ci/vendor/pyyaml-6.0.3.zip"), *sys.path]):
+            import yaml
+        switch = "HORIZON_PARITY_PREBUILD_TIMINGS"
+        setting = [path.name for path in (root / ".github").rglob("*") if path.is_file()
+                   and switch in path.read_text(encoding="utf-8", errors="replace")]
+        self.assertEqual(setting, ["parity-main.yml"], "PR parity, nightly and parity-hosted upload nothing")
+        job = yaml.safe_load((root / ".github/workflows/parity-main.yml").read_text(encoding="utf-8"))["jobs"]["parity-main"]
+        names = [step.get("name") for step in job["steps"]]
+        harnesses = names.index("The harnesses the merges since then can affect")
+        self.assertEqual([index for index, step in enumerate(job["steps"]) if switch in step.get("env", {})],
+                         [harnesses], "the verdict's reruns build without it")
+        self.assertNotIn(switch, job["env"])
+        self.assertEqual(job["steps"][harnesses]["env"][switch], "1")
+        upload = job["steps"][names.index("Upload the prebuild's timing reports")]
+        self.assertGreater(names.index("Upload the prebuild's timing reports"), harnesses)
+        self.assertEqual(upload["if"], "${{ !cancelled() }}")
+        self.assertTrue(upload["continue-on-error"], "the artifact service never decides the run")
+        self.assertEqual((upload["with"]["retention-days"], upload["with"]["if-no-files-found"]), (7, "ignore"))
+        # The folder tools/parity.py names after PARITY_RUN_ID.
+        self.assertEqual(upload["with"]["path"], f".local/parity-runner/prebuild-timings-{job['env']['PARITY_RUN_ID']}/")
+        self.assertEqual(upload["uses"], job["steps"][names.index("Upload the verdict")]["uses"])
+
 
 if __name__ == "__main__":
     unittest.main()
