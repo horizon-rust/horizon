@@ -2742,6 +2742,47 @@ pub fn start_crash_fallback(crashed: StartCrash, os: &str) -> Option<(&'static s
     }
 }
 
+/// Whether a game's exit can be a native crash in a graphics driver. On Windows, an NTSTATUS error
+/// code such as 0xC0000005; Stop's `TerminateProcess` leaves exit code 1. On Unix, a signal other
+/// than the SIGKILL Stop sends to the game's group or the SIGTERM and SIGINT of a shutdown; or
+/// exit code 1, which the run holder reports for a game that died by a signal
+/// (`horizon_mod_package::holder::enter`).
+pub fn native_crash_exit(status: std::process::ExitStatus) -> bool {
+    #[cfg(windows)]
+    {
+        status
+            .code()
+            .is_some_and(|code| code as u32 & 0xC000_0000 == 0xC000_0000)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        match status.signal() {
+            Some(signal) => ![libc::SIGKILL, libc::SIGTERM, libc::SIGINT].contains(&signal),
+            None => status.code() == Some(1),
+        }
+    }
+}
+
+/// Switches the crashed run's home from Auto to `api`, and only when it was on Auto the game home
+/// too: the GPU is the same for every profile, while an instance that chose its own API keeps
+/// every home as it is. True when the run's home changed.
+pub fn switch_after_start_crash(
+    run_home: &Path,
+    game_home: &Path,
+    api: &str,
+) -> Result<bool, String> {
+    if !switch_from_auto(run_home, api)? {
+        return Ok(false);
+    }
+    if game_home != run_home {
+        if let Err(e) = switch_from_auto(game_home, api) {
+            eprintln!("Horizon launcher: could not switch the game home to {api}: {e}");
+        }
+    }
+    Ok(true)
+}
+
 /// Sets `graphicsApi:<api>` in `home`'s graphics settings when it is unset or `auto`, keeping
 /// every other line. True when it changed; a player's own choice stays.
 pub fn switch_from_auto(home: &Path, api: &str) -> Result<bool, String> {
@@ -5693,6 +5734,61 @@ pub fn {f}("
             "sky:false\ngraphicsApi:dx12\nfog:true\n"
         );
         let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Stop ends a starting game too, without a report: only a driver's crash switches the API.
+    #[test]
+    fn stop_is_not_a_native_crash() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::ExitStatusExt;
+            let exit = |code: u32| native_crash_exit(std::process::ExitStatus::from_raw(code));
+            assert!(exit(0xC000_0005), "access violation");
+            assert!(exit(0xC000_0409), "fail fast");
+            assert!(!exit(1), "Stop's TerminateProcess");
+            assert!(!exit(0));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            // Raw wait statuses: a signal number alone, or an exit code shifted by 8.
+            let exit = |raw: i32| native_crash_exit(std::process::ExitStatus::from_raw(raw));
+            assert!(exit(libc::SIGSEGV), "the game itself");
+            assert!(
+                exit(1 << 8),
+                "the run holder's report of a game killed by a signal"
+            );
+            assert!(!exit(libc::SIGKILL), "Stop");
+            assert!(!exit(libc::SIGTERM));
+            assert!(!exit(2 << 8));
+        }
+    }
+
+    /// An instance that chose its own API crashes: neither its home nor the game home switches.
+    #[test]
+    fn a_start_crash_switches_the_game_home_only_after_the_crashed_runs_own() {
+        let root = std::env::temp_dir().join(format!("horizon-run-switch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (run, game) = (root.join("instance"), root.join("game"));
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(&game).unwrap();
+        fs::write(run.join(GRAPHICS_FILE), "graphicsApi:opengl\n").unwrap();
+        fs::write(game.join(GRAPHICS_FILE), "graphicsApi:auto\n").unwrap();
+        assert_eq!(switch_after_start_crash(&run, &game, "dx12"), Ok(false));
+        assert_eq!(
+            fs::read_to_string(game.join(GRAPHICS_FILE)).unwrap(),
+            "graphicsApi:auto\n"
+        );
+        // On Auto, the run's home and the game home both switch.
+        fs::write(run.join(GRAPHICS_FILE), "graphicsApi:auto\n").unwrap();
+        assert_eq!(switch_after_start_crash(&run, &game, "dx12"), Ok(true));
+        for home in [&run, &game] {
+            assert_eq!(
+                fs::read_to_string(home.join(GRAPHICS_FILE)).unwrap(),
+                "graphicsApi:dx12\n"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// #4293: an Ivy Bridge on Linux whose Vulkan driver (Mesa's hasvk) crashes at the renderer's
