@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           [ -x /usr/bin/python3 ] || { echo "::error::/usr/bin/python3 is missing"; exit 1; }
-          dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
+          dir="$(/usr/bin/mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
           url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
           /usr/bin/curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' --max-redirs 0 \
             --noproxy '*' --max-time 60 --retry 5 -o "$dir/cargo_isolation.py" "$url"
@@ -262,7 +262,7 @@ jobs:
         run: |
           set -euo pipefail
           [ -x /usr/bin/python3 ] || { echo "::error::/usr/bin/python3 is missing"; exit 1; }
-          dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
+          dir="$(/usr/bin/mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
           url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
           /usr/bin/curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' --max-redirs 0 \
             --noproxy '*' --max-time 60 --retry 5 -o "$dir/cargo_isolation.py" "$url"

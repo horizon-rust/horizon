@@ -223,7 +223,7 @@ def polytone_gate_bypasses(game, nightly_build):
 # The guard comes from the workflow's own commit into RUNNER_TEMP, never from the checkout being built.
 SETUP_RUN = r"""set -euo pipefail
 [ -x /usr/bin/python3 ] || { echo "::error::/usr/bin/python3 is missing"; exit 1; }
-dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
+dir="$(/usr/bin/mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"
 url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
 /usr/bin/curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' --max-redirs 0 \
   --noproxy '*' --max-time 60 --retry 5 -o "$dir/cargo_isolation.py" "$url"
@@ -239,6 +239,25 @@ ASSIGNMENT = re.compile(r"(?<![\w$\{])([A-Za-z_][A-Za-z0-9_]*)="
                         r"|\b(?:export|declare\s+-x|typeset\s+-x)\s+([A-Za-z_][A-Za-z0-9_]*)")
 CARGO_CALL = re.compile(r"\bcargo\b(?!-home)|\bxtask\b|\brustup\b|vanilla-data\.sh|runner-env\.sh")
 ENV_WRITE = re.compile(r"\b(CARGO_\w+|RUSTC\w*|RUSTDOC\w*|RUSTFLAGS|HORIZON_NO_SCCACHE)=.*GITHUB_ENV")
+
+
+SHELL_BUILTINS = {"set", "[", "echo", "printf", "exit"}
+
+
+def bare_commands(run):
+    """The commands in a run script that are neither a shell builtin nor a full /usr/bin or /bin path."""
+    found, continued = [], False
+    for line in run.splitlines():
+        if continued:
+            continued = line.endswith("\\")
+            continue
+        continued = line.endswith("\\")
+        for part in re.split(r"\$\(|\|\|?|&&|;|(?<![$\w])\{\s|\s\}|\)", line):
+            words = part.split()
+            word = words[0].strip('"') if words else ""
+            if word and "=" not in word and word not in SHELL_BUILTINS and not word.startswith(("/usr/bin/", "/bin/")):
+                found.append(word)
+    return found
 
 
 def self_hosted(job):
@@ -465,7 +484,7 @@ class UntrustedBuildTests(unittest.TestCase):
     def test_the_guard_never_comes_from_the_checkout_it_checks(self):
         # Fetched at the workflow's own commit into a new RUNNER_TEMP folder, so a Nightly of an older commit still
         # has it, and run by the system's curl and Python with nothing from the environment.
-        self.assertIn('dir="$(mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"', SETUP_RUN)
+        self.assertIn('dir="$(/usr/bin/mktemp -d "$RUNNER_TEMP/workflow-tools.XXXXXX")"', SETUP_RUN)
         self.assertIn("/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py", SETUP_RUN)
         self.assertIn('/usr/bin/python3 -I -S "$dir/cargo_isolation.py"', SETUP_RUN)
         for flag in ("/usr/bin/curl -q ", "--fail", "--proto '=https'", "--proto-redir '=https'", "--max-redirs 0",
@@ -474,6 +493,13 @@ class UntrustedBuildTests(unittest.TestCase):
         self.assertNotIn("command -v", SETUP_RUN)
         self.assertNotRegex(SETUP_RUN, r"\s-[a-zA-Z]*L")
         self.assertIn(f'= "{cargo_isolation.CLEAN}" ]', SETUP_RUN)
+        # Before the guard has run, PATH is the machine's: every command is a shell builtin or a full system path.
+        self.assertEqual(bare_commands(SETUP_RUN), [])
+        for bare in ("mktemp", "curl", "python3", "tail", "cat"):
+            with self.subTest(bare=bare):
+                mutated = SETUP_RUN.replace(f"/usr/bin/{bare} ", f"{bare} ") if f"/usr/bin/{bare} " in SETUP_RUN \
+                    else SETUP_RUN.replace('printf \'%s\\n\' "$out"\n', f'printf \'%s\\n\' "$out" | {bare}\n')
+                self.assertEqual(bare_commands(mutated), [bare])
         # No relative path at all: nothing in the step reads a file of the built commit.
         for word in re.findall(r"[^\s\"'()]+", SETUP_RUN):
             if "/" in word:
