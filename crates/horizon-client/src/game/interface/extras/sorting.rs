@@ -261,10 +261,9 @@ impl Game<'_> {
         if key == KeyCode::KeyX
             && !self.recipe_search_focused()
             && (self.settings.extras.sort || self.tweaks_on())
+            && self.easy_deposit_matching()
         {
-            if self.easy_deposit_matching() {
-                return true;
-            }
+            return true;
         }
         keybinds::key_name(key).is_some_and(|name| self.sort_input(name))
     }
@@ -322,19 +321,31 @@ pub(in crate::game) fn plan_deposit_matching(
     }
     inventory
         .iter()
-        .filter(|(_, held)| container_items.iter().any(|c| c.same_item_same_components(held)))
+        .filter(|(_, held)| {
+            container_items
+                .iter()
+                .any(|c| c.same_item_same_components(held))
+        })
         .map(|&(slot, _)| slot)
         .collect()
 }
 
 /// Selects slots to deposit for 'Deposit All' (main inventory non-hotbar slots 9..36).
 pub(in crate::game) fn plan_deposit_all(slots: &[usize]) -> Vec<usize> {
-    slots.iter().copied().filter(|&s| (9..36).contains(&s)).collect()
+    slots
+        .iter()
+        .copied()
+        .filter(|&s| (9..36).contains(&s))
+        .collect()
 }
 
 /// Selects slots to restock for 'Restock All' (container slots 300..500).
 pub(in crate::game) fn plan_restock_all(slots: &[usize]) -> Vec<usize> {
-    slots.iter().copied().filter(|&s| (300..500).contains(&s)).collect()
+    slots
+        .iter()
+        .copied()
+        .filter(|&s| (300..500).contains(&s))
+        .collect()
 }
 
 #[cfg(test)]

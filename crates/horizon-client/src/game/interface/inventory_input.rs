@@ -173,9 +173,6 @@ impl Game<'_> {
             }
             return;
         }
-        if self.tweak_press(slot, right, shift) {
-            return;
-        }
         let space = self.physical_keys.contains(&KeyCode::Space);
         if space
             && !right
@@ -185,6 +182,10 @@ impl Game<'_> {
         {
             self.quick_move_stack_all(slot);
             self.inv_clicks.skip_release();
+            self.tweak_release();
+            return;
+        }
+        if self.tweak_press(slot, right, shift) {
             return;
         }
         if let Some(slot) = slot
