@@ -1736,10 +1736,12 @@ def report_decisions(path):
     return failed
 
 
-def finished_run(failed):
-    """Record that this run completed, for tools/gate.py: a crashed runner never writes it."""
+def finished_run(failed, unverified=()):
+    """Record that this run completed, for tools/gate.py: a crashed runner never writes it. unverified: the harnesses
+    with a replay that PARITY_SHIM_VERIFY=1 found different, which fail the run even if they passed afterwards."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    (STATE_DIR / "last-run.json").write_text(json.dumps({"run": os.environ.get("PARITY_RUN_ID"), "failed": failed}))
+    (STATE_DIR / "last-run.json").write_text(json.dumps({"run": os.environ.get("PARITY_RUN_ID"), "failed": failed,
+                                                         "unverified": sorted(set(unverified))}))
 
 
 def main():
@@ -1918,10 +1920,10 @@ def main():
             executor.stop()
     save_state(state)
     failed = sorted(name for name, record in results.items() if record["status"] != "pass")
-    finished_run(failed)
+    unverified = report_decisions(DECISIONS)
+    finished_run(failed, [decision["harness"] for decision in unverified])
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed in {elapsed / 60:.1f} min.")
     report_retries(results, known_flaky(config))
-    unverified = report_decisions(DECISIONS)
     known = known_failing(config)
     blocking, again, passed = split_known_failing(results, known)
     report_known_failing(again, passed, known)

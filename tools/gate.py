@@ -86,7 +86,11 @@ def main():
                 new = sorted(name for name in failing if name not in known and name.split("#")[0] not in known)  # shards
                 if failing:
                     print(f"Failing harnesses: {', '.join(sorted(failing))}; new: {', '.join(new) or 'none'}")
-                status = 1 if new else 0
+                # A replay PARITY_SHIM_VERIFY=1 found different fails the gate, whatever the harness did afterwards.
+                unverified = finished.get("unverified", [])
+                if unverified:
+                    print(f"Oracle replays verification found different: {', '.join(unverified)}")
+                status = 1 if new or unverified else 0
         else:
             with log.open("w") as stream:
                 status = subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT).returncode

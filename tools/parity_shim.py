@@ -370,7 +370,7 @@ def decide(name, reason, seconds=None, key=None, **details):
         os.close(descriptor)
 
 
-def mismatches(saved, key, status, captured, hashes):
+def mismatches(saved, key, status, captured, hashes, outputs):
     """How what the oracle just did differs from what replaying its record would have given: which stream or output,
     and sizes, never the content or a digest of it (oracle output is game data, and this goes to CI logs)."""
     if status != 0:
@@ -386,6 +386,8 @@ def mismatches(saved, key, status, captured, hashes):
         elif hashes.file(path) != sha:
             found.append(f"output {os.path.relpath(path)}: other content ({os.path.getsize(path)} bytes, recorded "
                          f"{saved['outputs'][path][0]})")
+    # A replay would not have made these at all.
+    found += [f"output {os.path.relpath(path)}: not recorded" for path in sorted(set(outputs) - set(saved["outputs"]))]
     return found
 
 
@@ -438,8 +440,10 @@ def main():
     started = time.monotonic()
     status, captured = run_and_tee([program, *arguments])
     seconds = time.monotonic() - started
+    after = snapshot(paths)
+    outputs = {path: stamp for path, stamp in after.items() if stamp is not None and before.get(path) != stamp}
     if verify:
-        found = mismatches(saved, key, status, captured, hashes)
+        found = mismatches(saved, key, status, captured, hashes, outputs)
         if found:
             for path in (record, CACHE / f"{key}.stdout", CACHE / f"{key}.stderr"):
                 path.unlink(missing_ok=True)
@@ -454,8 +458,6 @@ def main():
     if status != 0:
         decide(name, "passthrough-failed", seconds, key, miss=reason)
         return status
-    after = snapshot(paths)
-    outputs = {path: stamp for path, stamp in after.items() if stamp is not None and before.get(path) != stamp}
     for path in outputs:
         inputs.pop(path, None)
     (CACHE / f"{key}.stdout").write_bytes(captured["stdout"])

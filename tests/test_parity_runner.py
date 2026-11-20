@@ -498,6 +498,12 @@ class ShimDecisionSummaryTests(unittest.TestCase):
         self.assertIn("HORIZON_ORDER 1", printed)
         self.assertIn("VERIFY FAILED c: java abc: stdout: 3 bytes, recorded 4", printed)
 
+    def test_the_run_record_names_harnesses_with_a_failed_verification(self):
+        # tools/gate.py fails a run that has them, even when every harness passed on its fresh retry.
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "STATE_DIR", Path(temp)):
+            parity.finished_run([], ["c", "c"])
+            self.assertEqual(json.loads((Path(temp) / "last-run.json").read_text())["unverified"], ["c"])
+
 
 @unittest.skipIf(os.name == "nt", "oracle PATH shimming uses Unix executable symlink semantics")
 class OracleReuseTests(unittest.TestCase):
@@ -547,6 +553,8 @@ class OracleReuseTests(unittest.TestCase):
                         "side = pathlib.Path(__file__).parent.parent / 'side'\n"
                         "mix, say = side / 'mix', side / 'say'\n"
                         "pathlib.Path(sys.argv[2]).write_text(text + (mix.read_text() if mix.exists() else ''))\n"
+                        "if len(sys.argv) > 3 and (side / 'new').exists():\n"
+                        "    (pathlib.Path(sys.argv[3]) / 'new.txt').write_text('n')\n"
                         "print(say.read_text() if say.exists() else 'done')\n")
         fake.chmod(0o755)
 
@@ -654,6 +662,15 @@ class OracleReuseTests(unittest.TestCase):
         line = self.last()
         self.assertEqual(line["reason"], "verify-mismatch")
         self.assertEqual(len(line["differs"]), 1)
+
+    def test_verify_fails_on_an_output_a_replay_would_not_make(self):
+        extra = self.input.parent / "extra"
+        extra.mkdir()
+        self.oracle(extra)
+        (self.side / "new").write_text("")
+        result = self.call(extra, check=False, PARITY_SHIM_VERIFY="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"output {os.path.relpath(extra / 'new.txt')}: not recorded", result.stderr)
 
     def test_verify_passes_and_keeps_replaying(self):
         self.oracle()
