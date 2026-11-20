@@ -4,9 +4,11 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from types import SimpleNamespace
 import unittest
@@ -168,22 +170,75 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertTrue(printed.call_args_list[-1].args[0].startswith(
             "::error::The probe prebuild passed its 0 min limit at cargo 1/2"))
         if os.name == "posix":
+            from tests.test_compile_lock import process_gone
             pid = int(pid_file.read_text())
-            try:
-                with open(f"/proc/{pid}/stat") as handle:
-                    state = handle.read().rsplit(")", 1)[1].split()[0]
-            except FileNotFoundError:
-                state = "gone"
-            except OSError:  # no /proc (macOS): kill(pid, 0) on a reaped orphan
-                state = "gone"
-                try:
-                    os.kill(pid, 0)
-                    state = "running"
-                except ProcessLookupError:
-                    pass
-            self.assertIn(state, ("gone", "Z"), "the child outlived the run's limit")
+            gone = process_gone(pid)
+            if not gone:
+                os.kill(pid, 9)
+            self.assertTrue(gone, "the child outlived the run's limit")
         # A pull request's prebuild has no limit of its own (its job's 240 min is the limit).
         self.assertNotIn("pr", parity.PREBUILD_LIMIT)
+
+    @unittest.skipUnless(os.name == "posix", "process groups")
+    def test_a_cargo_that_closes_its_stderr_still_meets_the_limit(self):
+        # Stderr closes long before the limit while Cargo runs on: the deadline stays armed.
+        script = "import os, time; os.close(2); time.sleep(60)"
+        with mock.patch.object(parity, "target_packages", return_value={}), \
+                mock.patch.object(parity.compile_lock, "GRACE", 2), \
+                mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", script]]), \
+                mock.patch.object(parity, "sccache_stats", return_value=None), \
+                mock.patch.object(parity, "PREBUILD_LIMIT", {"main": 2}), \
+                mock.patch.object(parity.compile_lock, "active", return_value=False), \
+                mock.patch.dict(os.environ, {"HORIZON_COMPILE_LOCK_ROLE": "main"}), \
+                mock.patch("builtins.print") as printed:
+            started = time.monotonic()
+            with self.assertRaises(SystemExit):
+                parity.prebuild([], 2)
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertTrue(printed.call_args_list[-1].args[0].startswith("::error::The probe prebuild passed its"))
+
+    @unittest.skipUnless(os.name == "posix", "process groups and signals")
+    def test_signals_while_the_watchdog_stops_the_group_never_cut_the_cleanup_short(self):
+        # The limit fires; Cargo dies on SIGTERM, its child (stderr closed, SIGTERM ignored) lives on through the
+        # grace. Two SIGTERMs reach parity.py while it waits for that cleanup: the child is still gone at the end.
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        pid_file = folder / "child.pid"
+        child = ("import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); os.close(2); "
+                 f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)")
+        cargo = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(60)"
+        script = textwrap.dedent(f"""
+            import sys
+            from unittest import mock
+            sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+            from tools import parity
+            parity.exit_on_termination()
+            parity.compile_lock.GRACE = 4
+            parity.PREBUILD_LIMIT = {{"main": 1}}
+            with mock.patch.object(parity, "target_packages", return_value={{}}), \\
+                    mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", {cargo!r}]]), \\
+                    mock.patch.object(parity, "sccache_stats", return_value=None), \\
+                    mock.patch.object(parity.compile_lock, "active", return_value=False):
+                parity.prebuild([], 2)
+        """)
+        process = subprocess.Popen([sys.executable, "-c", script], env=dict(os.environ, HORIZON_COMPILE_LOCK_ROLE="main"),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (process.poll() is None and process.kill(), process.wait()))
+        for _ in range(100):
+            if pid_file.exists() and pid_file.read_text():
+                break
+            time.sleep(0.1)
+        pid = int(pid_file.read_text())
+        time.sleep(2)  # past the 1 s limit: the watchdog is in its 4 s grace
+        process.send_signal(signal.SIGTERM)
+        time.sleep(0.5)
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=30), 128 + signal.SIGTERM)
+        from tests.test_compile_lock import process_gone
+        gone = process_gone(pid)
+        if not gone:
+            os.kill(pid, signal.SIGKILL)
+        self.assertTrue(gone, "the child outlived the cleanup")
 
     def test_the_prebuild_machine_and_cache_lines(self):
         self.assertEqual(parity.describe_machine(12, (3.14, 2.0, 1.0), (9.0, 6.5, 2.25)),

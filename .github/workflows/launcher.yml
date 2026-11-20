@@ -189,7 +189,7 @@ jobs:
     runs-on: ${{ matrix.mac && (needs.decide.outputs.main == 'true' && (vars.MAC_RUNNER || 'ludovics-mac-mini') || 'macos-15') || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each. The Mac mini's builds (main) may first wait
     # up to 60 min for their turn at compiling (tools/compile_lock.py); the leg itself took 5-6 min on 2026-11-20.
-    timeout-minutes: ${{ matrix.mac && 90 || 40 }}
+    timeout-minutes: ${{ matrix.mac && needs.decide.outputs.main == 'true' && 90 || matrix.mac && 60 || 40 }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
       # Where cargo puts the launcher: target/release, or target/<target>/release for another target.

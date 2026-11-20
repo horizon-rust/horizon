@@ -803,17 +803,21 @@ def prebuild(artifacts, jobs):
                 try:
                     lines = [(time.monotonic(), line) for line in process.stderr]
                     if watchdog:
-                        # Stderr can close while the watchdog is still stopping the group (Cargo ended on SIGTERM,
-                        # a child that closed stderr has not): the group is gone before Cargo is reaped and the
-                        # turn released.
+                        # Stderr can close before Cargo exits, so the deadline stays armed until Cargo has exited
+                        # (not reaped yet: its group's id stays its own). Then a watchdog already stopping the group
+                        # (a child that closed stderr outlives Cargo) finishes before Cargo is reaped and the turn
+                        # released.
+                        compile_lock.wait_exited(process)
                         watchdog.cancel()
                         watchdog.join()
                     process.wait()
                 except BaseException:
-                    if watchdog:
-                        watchdog.cancel()
-                        watchdog.join()
-                    compile_lock.stop_group(process)  # its whole group, as subprocess.run kills the process
+                    # A cancelled job's next signal must not cut this short: it only shortens the grace.
+                    with compile_lock.Hurry():
+                        if watchdog:
+                            watchdog.cancel()
+                            watchdog.join()
+                        compile_lock.stop_group(process)  # its whole group, as subprocess.run kills the process
                     raise
             if process.returncode:
                 errors += "".join(line for _, line in lines)

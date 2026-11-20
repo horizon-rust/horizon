@@ -14,13 +14,15 @@ Two lock files in LOCK_DIR, held with flock, so the kernel ends a turn the momen
 Admission order of a `pr` job, all non-blocking: (1) flock(priority, EX); if refused, a priority job is here: wait.
 (2) flock(turn, EX). (3) flock(priority, UN), whether (2) succeeded or not. A priority job's arrival is its shared
 lock on `priority`, which it keeps. An exclusive and a shared lock on one file never coexist, so in the instant a
-`pr` job takes `turn` no priority job has arrived; one that arrives later waits for `turn` like anybody. No
-interleaving lets a pull request's job start compiling under the lock while a priority job is here.
+`pr` job takes `turn` no priority job has arrived; one that arrives later waits for `turn` like anybody. A pull
+request's job is admitted when it takes the turn; nothing here says when its cargo starts.
 
 Priority jobs among themselves, and pull requests among themselves, poll `turn` every POLL seconds with a bounded
 wait: whoever polls first after a release gets the turn, which is no queue. Every wait is bounded (WAIT, by
 time.monotonic): then the job compiles anyway and says who held the turn. A priority job that goes ahead keeps its `priority` lock, so no pull
-request starts beside it meanwhile. A holder that hangs is only ever met by these bounds: nothing is taken over,
+request is admitted beside it meanwhile. A priority job's waits share one budget per job (WAIT[role] in all): each
+records what it waited in BUDGET_FILE under RUNNER_TEMP, and a later wait in the same job gets only what is left
+(its preparer, game and packaging compiles, say). A pull request's job has WAIT["pr"] per wait. A holder that hangs is only ever met by these bounds: nothing is taken over,
 renamed or deleted here, ever.
 
 Fail open: a folder or lock file that can't be opened, isn't a real directory or regular file, or a system without
@@ -55,6 +57,7 @@ LOCK_DIR = "/Users/Shared/horizon-compile-lock"
 # request's parity job 60 min per prebuild of its 240 (the frame_identity step is a second prebuild).
 WAIT = {"main": 20 * 60, "build": 60 * 60, "pr": 60 * 60}
 PRIORITY = {"main", "build"}
+BUDGET_FILE = "horizon-compile-lock-waited"  # under RUNNER_TEMP: the seconds this job's priority waits took
 POLL = 2.0
 ARRIVE_POLL = 0.1  # a pull request holds `priority` exclusively only for an instant
 INFO_MAX = 300
@@ -139,6 +142,8 @@ class Turn:
                  say=None):
         environ = os.environ if environ is None else environ
         self.role = role
+        temp = environ.get("RUNNER_TEMP")
+        self.budget_file = os.path.join(temp, BUDGET_FILE) if temp and role in PRIORITY else None
         folder = folder or environ.get("HORIZON_COMPILE_LOCK_DIR")
         self.on = role != "off" and bool(folder or active(environ, platform or sys.platform))
         self.path = folder or LOCK_DIR
@@ -244,20 +249,49 @@ class Turn:
         if self.role not in WAIT:
             self.fail_open(f"unknown role {self.role}")
             return False
+        spent = self.spent()
+        started = self.clock()
         try:
             self.open()
-            return self.wait()
+            return self.wait(max(0, WAIT[self.role] - spent), spent)
         except Exception as error:
             self.fail_open(f"{self.path} can't be used ({type(error).__name__}: {error})")
             self.close()
             return False
+        finally:
+            self.record(spent + self.clock() - started)
 
-    def wait(self):
+    def spent(self):
+        """Seconds this job's earlier priority waits took: 0 without a budget file or for one that isn't a number."""
+        if not self.budget_file:
+            return 0
+        try:
+            with open(self.budget_file, encoding="utf-8") as handle:
+                value = int(handle.read(32).strip())
+            return value if 0 <= value <= 10 ** 7 else 0
+        except (OSError, ValueError):
+            return 0
+
+    def record(self, seconds):
+        if not self.budget_file:
+            return
+        try:
+            with open(self.budget_file, "w", encoding="utf-8") as handle:
+                handle.write(str(int(seconds)))
+        except OSError:
+            pass
+
+    def wait(self, limit, spent=0):
         started = self.clock()
-        limit = WAIT[self.role]
+        total = WAIT[self.role]
+        if limit <= 0:
+            self.say(f"this job's {total // 60:.0f} min of waiting are used up: one try for the turn, else compiling "
+                     "without it")
         if self.role in PRIORITY:
             while not self.arrive():
                 if self.clock() - started >= limit:
+                    if limit <= 0:
+                        break
                     self.say(f"could not announce this job ahead of pull requests for {limit // 60:.0f} min (a "
                              "pull request held `priority` at every try); trying for the turn as it is")
                     break
@@ -270,11 +304,15 @@ class Turn:
                     (f"; {holder} holds the turn" if holder else "")
             else:
                 blocker = f"{holder or 'an unknown job'} holds the turn"
-            if not waiting:
+            if not waiting and limit > 0:
                 self.say(f"waiting: {blocker}")
                 waiting = True
             if self.clock() - started >= limit:
-                self.say(f"waited {limit // 60:.0f} min, this job's limit; compiling without the turn while {blocker}")
+                if limit <= 0:
+                    self.say(f"compiling without the turn while {blocker}")
+                else:
+                    share = "this job's limit" if not spent else f"the rest of this job's {total // 60:.0f} min"
+                    self.say(f"waited {limit / 60:.0f} min, {share}; compiling without the turn while {blocker}")
                 return False
             self.sleep(POLL)
         self.write_holder()
@@ -358,6 +396,17 @@ def group_alive(pgid):
         return True
     except (ProcessLookupError, PermissionError):
         return False
+
+
+def wait_exited(process):
+    """Block until the process has exited, without reaping it (os.waitid WNOWAIT), so its process group's id can't
+    name another group yet. Without waitid (macOS before Python 3.13) it returns at once."""
+    if os.name == "nt" or not hasattr(os, "waitid") or process.returncode is not None:
+        return
+    try:
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+    except ChildProcessError:
+        pass
 
 
 def stop_group(process, grace=None):

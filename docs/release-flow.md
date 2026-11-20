@@ -182,10 +182,10 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   (`.local/parity-runner/bisect.json`).
 - Jobs on the self-hosted Mac take turns at compiling (`tools/compile_lock.py`, flock on files in
   `/Users/Shared/horizon-compile-lock`): parity-main's probe prebuild, pull requests' parity prebuilds and the
-  Nightly's and releases' Mac compiles. A pull request's job starts no compile while parity-main or a Mac build is
-  waiting or compiling; those wait only for the turn's holder. A holder that dies frees the turn at once (the kernel
-  drops its lock). Waits are bounded (parity-main 20 min, the Mac builds 60, pull requests 60 per prebuild), then the
-  job compiles anyway and says who held the turn. parity-main's prebuild then has 120 minutes (`PREBUILD_LIMIT`),
+  Nightly's, releases' and the launcher's Mac compiles. A pull request's job is not given the turn while parity-main
+  or a Mac build is waiting or compiling; those wait only for the turn's holder. A holder that dies frees the turn at
+  once (the kernel drops its lock). Waits are bounded (parity-main 20 min and the Mac builds 60, each for all its
+  compiles together; pull requests 60 per prebuild), then the job compiles anyway and says who held the turn. parity-main's prebuild then has 120 minutes (`PREBUILD_LIMIT`),
   past which its Cargo process group is stopped and the run fails.
 - The verdict report, `verdict-<run id>-<attempt>.json` (the run's `parity-main-verdict` artifact, uploaded best
   effort), holds the head, the base, the run id and attempt, the exit code, each failed harness's tries (the batch's,

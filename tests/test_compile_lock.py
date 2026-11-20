@@ -27,6 +27,26 @@ MAC = {"RUNNER_ENVIRONMENT": "self-hosted", "GITHUB_RUN_ID": "77", "GITHUB_WORKF
        "GITHUB_JOB": "parity", "RUNNER_NAME": "mac-runner"}
 
 
+def process_gone(pid, seconds=5.0):
+    """Whether the process has exited within `seconds`: kill(pid, 0) fails, or /proc (where there is one) shows a
+    zombie nobody reaped yet. A missing /proc never counts as gone."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:
+            with open(f"/proc/{pid}/stat") as handle:
+                if handle.read().rsplit(")", 1)[1].split()[0] == "Z":
+                    return True
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
 class Clock:
     """Fake monotonic time: a waiter's sleep moves it."""
 
@@ -296,6 +316,37 @@ class CompileLockTests(unittest.TestCase):
                                                   "announcement ahead of pull requests"), self.lines)
         main.release()
 
+    @needs_flock
+    def test_a_priority_jobs_waits_share_one_budget(self):
+        # parity-main holds the turn throughout. A Mac build's first wait takes 40 min, its second gets the 20 left,
+        # its third none: one try, then compiling without the turn. An unreadable record counts as 0 waited.
+        self.holder_process("main", dict(MAC, GITHUB_WORKFLOW="parity-main", GITHUB_JOB="parity-main"))
+        temp = Path(self.temp.name)
+        environ = dict(MAC, RUNNER_TEMP=str(temp))
+        budget = temp / compile_lock.BUDGET_FILE
+        budget.write_text("2400")
+        self.assertFalse(self.turn("build", environ=environ).acquire())
+        self.assertEqual(self.clock.slept, 20 * 60)
+        self.assertIn("waited 20 min, the rest of this job's 60 min; compiling without the turn", self.lines[-1])
+        self.assertEqual(int(budget.read_text()), 3600)
+        self.clock.slept = 0
+        self.lines.clear()
+        self.assertFalse(self.turn("build", environ=environ).acquire())
+        self.assertEqual(self.clock.slept, 0)
+        self.assertEqual(len(self.lines), 2, self.lines)
+        self.assertIn("this job's 60 min of waiting are used up", self.lines[0])
+        self.assertTrue(self.lines[1].startswith("  compile lock: compiling without the turn while parity-main"))
+        for text in ("x", "-5", "\x00", "99999999999"):
+            with self.subTest(text):
+                budget.write_text(text)
+                self.assertEqual(self.turn("build", environ=environ).spent(), 0)
+        # A pull request's job keeps its own limit per wait and leaves the record alone.
+        budget.write_text("3600")
+        self.clock.slept = 0
+        self.assertFalse(self.turn("pr", environ=environ).acquire())
+        self.assertEqual(self.clock.slept, WAIT["pr"])
+        self.assertEqual(budget.read_text(), "3600")
+
     def reset_folder(self):
         if os.path.islink(self.folder) or os.path.isfile(self.folder):
             os.unlink(self.folder)
@@ -401,22 +452,9 @@ class CompileLockTests(unittest.TestCase):
         return status, time.monotonic() - started, pid
 
     def assert_gone(self, pid):
-        for _ in range(50):
-            try:
-                with open(f"/proc/{pid}/stat") as handle:
-                    if handle.read().rsplit(")", 1)[1].split()[0] == "Z":
-                        return
-            except FileNotFoundError:
-                return
-            except OSError:
-                break
-            time.sleep(0.1)
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        os.kill(pid, signal.SIGKILL)
-        self.fail(f"process {pid} outlived the wrapper")
+        if not process_gone(pid):
+            os.kill(pid, signal.SIGKILL)
+            self.fail(f"process {pid} outlived the wrapper")
 
     @needs_flock
     def test_a_cancelled_wrapper_ends_its_commands_group_and_frees_the_turn(self):
@@ -467,9 +505,9 @@ class CompileLockTests(unittest.TestCase):
                                                        "--locked -p xtask"))
         names = list(build)
         self.assertLess(names.index("The packaging tool, compiled in its turn"), names.index("Package"))
-        # Room for the 60 min wait: 120 min on the Mac legs.
-        self.assertEqual(jobs["exporters"]["timeout-minutes"], 120)
-        self.assertTrue(jobs["build"]["timeout-minutes"].startswith("${{ matrix.mac && 120 ||"))
+        # Room for the job's 60 min of waiting: 150 min for exporters, 180 for the Mac build legs.
+        self.assertEqual(jobs["exporters"]["timeout-minutes"], 150)
+        self.assertTrue(jobs["build"]["timeout-minutes"].startswith("${{ matrix.mac && 180 ||"))
         main = load("parity-main.yml")["jobs"]["parity-main"]
         self.assertEqual(main["env"]["HORIZON_COMPILE_LOCK_ROLE"], "main")
         harnesses = next(step for step in main["steps"] if step.get("id") == "harnesses")
@@ -488,10 +526,15 @@ class CompileLockTests(unittest.TestCase):
         self.assertIn("cargo test --release --locked --no-run", turn["run"])
         self.assertLess(names.index("The launcher and its tests, compiled in their turn"),
                         names.index("Test every launcher target in a scratch home"))
-        self.assertTrue(launcher["timeout-minutes"].startswith("${{ matrix.mac && 90 ||"))
+        # 90 min on the Mac mini (main); GitHub's Macs (branch builds) keep 60.
+        self.assertEqual(launcher["timeout-minutes"],
+                         "${{ matrix.mac && needs.decide.outputs.main == 'true' && 90 || matrix.mac && 60 || 40 }}")
         vanilla = (ROOT / "tools/ci/vanilla-data.sh").read_text(encoding="utf-8")
-        self.assertIn('lock="bash tools/ci/compile-lock.sh ${HORIZON_COMPILE_LOCK_ROLE:-pr} --"', vanilla)
-        self.assertEqual(vanilla.count("$lock "), 2)
+        self.assertIn('in_turn="bash tools/ci/compile-lock.sh ${HORIZON_COMPILE_LOCK_ROLE:-pr} --"', vanilla)
+        self.assertEqual(vanilla.count("$in_turn "), 2)
+        # `lock` stays the preparation lock's folder, which the mkdir fallback's EXIT trap removes.
+        self.assertEqual([line.strip() for line in vanilla.splitlines() if line.strip().startswith("lock=")],
+                         ['lock="$shared/prepared/.lock"'])
         self.assertEqual(vanilla.count("cargo build"), 2, "no cargo build outside the turn")
 
 
