@@ -453,3 +453,56 @@ fn the_check_refuses_a_step_it_can_t_run() {
         "{problems:#?}"
     );
 }
+
+/// Every marker of the step's text at once: a pack that names `shaded_tint`, `RAY_ENTITY`, the
+/// light sources and `candidate_tint` composes and is checked with the scene and without it.
+#[test]
+fn a_step_composes_with_every_other_opt_in() {
+    let all = format!(
+        "{LIGHT_STEP}fn post(input: PostInput) -> vec4<f32> {{
+    let p = view_position(input.uv, input.depth);
+    let sun = trace_light(p, frame.sun_direction, 64.0, vec2<u32>(3u, 0xffffffffu));
+    var state = RayState(vec3<f32>(1.0), vec2<u32>(0xffffffffu));
+    let hit = trace_step(p, frame.sun_direction, 8.0, RAY_SOLID | RAY_ENTITY, &state);
+    let lit = f32(ray_light_count()) * hit.shaded_tint.rgb * hit.tint.rgb;
+    return vec4<f32>(input.color.rgb * sun * state.light + lit, 1.0);
+}}
+"
+    );
+    let report = post(&all, "lights = true\nstep = true\n").unwrap();
+    both_ways(&report);
+    let stage = &report.stages[0];
+    assert!(stage.traces_entities() && stage.traces_lights() && stage.traces_looks());
+}
+
+/// Two post entries of one file, one listing a file that names nothing of the step: under the key
+/// each is checked from the same sources as without it.
+#[test]
+fn post_entries_sharing_a_file_compose_as_without_the_key() {
+    let traced = "fn post(input: PostInput) -> vec4<f32> {\n    \
+                  return input.color * f32(trace_any(vec3<f32>(0.0), frame.sun_direction, 8.0));\n}\n";
+    let helper = "fn helper(a: f32) -> f32 { return a * 2.0; }\n";
+    let manifest = |keys: &str| {
+        format!(
+            "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+             [[post]]\nfile = \"post.wgsl\"\n[[post]]\nfile = \"post.wgsl\"\nfiles = [\"helper.wgsl\"]\n\
+             [tonemap]\nfile = \"t.wgsl\"\n[ray_tracing]\n{keys}"
+        )
+    };
+    let sources = |keys: &str| {
+        let manifest = manifest(keys);
+        let files = [
+            (MANIFEST, manifest.as_str()),
+            ("post.wgsl", traced),
+            ("helper.wgsl", helper),
+            ("t.wgsl", TONEMAP),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        (report.stages.iter())
+            .map(|s| (s.source.clone(), s.scene_source.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sources("step = true\n"), sources(""));
+}

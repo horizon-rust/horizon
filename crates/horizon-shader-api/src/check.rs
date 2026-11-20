@@ -16,7 +16,7 @@ use crate::package::Pack;
 use crate::stages::{
     Composed, GROUP, KEPT_BINDING, RAY_ENTITY_RETAINED_BINDING, RAY_ENTITY_STORE_BINDING,
     RAY_LIGHTS_BINDING, RAY_LOOKS_BINDING, RAY_SCENE_BINDING, STEP_NAMES, StageKind, TRACE_NAMES,
-    compose_traced, identifiers, lights_on, step_on,
+    compose_traced, identifiers, lights_on,
 };
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use std::collections::HashSet;
@@ -469,7 +469,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             false => (
                 StageKind::Post,
                 s,
-                (m.computes() || lights_on(pack) || step_on(pack)).then_some(i),
+                (m.computes() || lights_on(pack)).then_some(i),
             ),
         }))
         .chain(m.tonemap.iter().map(|s| (StageKind::Tonemap, s, None)))
