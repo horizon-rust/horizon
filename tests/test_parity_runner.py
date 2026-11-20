@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -697,8 +698,8 @@ class OracleReuseTests(unittest.TestCase):
 
     def test_a_runtime_link_retargeted_to_an_equal_looking_file_changes_the_key(self):
         server = self.bin.parent / "lib" / "server"
-        for name in ("a.so", "b.so"):
-            (server / name).write_text("vm")
+        for name, text in (("a.so", "vm"), ("b.so", "VM")):
+            (server / name).write_text(text)
             os.utime(server / name, ns=(10**18, 10**18))
         (server / "libjvm.so").unlink()
         (server / "libjvm.so").symlink_to(server / "a.so")
@@ -707,6 +708,41 @@ class OracleReuseTests(unittest.TestCase):
         (server / "libjvm.so").symlink_to(server / "b.so")  # the same size and mtime, another file
         self.assertEqual(self.oracle(), 2)
         self.assertEqual(self.reasons(), ["no-record", "java-runtime"])
+
+    def test_a_vm_library_byte_rewritten_under_its_old_size_and_mtime_changes_the_key(self):
+        # The memo of its hash is not consulted: the rewrite changed its ctime.
+        vm = self.bin.parent / "lib" / "server" / "libjvm.so"
+        self.assertEqual(self.oracle(), 1)
+        before = vm.stat()
+        vm.write_text("vM")
+        os.utime(vm, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(self.oracle(), 2)
+        self.assertEqual(self.reasons(), ["no-record", "java-runtime"])
+
+    def test_the_same_jdk_unpacked_again_replays(self):
+        # As on a fresh runner: the same bytes at the same path, but new files (inodes, ctimes) and other mtimes.
+        home = self.bin.parent
+        self.assertEqual(self.oracle(), 1)
+        for path in (self.bin / "java", self.release, home / "lib" / "modules", home / "lib" / "server" / "libjvm.so"):
+            data, mode = path.read_bytes(), path.stat().st_mode
+            path.unlink()
+            path.write_bytes(data)
+            path.chmod(mode)
+            os.utime(path, ns=(10**18, 10**18))
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.reasons(), ["no-record", "hit"])
+
+    def test_two_jdk_homes_with_the_same_content_give_the_same_runtime(self):
+        from tools import parity_shim
+        home, other = self.bin.parent, self.bin.parent / "elsewhere"
+        for name in ("bin/java", "release", "lib/modules", "lib/server/libjvm.so"):
+            (other / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(home / name, other / name)  # new inodes and mtimes
+        with mock.patch.object(parity_shim, "CACHE", home / "cache"):
+            first = parity_shim.runtime_digest(str(self.bin / "java"))
+            self.assertEqual(parity_shim.runtime_digest(str(other / "bin" / "java")), first)
+            (other / "lib" / "server" / "libjvm.so").write_text("vM")
+            self.assertNotEqual(parity_shim.runtime_digest(str(other / "bin" / "java")), first)
 
     def test_a_launcher_outside_a_whole_jdk_is_never_reused(self):
         home = self.bin.parent

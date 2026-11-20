@@ -365,9 +365,12 @@ class Unkeyed(Exception):
 
 
 def runtime_digest(program):
-    """The Java runtime behind `program`: its launcher's real path and stamp, the JDK's `release` file, the stamps of
-    its class library (lib/modules) and of the JVM's native library, and the `-version` text these give. A JDK updated
-    or replaced in place changes the key even when it prints the same version. Only a launcher at <home>/bin/ of a JDK
+    """The Java runtime behind `program`, by content only, so that the same JDK unpacked on another runner gives the
+    same key: the bytes of its launcher, its `release` file, its class library (lib/modules) and the JVM's native
+    library, and the `-version` text these give. A JDK updated or replaced in place changes the key even when it
+    prints the same version. Hashing lib/modules (about 130 MB) per call would cost more than many calls save, so the
+    hashes and the probe are memoised per machine under each file's identity (see `identity`), never across one that
+    changed. Only a launcher at <home>/bin/ of a JDK
     home holding all three as regular files can be keyed: not a stub that picks a JDK itself (/usr/bin/java beside a
     /usr/lib/modules folder). A launcher inside a JDK-shaped folder that hands the call to another JDK (a wrapper
     script or binary put there) can't be told apart from outside, and is not supported. Raises Unkeyed, or OSError
@@ -381,19 +384,21 @@ def runtime_digest(program):
     if os.path.basename(folder) != "bin" or not (os.path.isfile(release) and os.path.isfile(modules)) or vm is None:
         raise Unkeyed("the launcher is not in a JDK's bin folder")
 
-    def stamp(path):
-        """Which file it is (its real path, device and inode) and its last change (size, mtime, ctime): a link
-        retargeted to a file of the same size and mtime changes it too."""
+    files = [launcher, release, modules, vm]
+
+    def identity(path):
+        """Which file it is on this machine (its real path, device and inode) and its last change (size, mtime,
+        ctime): only the memo's guard, never the key. A link retargeted to a file of the same size and mtime, or a
+        rewrite that puts both back, changes it, so the file is hashed again."""
         real = os.path.realpath(path)
         stat = os.stat(real)
         return [real, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
-    fingerprint = [stamp(launcher), stamp(release), bytes_digest(release), stamp(modules), os.path.relpath(vm, home),
-                   stamp(vm)]
-    cached = CACHE / "versions" / digest(fingerprint)
+    memo = CACHE / "runtimes" / f"{digest([identity(path) for path in files])}.json"
     try:
-        version = cached.read_text()
-    except OSError:
+        content, version = json.loads(memo.read_text())
+    except (OSError, ValueError, TypeError):
+        content = [bytes_digest(path) for path in files]
         try:
             result = subprocess.run([program, "-version"], stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
         except (OSError, subprocess.SubprocessError) as error:
@@ -402,13 +407,13 @@ def runtime_digest(program):
             raise Unkeyed(f"-version exited {result.returncode}")
         version = digest([result.stdout.hex(), result.stderr.hex()])
         try:
-            cached.parent.mkdir(parents=True, exist_ok=True)
-            temporary = cached.with_suffix(f".{os.getpid()}.tmp")
-            temporary.write_text(version)
-            temporary.replace(cached)
+            memo.parent.mkdir(parents=True, exist_ok=True)
+            temporary = memo.with_suffix(f".{os.getpid()}.tmp")
+            temporary.write_text(json.dumps([content, version]))
+            temporary.replace(memo)
         except OSError:
-            pass  # probed again next time
-    return digest([fingerprint, version])
+            pass  # hashed and probed again next time
+    return digest([os.path.relpath(vm, home), content, version])
 
 
 def unrecorded(index, variables, runtime):
