@@ -8,13 +8,15 @@ name: launcher
 # feature. The version and the tag are given to the build (HORIZON_LAUNCHER_VERSION, HORIZON_LAUNCHER_TAG): no bump
 # commits.
 # Never marked latest. Pushes to launcher branches only build. RELEASES_PAUSED=1 stops releases.
+# Branch builds (any ref but main, a dispatch on a tag too) run on GitHub-hosted runners, unsigned, and save no cache;
+# signing stays on main (tests/test_launcher_workflow.py).
 # Linux ships two archives of one binary: the .tar.gz the launcher updates itself from, and an
 # AppImage (packaging/linux/appimage.sh) for players without a distribution package, which replaces
 # itself instead (launcher/src/backend.rs).
 # macOS: Apple Silicon, and Intel cross-built for x86_64-apple-darwin on the same runner, its tests and smoke test
 # under Rosetta 2 (#1161). With the repository variable MACOS_SIGN_IDENTITY set, Horizon.app and the .dmg are signed with
 # Developer ID, notarized and stapled, from the runner's signing keychain (packaging/macos/README.md);
-# unset (forks), they are signed ad hoc.
+# unset (forks) or off main, they are signed ad hoc.
 # Windows ships each architecture's launcher in its ZIP (what a launcher updates itself from) and as
 # horizon-launcher-setup.exe or horizon-launcher-setup-arm64.exe, which opens the per-user installer instead of Home
 # (launcher/src/installer.rs).
@@ -175,7 +177,7 @@ jobs:
             setup_asset: horizon-launcher-setup-arm64.exe
             # The C runtime linked in, so the standalone ARM64 launcher needs no redistributable.
             rustflags: -C target-feature=+crt-static
-    runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
+    runs-on: ${{ matrix.mac && (github.ref == 'refs/heads/main' && (vars.MAC_RUNNER || 'ludovics-mac-mini') || 'macos-15') || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each.
     timeout-minutes: ${{ matrix.mac && 60 || 40 }}
     env:
@@ -213,6 +215,7 @@ jobs:
         with:
           workspaces: launcher
           shared-key: launcher-${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux libraries GPUI links to
         if: runner.os == 'Linux'
         run: |
@@ -343,13 +346,13 @@ jobs:
           fi
           rm -rf "$HORIZON_LAUNCHER_HOME"
       - name: The signing keychain, unlocked
-        if: runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
+        if: github.ref == 'refs/heads/main' && runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
         env:
           MACOS_SIGN_IDENTITY: ${{ vars.MACOS_SIGN_IDENTITY }}
         run: ../packaging/macos/keychain.sh unlock
       - name: Package
         env:
-          MACOS_SIGN_IDENTITY: ${{ vars.MACOS_SIGN_IDENTITY }}
+          MACOS_SIGN_IDENTITY: ${{ github.ref == 'refs/heads/main' && vars.MACOS_SIGN_IDENTITY || '' }}
         run: |
           rm -rf dist out && mkdir -p out
           if [[ "$RUNNER_OS" == "macOS" ]]; then
@@ -388,7 +391,7 @@ jobs:
           path: launcher/out/*
           retention-days: 3
       - name: The signing keychain, locked again
-        if: always() && runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
+        if: always() && github.ref == 'refs/heads/main' && runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
         run: ../packaging/macos/keychain.sh lock
 
   sign:
@@ -412,8 +415,8 @@ jobs:
           merge-multiple: true
       - name: Sign the checksums (SHA256SUMS, SHA256SUMS.sig)
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-          RELEASE_SIGNING_KEY_NEXT: ${{ secrets.RELEASE_SIGNING_KEY_NEXT }}
+          RELEASE_SIGNING_KEY: ${{ needs.decide.outputs.dry_run != 'true' && secrets.RELEASE_SIGNING_KEY || '' }}
+          RELEASE_SIGNING_KEY_NEXT: ${{ needs.decide.outputs.dry_run != 'true' && secrets.RELEASE_SIGNING_KEY_NEXT || '' }}
           EPHEMERAL: ${{ needs.decide.outputs.dry_run == 'true' && 'yes' || '' }}
           TAG: ${{ needs.decide.outputs.tag }}
         run: bash tools/ci/sign_release.sh "$TAG" dist/horizon-launcher-*
