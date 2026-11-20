@@ -445,20 +445,13 @@ impl Sprites {
         if largest_map.is_some() {
             let pbr_size = self.pbr_size;
             log::info!("Horizon: LabPBR maps at {pbr_size} px, {layers} layers");
-            for animation in &mut self.animations {
-                animation.materials = self.pbr[animation.layer as usize].each_ref().map(|map| {
-                    map.as_ref().map(|(from, frames)| {
-                        Arc::new(
-                            frames
-                                .iter()
-                                .map(|frame| resample(frame, *from, pbr_size))
-                                .collect(),
-                        )
-                    })
-                });
-            }
+            // Only each layer's initial frame is made at the shared size here. Animations keep
+            // the companion frames as stored; the material animator resamples the one frame it
+            // shows from its own side (`gfx::material_animate`), as it does for colour frames.
+            let mut stored = Vec::with_capacity(self.pbr.len());
             for (layer, maps) in std::mem::take(&mut self.pbr).into_iter().enumerate() {
-                for (map, (out, none)) in maps.into_iter().zip([
+                let mut kept: [Option<Arc<Vec<Vec<u8>>>>; 2] = [None, None];
+                for ((map, kept), (out, none)) in maps.into_iter().zip(&mut kept).zip([
                     (&mut self.normals, FLAT_NORMAL),
                     (&mut self.specular, NO_SPECULAR),
                 ]) {
@@ -468,10 +461,15 @@ impl Sprites {
                             let (from, pixels) =
                                 shrink_map(frames[initial].clone(), from, pbr_size);
                             out.extend(resample(&pixels, from, pbr_size));
+                            *kept = Some(Arc::new(frames));
                         }
                         None => out.extend(none.repeat((pbr_size * pbr_size) as usize)),
                     }
                 }
+                stored.push(kept);
+            }
+            for animation in &mut self.animations {
+                animation.materials = stored[animation.layer as usize].clone();
             }
         }
     }
@@ -1384,6 +1382,44 @@ mod tests {
         assert_eq!(sprites.normals[16 * 16 * 4..][..4], FLAT_NORMAL);
         assert_eq!(sprites.specular[..4], NO_SPECULAR);
         assert_eq!(sprites.specular.len(), 2 * 16 * 16 * 4);
+    }
+    /// Companion maps are kept like colour frames: a 16 px map's frames stay at 16 px beside a
+    /// 128 px map, and only the initial frame is made at the shared size. A sheet of 16448
+    /// such frames would be 16448 x 128^2 x 4 = 1,028 MiB per map resampled up front, against
+    /// 16448 x 16^2 x 4 = 16 MiB as stored; the material animator resamples the one frame it
+    /// shows (`gfx::material_animate`).
+    #[test]
+    fn companion_frames_keep_their_stored_size() {
+        assert_eq!(16_448u64 * 128 * 128 * 4, 1_078_722_560);
+        assert_eq!(16_448u64 * 16 * 16 * 4, 16_842_752);
+        let maps: Vec<Vec<u8>> = (0..4u8).map(|i| [i, 1, 2, 255].repeat(16 * 16)).collect();
+        let mut sprites = Sprites {
+            native: vec![
+                (16, Arc::new(vec![vec![0; 16 * 16 * 4]; 4]), 2),
+                (128, Arc::new(vec![vec![0; 128 * 128 * 4]]), 0),
+            ],
+            pbr: vec![
+                [None, Some((16, maps.clone()))],
+                [None, Some((128, vec![[7, 7, 7, 255].repeat(128 * 128)]))],
+            ],
+            animations: vec![test_frames(
+                0,
+                vec![vec![0; 16 * 16 * 4]; 4],
+                r#"{"frametime":1}"#,
+            )],
+            ..Default::default()
+        };
+        sprites.finish();
+        assert_eq!(sprites.pbr_size, 128);
+        assert_eq!(
+            sprites.animations[0].material_frames(1),
+            Some(maps.as_slice())
+        );
+        assert_eq!(sprites.animations[0].material_frames(0), None);
+        assert_eq!(
+            sprites.specular[..128 * 128 * 4],
+            resample(&maps[2], 16, 128)
+        );
     }
     #[test]
     fn companion_grid_and_static_map_follow_colour_frame_selection() {

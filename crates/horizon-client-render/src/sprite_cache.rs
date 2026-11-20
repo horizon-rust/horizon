@@ -126,6 +126,14 @@ impl<'a> Reader<'a> {
         self.take(n)
     }
 }
+/// Whether `count` frames of `frame_len` bytes fit both what is left of the file (each record
+/// is a 4-byte length and its bytes) and a full atlas, frame table included.
+fn frames_fit(frame_len: u128, count: u32, remaining: usize) -> bool {
+    let count = u128::from(count);
+    let table_entry = std::mem::size_of::<Vec<u8>>() as u128;
+    count * (frame_len + 4) <= remaining as u128
+        && count * (frame_len + table_entry) <= u128::from(MAX_ENTRY_BYTES)
+}
 fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
     let mut r = Reader(bytes);
     if r.take(4)? != MAGIC || r.u32()? != VERSION {
@@ -142,18 +150,17 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         let frame_size = [r.u32()?, r.u32()?];
         let frame_count = r.u32()?;
         // Checked before anything is copied: the shape, then the frames' total against what the
-        // file holds and against a full atlas (what one decoded image may be), then each length.
+        // file holds and against a full atlas (what one decoded image may be), counting the
+        // frame table too, which for tiny frames outweighs their pixels. The table grows only
+        // as each record's length checks out.
         if frame_count == 0 || frame_size.contains(&0) || frame_size[0].max(frame_size[1]) != side {
             return None;
         }
         let frame_len = u128::from(frame_size[0]) * u128::from(frame_size[1]) * 4;
-        let count = u128::from(frame_count);
-        if count * (frame_len + 4) > r.0.len() as u128
-            || count * frame_len > u128::from(MAX_ENTRY_BYTES)
-        {
+        if !frames_fit(frame_len, frame_count, r.0.len()) {
             return None;
         }
-        let mut frames = Vec::with_capacity(frame_count as usize);
+        let mut frames = Vec::new();
         for _ in 0..frame_count {
             let frame = r.bytes()?;
             if frame.len() as u128 != frame_len {
@@ -248,6 +255,37 @@ mod tests {
         let mut extra = bytes.clone();
         extra.push(0);
         assert!(parse(&extra, 7).is_none());
+    }
+    /// The frame table is charged with the pixels: for tiny frames it is the larger part.
+    #[test]
+    fn a_frame_table_counts_toward_the_entry_budget() {
+        let table = std::mem::size_of::<Vec<u8>>() as u128;
+        let tiny = 100_000_000;
+        // 1x1 frames: 400 MB of pixels fit a full atlas, their table does not.
+        assert!(u128::from(tiny) * 4 <= u128::from(MAX_ENTRY_BYTES));
+        assert!(u128::from(tiny) * (4 + table) > u128::from(MAX_ENTRY_BYTES));
+        assert!(!frames_fit(4, tiny, usize::MAX));
+        assert!(frames_fit(4, 1000, 8000));
+        assert!(!frames_fit(4, 1000, 7999));
+        assert!(!frames_fit(
+            u128::from(u32::MAX) * u128::from(u32::MAX) * 4,
+            u32::MAX,
+            usize::MAX
+        ));
+    }
+    /// Many 1x1 frames claimed over a short payload: a miss, with nothing reserved for them.
+    #[test]
+    fn a_huge_count_of_tiny_frames_is_a_miss() {
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&7u64.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        put_bytes(&mut bytes, b"a:b");
+        for field in [1, 1, 1, 30_000_000] {
+            bytes.extend_from_slice(&field.to_le_bytes());
+        }
+        put_bytes(&mut bytes, &[0; 4]);
+        assert!(parse(&bytes, 7).is_none());
     }
     /// An entry declaring far more frames than the file holds is a miss before anything is
     /// reserved for them.
