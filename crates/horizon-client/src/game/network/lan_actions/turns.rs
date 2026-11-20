@@ -275,6 +275,9 @@ impl Game<'_> {
         // mount menu the guest's action opens is not drawn over the host's
         // world (arismoko/horizon#687). The guest's client opens its own.
         let screen = std::mem::replace(&mut self.screen, Screen::Playing);
+        // The container screen the host's mod screen is over: a screen change in
+        // the guest's turn must not drop the host's way back to it.
+        let host_under = self.mod_screen_under.take();
         let host_sign = self.sign_edit.take();
         let host_book = self.book.take();
         let host_command_block = self.command_block_screen.take();
@@ -443,6 +446,7 @@ impl Game<'_> {
             level_up_sound,
             host_keys,
             screen,
+            host_under,
             host_sign,
             host_book,
             host_command_block,
@@ -583,6 +587,7 @@ impl Game<'_> {
             level_up_sound,
             host_keys,
             screen,
+            host_under,
             host_sign,
             host_book,
             host_command_block,
@@ -791,6 +796,7 @@ impl Game<'_> {
         std::mem::swap(&mut self.portals.player, &mut play.portal);
         self.container = container;
         self.screen = screen;
+        self.mod_screen_under = host_under;
         // A sign the guest's placement opened (SignBlock.openTextEdit).
         let guest_sign = std::mem::replace(&mut self.sign_edit, host_sign);
         // A lectern the guest's use opened (LecternBlock.openScreen).

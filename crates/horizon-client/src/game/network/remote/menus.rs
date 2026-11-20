@@ -239,14 +239,20 @@ impl Game<'_> {
         true
     }
     pub(super) fn remote_reject_container_body(&mut self, container: i32) {
+        // Read before the close, which forgets the container screen under a
+        // mod's own screen: that mod's screen goes with the menu.
+        let container_screen = self.container_screen() == Screen::Inventory;
         self.remote_close_local();
-        if self.screen == Screen::Inventory {
+        if container_screen {
             self.set_screen(Screen::Playing);
             self.capture(true);
         }
         self.send(S::ContainerClose(play::ContainerClose { container }));
     }
     pub(super) fn remote_close_local_body(&mut self) {
+        // The menu a mod's own screen was over is gone: Escape must not return
+        // to it, even when a screen hook keeps the mod's screen open.
+        self.mod_screen_under = None;
         // `Gui.setScreen` clears the focus of the screen it takes down: the
         // container's keyboard focus must not outlive it (a Tab bound to the
         // inventory moves the focus and closes the container in one press).

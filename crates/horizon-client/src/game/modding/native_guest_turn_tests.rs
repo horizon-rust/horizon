@@ -1751,3 +1751,19 @@ fn crash_teardown_keeps_every_player_a_swap_still_displaces() {
         game.leave_guest(outer);
     });
 }
+
+/// A screen change in a guest's turn leaves the host's mod screen its way
+/// back to the container it covers.
+#[test]
+#[ignore = "daily"]
+fn a_guests_turn_keeps_the_container_under_the_hosts_mod_screen() {
+    use super::Screen;
+    with_guests(|game| {
+        game.screen = Screen::Mod;
+        game.mod_screen_under = Some(Screen::Inventory);
+        game.as_guest(12, |game| game.set_screen(Screen::Inventory))
+            .unwrap();
+        assert_eq!(game.screen, Screen::Mod);
+        assert_eq!(game.mod_screen_under(), Some(Screen::Inventory));
+    });
+}

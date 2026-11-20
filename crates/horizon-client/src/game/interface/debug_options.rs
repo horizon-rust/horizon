@@ -139,7 +139,13 @@ impl Game<'_> {
                 self.set_screen(Screen::Playing);
                 self.capture(true);
             }
-            Screen::Mod => self.close_mod_screen(),
+            Screen::Mod => {
+                self.close_mod_screen();
+                // Back on the container screen it was over: that one closes too.
+                if matches!(self.screen, Screen::Inventory | Screen::Creative) {
+                    self.close_screen_behind_debug_options();
+                }
+            }
             _ => {}
         }
     }

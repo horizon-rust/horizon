@@ -68,7 +68,8 @@ pub trait ScreensClientHost {
     /// screen, a book, a sign editor, a dialog or a prompt, while the world
     /// loads, and anywhere but the window's own client (the server thread, a
     /// dedicated server). A gamepad can close it (B, Start) but not click on
-    /// it: its clicks don't reach the mouse hooks.
+    /// it: its clicks don't reach the mouse hooks. Over a container screen it
+    /// is false too: `mod_screen_open_over_container` opens one there.
     #[access(WorldOnly)]
     fn mod_screen_open(&mut self, mod_id: &str) -> bool;
     /// Side: client.
@@ -113,7 +114,8 @@ pub trait ScreensClientHost {
     fn sign_editor(&self) -> Option<SignEditView>;
     /// Side: client.
     /// The mod whose own screen is open, if one is (Escape, or another screen
-    /// replacing it, closes it).
+    /// replacing it, closes it; over a container screen, Escape returns to it:
+    /// `mod_screen_open_over_container`).
     #[access(ClientSetup)]
     fn mod_screen(&self) -> Option<&str>;
     /// Side: client.
@@ -156,4 +158,36 @@ pub trait ScreensClientHost {
     /// wasm alike.
     #[access(ClientSetup)]
     fn request_screenshot(&mut self) -> Result<(), ScreenshotError>;
+    /// Side: client.
+    /// Opens a screen of mod `mod_id`'s own over the open container screen
+    /// (the inventory, creative, a chest, a mod's menu: a `ScreenView.id` of
+    /// `inventory` or `creative`), as EMI's recipe screen opens over its
+    /// parent: the same screen `mod_screen_open` opens over the world (the
+    /// screen hooks, `ScreenView.id` `mod`, Escape), with the container screen
+    /// kept behind it. Over the world, or anywhere `mod_screen_open` is
+    /// refused, it is false: a mod that wants either calls the one that fits
+    /// the screen it sees.
+    ///
+    /// It opens as `Minecraft.setScreen(new Screen(parent))` does: the
+    /// container's menu stays open on the client and the server (no
+    /// `ServerboundContainerClosePacket`; the same window id, the stack on the
+    /// cursor kept), and its `ScreenView` keeps that menu's type, title and
+    /// slot count. The container screen is not drawn under it, as vanilla
+    /// draws only the open screen: the world shows, as under a mod's screen
+    /// over the world, and the mod draws its own background
+    /// (`apply_screen_blur`, a fill), as `Screen.renderBackground` would. It
+    /// gets no mouse, keys or typing, so it shows no slot highlight or tooltip
+    /// (`screen_hovered_item` is None). Escape or `mod_screen_close` returns
+    /// to the container screen as it was, without reopening its menu. When
+    /// the menu closes meanwhile (the server's
+    /// `ClientboundContainerClosePacket`, which takes down a container screen
+    /// but not creative's, or a portal), the mod's screen closes with it to
+    /// the world; if a `screen_opening` hook keeps the mod's screen open,
+    /// Escape then goes to the world, not to the closed container. Another
+    /// screen replacing the mod's (the death screen, a menu the server opens)
+    /// ends it as it would end the container screen. The screen hooks see
+    /// each change: `screen_opening`/`screen_closing` from the container
+    /// screen to `mod`, and back. True when it is open.
+    #[access(WorldOnly)]
+    fn mod_screen_open_over_container(&mut self, mod_id: &str) -> bool;
 }

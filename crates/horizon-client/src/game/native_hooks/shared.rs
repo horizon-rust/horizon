@@ -144,6 +144,10 @@ impl Game<'_> {
         if let Some(owner) = owner {
             self.native_mod_screen = Some(owner.to_owned());
         }
+        if screen != Screen::Mod {
+            // The container a mod's screen was over is no longer behind it.
+            self.mod_screen_under = None;
+        }
         if screen == Screen::Mod {
             self.keys.clear();
             self.left = false;
@@ -2176,17 +2180,34 @@ impl Game<'_> {
         let charts = self.debug_charts.corners(!self.has_singleplayer_server());
         !debug_takes(corner, self.debug, charts)
     }
-    /// A mod's own screen closes (Escape, or `mod_screen_close`).
+    /// A mod's own screen closes (Escape, or `mod_screen_close`): back to the
+    /// container screen it opened over, as it was (its menu never closed), or
+    /// to the game.
     pub(super) fn close_mod_screen(&mut self) {
         if self.screen == Screen::Mod {
-            self.set_screen(Screen::Playing);
+            let back = self.mod_screen_under().unwrap_or(Screen::Playing);
+            self.set_screen(back);
             if self.screen == Screen::Mod {
                 // `screen_opening` kept it open.
                 return;
             }
-            self.capture(true);
+            if self.screen == Screen::Playing {
+                self.capture(true);
+            }
         }
         self.native_mod_screen = None;
+    }
+    /// The container screen the open mod screen is over (`Inventory` or
+    /// `Creative`), its menu still open; None with no mod screen open, or one
+    /// over the world.
+    pub(super) fn mod_screen_under(&self) -> Option<Screen> {
+        self.mod_screen_under.filter(|_| self.screen == Screen::Mod)
+    }
+    /// The container screen the player has open: the open screen, or the one
+    /// a mod's own screen is over. What a menu's close by the server (or a
+    /// portal) closes.
+    pub(super) fn container_screen(&self) -> Screen {
+        self.mod_screen_under().unwrap_or(self.screen)
     }
     /// A data file of the game's resources, content mods' included
     /// (`data/mymod/machines.json`), when there is one: what a mod's content
@@ -2995,7 +3016,14 @@ impl Game<'_> {
     /// A data slot of window `window`'s menu (`ContainerSetData`); false
     /// when no mod screen is showing for that window.
     pub(super) fn native_screen_data(&mut self, window: i32, id: i16, value: i16) -> bool {
-        if self.shown_native_screen().is_none() {
+        // The container screen, shown or under a mod's own screen
+        // (`container_screen`): its data stays current for the return.
+        let open = self.container_screen() == Screen::Inventory
+            && self
+                .mod_screen
+                .as_ref()
+                .is_some_and(|s| self.container == Some(s.key));
+        if !open {
             return false;
         }
         self.mod_screen
@@ -3546,12 +3574,14 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
         && hi.z > min[2]
 }
 
-/// What `mod_screen_open(mod_id)` does over `screen` (`blocked`: an
-/// overlay, the title screen, no window or no player; `owner`'s own screen
-/// open): `None` opens it, `Some` answers without changing anything (true:
-/// `mod_id`'s is already open).
+/// What `mod_screen_open(mod_id)` (`over`: `MOD_SCREEN_OVER_WORLD`) or
+/// `mod_screen_open_over_container(mod_id)` (`MOD_SCREEN_OVER_CONTAINER`) does
+/// over `screen` (`blocked`: an overlay, the title screen, no window or no
+/// player; `owner`'s own screen open): `None` opens it, `Some` answers without
+/// changing anything (true: `mod_id`'s is already open).
 fn mod_screen_opens(
     screen: Screen,
+    over: &[Screen],
     blocked: bool,
     owner: Option<&str>,
     mod_id: &str,
@@ -3559,11 +3589,16 @@ fn mod_screen_opens(
     if screen == Screen::Mod {
         return Some(owner == Some(mod_id));
     }
-    if screen != Screen::Playing || blocked {
+    if !over.contains(&screen) || blocked {
         return Some(false);
     }
     None
 }
+/// The screen `mod_screen_open` opens a mod's own screen over: the world.
+const MOD_SCREEN_OVER_WORLD: &[Screen] = &[Screen::Playing];
+/// The container screens `mod_screen_open_over_container` opens a mod's own
+/// screen over, keeping them behind it.
+const MOD_SCREEN_OVER_CONTAINER: &[Screen] = &[Screen::Inventory, Screen::Creative];
 
 fn client_packet_view(packet: &horizon_protocol::packets::play::Clientbound) -> ClientPacket {
     use horizon_protocol::packets::play::Clientbound;
@@ -4428,33 +4463,39 @@ mod tests {
         assert_eq!(game.screen_hovered_item(), None);
     }
 
-    /// A mod's own screen opens only over the world, never over another
-    /// screen, an overlay (the title screen, a book, loading, no window) or
-    /// another mod's; opening it again is a no-op.
+    /// `mod_screen_open` opens a mod's own screen only over the world and
+    /// `mod_screen_open_over_container` only over a container screen, never
+    /// over another screen, an overlay (the title screen, a book, loading, no
+    /// window) or another mod's; opening it again is a no-op.
     #[test]
-    fn a_mod_screen_opens_only_over_the_world() {
-        use super::{Screen, mod_screen_opens};
-        assert_eq!(mod_screen_opens(Screen::Playing, false, None, "a"), None);
-        assert_eq!(
-            mod_screen_opens(Screen::Playing, true, None, "a"),
-            Some(false)
-        );
-        for other in [
-            Screen::Paused,
-            Screen::Inventory,
-            Screen::Chat,
-            Screen::Options,
-        ] {
-            assert_eq!(mod_screen_opens(other, false, None, "a"), Some(false));
+    fn a_mod_screen_opens_only_over_the_screens_its_call_names() {
+        use super::{
+            MOD_SCREEN_OVER_CONTAINER as CONTAINER, MOD_SCREEN_OVER_WORLD as WORLD, Screen,
+            mod_screen_opens,
+        };
+        let opens = |screen, over| mod_screen_opens(screen, over, false, None, "a");
+        assert_eq!(opens(Screen::Playing, WORLD), None);
+        assert_eq!(opens(Screen::Inventory, CONTAINER), None);
+        assert_eq!(opens(Screen::Creative, CONTAINER), None);
+        // The published call keeps refusing a container screen.
+        assert_eq!(opens(Screen::Inventory, WORLD), Some(false));
+        assert_eq!(opens(Screen::Creative, WORLD), Some(false));
+        assert_eq!(opens(Screen::Playing, CONTAINER), Some(false));
+        for over in [WORLD, CONTAINER] {
+            for other in [Screen::Paused, Screen::Chat, Screen::Options, Screen::Dead] {
+                assert_eq!(opens(other, over), Some(false));
+            }
+            let screen = over[0];
+            assert_eq!(mod_screen_opens(screen, over, true, None, "a"), Some(false));
+            assert_eq!(
+                mod_screen_opens(Screen::Mod, over, false, Some("a"), "a"),
+                Some(true)
+            );
+            assert_eq!(
+                mod_screen_opens(Screen::Mod, over, false, Some("b"), "a"),
+                Some(false)
+            );
         }
-        assert_eq!(
-            mod_screen_opens(Screen::Mod, false, Some("a"), "a"),
-            Some(true)
-        );
-        assert_eq!(
-            mod_screen_opens(Screen::Mod, false, Some("b"), "a"),
-            Some(false)
-        );
     }
 
     /// The characters a `ScreenEvent.CharacterTyped.Pre` sees are the
@@ -4685,6 +4726,33 @@ mod tests {
             assert!(!body.contains("return true"), "{head}");
         }
     }
+    /// A data slot the server sends while a mod's own screen covers the
+    /// container keeps that container's screen current for the return.
+    #[test]
+    #[ignore = "daily"]
+    fn container_data_under_a_mod_screen_reaches_the_covered_screen() {
+        use crate::game::Screen;
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            game.container = Some((1, 2, 3));
+            game.mod_screen = Some(super::OpenNativeScreen {
+                layout_revision: 0,
+                key: (1, 2, 3),
+                window: 4,
+                block: "gtmod:machine".into(),
+                screen: mod_api::Screen::default(),
+                data: Vec::new(),
+                extra: None,
+            });
+            game.screen = Screen::Mod;
+            game.mod_screen_under = Some(Screen::Inventory);
+            assert!(game.native_screen_data(4, 1, 7));
+            assert_eq!(game.mod_screen.as_ref().unwrap().data, [0, 7]);
+            // Over the world, a mod's screen covers no container.
+            game.mod_screen_under = None;
+            assert!(!game.native_screen_data(4, 1, 9));
+        });
+    }
+
     /// A data packet for an old window leaves the open mod screen alone.
     #[test]
     fn mod_screen_data_is_its_windows_only() {

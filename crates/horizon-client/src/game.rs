@@ -1720,6 +1720,10 @@ struct Game<'a> {
     native_net: native_net::NativeNet,
     /// The mod whose own screen is open (`Screen::Mod`).
     native_mod_screen: Option<String>,
+    /// The container screen (`Inventory` or `Creative`) a mod's own screen
+    /// opened over, its menu still open: Escape or `mod_screen_close`
+    /// returns to it. Only meaningful while `screen` is `Screen::Mod`.
+    mod_screen_under: Option<Screen>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     upload_pace: upload_pace::UploadPace,
@@ -5152,6 +5156,9 @@ impl Game<'_> {
     }
 
     pub(super) fn close_container(&mut self) {
+        // A mod's own screen over this container has nothing to return to now,
+        // even if a screen hook keeps it open.
+        self.mod_screen_under = None;
         // `Gui.setScreen` clears the old screen's focus before it goes: the
         // key that closed the container (Tab bound to the inventory) has
         // already moved the focus, and it must not outlive the screen.
@@ -10900,6 +10907,7 @@ impl<'a> Game<'a> {
             mod_phase,
             native_net: Default::default(),
             native_mod_screen: None,
+            mod_screen_under: None,
             sky_darken_memo: Default::default(),
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),

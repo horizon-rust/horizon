@@ -659,7 +659,11 @@ impl Game<'_> {
         }
         // No screen at all (`screen() == null`) is nothing to close.
         if self.screen != Screen::Playing && !self.screen.allowed_in_portal() {
-            if matches!(self.screen, Screen::Creative | Screen::Inventory) {
+            // A mod's own screen over a container closes that container too.
+            if matches!(
+                self.container_screen(),
+                Screen::Creative | Screen::Inventory
+            ) {
                 self.close_container();
                 self.carried = None;
             }

@@ -335,4 +335,146 @@ mod client_screen_tests {
             assert_eq!(game.sign_editor(), None);
         });
     }
+
+    /// The server's chest window 7 open on its screen, nothing sent since.
+    fn chest_open(game: &mut Game<'_>, reader: &mut ConnReader) {
+        game.handle_packet(C::OpenScreen(play::OpenScreen {
+            container: 7,
+            menu: chest_menu(),
+            title: horizon_core::nbt::Tag::String("Chest".into()),
+        }))
+        .unwrap();
+        assert_eq!(game.screen, Screen::Inventory);
+        sent(reader);
+    }
+
+    /// A mod's own screen opens over a chest as EMI's recipe screen does
+    /// (`setScreen(new RecipeScreen(parent))`): the chest's menu stays open,
+    /// the inventory key reaches the mod's screen, not the chest's, and
+    /// Escape returns to the chest as it was, with nothing sent.
+    #[test]
+    #[ignore = "daily"]
+    fn a_mod_screen_over_a_chest_keeps_its_menu_and_returns_to_it() {
+        with_client_game(|game| {
+            let mut reader = logged_in(game);
+            chest_open(game, &mut reader);
+            let stone = horizon_client::items::ItemStack::new("minecraft:stone", 3);
+            game.carried = Some(stone.clone());
+
+            assert!(game.show_mod_screen("emi"));
+            assert_eq!(game.screen, Screen::Mod);
+            assert_eq!(game.mod_screen(), Some("emi"));
+            assert_eq!(game.remote_menu_id(), 7, "the chest's menu is still open");
+            assert_eq!(game.screen_hovered_item(), None);
+            // The inventory key closes a chest screen; the mod's screen keeps it.
+            game.key_pressed(KeyCode::KeyE, KeyCode::KeyE).unwrap();
+            assert_eq!(game.screen, Screen::Mod);
+
+            assert!(game.close_screen(), "Escape closes the mod's screen");
+            assert_eq!(game.screen, Screen::Inventory);
+            assert_eq!(game.mod_screen(), None);
+            assert_eq!(game.remote_menu_id(), 7, "the same menu, not reopened");
+            assert_eq!(game.carried, Some(stone));
+            assert!(
+                sent(&mut reader).is_empty(),
+                "no container close went out, and nothing else"
+            );
+        });
+    }
+
+    /// The server closing the menu under a mod's screen
+    /// (`ClientboundContainerClosePacket`) closes the mod's screen too, to
+    /// the world.
+    #[test]
+    #[ignore = "daily"]
+    fn the_servers_close_of_the_menu_under_a_mod_screen_closes_both() {
+        with_client_game(|game| {
+            let mut reader = logged_in(game);
+            chest_open(game, &mut reader);
+            assert!(game.show_mod_screen("emi"));
+            game.handle_packet(C::ContainerClose(play::ContainerClose { container: 7 }))
+                .unwrap();
+            assert_eq!(game.screen, Screen::Playing);
+            assert_eq!(game.mod_screen(), None);
+            assert_eq!(game.remote_menu_id(), 0, "the client menu is closed");
+            // Escape now has nothing to return to.
+            assert!(!game.close_screen());
+            assert_eq!(game.screen, Screen::Playing);
+            assert!(sent(&mut reader).is_empty());
+        });
+    }
+
+    /// A menu the server opens that the window can't show (here a mount's
+    /// inventory for an entity it doesn't know) is closed again, and with it
+    /// the chest's screen under a mod's screen: both go, to the world.
+    #[test]
+    #[ignore = "daily"]
+    fn a_rejected_menu_closes_the_mod_screen_over_the_chest() {
+        with_client_game(|game| {
+            let mut reader = logged_in(game);
+            chest_open(game, &mut reader);
+            assert!(game.show_mod_screen("emi"));
+            game.handle_packet(C::MountScreenOpen(play::MountScreenOpen {
+                container: 8,
+                columns: 0,
+                entity: 4242,
+            }))
+            .unwrap();
+            assert_eq!(game.screen, Screen::Playing);
+            assert_eq!(game.mod_screen(), None);
+            assert_eq!(game.remote_menu_id(), 0, "the client menu is closed");
+        });
+    }
+
+    /// A mod that keeps its own screen open (`screen_opening` cancels leaving
+    /// it) while `keep` is set.
+    struct Keeper {
+        keep: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Keeper {
+        fn screen_opening(
+            &self,
+            _host: &dyn mod_api::ClientHost,
+            event: &mut mod_api::ScreenOpeningEvent<'_>,
+        ) -> Option<mod_api::ScreenOpening> {
+            let keep = self.keep.load(std::sync::atomic::Ordering::Relaxed);
+            (keep && event.current.id == "mod").then_some(mod_api::ScreenOpening::Cancel)
+        }
+    }
+
+    /// The server closes the menu under a mod's screen that a hook keeps open:
+    /// Escape then goes to the world, not to the chest screen whose menu is
+    /// gone.
+    #[test]
+    #[ignore = "daily"]
+    fn a_kept_mod_screen_forgets_the_menu_the_server_closed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let keep = std::sync::Arc::new(AtomicBool::new(true));
+        let mods = vec![mod_api::ModEntry::new(
+            "keeper",
+            Box::new(Keeper { keep: keep.clone() }),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_client_game(|game| {
+                let mut reader = logged_in(game);
+                chest_open(game, &mut reader);
+                assert!(game.show_mod_screen("keeper"));
+                game.handle_packet(C::ContainerClose(play::ContainerClose { container: 7 }))
+                    .unwrap();
+                assert_eq!(game.screen, Screen::Mod, "the hook kept the mod's screen");
+                assert_eq!(game.remote_menu_id(), 0, "the client menu is closed");
+
+                keep.store(false, Ordering::Relaxed);
+                assert!(game.close_screen(), "Escape closes the mod's screen");
+                assert_eq!(
+                    game.screen,
+                    Screen::Playing,
+                    "not the closed chest's screen"
+                );
+                assert_eq!(game.mod_screen(), None);
+            });
+        });
+    }
 }

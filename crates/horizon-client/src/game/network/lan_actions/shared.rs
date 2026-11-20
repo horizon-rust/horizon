@@ -159,6 +159,8 @@ pub(super) struct GuestSwap {
     level_up_sound: horizon_client::entities::LevelUpSound,
     host_keys: horizon_client::held::HeldKeys,
     screen: Screen,
+    /// The container screen the host's mod screen is over (`mod_screen_under`).
+    host_under: Option<Screen>,
     host_sign: Option<super::sign_edit::SignEditor>,
     host_book: Option<super::books::BookScreen>,
     host_command_block: Option<super::command_blocks::CommandBlockScreen>,

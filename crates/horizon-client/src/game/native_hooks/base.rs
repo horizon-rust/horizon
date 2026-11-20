@@ -4635,31 +4635,54 @@ impl Game<'_> {
         let [a, r, g, b] = argb.to_be_bytes();
         batch.fill_quad(&self.gui.atlas, points, rgba(r, g, b, a));
     }
-    /// Opens a screen of mod `mod_id`'s own over the world: the screen hooks
-    /// fire over it as over any other, so the mod draws it in
-    /// `native_screen_render_post` and takes its clicks, scroll, keys and
-    /// typing there; the mouse is freed, and Escape closes it. Every mod's own
-    /// screen has the `ScreenView.id` `mod`, so a mod's screen hooks
-    /// check `mod_screen()` is its own before drawing. It doesn't pause
-    /// a single-player game (as the inventory doesn't). True when it is open:
-    /// false while another screen is (or another mod's), over the title
-    /// screen, a book, a sign editor, a dialog or a prompt, while the world
-    /// loads, and anywhere but the window's own client (the server thread, a
-    /// dedicated server). A gamepad can close it (B, Start) but not click on
-    /// it: its clicks don't reach the mouse hooks.
+    /// Opens a screen of mod `mod_id`'s own over the world
+    /// (`ClientHost::mod_screen_open`): see `show_mod_screen`. True when it is
+    /// open: false while another screen is (or another mod's; a container
+    /// screen too: `mod_screen_open_over_container`), over the title screen, a
+    /// book, a sign editor, a dialog or a prompt, while the world loads, and
+    /// anywhere but the window's own client (the server thread, a dedicated
+    /// server).
     pub(in crate::game) fn mod_screen_open(&mut self, mod_id: &str) -> bool {
+        self.open_mod_screen_over(mod_id, MOD_SCREEN_OVER_WORLD)
+    }
+    /// Opens a screen of mod `mod_id`'s own over the open container screen
+    /// (`ClientHost::mod_screen_open_over_container`; the container's menu
+    /// stays open and Escape returns to it): see `show_mod_screen`. False over
+    /// the world and wherever `mod_screen_open` is refused.
+    pub(in crate::game) fn mod_screen_open_over_container(&mut self, mod_id: &str) -> bool {
+        self.open_mod_screen_over(mod_id, MOD_SCREEN_OVER_CONTAINER)
+    }
+    /// `mod_screen_open` and `mod_screen_open_over_container`: opens mod
+    /// `mod_id`'s own screen if the open screen is one of `over`.
+    fn open_mod_screen_over(&mut self, mod_id: &str, over: &[Screen]) -> bool {
         // What `screen_hooks_open` would refuse over the world: the mod's
         // screen would be up with no hook to draw or click it.
         let blocked = self.renderer.is_none() || self.mod_screen_blocked();
         let owner = self.mod_screen();
-        if let Some(open) = mod_screen_opens(self.screen, blocked, owner, mod_id) {
+        if let Some(open) = mod_screen_opens(self.screen, over, blocked, owner, mod_id) {
             return open;
         }
+        self.show_mod_screen(mod_id)
+    }
+    /// `Minecraft.setScreen` to mod `mod_id`'s own screen once
+    /// `mod_screen_open` allowed it: the screen hooks fire over it as over
+    /// any other, so the mod draws it in `native_screen_render_post` and
+    /// takes its clicks, scroll, keys and typing there; the mouse is freed,
+    /// and Escape closes it. Over a container screen (`Inventory`,
+    /// `Creative`), that screen is kept behind it as EMI's `RecipeScreen`
+    /// keeps its parent: its menu is not closed (no
+    /// `ServerboundContainerClosePacket`) and nothing of it (slots, the
+    /// carried stack) changes; it neither draws nor takes input until the
+    /// mod's screen closes back to it. True when `mod_id`'s screen is open.
+    pub(in crate::game) fn show_mod_screen(&mut self, mod_id: &str) -> bool {
+        let under = matches!(self.screen, Screen::Inventory | Screen::Creative);
         self.native_mod_screen = Some(mod_id.to_owned());
+        self.mod_screen_under = under.then_some(self.screen);
         self.set_screen(Screen::Mod);
         if self.screen != Screen::Mod {
-            // `screen_opening` kept the world.
+            // `screen_opening` kept the screen that was open.
             self.native_mod_screen = None;
+            self.mod_screen_under = None;
             return false;
         }
         self.mod_screen() == Some(mod_id)
