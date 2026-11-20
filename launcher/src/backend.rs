@@ -3079,9 +3079,7 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
     crate::storage::eviction::request_cleanup();
     let mut settings = Settings::load();
     if settings.selected.as_deref() == Some(tag) {
-        settings.selected = installed().first().cloned();
-        // The newest, chosen by the launcher: it follows new ones.
-        settings.following = settings.selected.clone();
+        settings.keep_installed_selection(&installed());
         settings.save()?;
     }
     Ok(())
@@ -4475,8 +4473,9 @@ pub struct Settings {
     /// The version the launcher itself selected (an update, or a newer Nightly installed for an
     /// instance): while `selected` is this one, it follows each newer Nightly. A person's pick
     /// leaves it behind, and a settings file from before it has none: neither follows
-    /// ([`selection_after_install`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// ([`selection_after_install`]). Always written, `null` for a pick, so a file from before
+    /// it is told apart ([`Settings::load`]).
+    #[serde(default)]
     pub following: Option<String>,
     /// Game asset architecture. Auto preserves the launcher's process-architecture behavior.
     #[serde(default)]
@@ -4619,7 +4618,45 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::parse(&fs::read_to_string(data_dir().join("settings.json")).unwrap_or_default())
+        let text = fs::read_to_string(data_dir().join("settings.json")).unwrap_or_default();
+        let mut settings = Self::parse(&text);
+        let recorded = serde_json::from_str::<serde_json::Value>(&text)
+            .is_ok_and(|v| v.get("following").is_some());
+        if !recorded
+            && settings
+                .selected
+                .as_deref()
+                .is_some_and(|s| crate::nightly::date_of(s).is_some())
+        {
+            settings.adopt_legacy_selection(&installed());
+        }
+        settings
+    }
+
+    /// A settings file from before `following`: its selection follows when it is the newest
+    /// installed Nightly, which is when updates moved it before ([`select_after_update`]). An
+    /// older one stays a pick.
+    fn adopt_legacy_selection(&mut self, installed: &[String]) {
+        let newest = installed
+            .iter()
+            .find(|t| crate::nightly::date_of(t).is_some());
+        if self.following.is_none() && newest.is_some() && newest == self.selected.as_ref() {
+            self.following = self.selected.clone();
+        }
+    }
+
+    /// Keeps the selection if `installed` (newest first) still has it; else the newest, which
+    /// the launcher chose and so follows. Both fields change together, so a save in between never
+    /// writes one without the other.
+    pub fn keep_installed_selection(&mut self, installed: &[String]) {
+        if self
+            .selected
+            .as_ref()
+            .is_none_or(|s| !installed.contains(s))
+        {
+            self.selected = installed.first().cloned();
+            self.following = self.selected.clone();
+        }
     }
     pub fn parse(text: &str) -> Self {
         let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -6891,6 +6928,70 @@ pub fn {f}("
                 "{cause:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_legacy_follower_on_the_newest_follows_an_instance_install() {
+        let (n19, n20) = ("nightly-2026-11-19-f00125f", "nightly-2026-11-20-0a875da");
+        let n18 = "nightly-2026-11-18-dd67b76";
+        // A settings file from before `following`, on the newest installed Nightly.
+        let legacy = format!(r#"{{"selected": "{n19}"}}"#);
+        let mut settings = Settings::parse(&legacy);
+        settings.adopt_legacy_selection(&[n19.into(), n18.into()]);
+        assert_eq!(settings.following.as_deref(), Some(n19));
+        // n20 installed for a pinned instance before the next update: the selection follows.
+        let now = [n20, n19, n18].map(String::from);
+        let pinned = InstallCause {
+            update: false,
+            instance: Some(true),
+        };
+        let after = |s: &Settings| {
+            selection_after_install(
+                s.selected.as_deref(),
+                s.following.as_deref(),
+                n20,
+                &now[1..],
+                &now,
+                pinned,
+            )
+        };
+        assert_eq!(after(&settings), Some(true));
+        // On an older one, it stays a pick.
+        let mut older = Settings::parse(&format!(r#"{{"selected": "{n18}"}}"#));
+        older.adopt_legacy_selection(&[n19.into(), n18.into()]);
+        assert_eq!(older.following, None);
+        assert_eq!(after(&older), None);
+        // Once saved, a pick reads back as a pick, not as a file from before `following`.
+        let mut picked = Settings::default();
+        picked.pick(n19.into());
+        let text = serde_json::to_string(&picked).unwrap();
+        assert!(text.contains(r#""following":null"#), "{text}");
+    }
+
+    #[test]
+    fn a_removed_selection_moves_to_the_newest_left_which_follows() {
+        let left = ["v0.2.49".to_string(), "v0.2.48".to_string()];
+        let mut kept = Settings::default();
+        kept.pick("v0.2.48".into());
+        kept.keep_installed_selection(&left);
+        assert_eq!(
+            (kept.selected.as_deref(), kept.following.as_deref()),
+            (Some("v0.2.48"), None)
+        );
+        let mut gone = Settings::default();
+        gone.pick("v0.2.47".into());
+        gone.keep_installed_selection(&left);
+        assert_eq!(
+            (gone.selected.as_deref(), gone.following.as_deref()),
+            (Some("v0.2.49"), Some("v0.2.49"))
+        );
+        let mut none = Settings::default();
+        none.keep_installed_selection(&left);
+        assert_eq!(none.selected.as_deref(), Some("v0.2.49"));
+        let mut empty = Settings::default();
+        empty.pick("v0.2.47".into());
+        empty.keep_installed_selection(&[]);
+        assert_eq!((empty.selected, empty.following), (None, None));
     }
 
     #[test]

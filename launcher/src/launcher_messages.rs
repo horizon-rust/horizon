@@ -283,24 +283,10 @@ impl Launcher {
                 Msg::Removed(tag, result) => {
                     self.removing.retain(|t| *t != tag);
                     self.installed = backend::installed();
-                    let (selected, following) = if self.settings_save_error.is_some() {
-                        (
-                            self.settings.selected.take(),
-                            self.settings.following.take(),
-                        )
-                    } else {
-                        let saved = Settings::load();
-                        (saved.selected, saved.following)
-                    };
-                    let kept = selected
-                        .as_ref()
-                        .is_some_and(|s| self.installed.contains(s));
-                    self.settings.selected = selection_after_removal(&self.installed, selected);
-                    // In place of a removed one, the newest, which follows new ones.
-                    self.settings.following = match kept {
-                        true => following,
-                        false => self.settings.selected.clone(),
-                    };
+                    if self.settings_save_error.is_none() {
+                        self.settings.selection_from(&Settings::load());
+                    }
+                    self.settings.keep_installed_selection(&self.installed);
                     if let Err(e) = result {
                         self.install_error = Some((tag, e));
                     }
