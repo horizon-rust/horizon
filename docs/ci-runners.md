@@ -257,3 +257,5 @@ running at all (offline, not just busy), it opens one issue, "CI: self-hosted ru
 each pool, what stops and what to do, and keeps its text current; it closes the issue once nothing waits. It needs
 only the workflow token (`actions: read`, `issues: write`). What the Team and the council do meanwhile:
 [operations.md](operations.md#self-hosted-runners-are-offline).
+
+<!-- throwaway: proof run for #18858, never merged -->
