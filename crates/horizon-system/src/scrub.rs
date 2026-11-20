@@ -208,10 +208,11 @@ fn dotted_quad(bytes: &[u8], i: usize) -> Option<usize> {
 }
 
 /// Eight hex groups with colons, or fewer around a `::` (at least two, as in `fd00::1`), the last
-/// 32 bits possibly written as an IPv4 address (`::ffff:192.168.1.10`), which goes with it. A
-/// digit in it is what leaves a Rust path such as `a::b` alone; with only two groups the digit
-/// has to be after the `::`, so `f32::add` stays too. A bare `::1` (loopback) says nothing about
-/// the player.
+/// 32 bits possibly written as an IPv4 address (`::ffff:192.168.1.10`), which goes with it, and
+/// a trailing `::` too (`2a01:4f8:c0c:1::`). A digit in it is what leaves a Rust path such as
+/// `a::b` alone; with only two groups and every colon in a `::` pair, as a path has them, the
+/// digit has to be in the last group, so `f32::add` stays too. A bare `::1` (loopback) says
+/// nothing about the player.
 fn ipv6_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     if !starts_token(bytes, i) {
         return None;
@@ -221,7 +222,13 @@ fn ipv6_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
         .take_while(|b| b.is_ascii_hexdigit() || **b == b':')
         .count();
     let token = std::str::from_utf8(&bytes[i..i + len]).ok()?;
-    let mut token = token.trim_end_matches(':');
+    // One colon after it ends the sentence (`2001:db8::1: refused`); a `::` is the address's.
+    let trimmed = token.trim_end_matches(':');
+    let mut token = if token.len() - trimmed.len() >= 2 {
+        &token[..trimmed.len() + 2]
+    } else {
+        trimmed
+    };
     let mut end = i + token.len();
     // An IPv4 address in the last two groups' place: the hex part is what comes before it.
     let mut quad = false;
@@ -241,11 +248,16 @@ fn ipv6_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     let groups: Vec<&str> = hex.split(':').collect();
     let filled = groups.iter().filter(|g| !g.is_empty()).count() + if quad { 2 } else { 0 };
     let digit = |g: &&str| g.bytes().any(|b| b.is_ascii_digit());
+    let path_like = !quad && filled == 2 && !token.replace("::", "").contains(':');
     let ok = groups.iter().all(|g| g.len() <= 4)
-        && (filled == 8
-            || (token.contains("::")
-                && (filled >= 3 || (filled == 2 && (quad || groups.last().is_some_and(digit))))))
-        && (quad || groups.iter().any(digit));
+        && (filled == 8 || (token.contains("::") && filled >= 2))
+        && (quad || groups.iter().any(digit))
+        && (!path_like
+            || groups
+                .iter()
+                .rev()
+                .find(|g| !g.is_empty())
+                .is_some_and(digit));
     (ok && ends_token(bytes, end)).then_some((end - i, IP))
 }
 
@@ -387,6 +399,10 @@ mod tests {
         assert_eq!(
             s.scrub("from ::ffff:192.168.1.10 and fd00::192.168.1.10."),
             "from <ip> and <ip>."
+        );
+        assert_eq!(
+            s.scrub("net 2a01:4f8:c0c:1::/64 and fd00:1::, 2001:db8::1: refused"),
+            "net <ip>/64 and <ip>, <ip>: refused"
         );
         assert_eq!(s.scrub("mail ana.b+mc@example.org now"), "mail <email> now");
         assert_eq!(
