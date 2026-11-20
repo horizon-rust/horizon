@@ -168,8 +168,10 @@ impl Launcher {
                 &folder,
                 &instance,
                 None,
-                back_up,
-                native_mods::Caller::Window,
+                native_mods::Asked {
+                    caller: native_mods::Caller::Window,
+                    back_up,
+                },
                 |step| {
                     let _ = tx.send(Msg::NativeProgress(step.shown(), step.progress()));
                 },

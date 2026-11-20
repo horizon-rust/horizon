@@ -1687,6 +1687,14 @@ pub enum Caller {
     CommandLine,
 }
 
+/// What the player asked of a [`build`]: who asked, and whether the worlds saved with mods it
+/// switches off are backed up first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Asked {
+    pub caller: Caller,
+    pub back_up: bool,
+}
+
 impl Failed {
     /// What this failure says to `caller`: the window prepares an unprepared base itself, so
     /// it never shows the command line's hint (#18659).
@@ -2453,11 +2461,11 @@ pub fn build(
     folder: &Path,
     instance: &Instance,
     profile: Option<Profile>,
-    back_up: bool,
-    caller: Caller,
+    asked: Asked,
     progress: impl Fn(Step),
     registry_consent: impl Fn(&RegistryInventory) -> bool,
 ) -> Result<String, Failed> {
+    let Asked { caller, back_up } = asked;
     require_consent()?;
     CANCEL.store(false, Ordering::Relaxed);
     if let Some(error) = backend::native_mod_architecture_error() {
@@ -4161,8 +4169,10 @@ mod tests {
             &folder,
             &instance,
             None,
-            false,
-            Caller::CommandLine,
+            Asked {
+                caller: Caller::CommandLine,
+                back_up: false,
+            },
             |_| {},
             |_| false,
         )
@@ -4239,8 +4249,10 @@ mod tests {
                 &folder,
                 &instances::selected(),
                 choice,
-                false,
-                Caller::CommandLine,
+                Asked {
+                    caller: Caller::CommandLine,
+                    back_up: false,
+                },
                 |_| {},
                 |_| false,
             ));
