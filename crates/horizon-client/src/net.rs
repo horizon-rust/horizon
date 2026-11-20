@@ -6,7 +6,7 @@
 //! Online-mode servers need the Microsoft account the launcher signed in
 //! (crate::auth): the login joins the server through the session service and
 //! encrypts the connection (ClientHandshakePacketListenerImpl.handleHello).
-use crate::auth::AuthSession;
+use crate::auth::{AuthSession, JoinError};
 pub mod ingress;
 mod known_packs;
 use known_packs::{fill_known_entries, select_known_packs};
@@ -35,7 +35,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use {
     horizon_core::nbt::{JavaString, Tag},
@@ -200,6 +200,11 @@ impl Event {
     }
 }
 
+struct Connector {
+    thread: JoinHandle<()>,
+    cancelled: Arc<AtomicBool>,
+}
+
 pub struct Session {
     events: ingress::Consumer<Event>,
     payload_events: ingress::Producer<Event>,
@@ -208,7 +213,7 @@ pub struct Session {
     /// The connection is in configuration (else in play). Changed only
     /// with `writer` locked, as the packet that switches is sent.
     configuring: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<Connector>,
     pub address: String,
     pub name: String,
     pub counters: Arc<Mutex<Option<Arc<Counters>>>>,
@@ -368,6 +373,8 @@ impl Session {
         let thread_payloads = payloads.clone();
         let writer = Arc::new(Mutex::new(None));
         let configuring = Arc::new(AtomicBool::new(true));
+        let login_cancelled = Arc::new(AtomicBool::new(false));
+        let thread_cancelled = login_cancelled.clone();
         let counters = Arc::new(Mutex::new(None));
         // Connection.initiateServerboundPlayConnection: a transfer's
         // handshake says so (ClientIntent.TRANSFER).
@@ -403,6 +410,7 @@ impl Session {
                     lan,
                     &thread_recorder,
                     &thread_payloads,
+                    &thread_cancelled,
                 )
             });
             thread_payloads.close();
@@ -413,11 +421,13 @@ impl Session {
                 w.shutdown();
             }
             // Nothing else tells the game the connection ended: wait for room (#18380).
-            let _ = send.send_waiting(Event::Disconnected {
-                reason: why.text,
-                key: why.key,
-                from_server,
-            });
+            if !thread_cancelled.load(Ordering::Acquire) {
+                let _ = send.send_waiting(Event::Disconnected {
+                    reason: why.text,
+                    key: why.key,
+                    from_server,
+                });
+            }
         })
         .inspect_err(|error| {
             // No reader runs to report the end: say it here, or the session waits forever.
@@ -427,7 +437,11 @@ impl Session {
                 from_server: false,
             });
         })
-        .ok();
+        .ok()
+        .map(|thread| Connector {
+            thread,
+            cancelled: login_cancelled,
+        });
         let debug = std::env::var_os("HORIZON_NET_DEBUG").is_some();
         Self {
             events,
@@ -687,11 +701,20 @@ impl Session {
     /// doesn't wake a read already waiting, so joining it held the window until
     /// the server dropped the connection, many seconds later.
     pub fn disconnect(&mut self) {
+        self.cancel_login();
         self.payloads.close();
         if let Some(w) = self.writer.lock().unwrap().take() {
             w.shutdown();
         }
         drop(self.thread.take());
+    }
+
+    /// Stop a pending login before the game tears down or replaces its connection screen.
+    pub fn cancel_login(&self) {
+        if let Some(connector) = &self.thread {
+            connector.cancelled.store(true, Ordering::Release);
+            connector.thread.thread().unpark();
+        }
     }
 }
 impl Drop for Session {
@@ -942,28 +965,94 @@ fn connection_lost(e: horizon_protocol::Error, lang: &Language) -> String {
     }
 }
 
-/// `ClientHandshakePacketListenerImpl.handleHello`: the whole connection.
-/// Ok: why it ended for good (the server's reason, or
-/// a refusal no retry fixes); Err: the connection failed.
-fn run(
+const JOIN_RATE_BACKOFF: [u64; 3] = [5, 10, 20];
+const JOIN_RATE_WAIT: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct JoinRetryBudget {
+    retries: usize,
+    waited: Duration,
+}
+
+impl JoinRetryBudget {
+    fn schedule(&mut self, retry_after: Duration) -> Option<Duration> {
+        // Give the game server's own connection throttle time to clear too.
+        let backoff = Duration::from_secs(*JOIN_RATE_BACKOFF.get(self.retries)?);
+        let delay = retry_after.max(backoff);
+        let total = self.waited.saturating_add(delay);
+        if total > JOIN_RATE_WAIT {
+            return None;
+        }
+        self.retries += 1;
+        self.waited = total;
+        Some(delay)
+    }
+}
+
+enum LoginError {
+    Closed(Reason),
+    Failed(Reason),
+    RateLimited(Duration),
+}
+
+impl From<Reason> for LoginError {
+    fn from(reason: Reason) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+fn login_active(cancelled: &AtomicBool, lang: &Language) -> Result<(), Reason> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(Reason::keyed("connect.aborted", lang));
+    }
+    Ok(())
+}
+
+fn wait_for_join_retry(
+    delay: Duration,
+    cancelled: &AtomicBool,
+    lang: &Language,
+) -> Result<(), Reason> {
+    let until = Instant::now() + delay;
+    loop {
+        login_active(cancelled, lang)?;
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::park_timeout(left);
+    }
+}
+
+/// Keep the inner key for reconnect's classification while showing the wrapped login error.
+fn join_failure(error: &JoinError, lang: &Language) -> Reason {
+    let (reason, key) = match error.reason() {
+        Ok(key) => (tr(lang, key), Some(key.to_owned())),
+        Err(message) => (message.to_owned(), None),
+    };
+    Reason {
+        text: plain(
+            &translatable("disconnect.loginFailedInfo", &[&reason]),
+            lang,
+        ),
+        key,
+    }
+}
+
+/// Start one login. Returning a rate limit drops the socket before waiting.
+fn login_attempt(
     local: Option<horizon_protocol::connection::Pipe>,
     address: &str,
     name: &str,
     auth: Option<&AuthSession>,
-    info: cfg::ClientInformation,
     lang: &Language,
     send: &ingress::Producer<Event>,
-    shared_writer: &Arc<Mutex<Option<QueuedWriter>>>,
-    configuring: &Arc<AtomicBool>,
     shared_counters: &Mutex<Option<Arc<Counters>>>,
     cookies: &Cookies,
-    far: &crate::lod_net::Inbox,
     transferred: bool,
-    resources: &ItemData,
     lan: bool,
-    recorder: &RecorderSlot,
-    payloads: &Arc<crate::raw_payloads::Transport>,
-) -> Result<Reason, Reason> {
+    cancelled: &AtomicBool,
+) -> Result<(Connection, login::GameProfile), LoginError> {
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
     } else {
@@ -977,13 +1066,15 @@ fn run(
                         "horizon.multiplayer.invalid_address",
                         lang,
                         address,
-                    ));
+                    )
+                    .into());
                 };
                 status(send, &tr(lang, "connect.connecting"));
                 log_connecting(&target.0, target.1);
                 (target.0, target.1, Vec::new())
             }
         };
+        login_active(cancelled, lang)?;
         let (mut c, host, port) =
             connect_tcp(&host, port, address.starts_with(FRIEND), READ_TIMEOUT)
                 .map_err(Reason::plain)?;
@@ -1001,6 +1092,7 @@ fn run(
         }
         (host, port, c)
     };
+    login_active(cancelled, lang)?;
     *shared_counters.lock().unwrap() = Some(c.reader.counters.clone());
     let e = |e: horizon_protocol::Error| Reason::plain(connection_lost(e, lang));
     c.send(
@@ -1037,7 +1129,7 @@ fn run(
                 break p.profile;
             }
             login::Clientbound::Disconnect(p) => {
-                return Ok(Reason::component(&p.reason_json, lang));
+                return Err(LoginError::Closed(Reason::component(&p.reason_json, lang)));
             }
             login::Clientbound::Hello(hello) => {
                 status(send, &tr(lang, "connect.authorizing"));
@@ -1045,34 +1137,25 @@ fn run(
                     .map_err(|err| Reason::plain(format!("Protocol error: {err}")))?;
                 let secret = generate_secret().map_err(e)?;
                 if hello.should_authenticate {
-                    let signed_in = auth.is_some();
-                    let authenticated = auth
-                        .ok_or_else(|| Reason::keyed("horizon.multiplayer.not_signed_in", lang))
-                        .and_then(|account| {
-                            let hash = server_hash(&hello.server_id, &secret, &hello.public_key);
-                            // The session service's refusal: the wrapped
-                            // `disconnect.loginFailedInfo` text is shown, and
-                            // the inner key (the reason's own) classifies
-                            // (`reconnect::allowed`).
-                            crate::auth::join_server(account, &hash).map_err(|err| {
-                                let (reason, key) = match err.reason() {
-                                    Ok(key) => (tr(lang, key), Some(key.to_owned())),
-                                    Err(message) => (message.to_owned(), None),
-                                };
-                                Reason {
-                                    text: plain(
-                                        &translatable("disconnect.loginFailedInfo", &[&reason]),
-                                        lang,
-                                    ),
-                                    key,
-                                }
-                            })
-                        });
-                    if let Err(reason) = authenticated {
-                        if !continues_after_failed_join(lan, signed_in) {
-                            return Err(reason);
+                    let account = auth
+                        .ok_or_else(|| Reason::keyed("horizon.multiplayer.not_signed_in", lang))?;
+                    let hash = server_hash(&hello.server_id, &secret, &hello.public_key);
+                    let result = crate::auth::join_server_cancellable(account, &hash, || {
+                        cancelled.load(Ordering::Acquire)
+                    });
+                    login_active(cancelled, lang)?;
+                    if let Err(error) = result {
+                        if continues_after_failed_join(lan, true) {
+                            log::warn!(
+                                "Authentication failed: {}",
+                                join_failure(&error, lang).text
+                            );
+                        } else {
+                            if let JoinError::RateLimited(Some(delay)) = error {
+                                return Err(LoginError::RateLimited(delay));
+                            }
+                            return Err(join_failure(&error, lang).into());
                         }
-                        log::warn!("Authentication failed: {}", reason.text);
                     }
                 }
                 status(send, &tr(lang, "connect.encrypting"));
@@ -1112,6 +1195,64 @@ fn run(
             login::Clientbound::Unknown(..) => {}
         }
     };
+    Ok((c, profile))
+}
+
+/// `ClientHandshakePacketListenerImpl.handleHello`: the whole connection.
+/// Ok: why it ended for good (the server's reason, or
+/// a refusal no retry fixes); Err: the connection failed.
+fn run(
+    mut local: Option<horizon_protocol::connection::Pipe>,
+    address: &str,
+    name: &str,
+    auth: Option<&AuthSession>,
+    info: cfg::ClientInformation,
+    lang: &Language,
+    send: &ingress::Producer<Event>,
+    shared_writer: &Arc<Mutex<Option<QueuedWriter>>>,
+    configuring: &Arc<AtomicBool>,
+    shared_counters: &Mutex<Option<Arc<Counters>>>,
+    cookies: &Cookies,
+    far: &crate::lod_net::Inbox,
+    transferred: bool,
+    resources: &ItemData,
+    lan: bool,
+    recorder: &RecorderSlot,
+    payloads: &Arc<crate::raw_payloads::Transport>,
+    cancelled: &AtomicBool,
+) -> Result<Reason, Reason> {
+    let tcp = local.is_none();
+    let mut retry_budget = JoinRetryBudget::default();
+    let (mut c, profile) = loop {
+        login_active(cancelled, lang)?;
+        match login_attempt(
+            local.take(),
+            address,
+            name,
+            auth,
+            lang,
+            send,
+            shared_counters,
+            cookies,
+            transferred,
+            lan,
+            cancelled,
+        ) {
+            Ok(connection_and_profile) => break connection_and_profile,
+            Err(LoginError::Closed(reason)) => return Ok(reason),
+            Err(LoginError::Failed(reason)) => return Err(reason),
+            Err(LoginError::RateLimited(retry_after)) => {
+                let delay = tcp.then(|| retry_budget.schedule(retry_after)).flatten();
+                let Some(delay) = delay else {
+                    return Err(join_failure(&JoinError::RateLimited(None), lang));
+                };
+                status(send, &tr(lang, "horizon.multiplayer.waiting_for_mojang"));
+                wait_for_join_retry(delay, cancelled, lang)?;
+            }
+        }
+    };
+    login_active(cancelled, lang)?;
+    let e = |e: horizon_protocol::Error| Reason::plain(connection_lost(e, lang));
     status(send, &tr(lang, "connect.joining"));
     // ClientHandshakePacketListenerImpl.handleLoginFinished: the brand, then
     // the client information.
@@ -1893,6 +2034,52 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 mod tests {
     use super::*;
     use horizon_world::native_load_context::DataLoadOrigin;
+
+    #[test]
+    fn join_retry_has_a_floor_and_a_bounded_backoff() {
+        let mut budget = JoinRetryBudget::default();
+        for seconds in [5, 10, 20] {
+            assert_eq!(
+                budget.schedule(Duration::from_secs(1)),
+                Some(Duration::from_secs(seconds))
+            );
+        }
+        assert_eq!(budget.schedule(Duration::ZERO), None);
+
+        let mut budget = JoinRetryBudget::default();
+        assert_eq!(budget.schedule(Duration::MAX), None);
+        assert_eq!(
+            budget.schedule(Duration::from_secs(55)),
+            Some(Duration::from_secs(55))
+        );
+        assert_eq!(budget.schedule(Duration::ZERO), None);
+    }
+
+    #[test]
+    fn cancelling_a_session_wakes_its_pending_join_retry() {
+        let mut session = Session::replay("Tester");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let thread_cancelled = cancelled.clone();
+        let (started, waiting) = channel();
+        let (finished, outcome) = channel();
+        let thread = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            let result =
+                wait_for_join_retry(JOIN_RATE_WAIT, &thread_cancelled, &Language::default());
+            finished.send(result.err().and_then(|r| r.key)).unwrap();
+        });
+        session.thread = Some(Connector { thread, cancelled });
+        waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+        session.cancel_login();
+        assert_eq!(
+            outcome
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .as_deref(),
+            Some("connect.aborted")
+        );
+        session.thread.take().unwrap().thread.join().unwrap();
+    }
 
     fn empty_item_data(name: &str) -> (PathBuf, Arc<ItemData>) {
         let root =
@@ -2846,7 +3033,10 @@ mod tests {
                 payloads: crate::raw_payloads::Transport::empty(),
                 writer: writer.clone(),
                 configuring: Arc::new(AtomicBool::new(false)),
-                thread: Some(thread),
+                thread: Some(Connector {
+                    thread,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                }),
                 address: "local".into(),
                 name: "TestPlayer".into(),
                 counters: Arc::new(Mutex::new(None)),

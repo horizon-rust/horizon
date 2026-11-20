@@ -6,13 +6,21 @@
 use std::{
     path::Path,
     sync::{Arc, Mutex, OnceLock},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 /// MinecraftServicesEnvironment.PROD.
 pub const DEFAULT_DISCOVERY: &str = "https://discovery.minecraftservices.com/minecraft/client";
 /// A session file older than this is refused: it can't be replayed later.
 const MAX_SESSION_FILE_AGE: Duration = Duration::from_secs(120);
+const JOIN_RETRY_FALLBACK: Duration = Duration::from_secs(5);
+const MAX_JOIN_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Clone, Copy)]
+struct JoinCooldown {
+    until: Instant,
+    automatic_retry: bool,
+}
 
 /// A signed-in account (vanilla's User with type msa).
 pub struct AuthSession {
@@ -20,6 +28,8 @@ pub struct AuthSession {
     pub uuid: u128,
     pub xuid: Option<String>,
     access_token: String,
+    // Serialize join requests for this account and retain a cooldown across connections.
+    join_cooldown: Mutex<Option<JoinCooldown>>,
 }
 impl std::fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,6 +57,7 @@ impl AuthSession {
             uuid,
             xuid: None,
             access_token: access_token.to_owned(),
+            join_cooldown: Mutex::new(None),
         }
     }
 
@@ -76,6 +87,7 @@ impl AuthSession {
             uuid,
             xuid: field("xuid").map(str::to_owned),
             access_token: access_token.to_owned(),
+            join_cooldown: Mutex::new(None),
         })
     }
     /// Read the session file the launcher wrote and delete it at once. It
@@ -139,6 +151,10 @@ pub fn current() -> Option<Arc<AuthSession>> {
 pub enum JoinError {
     /// No answer, or a 5xx (AuthenticationUnavailableException).
     Unavailable,
+    /// HTTP 429 and the minimum wait for another login. `None` ends automatic retries.
+    RateLimited(Option<Duration>),
+    /// The connection was cancelled before sending the request.
+    Cancelled,
     /// 401 or ForbiddenOperationException (InvalidCredentialsException).
     InvalidSession,
     /// InsufficientPrivilegesException: multiplayer is off for the account.
@@ -174,6 +190,8 @@ impl JoinError {
     pub fn reason(&self) -> Result<&'static str, &str> {
         match self {
             Self::Unavailable => Ok("disconnect.loginFailedInfo.serversUnavailable"),
+            Self::RateLimited(_) => Ok("horizon.multiplayer.join_rate_limited"),
+            Self::Cancelled => Ok("connect.aborted"),
             Self::InvalidSession => Ok("disconnect.loginFailedInfo.invalidSession"),
             Self::InsufficientPrivileges => Ok("disconnect.loginFailedInfo.insufficientPrivileges"),
             Self::Banned => Ok("disconnect.loginFailedInfo.userBanned"),
@@ -299,21 +317,77 @@ fn with_one_retry(
 /// account is joining the server whose hash is `server_hash`. Horizon tries
 /// twice when the service doesn't answer; vanilla asks the player to.
 pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
+    join_server_cancellable(session, server_hash, || false)
+}
+
+/// As [`join_server`], checking that the connection still wants the request
+/// after discovery, a concurrent join, or the temporary-unavailability pause.
+pub fn join_server_cancellable(
+    session: &AuthSession,
+    server_hash: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<(), JoinError> {
     with_one_retry(
-        || join_server_once(session, server_hash),
+        || join_server_once(session, server_hash, &cancelled),
         Duration::from_millis(500),
     )
 }
 
-fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
+/// An implausibly large or unrepresentable delay ends automatic retries.
+fn retry_after(header: Option<&str>, now: SystemTime) -> Option<Duration> {
+    let Some(value) = header.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Some(JOIN_RETRY_FALLBACK);
+    };
+    let delay = if value.bytes().all(|b| b.is_ascii_digit()) {
+        Duration::from_secs(value.parse().ok()?)
+    } else {
+        httpdate::parse_http_date(value).map_or(JOIN_RETRY_FALLBACK, |date| {
+            date.duration_since(now).unwrap_or_default()
+        })
+    };
+    (delay <= MAX_JOIN_COOLDOWN).then_some(delay)
+}
+
+fn join_server_once(
+    session: &AuthSession,
+    server_hash: &str,
+    cancelled: &impl Fn() -> bool,
+) -> Result<(), JoinError> {
+    let mut cooldown = session.join_cooldown.lock().unwrap();
+    if cancelled() {
+        return Err(JoinError::Cancelled);
+    }
+    if let Some(limit) = *cooldown {
+        let remaining = limit.until.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            return Err(JoinError::RateLimited(
+                limit.automatic_retry.then_some(remaining),
+            ));
+        }
+        *cooldown = None;
+    }
     let doc = discovery()?;
     let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
+    if cancelled() {
+        return Err(JoinError::Cancelled);
+    }
     match agent()
         .post(&url)
         .set("Content-Type", "application/json; charset=utf-8")
         .send_string(&join_request(session, server_hash))
     {
         Ok(_) => Ok(()),
+        Err(ureq::Error::Status(429, response)) => {
+            let retry_after = retry_after(response.header("Retry-After"), SystemTime::now());
+            // Give manual joins a short cooldown for an implausible header without arming a retry.
+            let delay = retry_after.unwrap_or(JOIN_RETRY_FALLBACK);
+            *cooldown = Some(JoinCooldown {
+                until: Instant::now() + delay,
+                automatic_retry: retry_after.is_some(),
+            });
+            log::warn!("Minecraft services session.join: HTTP 429, cooldown {delay:?}");
+            Err(JoinError::RateLimited(retry_after))
+        }
         Err(ureq::Error::Status(status, response)) => {
             if status >= 500 {
                 log::warn!("The session service's join answered {status}");
@@ -661,7 +735,7 @@ mod tests {
             JoinError::InvalidSession,
             JoinError::Banned,
             JoinError::InsufficientPrivileges,
-            JoinError::Other("Status: 429".into()),
+            JoinError::RateLimited(Some(JOIN_RETRY_FALLBACK)),
         ] {
             assert_eq!(joined(&[Err(refused.clone())]), (Err(refused), 1));
         }
@@ -808,6 +882,29 @@ mod tests {
             JoinError::InvalidSession.reason(),
             Ok("disconnect.loginFailedInfo.invalidSession")
         );
+    }
+
+    #[test]
+    fn join_retry_after_respects_both_http_forms_and_falls_back() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_784_999_999);
+        let later = httpdate::fmt_http_date(now + Duration::from_secs(17));
+        let earlier = httpdate::fmt_http_date(now - Duration::from_secs(1));
+        let far_future = httpdate::fmt_http_date(now + Duration::from_secs(86_401));
+        for (header, seconds) in [
+            (Some(" 12 "), Some(12)),
+            (Some("0"), Some(0)),
+            (Some("86400"), Some(86400)),
+            (Some(later.as_str()), Some(17)),
+            (Some(earlier.as_str()), Some(0)),
+            (None, Some(5)),
+            (Some("+12"), Some(5)),
+            (Some("-1"), Some(5)),
+            (Some("86401"), None),
+            (Some(far_future.as_str()), None),
+            (Some("999999999999999999999999"), None),
+        ] {
+            assert_eq!(retry_after(header, now), seconds.map(Duration::from_secs));
+        }
     }
 
     #[test]

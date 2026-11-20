@@ -912,6 +912,9 @@ impl Game<'_> {
         lan: bool,
         realm: bool,
     ) -> Result<()> {
+        if let Some(remote) = self.remote.as_ref().filter(|remote| !remote.joined) {
+            remote.session.cancel_login();
+        }
         super::world_loading::preload_server_loot(
             &self.options.resources,
             &self.res.core.item_data,
@@ -9819,6 +9822,9 @@ impl Game<'_> {
             return Ok(());
         };
         if horizon_client::ui::hovered(self.cursor, x, y, 200.0, 20.0) {
+            if let Some(remote) = &self.remote {
+                remote.session.cancel_login();
+            }
             self.audio.play_button_click();
             self.leave_server(None)?;
         }
