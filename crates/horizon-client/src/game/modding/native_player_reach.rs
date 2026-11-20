@@ -82,8 +82,6 @@ mod tests {
                 assert_eq!(lo[0], 3.0 + face, "pig {id}'s near face");
                 pig
             };
-<<<<<<< ours
-=======
             // The fixture leaves the guest without a body, and a player's attributes live on
             // it: give one, as a joined player's record keeps.
             let body =
@@ -95,7 +93,6 @@ mod tests {
                 .hub
                 .update_guest(12, |guest| guest.motion.set(body))
                 .unwrap();
->>>>>>> theirs
             let player = game.player(12).unwrap();
             let reach = |game: &crate::game::Game<'_>, pig, rule| {
                 game.player_within_entity_reach(player, pig, rule)
