@@ -65,7 +65,7 @@ class CargoIsolationTests(unittest.TestCase):
                         found = self.problems()
                         self.assertEqual(len(found), 1, found)
                         self.assertIn(str(path), found[0])
-                        self.assertIn("build.rustc-wrapper", found[0])
+                        self.assertIn("(tables: build)", found[0])
                     finally:
                         path.unlink()
         result, home, github_env = self.run_guard()
@@ -85,31 +85,45 @@ class CargoIsolationTests(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("could not be parsed", found[0])
         (self.top / "elsewhere.toml").write_text('[source.crates-io]\nreplace-with = "mirror"\n')
-        self.assertIn("source.crates-io.replace-with", self.problems()[0])
+        self.assertIn("(tables: source)", self.problems()[0])
 
     def test_each_forbidden_variable_fails_and_the_allow_list_passes(self):
-        names = sorted(cargo_isolation.FORBIDDEN) + [prefix + "X" for prefix in cargo_isolation.FORBIDDEN_PREFIXES]
-        for name in names:
+        for name in sorted(cargo_isolation.FORBIDDEN):
             with self.subTest(name=name):
                 self.assertEqual(self.problems(clean_environ(**{name: "1"})), [f"variable set: {name}"])
                 self.assertEqual(self.problems(clean_environ(**{name: ""})), [])
+        for prefix in cargo_isolation.FORBIDDEN_PREFIXES:
+            with self.subTest(prefix=prefix):
+                self.assertEqual(self.problems(clean_environ(**{prefix + "X": "1", prefix + "Y": "1"})),
+                                 [f"variables set: {prefix}* (2)"])
+                self.assertEqual(self.problems(clean_environ(**{prefix + "X": ""})), [])
         self.assertEqual(self.problems(clean_environ(CARGO_INCREMENTAL="0", CARGO_HOME="/x", CARGO_TERM_COLOR="always",
                                                      RUSTC_WRAPPER="", RUSTC_WORKSPACE_WRAPPER="")), [])
         self.assertEqual(self.problems(clean_environ(CARGO_INCREMENTAL="1")), ["variable set: CARGO_INCREMENTAL"])
 
     def test_no_value_ever_reaches_the_output(self):
         (self.top / ".cargo").mkdir()
+        # A secret as a value, as a registry's name, inside a URL used as a [patch] key, and as a top-level name.
         (self.top / ".cargo" / "config.toml").write_text(
-            f'[registries.x]\ntoken = "{SECRET}"\n[build]\nrustc-wrapper = "/{SECRET}/sccache"\n')
+            f'[registries.x]\ntoken = "{SECRET}"\n'
+            f'[registries.{SECRET}]\nindex = "sparse+https://example.org/"\n'
+            f'[build]\nrustc-wrapper = "/{SECRET}/sccache"\n'
+            f'[patch."https://user:{SECRET}@example.org/repo"]\nfoo = {{ path = "x" }}\n'
+            f'[{SECRET}]\nkey = 1\n')
         (self.checkout.parent / ".cargo").mkdir()
         (self.checkout.parent / ".cargo" / "config").write_text(f'token = "{SECRET}\n')  # unparsable
-        result, home, github_env = self.run_guard(CARGO_REGISTRY_TOKEN=SECRET, RUSTC_WRAPPER=f"/{SECRET}")
+        # And in variables' values and in the free part of their names.
+        in_name = SECRET.upper().replace("-", "_")
+        result, home, github_env = self.run_guard(**{
+            "CARGO_REGISTRY_TOKEN": SECRET, "RUSTC_WRAPPER": f"/{SECRET}",
+            f"CARGO_REGISTRIES_{in_name}_TOKEN": "x", f"CARGO_ALIAS_{in_name}": "build"})
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 1)
-        self.assertNotIn(SECRET, output)
-        self.assertNotIn("s3cret", output)
-        for expected in ("registries.x.token", "build.rustc-wrapper", "could not be parsed", "CARGO_REGISTRY_TOKEN",
-                         "RUSTC_WRAPPER"):
+        self.assertNotIn("s3cret", output.lower())
+        self.assertNotIn("4711", output)
+        for expected in ("(tables: build, patch, registries, other (1))", "could not be parsed",
+                         "variables set: CARGO_REGISTRY_* (1)", "variables set: CARGO_REGISTRIES_* (1)",
+                         "variables set: CARGO_ALIAS_* (1)", "variable set: RUSTC_WRAPPER"):
             self.assertIn(expected, output)
         self.assertFalse(home.exists())
         self.assertEqual(github_env, "")

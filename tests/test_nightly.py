@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -219,10 +220,20 @@ def polytone_gate_bypasses(game, nightly_build):
     return problems
 
 
-SETUP_RUN = ('"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" tools/ci/cargo_isolation.py '
-             '"$GITHUB_WORKSPACE"')
+# The guard comes from the workflow's own commit into RUNNER_TEMP, never from the checkout being built.
+SETUP_RUN = """set -euo pipefail
+guard="$RUNNER_TEMP/workflow-tools/cargo_isolation.py"
+mkdir -p "${guard%/*}"
+url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
+curl -q -fsSL --retry 5 -o "$guard" "$url"
+"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" -E -s "$guard" "$GITHUB_WORKSPACE"
+"""
 SETUP_IFS = (None, "runner.environment == 'self-hosted'")
 CLEANUP_RUN = 'rm -rf "$RUNNER_TEMP/cargo-home"'
+CLEANUP_IFS = ("always()", "always() && runner.environment == 'self-hosted'")
+# A variable assigned or exported inside a run script: `NAME=`, `export NAME`, `env NAME=`, `declare -x NAME`.
+ASSIGNMENT = re.compile(r"(?<![\w$\{])([A-Za-z_][A-Za-z0-9_]*)="
+                        r"|\b(?:export|declare\s+-x|typeset\s+-x)\s+([A-Za-z_][A-Za-z0-9_]*)")
 CARGO_CALL = re.compile(r"\bcargo\b(?!-home)|\bxtask\b|\brustup\b|vanilla-data\.sh|runner-env\.sh")
 ENV_WRITE = re.compile(r"\b(CARGO_\w+|RUSTC\w*|RUSTDOC\w*|RUSTFLAGS|HORIZON_NO_SCCACHE)=.*GITHUB_ENV")
 
@@ -278,8 +289,11 @@ def machine_cache_problems(workflow):
                 problem("runner-env.sh without HORIZON_NO_SCCACHE: '1'")
             if ENV_WRITE.search(run):
                 problem("a step writes cargo settings to GITHUB_ENV")
-        if not any(run == CLEANUP_RUN and str(step.get("if", "")).startswith("always()")
-                   for step, run in zip(steps, runs)):
+            for match in ASSIGNMENT.finditer(run):
+                key = match.group(1) or match.group(2)
+                if key == "CARGO_HOME" or cargo_isolation.forbidden(key):
+                    problem(f"a run script sets {key}")
+        if not any(run == CLEANUP_RUN and step.get("if") in CLEANUP_IFS for step, run in zip(steps, runs)):
             problem("the cargo home is not removed with always()")
     return found
 
@@ -415,6 +429,17 @@ class UntrustedBuildTests(unittest.TestCase):
             "job env CARGO_HOME": lambda job: job["env"].update(CARGO_HOME="/x"),
             "cleanup removed": lambda job: job["steps"].remove(cleanup(job)),
             "cleanup not always": lambda job: cleanup(job).update({"if": "success()"}),
+            "cleanup never runs": lambda job: cleanup(job).update({"if": "always() && false"}),
+            "guard from the checkout": lambda job: setup(job).update(
+                run='python3 tools/ci/cargo_isolation.py "$GITHUB_WORKSPACE"'),
+            "guard at the built ref": lambda job: setup(job).update(
+                run=SETUP_RUN.replace("$GITHUB_WORKFLOW_SHA", "${{ inputs.ref }}")),
+            "export before setup": before_setup({"run": "export RUSTFLAGS=-Cx"}),
+            "export after setup": lambda job: later(job).update(run="export RUSTFLAGS=-Cx\n" + later(job)["run"]),
+            "assignment on a cargo call": lambda job: later(job).update(run="RUSTFLAGS=-Cx cargo build"),
+            "env on a cargo call": lambda job: later(job).update(run="env CARGO_TARGET_DIR=/x cargo build"),
+            "export of a family name": lambda job: later(job).update(run="export CARGO_REGISTRIES_X_TOKEN\ncargo build"),
+            "declare -x": lambda job: later(job).update(run="declare -x RUSTC=/x\ncargo build"),
         }
         for name in ("exporters", "build"):
             for label, change in breaks.items():
@@ -433,6 +458,45 @@ class UntrustedBuildTests(unittest.TestCase):
             self.assertEqual({job for job, _ in machine_cache_problems(mutated)}, {"new-mac"})
         env = (Path(__file__).resolve().parents[1] / "tools/ci/runner-env.sh").read_text()
         self.assertEqual(env.count('-z "${HORIZON_NO_SCCACHE:-}"'), 2)
+
+    def test_the_guard_never_comes_from_the_checkout_it_guards(self):
+        # Run from RUNNER_TEMP at the workflow's own commit, so a Nightly of an older commit still has it.
+        self.assertIn('guard="$RUNNER_TEMP/', SETUP_RUN)
+        self.assertIn("/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py", SETUP_RUN)
+        self.assertIn('-E -s "$guard"', SETUP_RUN)
+        # No relative path at all: nothing in the step reads a file of the built commit.
+        for word in re.findall(r"[^\s\"']+", SETUP_RUN):
+            if "/" in word:
+                self.assertTrue(word.startswith(("$RUNNER_TEMP/", "/opt/homebrew/", "https://", "${guard")), word)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "needs a POSIX bash")
+    def test_the_guard_step_runs_beside_a_checkout_without_any_of_its_files(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            checkout, runner_temp, bin_dir = temporary / "work" / "checkout", temporary / "temp", temporary / "bin"
+            for folder in (checkout, runner_temp, bin_dir):
+                folder.mkdir(parents=True)
+            (runner_temp / "github-env").touch()
+            # curl stands in for the download at the workflow's commit: it serves this tree's copy of the guard.
+            fake_curl = bin_dir / "curl"
+            fake_curl.write_text('#!/usr/bin/env bash\nwhile [ "$1" != -o ]; do shift; done\n'
+                                 f'case "$3" in */abc123/tools/ci/cargo_isolation.py) '
+                                 f'cp "{(root / "tools/ci/cargo_isolation.py").as_posix()}" "$2" ;; *) exit 22 ;; esac\n')
+            fake_curl.chmod(0o755)
+            python = bin_dir / "python3"
+            python.write_text(f'#!/usr/bin/env bash\nexec "{Path(sys.executable).as_posix()}" "$@"\n')
+            python.chmod(0o755)
+            environ = {key: value for key, value in os.environ.items() if not cargo_isolation.forbidden(key)}
+            environ.update(PATH=f"{bin_dir}{os.pathsep}{environ['PATH']}", RUNNER_TEMP=str(runner_temp),
+                           GITHUB_ENV=str(runner_temp / "github-env"), GITHUB_WORKSPACE=str(checkout),
+                           GITHUB_REPOSITORY="horizon-rust/horizon", GITHUB_WORKFLOW_SHA="abc123")
+            # The ancestor walk ends at the temporary folder's parents, which a developer machine may hold configs in.
+            run = SETUP_RUN.replace('"$GITHUB_WORKSPACE"', f'"$GITHUB_WORKSPACE" --top "{temporary.as_posix()}"')
+            result = subprocess.run(["bash", "-c", run], cwd=checkout, env=environ, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(list(checkout.iterdir()), [])
+            self.assertIn("CARGO_HOME=", (runner_temp / "github-env").read_text())
 
 
 class PruneBuildsTests(unittest.TestCase):

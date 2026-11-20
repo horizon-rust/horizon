@@ -87,7 +87,15 @@ jobs:
         with:
           toolchain: stable
       - name: A fresh cargo home and no cargo configuration from outside the checkout
-        run: '"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" tools/ci/cargo_isolation.py "$GITHUB_WORKSPACE"'
+        # The guard comes from this workflow's commit (GITHUB_WORKFLOW_SHA: the caller's, whose ./ copy of this file
+        # runs), never from the checkout it guards, which may be an older commit without it. curl -q: no curlrc.
+        run: |
+          set -euo pipefail
+          guard="$RUNNER_TEMP/workflow-tools/cargo_isolation.py"
+          mkdir -p "${guard%/*}"
+          url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
+          curl -q -fsSL --retry 5 -o "$guard" "$url"
+          "$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" -E -s "$guard" "$GITHUB_WORKSPACE"
       - run: bash tools/ci/runner-env.sh
         env:
           # Nightly, dry-run and release Mac jobs don't read machine-shared caches: no sccache, and a fresh cargo home
@@ -243,7 +251,15 @@ jobs:
           targets: ${{ matrix.target }}
       - name: A fresh cargo home and no cargo configuration from outside the checkout
         if: runner.environment == 'self-hosted'
-        run: '"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" tools/ci/cargo_isolation.py "$GITHUB_WORKSPACE"'
+        # The guard comes from this workflow's commit (GITHUB_WORKFLOW_SHA: the caller's, whose ./ copy of this file
+        # runs), never from the checkout it guards, which may be an older commit without it. curl -q: no curlrc.
+        run: |
+          set -euo pipefail
+          guard="$RUNNER_TEMP/workflow-tools/cargo_isolation.py"
+          mkdir -p "${guard%/*}"
+          url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_WORKFLOW_SHA/tools/ci/cargo_isolation.py"
+          curl -q -fsSL --retry 5 -o "$guard" "$url"
+          "$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" -E -s "$guard" "$GITHUB_WORKSPACE"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted' && !matrix.musl
         with:
