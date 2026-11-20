@@ -632,7 +632,7 @@ pub(super) struct Remote {
     pub(super) passenger_index: usize,
     /// Item entities waiting for their item data: where they are and their motion.
     pub(super) pending_items: HashMap<i32, ([f64; 3], Vec3)>,
-    health: (f32, i32, f32),
+    pub(super) health: (f32, i32, f32),
     /// `LocalPlayer.flashOnSetHealth`: set by the first health the server
     /// sends; from then on a drop starts the hurt animation.
     flash_on_set_health: bool,
@@ -761,7 +761,7 @@ pub(super) struct Remote {
     synced: Vec<Option<ItemStack>>,
     decode_errors: u32,
     /// Connection-owned `ClientClockManager` state, retained across dimensions.
-    clocks: HashMap<i32, play::ClockState>,
+    pub(super) clocks: HashMap<i32, play::ClockState>,
     default_clock: Option<i32>,
     overworld_clock: Option<i32>,
     clock_game_time: i64,
@@ -1790,7 +1790,7 @@ impl Game<'_> {
     /// A stack to the server (`SetCreativeModeSlot`): the same component
     /// patch a Horizon server sends its clients, with the registries' ids, so
     /// the server's echo doesn't hand back a bare item.
-    fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
+    pub(super) fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
         let r = self.remote.as_ref()?;
         // A stack as the server sent it, only its count changed: its own
         // components go back, as a vanilla client keeps them.
