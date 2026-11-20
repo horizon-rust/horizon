@@ -7,6 +7,15 @@ impl MotionWorld<'_, '_, '_> {
     /// `CollisionGetter.noCollision(player, bounds)`: blocks, less the player's collision exclusions, and
     /// the host's entity boxes.
     pub fn no_player_collision(&mut self, bounds: Aabb) -> Result<bool> {
+        if self.entities.is_empty()
+            && self.player.collision_exclusions.is_empty()
+            && self.player.border.as_ref().is_none_or(|b| {
+                !b.is_inside_close_to_border(self.player.position.x, self.player.position.z, bounds)
+            })
+            && self.collisions().cells_without_collision(bounds)
+        {
+            return Ok(true);
+        }
         let context = self.context();
         Ok(collision_exclusions::no_world_collision(
             &mut self.movement_collisions(),
