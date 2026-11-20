@@ -561,12 +561,12 @@ async fn open_backend(
             },
         );
     }
-    // Adapters that could not present to the window: the next one of this backend
-    // that can is tried before the next backend (#13493).
+    // An adapter that gives way (`gives_way`): the next one of this backend that presents is
+    // tried before the next backend (#13493).
     let mut tried = Vec::new();
     let mut adapter = adapter;
     loop {
-        let why = match open_adapter(name, window, surface.as_ref(), &adapter, needs).await {
+        let failure = match open_adapter(name, window, surface.as_ref(), &adapter, needs).await {
             Ok(adapted) => {
                 return Ok(Opened {
                     instance,
@@ -578,8 +578,14 @@ async fn open_backend(
                     configured: adapted.configured,
                 });
             }
-            Err(AdapterFailure::Failed(e)) => return Err(NoDevice::Failed(e)),
-            Err(AdapterFailure::CannotPresent(why)) => why,
+            Err(failure) => failure,
+        };
+        let gives_way = gives_way(&failure, allow_cpu);
+        let failed_to_open = matches!(failure, AdapterFailure::Failed(_));
+        let (what, why) = match failure {
+            AdapterFailure::CannotPresent(why) => ("it can't present to the window", why),
+            AdapterFailure::Failed(e) if !gives_way => return Err(NoDevice::Failed(e)),
+            AdapterFailure::Failed(e) => ("its device failed to open", e),
         };
         let info = adapter.get_info();
         tried.push(info.clone());
@@ -596,22 +602,33 @@ async fn open_backend(
             .collect();
         let Some(next) = pick_adapter(&choices, allow_cpu) else {
             log::warn!(
-                "Horizon renderer: skipping {} on {name}: it can't present to the window \
-                 ({why}), and no other {name} adapter can",
+                "Horizon renderer: skipping {} on {name}: {what} ({why}), and no other {name} \
+                 adapter can stand in",
                 info.name
             );
-            return Err(NoDevice::Failed(format!(
-                "{name}: {} can't present to the window ({why})",
-                info.name
-            )));
+            return Err(NoDevice::Failed(match failed_to_open {
+                true => why,
+                false => format!("{name}: {} can't present to the window ({why})", info.name),
+            }));
         };
         adapter = others[next].clone();
         log::warn!(
-            "Horizon renderer: skipping {} on {name}: it can't present to the window ({why}); \
-             trying {}",
+            "Horizon renderer: skipping {} on {name}: {what} ({why}); trying {}",
             info.name,
             adapter.get_info().name
         );
+    }
+}
+/// Whether `open_backend` tries another adapter of the backend after `failure`; otherwise the
+/// failure ends the backend. One that can't present to the window gives way (#13493). One whose
+/// device failed to open gives way only on the search's last, software-allowed try:
+/// `request_adapter` hands back the same GPU there, and DirectX 12 tries no other backend
+/// (`device_search`), so without this WARP never stands in for a GPU whose DirectX 12 device
+/// fails to open (#18291).
+fn gives_way(failure: &AdapterFailure, allow_cpu: bool) -> bool {
+    match failure {
+        AdapterFailure::CannotPresent(_) => true,
+        AdapterFailure::Failed(_) => allow_cpu,
     }
 }
 /// A surface for `window` (none `offscreen`) and the adapter `open_backend`
@@ -693,3 +710,18 @@ const NO_GPU_DRIVER: &str = "No Metal graphics device found";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const NO_GPU_DRIVER: &str = "No Vulkan or OpenGL graphics driver found: Horizon needs the Vulkan loader \
      (libvulkan.so.1) and a Vulkan driver for your GPU (Mesa's, or NVIDIA's), or OpenGL through EGL";
+#[cfg(test)]
+mod tests {
+    use super::{AdapterFailure, gives_way};
+    /// #18291: on DirectX 12's software-allowed last try a GPU whose device fails to open gives way
+    /// to another adapter (WARP); on the GPU tries it ends the backend as before. One that can't
+    /// present always gives way (#13493).
+    #[test]
+    fn a_device_that_fails_to_open_gives_way_only_on_the_software_try() {
+        let failed = || AdapterFailure::Failed("E_INVALIDARG".into());
+        assert!(gives_way(&failed(), true));
+        assert!(!gives_way(&failed(), false));
+        let cannot_present = AdapterFailure::CannotPresent("no formats".into());
+        assert!(gives_way(&cannot_present, false));
+    }
+}
