@@ -139,14 +139,6 @@ impl Launcher {
 
     /// Starts building `instance`'s native mods on `base`, on a thread; `Msg::Native` ends it.
     fn start_native_build(&mut self, instance: instances::Instance, base: String, back_up: bool) {
-        let folder = match native_mods_to_build(&instance.home) {
-            Ok(folder) => folder,
-            Err(e) => {
-                self.native_log_preflight(&e);
-                self.native_error = Some(e);
-                return;
-            }
-        };
         // The mods this build is given: its failure is read against them, even if another
         // instance is selected by the time it ends.
         self.native_built_mods = native_status::enabled(&instance.home)
@@ -163,15 +155,16 @@ impl Launcher {
         self.native_done = None;
         let tx = self.tx.clone();
         let done = self.tx.clone();
-        // The worker builds the instance and base the request captured. The result goes to the
-        // window as soon as the build ends, before the old-build cleanup that follows on this
-        // thread; a panic still sends one (#18669).
+        // The worker builds the instance and base the request captured, staging its mods into
+        // the shared folder only once it has its turn and lease. The result goes to the window
+        // as soon as the build ends, before the old-build cleanup that follows on this thread;
+        // a panic still sends one (#18669).
         std::thread::spawn(move || {
             native_mods::deliver_once(
                 |deliver| {
                     native_mods::build_then(
                         &base,
-                        &folder,
+                        || native_mods_to_build(&instance.home),
                         &instance,
                         None,
                         native_mods::Asked {

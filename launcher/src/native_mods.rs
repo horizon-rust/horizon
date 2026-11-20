@@ -2521,7 +2521,7 @@ pub fn build(
 ) -> Result<String, Failed> {
     build_then(
         base,
-        folder,
+        || Ok(folder.to_owned()),
         instance,
         profile,
         asked,
@@ -2560,11 +2560,13 @@ fn build_turn(progress: &impl Fn(Step)) -> Result<std::sync::MutexGuard<'static,
 
 /// [`build`], handing its result to `deliver` before the old-build cleanup runs (under the same
 /// build lease), so the window need not wait for the cleanup. Returns what `deliver` returned,
-/// once the cleanup has ended.
+/// once the cleanup has ended. `stage` gives the folder of mods to build; it runs once this build
+/// has its turn and its lease, so what it writes (the shared [`installed_mods`] folder) is not
+/// replaced by a build it waited for.
 #[allow(clippy::too_many_arguments)]
 pub fn build_then<R>(
     base: &str,
-    folder: &Path,
+    stage: impl FnOnce() -> Result<PathBuf, String>,
     instance: &Instance,
     profile: Option<Profile>,
     asked: Asked,
@@ -2586,11 +2588,13 @@ pub fn build_then<R>(
     }
     let said = |error: &Failed| error.said(caller);
     let attempt = |cache: Result<&crate::native_cache::Cache, &str>| {
+        let lease = cache.map_err(|error| Failed::Other(error.into()))?;
+        let folder = stage()?;
+        let folder = folder.as_path();
         // After `logged` empties the log: the player reads it to learn why a mod is missing.
         if folder == installed_incoming() {
             warn_legacy(&instance.home);
         }
-        let lease = cache.map_err(|error| Failed::Other(error.into()))?;
         let profile = select_build_profile(instance.native_profile, profile, || {
             planning::classify(folder, Some(base), lease)
                 .map_err(|error| Failed::Other(error.said(caller)))
@@ -4518,7 +4522,7 @@ mod tests {
         let steps = std::cell::RefCell::new(Vec::new());
         let result = build_then(
             "v0.0.0-not-installed",
-            &dir("waits"),
+            || Ok(dir("waits")),
             &instances::selected(),
             None,
             Asked {
@@ -4566,7 +4570,7 @@ mod tests {
         let steps = std::cell::RefCell::new(Vec::new());
         let result = build_then(
             "v0.0.0-not-installed",
-            &dir("consent-after-wait"),
+            || -> Result<PathBuf, String> { panic!("staged without consent") },
             &instances::selected(),
             None,
             Asked {
@@ -4641,7 +4645,11 @@ mod tests {
         let steps = std::cell::RefCell::new(Vec::new());
         let result = build_then(
             &waiting.snapshot.base,
-            &folder,
+            // The shared staging folder is written only once this build has its turn.
+            || {
+                steps.borrow_mut().push("staged".to_string());
+                Ok(folder.clone())
+            },
             &instance,
             None,
             Asked {
@@ -4659,7 +4667,10 @@ mod tests {
         );
         cleanup.join().unwrap();
         original.save().unwrap();
-        assert_eq!(steps.borrow().first(), Some(&Step::Waiting.label()));
+        assert_eq!(
+            steps.borrow().get(..2),
+            Some(&[Step::Waiting.label(), "staged".to_string()][..])
+        );
         // It went on to build the captured base, which isn't installed here: the build names it.
         let error = String::from(result.unwrap_err());
         assert!(error.contains(base), "{error}");
