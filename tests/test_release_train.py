@@ -440,6 +440,21 @@ class NightlyTrainTests(unittest.TestCase):
         self.assertTrue(train.nightly_decision(True, "forced", self.PRS, None, 30, force=True)[0])
         self.assertFalse(train.nightly_decision(True, "forced", self.PRS, 7, 0, force=True)[0])
 
+    def test_an_active_build_is_found_behind_newer_finished_runs(self):
+        # Newest first, as GitHub lists them: eleven finished dry runs, then the real cut still building.
+        runs = [{"databaseId": n, "status": "completed"} for n in range(100, 89, -1)] + \
+               [{"databaseId": 42, "status": "in_progress"}, {"databaseId": 41, "status": "queued"}]
+
+        def gh_json(*arguments):
+            status = arguments[arguments.index("--status") + 1]
+            limit = int(arguments[arguments.index("--limit") + 1])
+            return [{"databaseId": r["databaseId"]} for r in runs if r["status"] == status][:limit]
+
+        with mock.patch.object(train, "gh_json", gh_json):
+            self.assertIn(train.nightly_building(), (41, 42))
+            runs[11:] = []
+            self.assertIsNone(train.nightly_building())
+
     def test_the_cap_is_the_nightly_sets(self):
         from tools.ci import nightly_set
         self.assertEqual(train.NIGHTLY_CAP, nightly_set.MAX_BUILDS_PER_DAY)

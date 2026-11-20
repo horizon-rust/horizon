@@ -487,11 +487,15 @@ def published_nightly():
 
 
 def nightly_building():
-    """The run of `nightly build` under way or waiting, if any: the train starts no second one."""
-    runs = gh_json("run", "list", "--repo", REPO, "--workflow", NIGHTLY_WORKFLOW, "--limit", "10",
-                   "--json", "databaseId,status")
-    return next((entry["databaseId"] for entry in runs if entry["status"] in ("queued", "in_progress", "waiting",
-                                                                              "pending", "requested")), None)
+    """The run of `nightly build` under way or waiting, if any: the train starts no second one. A dry run counts
+    too: it has a concurrency group of its own, but its macOS jobs share the Mac's one nightly runner. Filtered by
+    status on GitHub's side, so newer finished runs (dry runs no longer wait in line) can't hide an active one."""
+    for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+        runs = gh_json("run", "list", "--repo", REPO, "--workflow", NIGHTLY_WORKFLOW, "--status", status,
+                       "--limit", "1", "--json", "databaseId")
+        if runs:
+            return runs[0]["databaseId"]
+    return None
 
 
 def nightly_builds_today(today):

@@ -1,5 +1,5 @@
 name: nightly build
-run-name: nightly build${{ (github.event_name == 'workflow_dispatch' && (inputs.dry_run || github.ref != 'refs/heads/main')) && ' (dry run)' || ' (real)' }}${{ inputs.base && format(' on {0}', inputs.base) || '' }}${{ inputs.request && format(' (request {0})', inputs.request) || '' }}
+run-name: nightly build${{ (github.event_name == 'workflow_dispatch' && (inputs.dry_run || github.ref != 'refs/heads/main')) && ' (dry run)' || ' (real)' }}${{ inputs.request && format(' (request {0})', inputs.request) || '' }}${{ inputs.base && format(' on {0}', inputs.base) || '' }}
 # The Nightly, the only build Horizon ships since 2026-10-28 (docs/release-flow.md "Nightly"; Ludovic). When the batch
 # train decides (release.yml, with the commit as `base`), once a night, and when a trusted
 # reviewer asks (`/nightly 2640 2642`, nightly-command.yml), it builds main plus the pull requests the reviewers
