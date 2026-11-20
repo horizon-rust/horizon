@@ -364,13 +364,13 @@ fn quad_is_cutout(
     solid: &[super::TerrainVertex],
     packed: &[[u32; 6]],
 ) -> bool {
+    if let Some(v) = solid.get((q as usize).saturating_mul(4)) {
+        return (v.layer & super::OPAQUE_LAYER) == 0;
+    }
     if let Some(words) = packed.get(q as usize)
         && words[5] & super::packed::FULL == 0
     {
         return ((words[3] & 0xFFFF) as u16 & super::OPAQUE_LAYER) == 0;
-    }
-    if let Some(v) = solid.get((q as usize).saturating_mul(4)) {
-        return (v.layer & super::OPAQUE_LAYER) == 0;
     }
     if let Some(raw_quad) = spilled_quad_words(packed, q) {
         let v: &super::TerrainVertex = bytemuck::cast_ref(&raw_quad[0]);
@@ -379,24 +379,33 @@ fn quad_is_cutout(
     default_cutout
 }
 
-/// Includes quad `q`'s bounds from compact `packed` record or full vertices and returns any extra meshlet flags.
+/// Includes quad `q`'s bounds from unpacked `solid` vertices first (staying agnostic to packed
+/// sub-block encodings) and falls back to `packed` records or spilled `FULL` words when `solid` is empty.
 fn include_section_quad(
     q: u32,
     solid: &[super::TerrainVertex],
     packed: &[[u32; 6]],
     aabb: &mut SubAabbBuilder,
 ) -> u8 {
-    if let Some(words) = packed.get(q as usize)
-        && aabb.include_packed_record(words)
-    {
-        return 0;
-    }
+    let packed_record = packed.get(q as usize);
+    let extra_flags = if packed_record.is_none_or(|w| w[5] & super::packed::FULL != 0) {
+        MeshletDesc::FLAG_FULL_VERTICES
+    } else {
+        0
+    };
     if let Some(base) = (q as usize).checked_mul(4)
         && let Some(verts) = solid.get(base..(base + 4))
         && let Ok(quad) = <&[super::TerrainVertex; 4]>::try_from(verts)
     {
         aabb.include_vertices(quad);
-    } else if let Some(raw_quad) = spilled_quad_words(packed, q) {
+        return extra_flags;
+    }
+    if let Some(words) = packed_record
+        && aabb.include_packed_record(words)
+    {
+        return 0;
+    }
+    if let Some(raw_quad) = spilled_quad_words(packed, q) {
         let quad: [super::TerrainVertex; 4] = std::array::from_fn(|i| bytemuck::cast(raw_quad[i]));
         aabb.include_vertices(&quad);
     }
