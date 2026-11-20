@@ -938,12 +938,7 @@ pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
-    let mut bytes = vec![
-        0;
-        reader
-            .output_buffer_size()
-            .ok_or("sprite exceeds decoder limits")?
-    ];
+    let mut bytes = crate::hud::png_frame_buffer(&reader)?;
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
     let mut pixels = Vec::with_capacity(info.width as usize * info.height as usize * 4);
@@ -1858,5 +1853,28 @@ mod tests {
         let stepped = test_clip(16, 0, r#"{"frametime":4}"#);
         assert_eq!(stepped.blend(1), blend(0, 0, 0));
         assert_eq!(stepped.blend(5), blend(1, 1, 0));
+    }
+}
+
+#[cfg(test)]
+mod png_size_tests {
+    use crate::hud::{claimed_size_png, grey_png};
+
+    /// A block texture whose header claims 60000x60000 pixels is refused from its header, as an
+    /// undecodable one is, before memory for its pixels is reserved.
+    #[test]
+    fn a_sprite_claiming_a_huge_size_is_refused() {
+        let error = super::decode_rgba(&claimed_size_png(60_000, 60_000)).unwrap_err();
+        assert!(
+            error.to_string().contains("60000x60000 PNG is larger"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_sprite_at_the_side_limit_still_decodes() {
+        let side = crate::atlas_sources::MAX_SPRITE_SIDE as u32;
+        let (width, height, rgba) = super::decode_rgba(&grey_png(side, 1)).unwrap();
+        assert_eq!((width, height, rgba.len()), (side, 1, side as usize * 4));
     }
 }

@@ -219,7 +219,7 @@ fn decode_colormap(bytes: Vec<u8>) -> Result<Vec<u32>> {
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
-    let mut bytes = vec![0; reader.output_buffer_size().ok_or("colormap too large")?];
+    let mut bytes = crate::hud::png_frame_buffer(&reader)?;
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
     Ok(bytes[..info.buffer_size()]
@@ -1327,5 +1327,27 @@ mod exhaustion_tests {
         assert_eq!(biomes.ensure_saveable(), Err(BiomeIdExhausted));
         assert!(BiomeIdExhausted.to_string().contains("65536"));
         assert_eq!(biomes.saved_name(65535), "missing:last");
+    }
+}
+
+#[cfg(test)]
+mod colormap_size_tests {
+    /// A pack colormap whose header claims 60000x60000 pixels is an error, as an undecodable one
+    /// is, before memory for its pixels is reserved.
+    #[test]
+    fn a_colormap_claiming_a_huge_size_is_refused() {
+        let png = crate::hud::claimed_size_png(60_000, 60_000);
+        let error = super::decode_colormap(png).unwrap_err();
+        assert!(
+            error.to_string().contains("60000x60000 PNG is larger"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_full_size_colormap_still_decodes() {
+        let map = super::decode_colormap(crate::hud::grey_png(256, 256)).unwrap();
+        assert_eq!(map.len(), 256 * 256);
+        assert_eq!(map[0], 0x0080_8080);
     }
 }

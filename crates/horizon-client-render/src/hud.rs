@@ -294,10 +294,10 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
-    let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
+    let mut bytes = png_frame_buffer(&reader)?;
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
-    let mut rgba = Vec::with_capacity((info.width * info.height * 4) as usize);
+    let mut rgba = Vec::with_capacity(info.width as usize * info.height as usize * 4);
     for p in bytes[..info.buffer_size()].chunks_exact(channels) {
         rgba.extend(match channels {
             4 => [p[0], p[1], p[2], p[3]],
@@ -350,6 +350,84 @@ pub fn png_bytes_size(data: &[u8]) -> Option<(u32, u32)> {
     }
     let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
     Some((field(16), field(20)))
+}
+/// The zeroed buffer `reader.next_frame` fills, or an error when the PNG's header claims a size
+/// no texture could use. The PNG reader trusts the header and leaves this buffer to its caller,
+/// so a pack file of a few dozen bytes could otherwise ask for gigabytes and end the game. A side
+/// may be at most [`MAX_SPRITE_SIDE`](crate::atlas_sources::MAX_SPRITE_SIDE), the largest any
+/// GPU takes, and the texels at most a full [`MAX_ATLAS_SIZE`] atlas (1 GiB of RGBA).
+pub(crate) fn png_frame_buffer<R: std::io::BufRead + std::io::Seek>(
+    reader: &png::Reader<R>,
+) -> std::result::Result<Vec<u8>, String> {
+    let (width, height) = reader.info().size();
+    check_png_size(width, height)?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| format!("a {width}x{height} PNG exceeds the decoder's limits"))?;
+    Ok(vec![0; size])
+}
+fn check_png_size(width: u32, height: u32) -> std::result::Result<(), String> {
+    let side = u64::from(width.max(height));
+    let texels = u64::from(width) * u64::from(height);
+    let atlas = u64::from(MAX_ATLAS_SIZE);
+    if side > crate::atlas_sources::MAX_SPRITE_SIDE as u64 || texels > atlas * atlas {
+        return Err(format!(
+            "a {width}x{height} PNG is larger than any texture it could fill"
+        ));
+    }
+    Ok(())
+}
+/// A PNG whose header claims `width` x `height` RGBA pixels and whose image data is empty: a
+/// few dozen bytes that ask a decoder to reserve memory for every claimed pixel.
+#[cfg(test)]
+pub(crate) fn claimed_size_png(width: u32, height: u32) -> Vec<u8> {
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut chunk = |kind: &[u8; 4], data: &[u8]| {
+        png.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
+        let start = png.len();
+        png.extend_from_slice(kind);
+        png.extend_from_slice(data);
+        let crc = crc32(&png[start..]);
+        png.extend_from_slice(&crc.to_be_bytes());
+    };
+    let mut ihdr = [0; 13];
+    ihdr[..4].copy_from_slice(&width.to_be_bytes());
+    ihdr[4..8].copy_from_slice(&height.to_be_bytes());
+    // 8 bits a channel, RGBA, no interlace.
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    chunk(b"IHDR", &ihdr);
+    // An empty zlib stream.
+    chunk(b"IDAT", &[0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]);
+    chunk(b"IEND", &[]);
+    png
+}
+/// A real `width` x `height` RGBA PNG, every pixel opaque grey.
+#[cfg(test)]
+pub(crate) fn grey_png(width: u32, height: u32) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    let mut encoder = png::Encoder::new(&mut encoded, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let pixels = [128, 128, 128, 255].repeat(width as usize * height as usize);
+    writer.write_image_data(&pixels).unwrap();
+    writer.finish().unwrap();
+    encoded
 }
 /// A PNG's width and height, from its header alone.
 fn png_size(source: &ResourceSource, path: &str) -> Option<(u32, u32)> {
@@ -3308,6 +3386,41 @@ mod tests {
         assert!(decode_bytes(&jpeg).is_err());
         let webp = b"RIFF\x00\x00\x00\x00WEBPVP8 ";
         assert!(decode_bytes(webp).is_err());
+    }
+
+    /// A pack PNG of a few dozen bytes whose header claims 60000x60000 pixels would make the
+    /// decoder reserve 14 GB; it is refused from its header, with nothing reserved.
+    #[test]
+    fn decode_bytes_refuses_a_png_claiming_a_huge_size() {
+        let error = decode_bytes(&claimed_size_png(60_000, 60_000)).unwrap_err();
+        assert!(
+            error.to_string().contains("60000x60000 PNG is larger"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn png_sizes_are_bounded_by_the_largest_texture() {
+        let side = crate::atlas_sources::MAX_SPRITE_SIDE as u32;
+        assert_eq!(check_png_size(side, 1), Ok(()));
+        assert_eq!(check_png_size(MAX_ATLAS_SIZE, MAX_ATLAS_SIZE), Ok(()));
+        assert_eq!(
+            check_png_size(side, MAX_ATLAS_SIZE * MAX_ATLAS_SIZE / side),
+            Ok(())
+        );
+        assert!(check_png_size(side + 1, 1).is_err());
+        assert!(check_png_size(1, side + 1).is_err());
+        assert!(check_png_size(MAX_ATLAS_SIZE + 1, MAX_ATLAS_SIZE).is_err());
+        assert!(check_png_size(u32::MAX, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn decode_bytes_reads_a_png_at_the_side_limit() {
+        let side = crate::atlas_sources::MAX_SPRITE_SIDE as u32;
+        let (width, height, rgba) = decode_bytes(&grey_png(side, 1)).unwrap();
+        assert_eq!((width, height), (side, 1));
+        assert_eq!(rgba.len(), side as usize * 4);
+        assert_eq!(rgba[..4], [128, 128, 128, 255]);
     }
 
     #[test]
