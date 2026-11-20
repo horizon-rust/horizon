@@ -244,7 +244,8 @@ class ModPointSelectionTests(unittest.TestCase):
                      "crates/horizon-mod-api-gen/src/points.rs", "crates/horizon-mod-api-macros/src/lib.rs",
                      "tools/check_mod_points_unchanged.py", "crates/horizon-world/Cargo.toml", "Cargo.lock",
                      UNKNOWN_CHANGE, ".github/workflows/ci.yml", "tools/ci/surface_report.py",
-                     "tools/ci/surface.toml", "crates/horizon-mod-vocab/changes/a-note.toml"]:
+                     "tools/ci/surface.toml", "crates/horizon-mod-vocab/changes/a-note.toml",
+                     "crates/horizon-core/src/nbt.rs"]:
             with self.subTest(path=path):
                 self.assertTrue(needs_mod_points(["README.md", path]))
 

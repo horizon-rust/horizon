@@ -160,6 +160,9 @@ pub struct Export {
     /// One line per public item or declaration the export has no record kind for, and the
     /// counts of what it skips by rule.
     pub notes: Vec<String>,
+    /// The calls and core a wasm mod is checked by when it loads; `None` for an export of
+    /// declarations alone.
+    pub boundary: Option<mod_surface::boundary::Boundary>,
 }
 
 impl Export {
@@ -237,8 +240,11 @@ fn export_here(root: &Path) -> Result<Export, String> {
     // A listed boundary trait an older tree lacks is noted by `Roles::resolve`, not refused.
     let wire = crate::wire::surface_reading(root, &with_providers, Some(&mut Vec::new()))?;
     let boundary = Boundary::from_wire(&wire);
+    let calls = crate::wire::boundary(root, &wire)?;
     let mut index = wire.types.index;
-    build(root, &mut index, &catalog.hooks, &boundary)
+    let mut export = build(root, &mut index, &catalog.hooks, &boundary)?;
+    export.boundary = Some(calls);
+    Ok(export)
 }
 
 /// The `///` text of `attrs`, one line each, a leading space dropped.
@@ -833,6 +839,7 @@ pub(crate) fn build(
         )
         .with_behaviours(behaviours),
         notes,
+        boundary: None,
     })
 }
 

@@ -101,9 +101,11 @@ def needs_tooling(changes):
 # (manifests and the lockfile; the unknown-change stand-in is Cargo.lock). The generator also reads every `#[replaceable]` function in a lower crate, so a
 # changed Rust file under crates/ that mentions the attribute, before or after, counts too (mentions_replaceable).
 MOD_POINT_PREFIXES = ("crates/horizon-client/src/game/", "crates/horizon-mod-")
+# The network NBT's tag ids and limits are in the core hash every wasm mod is checked by; the other core inputs live in
+# crates/horizon-mod-*.
 MOD_POINT_FILES = {"crates/horizon-client/src/game.rs", "tools/check_mod_points_unchanged.py", "Cargo.lock",
                    ".github/workflows/ci.yml", "tools/ci/rust_changes.py", "tools/ci/surface_report.py",
-                   "tools/ci/surface.toml"}
+                   "tools/ci/surface.toml", "crates/horizon-core/src/nbt.rs"}
 PATHS_PER_GREP = 200
 
 

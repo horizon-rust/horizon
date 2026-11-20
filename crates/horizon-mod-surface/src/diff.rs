@@ -13,22 +13,16 @@
 //!   item added to a trait mods implement (the container's own hash covers those sets); an impl
 //!   a type no longer has; a supertrait a trait mods call no longer has, or gains when the new
 //!   one is not known to keep `dyn Trait` valid (`Clone`, `Sized`, a trait with generic methods).
-//!   A change to how an existing call crosses the wasm boundary is breaking too: the game compares
-//!   each call's hash in full when a wasm mod loads, and a minimal mod imports nearly every call,
-//!   so every wasm mod built before the change is refused. That is a changed wire layout
-//!   (`shape`) or wire form of a type that crossed before, a type that no longer crosses, and an
-//!   argument added to a hook or a field or variant added to a borrowing record an existing call
-//!   reaches (its fields are in the call's signature hash). A variant appended to a
-//!   `#[non_exhaustive]` enum that crosses changes its `shape` too.
 //! - **Conditional**: it breaks only some mods, which the fit test finds from each mod's source.
-//!   A field added to a struct mods can build (only a mod that builds the value with a full
-//!   literal or matches it with an exhaustive pattern, without `..`), or a struct's public field
-//!   set changing in a field its records do not list (its `fields_hash`); a struct that is no
-//!   longer constructible (only a mod that builds it with a literal); a public path that goes
-//!   (only a mod that names the item by it); a hook's `version` (only a mod whose manifest names
-//!   it) or a behaviour's (only a mod that relies on it); a type that gets a wire layout where it
-//!   had none; a method of a trait mods only call that moved unchanged to a supertrait it still
-//!   has (only a call written by trait path).
+//!   A field added to a struct mods can build, or an argument added to a hook (only a mod that
+//!   builds the value with a full literal or matches it with an exhaustive pattern, without
+//!   `..`), or a struct's public field set changing in a field its records do not list (its
+//!   `fields_hash`); a struct that is no longer
+//!   constructible (only a mod that builds it with a literal); a public path that goes (only a
+//!   mod that names the item by it); a hook's `version` (only a mod whose manifest names it) or a
+//!   behaviour's (only a mod that relies on it); a
+//!   type's wire form or wire layout (`shape`; wasm mods only); a method of a trait mods only call
+//!   that moved unchanged to a supertrait it still has (only a call written by trait path).
 //! - **Additive**: a new record (a behaviour, a field of a struct mods cannot build, a variant of a
 //!   `#[non_exhaustive]` enum, a defaulted method), and changes that only widen an item: now on
 //!   wasm, now crossing the wasm boundary, now constructible, an impl gained, a new public path,
@@ -342,44 +336,11 @@ fn literal_owners(old: &Surface, new: &Surface) -> BTreeSet<String> {
     builds(old).intersection(&builds(new)).cloned().collect()
 }
 
-/// The borrowing records an existing call crosses: types that don't cross as `Wire` values
-/// (their fields are in the call's signature hash instead) named by a hook, or by a method,
-/// handle or function a wasm mod can call.
-fn reached_records(old: &Surface) -> BTreeSet<String> {
-    let records: BTreeSet<&String> = old
-        .types
-        .iter()
-        .filter(|t| !t.contract.wire)
-        .map(|t| &t.id)
-        .collect();
-    let hooks = old.hooks.iter().map(|h| &h.contract.refs);
-    let methods = old
-        .traits
-        .iter()
-        .flat_map(|t| &t.methods)
-        .filter(|m| m.contract.wasm)
-        .map(|m| &m.contract.refs);
-    let functions = old
-        .handles
-        .iter()
-        .chain(&old.functions)
-        .filter(|f| f.contract.wasm)
-        .map(|f| &f.contract.refs);
-    hooks
-        .chain(methods)
-        .chain(functions)
-        .flatten()
-        .filter(|id| records.contains(id))
-        .cloned()
-        .collect()
-}
-
 /// Compares two surfaces.
 pub fn diff(old: &Surface, new: &Surface) -> Diff {
     let before = entries(old);
     let after = entries(new);
     let owners = literal_owners(old, new);
-    let reached = reached_records(old);
     let free = free_bounds(new);
     let ids: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
     let mut changes: BTreeMap<String, Change> = BTreeMap::new();
@@ -399,18 +360,9 @@ pub fn diff(old: &Surface, new: &Surface) -> Diff {
                 (ChangeKind::Removed, vec![line])
             }
             (None, Some(b)) => {
-                let line = match container(id) {
-                    Some(owner)
-                        if before.contains_key(&owner)
-                            && after.contains_key(&owner)
-                            && (owner.starts_with("hook:") || reached.contains(&owner)) =>
-                    {
-                        (wasm_member_added(id, &owner, &b.view), Class::Breaking)
-                    }
-                    Some(owner) if owners.contains(&owner) => {
-                        (literal_added(id, &owner, &b.view), Class::Conditional)
-                    }
-                    _ => ("added".into(), Class::Additive),
+                let line = match container(id).filter(|owner| owners.contains(owner)) {
+                    Some(owner) => (literal_added(id, &owner, &b.view), Class::Conditional),
+                    None => ("added".into(), Class::Additive),
                 };
                 (ChangeKind::Added, vec![line])
             }
@@ -550,21 +502,6 @@ fn literal_added(id: &str, owner: &str, view: &Value) -> String {
     }
 }
 
-/// The line for a member added to a hook, or to a borrowing record an existing call reaches.
-fn wasm_member_added(id: &str, owner: &str, view: &Value) -> String {
-    let name = crate::leaf(owner);
-    let (what, member) = match view.get("type") {
-        Some(ty) if owner.starts_with("hook:") => {
-            ("argument", format!("{}: {}", crate::leaf(id), show(ty)))
-        }
-        Some(ty) => ("field", format!("{}: {}", crate::leaf(id), show(ty))),
-        None => ("variant", crate::leaf(id).to_owned()),
-    };
-    format!(
-        "{what} `{member}` added to `{name}`: the call's hash changes, so every wasm mod built before it is refused at load"
-    )
-}
-
 /// What changed outside the hash: impls, public paths, whether a struct is constructible, a
 /// hook's version, the wire form.
 fn extras(
@@ -654,44 +591,34 @@ fn extras(
             Class::Conditional,
         ));
     }
-    // The game checks each call a wasm mod uses by its hash, which mixes in the run-time layout of
-    // every type the call reaches, and a hand-written codec is in the core hash every mod is
-    // checked by: a layout or codec that changes refuses the mods built before it, an appended
-    // variant included.
-    let refused = "every wasm mod built before it is refused at load";
     let (x, y) = (get(old, "shape"), get(new, "shape"));
     if x != y {
-        let (consequence, class) = if x.is_null() {
-            ("affects wasm mods only", Class::Conditional)
-        } else {
-            (refused, Class::Breaking)
-        };
         lines.push((
             format!(
-                "wire layout: {} → {}: {consequence}",
+                "wire layout: {} → {}: affects wasm mods only",
                 quoted("shape", &x),
                 quoted("shape", &y)
             ),
-            class,
+            Class::Conditional,
         ));
     }
     let wire = |map: &Map<String, Value>| get(map, "wire") == Value::Bool(true);
     match (wire(old), wire(new)) {
         (false, true) => lines.push(("now crosses the wasm boundary".into(), Class::Additive)),
         (true, false) => lines.push((
-            format!("no longer crosses the wasm boundary: {refused}"),
-            Class::Breaking,
+            "no longer crosses the wasm boundary: affects wasm mods only".into(),
+            Class::Conditional,
         )),
         _ => {
             let (x, y) = (get(old, "wire_form"), get(new, "wire_form"));
             if x != y {
                 lines.push((
                     format!(
-                        "wire form: {} → {}: {refused}",
+                        "wire form: {} → {}: affects wasm mods only",
                         quoted("wire_form", &x),
                         quoted("wire_form", &y)
                     ),
-                    Class::Breaking,
+                    Class::Conditional,
                 ));
             }
         }

@@ -704,6 +704,49 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
     })
 }
 
+/// What a wasm mod and the game check each other by when it loads (`mod_surface::boundary`):
+/// every call's key, signature hash and the owned types it reaches, as `call_layouts` mixes them,
+/// and a fingerprint of the core hash's inputs that the source holds (the hand-written codecs and
+/// the transport values `codecs` reads, the file roots and the prepared ABI).
+pub(crate) fn boundary(
+    root: &Path,
+    surface: &Surface<'_>,
+) -> Result<mod_surface::boundary::Boundary, String> {
+    let prepared = crate::Catalog::load(root)?
+        .hooks
+        .into_iter()
+        .filter_map(|hook| hook.prepared.map(|field| (hook.name, field)))
+        .collect::<Vec<_>>();
+    let abis = prepared::describe(&surface.methods, &prepared)?;
+    let (codecs, _) = codecs(root)?;
+    let core = names::fnv(&format!(
+        "{:#x};{:#x};{:#x};{}",
+        core(codecs, FILE_ROOTS),
+        prepared::PREPARE,
+        prepared::RELEASE,
+        prepared::layout_code(&abis)
+    ));
+    let calls = names::calls(&surface.types, &surface.methods, &surface.dropped)
+        .into_iter()
+        .map(
+            |(key, signature, found, export)| mod_surface::boundary::Call {
+                key,
+                signature: format!("{signature:016x}"),
+                export,
+                owned: found
+                    .iter()
+                    .map(|def| surface.types.defs[*def].rust.clone())
+                    .collect(),
+            },
+        )
+        .collect();
+    Ok(mod_surface::boundary::Boundary {
+        schema: mod_surface::boundary::SCHEMA,
+        core: format!("{core:016x}"),
+        calls,
+    })
+}
+
 /// Public owned API values available to point records, without inspecting their fields.
 /// The generated record's Wire bounds check its members; Clone permits copying a borrowed
 /// argument, while a live capability such as Transaction remains non-copyable.

@@ -309,25 +309,24 @@ fn a_retyped_hook_argument_is_breaking_and_named() {
 }
 
 #[test]
-fn a_new_hook_argument_or_a_removed_one_breaks() {
+fn a_new_hook_argument_is_conditional_and_a_removed_one_breaks() {
     let old = hooks(vec![hook("tick", Side::Server, &[("level", "LevelRef")])]);
     let new = hooks(vec![hook(
         "tick",
         Side::Server,
         &[("level", "LevelRef"), ("phase", "u8")],
     )]);
-    // The argument is in the hook's hash, which a wasm mod built before it answers with.
     let d = diff(&old, &new);
-    assert_eq!(d.verdict, Verdict::Breaking);
-    assert_eq!(d.undeclared().count(), 1);
+    assert_eq!(d.verdict, Verdict::Conditional);
+    assert_eq!(d.undeclared().count(), 0);
     assert_eq!(
         only(&d),
         (
             "hook:tick.phase",
             ChangeKind::Added,
-            Class::Breaking,
+            Class::Conditional,
             vec![
-                "argument `phase: u8` added to `tick`: the call's hash changes, so every wasm mod built before it is refused at load"
+                "argument `phase: u8` added to `tick`: breaks only a mod that builds this hook's event with a full literal or matches it with an exhaustive pattern (no `..`)"
             ],
             vec![]
         )
@@ -734,7 +733,7 @@ fn wired(wire: bool, form: Option<&str>) -> Surface {
 }
 
 #[test]
-fn a_wire_change_adds_when_a_type_starts_crossing_and_breaks_otherwise() {
+fn a_wire_change_adds_when_a_type_starts_crossing_and_is_conditional_otherwise() {
     let none = wired(false, None);
     let derive = wired(true, Some("derive"));
     let via = wired(true, Some("via:u32"));
@@ -756,15 +755,15 @@ fn a_wire_change_adds_when_a_type_starts_crossing_and_breaks_otherwise() {
     assert_eq!(
         class_and_lines(&derive, &none),
         (
-            Class::Breaking,
-            vec!["no longer crosses the wasm boundary: every wasm mod built before it is refused at load".into()]
+            Class::Conditional,
+            vec!["no longer crosses the wasm boundary: affects wasm mods only".into()]
         )
     );
     assert_eq!(
         class_and_lines(&derive, &via),
         (
-            Class::Breaking,
-            vec!["wire form: `derive` → `via:u32`: every wasm mod built before it is refused at load".into()]
+            Class::Conditional,
+            vec!["wire form: `derive` → `via:u32`: affects wasm mods only".into()]
         )
     );
 }
@@ -1100,7 +1099,7 @@ fn a_struct_gaining_non_exhaustive_is_conditional_whatever_else_changed() {
 }
 
 #[test]
-fn a_wire_layout_change_breaks_and_a_first_layout_is_conditional() {
+fn a_wire_layout_change_affects_wasm_mods_only() {
     let at = |shape: &str| {
         let mut s = types(vec![structure("Pos", false, &[("x", "i32")])]);
         s.types[0].shape = Some(shape.into());
@@ -1111,20 +1110,8 @@ fn a_wire_layout_change_breaks_and_a_first_layout_is_conditional() {
         (
             "type:Pos",
             ChangeKind::Changed,
-            Class::Breaking,
-            vec!["wire layout: `aaaa` → `bbbb`: every wasm mod built before it is refused at load"],
-            vec![]
-        )
-    );
-    let mut none = at("aaaa");
-    none.types[0].shape = None;
-    assert_eq!(
-        only(&diff(&none, &at("aaaa"))),
-        (
-            "type:Pos",
-            ChangeKind::Changed,
             Class::Conditional,
-            vec!["wire layout: none → `aaaa`: affects wasm mods only"],
+            vec!["wire layout: `aaaa` → `bbbb`: affects wasm mods only"],
             vec![]
         )
     );
@@ -1286,128 +1273,4 @@ fn a_called_trait_gaining_a_supertrait_that_breaks_dyn_breaks() {
         let (id, _, c, what, _) = only(&d);
         assert_eq!((id, c, what), ("trait:Host", class, vec![line]), "{bound}");
     }
-}
-
-/// A crossing enum (`#[derive(Wire)]`, `#[non_exhaustive]`) with its wire layout set by hand:
-/// the shape function's own tests show that every variant and its place enter it.
-fn crossing_enum(name: &str, variants: &[&str], shape: &str) -> Type {
-    let mut t = enumeration(name, false, variants);
-    t.contract.wire = true;
-    t.contract.wire_form = Some("derive".into());
-    t.shape = Some(shape.into());
-    t
-}
-
-#[test]
-fn a_variant_inserted_or_appended_in_a_crossing_enum_breaks_without_a_note() {
-    // #18742: `StaleEntity` before `OtherLevel` moves the later tags, and every call returning
-    // the enum hashes its layout. Appending moves no tag but changes the layout all the same.
-    let old = types(vec![crossing_enum(
-        "PlayerWorldRefusal",
-        &["Stale", "StaleLevel", "OtherLevel"],
-        "aaaa",
-    )]);
-    for (variants, shape) in [
-        (["Stale", "StaleLevel", "StaleEntity", "OtherLevel"], "bbbb"),
-        (["Stale", "StaleLevel", "OtherLevel", "StaleEntity"], "cccc"),
-    ] {
-        let new = types(vec![crossing_enum("PlayerWorldRefusal", &variants, shape)]);
-        let d = diff(&old, &new);
-        assert_eq!(d.verdict, Verdict::Breaking, "{variants:?}");
-        let undeclared: Vec<&str> = d.undeclared().map(|c| c.id.as_str()).collect();
-        assert_eq!(undeclared, ["type:PlayerWorldRefusal"], "{variants:?}");
-        let change = &d.changes[0];
-        assert!(
-            change.what.contains(&format!(
-                "wire layout: `aaaa` → `{shape}`: every wasm mod built before it is refused at load"
-            )),
-            "{:?}",
-            change.what
-        );
-    }
-}
-
-/// `hook` with its event record: the hook names the record in its refs, and the record is a
-/// borrowing struct that doesn't cross as a `Wire` value.
-fn hook_with_event(name: &str, event: &str, arguments: &[(&str, &str)]) -> Surface {
-    let mut h = hook(name, Side::Client, arguments);
-    h.contract.refs = vec![format!("type:{event}")];
-    surface(Parts {
-        hooks: vec![h],
-        types: vec![structure(event, true, arguments)],
-        ..Parts::default()
-    })
-}
-
-#[test]
-fn an_argument_added_to_an_existing_hook_breaks_its_event_too() {
-    // #18874 (`slot` on should_cause_reequip_animation) and #19020 (fields on player_move): the
-    // event's fields are in the export's hash.
-    let base = [("stack", "&'a ItemStack"), ("reequip", "bool")];
-    let old = hook_with_event("should_cause_reequip_animation", "ReequipEvent", &base);
-    let new = hook_with_event(
-        "should_cause_reequip_animation",
-        "ReequipEvent",
-        &[base[0], ("slot", "Option<&'a str>"), base[1]],
-    );
-    let d = diff(&old, &new);
-    assert_eq!(d.verdict, Verdict::Breaking);
-    let undeclared: BTreeSet<&str> = d.undeclared().map(|c| c.id.as_str()).collect();
-    assert!(
-        undeclared.contains("hook:should_cause_reequip_animation.slot")
-            || undeclared.contains("hook:should_cause_reequip_animation"),
-        "{undeclared:?}"
-    );
-    let lines: Vec<&String> = d.changes.iter().flat_map(|c| &c.what).collect();
-    assert!(lines.iter().any(|l| l.as_str() == "argument `slot: Option<&'a str>` added to `should_cause_reequip_animation`: the call's hash changes, so every wasm mod built before it is refused at load"), "{lines:?}");
-    assert!(lines.iter().any(|l| l.as_str() == "field `slot: Option<&'a str>` added to `ReequipEvent`: the call's hash changes, so every wasm mod built before it is refused at load"), "{lines:?}");
-}
-
-#[test]
-fn a_field_added_to_a_record_a_wasm_call_reaches_breaks_and_elsewhere_stays_conditional() {
-    let with = |fields: &[(&str, &str)], wasm: bool| {
-        let mut f = function("explode", "fn explode(_: &ExplosionStart<'_>)", wasm);
-        f.contract.refs = vec!["type:ExplosionStart".into()];
-        surface(Parts {
-            functions: vec![f],
-            types: vec![structure("ExplosionStart", true, fields)],
-            ..Parts::default()
-        })
-    };
-    let old = [("pos", "[f64; 3]")];
-    let new = [("pos", "[f64; 3]"), ("power", "f32")];
-    let class = |wasm| only(&diff(&with(&old, wasm), &with(&new, wasm))).2;
-    assert_eq!(class(true), Class::Breaking);
-    // A native-only call: only a mod that builds the record with a full literal notices.
-    assert_eq!(class(false), Class::Conditional);
-}
-
-#[test]
-fn a_new_hook_or_a_new_call_with_new_types_is_additive() {
-    // #18539's case and a new host call (#19048): nothing an existing call reaches changes.
-    let old = hook_with_event(
-        "dispenser_acts",
-        "DispenserActsEvent",
-        &[("pos", "[i32; 3]")],
-    );
-    let mut new = old.clone();
-    let added = hook_with_event(
-        "dragon_fight_won",
-        "DragonFightWonEvent",
-        &[("level", "LevelRef")],
-    );
-    new.hooks.extend(added.hooks);
-    new.types.extend(added.types);
-    let mut call = function(
-        "block_entities",
-        "fn block_entities() -> Vec<BlockEntityAt>",
-        true,
-    );
-    call.contract.refs = vec!["type:BlockEntityAt".into()];
-    new.functions.push(call);
-    new.types
-        .push(crossing_enum("BlockEntityAt", &["Chest"], "dddd"));
-    let d = diff(&old, &new);
-    assert_eq!(d.verdict, Verdict::Additive, "{:#?}", d.changes);
-    assert_eq!(d.undeclared().count(), 0);
 }
