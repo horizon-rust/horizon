@@ -7,6 +7,7 @@
   partner's server, and a checks runner keeps what a fork's job left behind.
 """
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -283,6 +284,31 @@ class HostedParityTests(unittest.TestCase):
                     (folder / "script.sh").write_bytes(data)
                     result = self.run_secret_step(self.prologue("Fetch the vanilla data")
                                                   + f'\nverified "{folder}/script.sh" "{expected}"\n', folder)
+                    self.assertEqual(result.returncode, status, result.stderr)
+
+    @unittest.skipUnless(*LINUX_STEP)
+    def test_a_script_is_fetched_only_as_the_blob_its_listing_names(self):
+        # The steps' own fetched, with only the two API requests answered from files: the listing's sha and the raw
+        # bytes must agree, and the script lands in the private folder only then.
+        script = b"#!/usr/bin/env bash\necho fetched\n"
+        blob = hashlib.sha1(b"blob %d\0" % len(script) + script).hexdigest()
+        empty = hashlib.sha1(b"blob 0\0").hexdigest()
+        cases = [("matching", json.dumps({"sha": blob, "type": "file"}), script, 0),
+                 ("another sha", json.dumps({"sha": "1" * 40}), script, 1),
+                 ("not an object", "[]", script, 1),
+                 ("no listing", "", script, 1),
+                 ("empty bytes", json.dumps({"sha": empty}), b"", 1)]
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            for case, listing, data, status in cases:
+                with self.subTest(case):
+                    (folder / "listing.json").write_text(listing)
+                    (folder / "raw").write_bytes(data)
+                    stub = (f'api() {{ case "$1" in *+json) cp {folder}/listing.json "$3" ;; '
+                            f'*.raw) cp {folder}/raw "$3" ;; esac; }}')
+                    result = self.run_secret_step(self.prologue("Fetch the vanilla data") + f"\n{stub}\n"
+                                                  'fetched script.sh && cmp -s "$private/script.sh" '
+                                                  f'{folder}/raw\n', folder)
                     self.assertEqual(result.returncode, status, result.stderr)
 
     @unittest.skipUnless(*LINUX_STEP)

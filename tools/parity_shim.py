@@ -133,21 +133,19 @@ def prepare(path, deadline, damaged=None):
     nothing if already done. Shims starting together on an empty cache each switched it to WAL, and those that lost
     failed ("database is locked": 63 of 960 on Linux, 2026-11-20), failing their harness's first run. Now one does it
     under hashes.lock while the others wait for the lock. A shim from before this lock ignores it: meeting one
-    mid-way, this retries until the deadline. The file is replaced only when damaged: `damaged` is the inode of the
-    file a shim found damaged, removed first if it is still that file (another shim may have made it again already).
-    A process that has the old one open keeps using it, unlinked."""
+    mid-way, this retries until the deadline. The file is replaced only when damaged: `damaged` is the inode number
+    of the file a shim found damaged, removed first if the file there still has it. Mostly that keeps a second shim
+    from removing one another shim just made again; a reused inode number only costs another remake. A process that
+    has the old file open keeps using it, unlinked."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_name("hashes.lock"), "a+b") as handle:
         while not file_lock.lock(handle, wait=False):
             if time.monotonic() >= deadline:
                 raise Uncached("another process held hashes.lock throughout")
             time.sleep(0.02)
-        try:
-            if damaged is not None and os.stat(path).st_ino == damaged:
-                for name in (path.name, f"{path.name}-wal", f"{path.name}-shm"):
-                    path.with_name(name).unlink(missing_ok=True)
-        except FileNotFoundError:
-            pass
+        if damaged is not None and inode(path) == damaged:
+            for name in (path.name, f"{path.name}-wal", f"{path.name}-shm"):
+                path.with_name(name).unlink(missing_ok=True)
         def in_time():
             if time.monotonic() >= deadline:
                 raise Uncached("the database stayed locked")
@@ -171,6 +169,14 @@ def prepare(path, deadline, damaged=None):
             time.sleep(0.02)
 
 
+def inode(path):
+    """The file's inode number, or None when there is none to read (another shim may be making it again)."""
+    try:
+        return os.stat(path).st_ino
+    except OSError:
+        return None
+
+
 class Hashes:
     """Content hashes keyed by path, size and mtime, shared by parallel harnesses. Only a memo: when the database
     fails in any way, at open or at any later lookup or store (a cache entry restored in part, a damaged page met
@@ -184,10 +190,7 @@ class Hashes:
         # The clock starts before the warm probe, which keeps the usual busy timeout (no less patient than before
         # the lock): time it spent waiting counts against the setup that may follow.
         deadline = time.monotonic() + INIT_SECONDS
-        try:
-            seen = os.stat(self.path).st_ino
-        except OSError:
-            seen = None
+        seen = inode(self.path)
         try:
             self.open(deadline)
         except sqlite3.Error:
@@ -200,7 +203,7 @@ class Hashes:
             self.db = sqlite3.connect(self.path, timeout=60)
             try:
                 if self.db.execute(TABLE).fetchone():
-                    self.inode = os.stat(self.path).st_ino
+                    self.inode = inode(self.path)
                     return
             except sqlite3.OperationalError as error:
                 if not busy(error):
@@ -208,7 +211,7 @@ class Hashes:
             self.close()
         prepare(self.path, deadline)
         self.db = sqlite3.connect(self.path, timeout=60)
-        self.inode = os.stat(self.path).st_ino
+        self.inode = inode(self.path)
 
     def close(self):
         if self.db is not None:
@@ -224,7 +227,7 @@ class Hashes:
             prepare(self.path, deadline, damaged)
             self.db = sqlite3.connect(self.path, timeout=60)
             self.db.execute(TABLE).fetchone()
-            self.inode = os.stat(self.path).st_ino
+            self.inode = inode(self.path)
         except (sqlite3.Error, OSError, Uncached):
             self.close()
 

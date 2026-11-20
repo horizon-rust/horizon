@@ -1058,6 +1058,24 @@ class OracleReuseTests(unittest.TestCase):
             self.assertIs(hashes.db, busy)
             self.assertEqual(path.stat().st_ino, inode)
 
+    def test_a_hash_database_made_again_by_another_shim_meanwhile_is_no_error(self):
+        # Another shim's remake can unlink the file between this one's connect and its look at the inode.
+        from tools import parity_shim
+        stat = os.stat
+
+        def vanishing(path, *args, **kwargs):
+            if str(path).endswith("hashes.sqlite"):
+                raise FileNotFoundError(path)
+            return stat(path, *args, **kwargs)
+
+        expected = hashlib.sha256(Path(parity_shim.__file__).read_bytes()).hexdigest()
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity_shim, "CACHE", Path(temp) / "cache"):
+            with mock.patch.object(parity_shim.os, "stat", side_effect=vanishing):
+                hashes = parity_shim.Hashes()
+            self.assertIsNone(hashes.inode)
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            hashes.close()
+
     def test_a_damaged_hash_database_never_fails_the_call(self):
         cache = Path(self.env["PARITY_SHIM_CACHE"])
         cache.mkdir()

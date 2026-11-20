@@ -53,7 +53,7 @@ for path in "${excluded[@]}"; do allowed "$path" || { echo "::error::an excluded
 
 work=$(mktemp -d "$temp/sealed-cache.XXXXXX")
 # An entry may hold folders without write access: made writable first, so nothing of it is left behind.
-cleanup() { chmod -R u+rwX "$work" 2> /dev/null; rm -rf "$work" 2> /dev/null || true; }
+cleanup() { chmod -R u+rwX "$work" 2> /dev/null || true; rm -rf "$work" 2> /dev/null || true; }
 trap cleanup EXIT
 printf '%s' "${VANILLA_DATA_PASSPHRASE//[$'\r\n']/}" > "$work/passphrase"
 unset VANILLA_DATA_PASSPHRASE
