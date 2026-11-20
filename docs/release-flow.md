@@ -844,11 +844,13 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
   stays locked. `sign` is the only job with the key, and checks out only main's `tools/ci/sign_release.sh`, which
   hashes the archives with the runner's `sha256sum` and signs with its OpenSSL: it never runs what `build` made.
   `publish` runs main's `horizon-release-sign`, never the archives. Nothing a nightly's build leaves reaches a
-  release either: `game-build.yml`'s `trusted` input is true only for `release.yml`. An untrusted build runs its
-  macOS jobs on the Mac mini's nightly runner (`horizon-nightly`, its own so a nightly never waits behind pull
+  release either: `release.yml` starts `nightly-build.yml`, which calls `game-build.yml` with `trusted: false` and
+  `developer_id: false`, so releases build as Nightlies do and their checksums are signed in a hosted job. An
+  untrusted build runs its macOS jobs on the Mac mini's nightly runner (`horizon-nightly`, its own so a nightly never waits behind pull
   requests' parity queue; same machine and trust as the `horizon-game` runner), never the release runner
   (`MAC_RUNNER`), and its Rust cache has its own key and is never saved. Its Mac jobs, trusted or not, don't read
-  machine-shared caches: no sccache (`HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`) and a fresh cargo home per run.
+  machine-shared caches: no sccache (`HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`), a fresh cargo home per run,
+  and no cargo configuration from outside the checkout (`tools/ci/cargo_isolation.py` fails the job and names it).
 - **Players.** Every launcher and `horizon-server update` install the `nightly` pre-release
   ([Nightly only](#nightly-only)). It is never GitHub's latest: the last `vX.Y.Z` stays that, for launchers,
   servers and `install.sh` from before the switch.

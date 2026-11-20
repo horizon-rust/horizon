@@ -2,8 +2,8 @@ name: game build
 # Builds the game for every platform from `ref`: the Java exporters, then Linux and the Linux server, Windows x64
 # and ARM64 on GitHub, and macOS on the Mac mini's runner with a 1500-frame offscreen run of a new world (smoke-test.json): Apple
 # Silicon, and Intel cross-built there for x86_64-apple-darwin and checked under Rosetta 2 (#1161). Called by
-# release.yml (the releases) and nightly-build.yml (the opt-in Nightly), always from main's copy of this file: the
-# caller's commit, never the one being built. It holds no secrets: signing the checksums is the callers' own job,
+# nightly-build.yml (the Nightly, which release.yml starts), always from main's copy of this file: the caller's
+# commit, never the one being built. It holds no secrets: signing the checksums is the callers' own job,
 # which never runs what this one built. See docs/release-flow.md.
 on:
   workflow_call:
@@ -21,10 +21,11 @@ on:
         type: string
         default: ''
       trusted:
-        # Only release.yml says true: it builds main. A nightly can hold pull requests nobody reviewed yet, whose
-        # build scripts and tests run here and could rewrite target/, the cargo home or a compiler cache. So an
-        # untrusted build never runs on the release runner and never saves the Rust cache (its key is its own anyway).
-        # Mac jobs, trusted or not, don't read machine-shared caches (tests/test_nightly.py pins all of it).
+        # No caller passes true today: release.yml starts nightly-build.yml, which passes false here and for
+        # Developer ID signing, so releases build on the Nightly's runner and their checksums are signed in a hosted
+        # job. An untrusted build never runs on the release runner and never saves the Rust cache (its key is its
+        # own anyway). Mac jobs, trusted or not, don't read machine-shared caches or cargo configuration from outside
+        # the checkout (tools/ci/cargo_isolation.py; tests/test_nightly.py pins all of it).
         description: The source is main (a release); false for anything else (a nightly)
         type: boolean
         default: false
@@ -72,7 +73,8 @@ jobs:
     # Three full preparations (two isolated, one batched) besides the compile.
     timeout-minutes: 60
     env:
-      # An empty RUSTC_WRAPPER also overrides a build.rustc-wrapper in any cargo config.
+      # An empty RUSTC_WRAPPER also overrides a build.rustc-wrapper in any cargo config. The variables cargo_isolation.py
+      # refuses may be set here only empty.
       RUSTC_WRAPPER: ''
       RUSTC_WORKSPACE_WRAPPER: ''
     steps:
@@ -84,12 +86,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
         with:
           toolchain: stable
-      - name: A fresh cargo home and no compiler wrapper
-        run: |
-          set -euo pipefail
-          [ -z "${RUSTC_WRAPPER:-}${RUSTC_WORKSPACE_WRAPPER:-}${CARGO_BUILD_RUSTC_WRAPPER:-}" ] || { echo "::error::a compiler wrapper is set"; exit 1; }
-          rm -rf "$RUNNER_TEMP/cargo-home" && mkdir "$RUNNER_TEMP/cargo-home"
-          echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"
+      - name: A fresh cargo home and no cargo configuration from outside the checkout
+        run: '"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" tools/ci/cargo_isolation.py "$GITHUB_WORKSPACE"'
       - run: bash tools/ci/runner-env.sh
         env:
           # Nightly, dry-run and release Mac jobs don't read machine-shared caches: no sccache, and a fresh cargo home
@@ -243,13 +241,9 @@ jobs:
         with:
           toolchain: ${{ steps.rust.outputs.version }}
           targets: ${{ matrix.target }}
-      - name: A fresh cargo home and no compiler wrapper
+      - name: A fresh cargo home and no cargo configuration from outside the checkout
         if: runner.environment == 'self-hosted'
-        run: |
-          set -euo pipefail
-          [ -z "${RUSTC_WRAPPER:-}${RUSTC_WORKSPACE_WRAPPER:-}${CARGO_BUILD_RUSTC_WRAPPER:-}" ] || { echo "::error::a compiler wrapper is set"; exit 1; }
-          rm -rf "$RUNNER_TEMP/cargo-home" && mkdir "$RUNNER_TEMP/cargo-home"
-          echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"
+        run: '"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" tools/ci/cargo_isolation.py "$GITHUB_WORKSPACE"'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted' && !matrix.musl
         with:

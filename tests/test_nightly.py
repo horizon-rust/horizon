@@ -12,6 +12,7 @@ from pathlib import Path
 
 from tools.ci import nightly
 from tools.ci import nightly_set as ns
+from tools.ci import cargo_isolation
 from tests.test_ci_concurrency import yaml
 
 NOW = "2026-10-28T12:00:00+00:00"
@@ -217,30 +218,84 @@ def polytone_gate_bypasses(game, nightly_build):
     return problems
 
 
-FRESH_CARGO_HOME = 'echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"'
-CARGO_CALL = re.compile(r"\bcargo (build|run|test)\b|vanilla-data\.sh")
+SETUP_RUN = ('"$(command -v /opt/homebrew/bin/python3.13 || command -v python3)" tools/ci/cargo_isolation.py '
+             '"$GITHUB_WORKSPACE"')
+SETUP_IFS = (None, "runner.environment == 'self-hosted'")
+CLEANUP_RUN = 'rm -rf "$RUNNER_TEMP/cargo-home"'
+CARGO_CALL = re.compile(r"\bcargo\b(?!-home)|\bxtask\b|\brustup\b|vanilla-data\.sh|runner-env\.sh")
+ENV_WRITE = re.compile(r"\b(CARGO_\w+|RUSTC\w*|RUSTDOC\w*|RUSTFLAGS|HORIZON_NO_SCCACHE)=.*GITHUB_ENV")
 
 
-def machine_cache_users(workflow):
-    """The jobs that set up a runner's tools (tools/ci/runner-env.sh) but may read machine-shared caches: without
-    HORIZON_NO_SCCACHE: '1', an empty RUSTC_WRAPPER, a fresh cargo home before their first cargo call, or its removal."""
-    users = []
+def self_hosted(job):
+    runs_on = json.dumps(job.get("runs-on", ""))
+    return "self-hosted" in runs_on or "MAC_RUNNER" in runs_on
+
+
+def machine_cache_problems(workflow):
+    """(job, problem) for each job that builds on a self-hosted runner, or sets up its tools (runner-env.sh), without
+    the protections: HORIZON_NO_SCCACHE: '1', empty compiler wrappers, cargo_isolation.py before the first cargo
+    call on every self-hosted leg, no step that sets what it refuses, and the cargo home's removal."""
+    found = []
     for name, job in workflow["jobs"].items():
         steps = job.get("steps", [])
         runs = [step.get("run", "") for step in steps]
-        if not any("runner-env.sh" in run for run in runs):
+        if not (any("runner-env.sh" in run for run in runs)
+                or self_hosted(job) and any(CARGO_CALL.search(run) for run in runs)):
             continue
+
+        def problem(text):
+            found.append((name, text))
         env = job.get("env", {})
-        sccache_off = all({**env, **step.get("env", {})}.get("HORIZON_NO_SCCACHE") == "1"
-                          for step, run in zip(steps, runs) if "runner-env.sh" in run)
-        wrapper_off = env.get("RUSTC_WRAPPER") == "" and env.get("RUSTC_WORKSPACE_WRAPPER") == ""
-        fresh = [i for i, run in enumerate(runs) if FRESH_CARGO_HOME in run]
-        first_cargo = next((i for i, run in enumerate(runs) if CARGO_CALL.search(run)), len(runs))
-        removed = any(str(step.get("if", "")).startswith("always()") and 'rm -rf "$RUNNER_TEMP/cargo-home"' in run
-                      for step, run in zip(steps, runs))
-        if not (sccache_off and wrapper_off and fresh and fresh[0] < first_cargo and removed):
-            users.append(name)
-    return users
+        mac_rustflags = any(entry.get("mac") and "rustflags" in entry
+                            for entry in job.get("strategy", {}).get("matrix", {}).get("include", []))
+        for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            if env.get(key) != "":
+                problem(f"job env {key} is not ''")
+        for key, value in env.items():
+            if key == "CARGO_HOME" or cargo_isolation.forbidden(key) and value != "" and not (
+                    key == "RUSTFLAGS" and value == "${{ matrix.rustflags }}" and not mac_rustflags):
+                problem(f"job env sets {key}")
+        setup = [i for i, run in enumerate(runs) if "cargo_isolation.py" in run]
+        if len(setup) != 1:
+            problem("not exactly one cargo_isolation.py step")
+        else:
+            step = steps[setup[0]]
+            if (step["run"] != SETUP_RUN or step.get("if") not in SETUP_IFS or step.get("continue-on-error")
+                    or step.get("env")):
+                problem("the cargo_isolation.py step changed")
+            first_cargo = next((i for i, run in enumerate(runs) if CARGO_CALL.search(run)), len(runs))
+            if first_cargo < setup[0]:
+                problem("a cargo call before cargo_isolation.py")
+        for step, run in zip(steps, runs):
+            step_env = step.get("env", {})
+            for key, value in step_env.items():
+                if key == "HORIZON_NO_SCCACHE" and value == "1":
+                    continue
+                if key in ("CARGO_HOME", "HORIZON_NO_SCCACHE") or cargo_isolation.forbidden(key):
+                    problem(f"a step sets {key}")
+            if "runner-env.sh" in run and {**env, **step_env}.get("HORIZON_NO_SCCACHE") != "1":
+                problem("runner-env.sh without HORIZON_NO_SCCACHE: '1'")
+            if ENV_WRITE.search(run):
+                problem("a step writes cargo settings to GITHUB_ENV")
+        if not any(run == CLEANUP_RUN and str(step.get("if", "")).startswith("always()")
+                   for step, run in zip(steps, runs)):
+            problem("the cargo home is not removed with always()")
+    return found
+
+
+def route_workflows(*roots):
+    """The workflows the roots reach through `uses: ./.github/workflows/…`."""
+    seen, todo = [], list(roots)
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.append(name)
+        for job in yaml.safe_load((WORKFLOWS / name).read_text())["jobs"].values():
+            uses = job.get("uses", "")
+            if uses.startswith("./.github/workflows/"):
+                todo.append(uses.rsplit("/", 1)[1])
+    return seen
 
 
 class UntrustedBuildTests(unittest.TestCase):
@@ -303,29 +358,78 @@ class UntrustedBuildTests(unittest.TestCase):
                 self.assertNotEqual(polytone_gate_bypasses(mutated_game, mutated_build), [])
 
     def test_mac_jobs_read_no_machine_shared_cache(self):
-        # Every job that sets up the runner's tools, whatever `trusted` says; a job added later is held to it too.
+        # Whatever `trusted` says; a job or workflow added to the route later is held to it too.
+        route = route_workflows("release.yml", "nightly-build.yml")
+        self.assertIn("game-build.yml", route)
+        for name in route:
+            with self.subTest(workflow=name):
+                self.assertEqual(machine_cache_problems(yaml.safe_load((WORKFLOWS / name).read_text())), [])
         game = yaml.safe_load(self.game)
-        callers = {name for name, job in game["jobs"].items()
-                   if any("runner-env.sh" in step.get("run", "") for step in job.get("steps", []))}
-        self.assertLessEqual({"exporters", "build"}, callers)
-        self.assertEqual(machine_cache_users(game), [])
-        breaks = (
-            lambda job: [step["env"].update(HORIZON_NO_SCCACHE="${{ inputs.trusted && '1' || '' }}")
-                         for step in job["steps"] if "runner-env.sh" in step.get("run", "")],
-            lambda job: job["env"].pop("RUSTC_WRAPPER"),
-            lambda job: job["steps"].remove(next(step for step in job["steps"] if FRESH_CARGO_HOME in step.get("run", ""))),
-            lambda job: job["steps"].remove(next(step for step in job["steps"] if "cargo-home" in step.get("run", "")
-                                                 and FRESH_CARGO_HOME not in step["run"])),
-        )
+        covered = {job for job, _ in machine_cache_problems(
+            {"jobs": {name: {**job, "steps": job["steps"][:1] + [{"run": "cargo build"}]}
+                      for name, job in game["jobs"].items() if "steps" in job}})}
+        self.assertLessEqual({"exporters", "build"}, covered)
+        # No caller can switch the protections off: none of them reads an input, and callers pass only declared ones.
+        inputs = set(game[True]["workflow_call"]["inputs"])
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for job in (yaml.safe_load(path.read_text()) or {}).get("jobs", {}).values():
+                if job.get("uses", "").endswith("/game-build.yml"):
+                    with self.subTest(caller=path.name):
+                        self.assertLessEqual(set(job.get("with", {})), inputs)
+
+        def setup(job):
+            return next(step for step in job["steps"] if "cargo_isolation.py" in step.get("run", ""))
+
+        def later(job):
+            return next(step for step in job["steps"][job["steps"].index(setup(job)) + 1:] if "run" in step)
+
+        def runner_env(job):
+            return next(step for step in job["steps"] if "runner-env.sh" in step.get("run", ""))
+
+        def cleanup(job):
+            return next(step for step in job["steps"] if step.get("run") == CLEANUP_RUN)
+
+        def before_setup(step):
+            return lambda job: job["steps"].insert(job["steps"].index(setup(job)), step)
+
+        breaks = {
+            "setup removed": lambda job: job["steps"].remove(setup(job)),
+            "setup if trusted": lambda job: setup(job).update({"if": "${{ inputs.trusted }}"}),
+            "setup if false": lambda job: setup(job).update({"if": "false"}),
+            "setup if developer_id": lambda job: setup(job).update({"if": "inputs.developer_id"}),
+            "setup may fail": lambda job: setup(job).update({"continue-on-error": True}),
+            "setup script changed": lambda job: setup(job).update({"run": "true"}),
+            "setup gets env": lambda job: setup(job).update({"env": {"PYTHONPATH": "x"}}),
+            "setup after the cargo calls": lambda job: job["steps"].append(job["steps"].pop(job["steps"].index(setup(job)))),
+            "cargo before setup": before_setup({"run": "cargo build --release --locked -p horizon-prepare"}),
+            "xtask before setup": before_setup({"run": "cargo xtask package"}),
+            "script before setup": before_setup({"run": "bash tools/ci/vanilla-data.sh"}),
+            "step overrides RUSTC_WRAPPER": lambda job: later(job).setdefault("env", {}).update(RUSTC_WRAPPER="sccache"),
+            "step overrides CARGO_HOME": lambda job: later(job).setdefault("env", {}).update(CARGO_HOME="/x"),
+            "step sets RUSTFLAGS": lambda job: later(job).setdefault("env", {}).update(RUSTFLAGS="-C x"),
+            "sccache conditional": lambda job: runner_env(job)["env"].update(
+                HORIZON_NO_SCCACHE="${{ inputs.trusted && '1' || '' }}"),
+            "step writes RUSTC_WRAPPER": lambda job: later(job).update(run='echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"'),
+            "job env wrapper dropped": lambda job: job["env"].pop("RUSTC_WRAPPER"),
+            "job env CARGO_HOME": lambda job: job["env"].update(CARGO_HOME="/x"),
+            "cleanup removed": lambda job: job["steps"].remove(cleanup(job)),
+            "cleanup not always": lambda job: cleanup(job).update({"if": "success()"}),
+        }
         for name in ("exporters", "build"):
-            for number, change in enumerate(breaks):
-                with self.subTest(job=name, change=number):
+            for label, change in breaks.items():
+                with self.subTest(job=name, change=label):
                     mutated = copy.deepcopy(game)
                     change(mutated["jobs"][name])
-                    self.assertEqual(machine_cache_users(mutated), [name])
+                    self.assertIn(name, {job for job, _ in machine_cache_problems(mutated)})
         mutated = copy.deepcopy(game)
-        mutated["jobs"]["new-mac"] = {"runs-on": ["self-hosted", "macOS"], "steps": [{"run": "bash tools/ci/runner-env.sh"}]}
-        self.assertEqual(machine_cache_users(mutated), ["new-mac"])
+        mac = next(entry for entry in mutated["jobs"]["build"]["strategy"]["matrix"]["include"] if entry.get("mac"))
+        mac["rustflags"] = "-C x"
+        self.assertEqual({job for job, _ in machine_cache_problems(mutated)}, {"build"})
+        for new in ({"runs-on": ["self-hosted", "macOS"], "steps": [{"run": "bash tools/ci/runner-env.sh"}]},
+                    {"runs-on": "${{ vars.MAC_RUNNER }}", "steps": [{"run": "cargo build"}]}):
+            mutated = copy.deepcopy(game)
+            mutated["jobs"]["new-mac"] = new
+            self.assertEqual({job for job, _ in machine_cache_problems(mutated)}, {"new-mac"})
         env = (Path(__file__).resolve().parents[1] / "tools/ci/runner-env.sh").read_text()
         self.assertEqual(env.count('-z "${HORIZON_NO_SCCACHE:-}"'), 2)
 
