@@ -61,6 +61,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -728,9 +729,10 @@ def prebuild(artifacts, jobs):
     for number, command in enumerate(commands, 1):
         started = time.monotonic()
         # Stderr is read line by line, timed, so the summary can tell lock waits from compiling; stdout, which
-        # Cargo leaves empty here, was discarded before too.
+        # Cargo leaves empty here, was discarded before too. Undecodable bytes are replaced: decoding as the lines
+        # arrive must never interrupt the build.
         with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                              text=True) as process:
+                              text=True, errors="replace") as process:
             try:
                 lines = [(time.monotonic(), line) for line in process.stderr]
                 process.wait()
@@ -755,14 +757,17 @@ def report(line):
 
 
 CARGO_LOCK_WAIT = re.compile(r"^\s*Blocking waiting for file lock on (.+?)\s*$")
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def describe_cargo_build(command, lines, started, ended):
     """One prebuild Cargo run as a log line: what it built, its wall time, how many crates Cargo compiled (it names
-    only those; fresh ones need -v), and how long it sat behind another build's file lock before going on.
+    only those; fresh ones need -v), and about how long it sat behind another build's file lock.
 
-    lines: [(monotonic time, stderr line)]. A wait runs from Cargo's `Blocking waiting for file lock on <what>` to
-    its next line, or to the end of the run."""
+    lines: [(monotonic time, stderr line)], colours included when CARGO_TERM_COLOR=always. A wait runs from Cargo's
+    `Blocking waiting for file lock on <what>` to its next line, or to the end of the run, so it can include silent
+    work after the lock was taken."""
+    lines = [(at, ANSI_ESCAPE.sub("", line)) for at, line in lines]
     profile, selection, targets = "dev", [], 0
     arguments = iter(command[2:])
     for argument in arguments:
@@ -787,7 +792,7 @@ def describe_cargo_build(command, lines, started, ended):
     built = " ".join([profile, *selection, *([f"{targets} target{'s' * (targets != 1)}"] if targets else [])])
     text = f"{built}: {ended - started:.0f}s, {compiled} crate{'s' * (compiled != 1)} compiled"
     for lock, seconds in waits.items():
-        text += f", {seconds:.0f}s waiting for the {lock} lock"
+        text += f", about {seconds:.0f}s waiting for the {lock} lock (to cargo's next line)"
     return text
 
 
@@ -810,18 +815,30 @@ SCCACHE_COUNTS = re.compile(r"^Cache (hits|misses)\s+(\d+)\s*$", re.MULTILINE)
 
 def sccache_stats(environment):
     """sccache's {"hits": n, "misses": n} when the build goes through it (RUSTC_WRAPPER names sccache or
-    tools/ci/compiler-cache.sh, which calls it), else None; None too when the counts can't be read."""
+    tools/ci/compiler-cache.sh, which calls it), else None; None too when the counts can't be read in 10 s.
+
+    The output goes to a file, not a pipe: a server the command starts could inherit a pipe and hold it open."""
     wrapper = os.path.basename(environment.get("RUSTC_WRAPPER", ""))
     if os.path.splitext(wrapper)[0].lower() != "sccache" and wrapper != "compiler-cache.sh":
         return None
-    program = shutil.which("sccache", path=environment.get("PATH")) if wrapper == "compiler-cache.sh" \
-        else environment["RUSTC_WRAPPER"]
     try:
-        result = subprocess.run([program, "--show-stats"], capture_output=True, text=True, timeout=30)
-    except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+        program = shutil.which("sccache", path=environment.get("PATH")) if wrapper == "compiler-cache.sh" \
+            else environment["RUSTC_WRAPPER"]
+        with tempfile.TemporaryFile() as output:
+            process = subprocess.Popen([program, "--show-stats"], stdin=subprocess.DEVNULL, stdout=output,
+                                       stderr=subprocess.DEVNULL)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+                return None
+            output.seek(0)
+            text = output.read().decode("utf-8", errors="replace")
+        counts = dict((name, int(value)) for name, value in SCCACHE_COUNTS.findall(text))
+        return counts if not process.returncode and len(counts) == 2 else None
+    except Exception:
         return None
-    counts = dict((name, int(value)) for name, value in SCCACHE_COUNTS.findall(result.stdout))
-    return counts if not result.returncode and len(counts) == 2 else None
 
 
 def describe_sccache(before, after):

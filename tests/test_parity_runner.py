@@ -94,28 +94,40 @@ class ParityRunnerTests(unittest.TestCase):
     def test_a_prebuild_cargo_run_says_where_its_time_went(self):
         command = ["cargo", "build", "--locked", "--profile", "release", "-p", "horizon-world", "--features", "f",
                    "--example", "a", "--example", "b", "--bins"]
-        lines = [(10.0, "    Blocking waiting for file lock on package cache\n"),
-                 (12.0, "    Blocking waiting for file lock on build directory\n"),
-                 (700.0, "   Compiling serde v1.0.0\n"),
-                 (900.0, "   Compiling horizon-world v0.1.0 (/w)\n"),
-                 (1000.0, "    Finished `release` profile [optimized] target(s) in 16m 40s\n")]
-        self.assertEqual(parity.describe_cargo_build(command, lines, 0.0, 1001.0),
-                         "release -p horizon-world --features f --bins 2 targets: 1001s, 2 crates compiled, "
-                         "2s waiting for the package cache lock, 688s waiting for the build directory lock")
+        # As Cargo prints them with CARGO_TERM_COLOR=always: a bold, coloured status word, then a reset.
+        lines = [(10.0, "\x1b[1m\x1b[36m    Blocking\x1b[0m waiting for file lock on package cache\n"),
+                 (12.0, "\x1b[1m\x1b[36m    Blocking\x1b[0m waiting for file lock on build directory\n"),
+                 (700.0, "\x1b[1m\x1b[92m   Compiling\x1b[0m serde v1.0.0\n"),
+                 (900.0, "\x1b[1m\x1b[32m   Compiling\x1b[0m horizon-world v0.1.0 (/w)\n"),
+                 (1000.0, "\x1b[1m\x1b[92m    Finished\x1b[0m `release` profile [optimized] target(s) in 16m 40s\n")]
+        expected = ("release -p horizon-world --features f --bins 2 targets: 1001s, 2 crates compiled, "
+                    "about 2s waiting for the package cache lock (to cargo's next line), "
+                    "about 688s waiting for the build directory lock (to cargo's next line)")
+        self.assertEqual(parity.describe_cargo_build(command, lines, 0.0, 1001.0), expected)
+        plain = [(at, parity.ANSI_ESCAPE.sub("", line)) for at, line in lines]
+        self.assertEqual(plain[2][1], "   Compiling serde v1.0.0\n")
+        self.assertEqual(parity.describe_cargo_build(command, plain, 0.0, 1001.0), expected)
         # Still waiting when the run ended (it failed or was stopped).
         self.assertEqual(parity.describe_cargo_build(["cargo", "build", "--locked", "--example", "a"],
                                                      [(5.0, "Blocking waiting for file lock on build directory\n")],
                                                      0.0, 65.0),
-                         "dev 1 target: 65s, 0 crates compiled, 60s waiting for the build directory lock")
+                         "dev 1 target: 65s, 0 crates compiled, "
+                         "about 60s waiting for the build directory lock (to cargo's next line)")
 
     def test_the_prebuild_still_returns_a_failed_runs_errors(self):
+        # Bytes no locale decodes must not stop the line reader (and with it the build).
         script = ("import sys; print('Blocking waiting for file lock on build directory', file=sys.stderr, flush=True); "
-                  "print('   Compiling x v1', file=sys.stderr); sys.exit(1)")
+                  "sys.stderr.buffer.write(b'\\x1b[1m\\x1b[32m   Compiling\\x1b[0m x v1 \\x81\\xff\\x81\\n'); "
+                  "sys.stderr.flush(); sys.exit(1)")
         with mock.patch.object(parity, "target_packages", return_value={}), \
                 mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", script]]), \
+                mock.patch.object(parity, "sccache_stats", return_value=None), \
                 mock.patch("builtins.print") as printed:
-            self.assertEqual(parity.prebuild([], 2),
-                             (False, "Blocking waiting for file lock on build directory\n   Compiling x v1\n"))
+            built, errors = parity.prebuild([], 2)
+        self.assertFalse(built)
+        self.assertTrue(errors.startswith("Blocking waiting for file lock on build directory\n"
+                                          "\x1b[1m\x1b[32m   Compiling\x1b[0m x v1 "), errors)  # colours kept here
+        self.assertIn("�", errors)
         self.assertIn("1 crate compiled", printed.call_args_list[0].args[0])
 
     def test_the_prebuild_machine_and_cache_lines(self):
@@ -127,17 +139,40 @@ class ParityRunnerTests(unittest.TestCase):
         for before in (None, {"hits": 500, "misses": 5}):  # none, or a server restarted meanwhile
             self.assertEqual(parity.describe_sccache(before, {"hits": 410, "misses": 7}),
                              "compiler cache: not in use, or its counts could not be read")
-        stats = ("Compile requests                   500\nCache hits                         410\n"
-                 "Cache hits (Rust)                  410\nCache misses                         7\n"
-                 "Cache hits rate                  98.33 %\n")
-        with mock.patch.object(parity.subprocess, "run",
-                               return_value=subprocess.CompletedProcess([], 0, stdout=stats)) as run:
+
+    def test_sccache_counts_come_from_a_file_within_a_time_limit(self):
+        stats = (b"Compile requests                   500\nCache hits                         410\n"
+                 b"Cache hits (Rust)                  410\nCache misses                         7\n"
+                 b"Cache hits rate                  98.33 %\nCache location     /Users/\xff\n")
+
+        class FakeSccache:
+            calls, hangs = [], False
+
+            def __init__(self, command, stdin=None, stdout=None, stderr=None):
+                FakeSccache.calls.append(command)
+                self.returncode, self.killed = None, False
+                stdout.write(stats)  # a real file, not a pipe
+
+            def wait(self, timeout=None):
+                if FakeSccache.hangs and not self.killed:
+                    raise subprocess.TimeoutExpired("sccache", timeout)
+                self.returncode = -9 if self.killed else 0
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+
+        with mock.patch.object(parity.subprocess, "Popen", FakeSccache):
             self.assertEqual(parity.sccache_stats({"RUSTC_WRAPPER": "/opt/homebrew/bin/sccache"}),
                              {"hits": 410, "misses": 7})
-            self.assertIsNone(parity.sccache_stats({}))
-            self.assertEqual(run.call_count, 1)
-        with mock.patch.object(parity.subprocess, "run", side_effect=OSError):
+            self.assertEqual(FakeSccache.calls, [["/opt/homebrew/bin/sccache", "--show-stats"]])
+            self.assertIsNone(parity.sccache_stats({}))  # no wrapper: not asked
+            self.assertEqual(len(FakeSccache.calls), 1)
+            FakeSccache.hangs = True
             self.assertIsNone(parity.sccache_stats({"RUSTC_WRAPPER": "sccache"}))
+        for failure in (OSError, ValueError):
+            with mock.patch.object(parity.subprocess, "Popen", side_effect=failure):
+                self.assertIsNone(parity.sccache_stats({"RUSTC_WRAPPER": "sccache"}))
 
     def test_a_probe_binary_depends_only_on_the_probes_it_ran(self):
         commands = [["/t/release/examples/world_probe", "a_fixture", "/dir"],
