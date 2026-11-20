@@ -30,10 +30,16 @@ EXCLUDED = {
     "tools/ci/fn-replace-check/registry/Cargo.lock": "needs the SDK fn_replace_check.sh generates",
 }
 
-# cargo's message when --locked stops a lock change (src/cargo/ops/lockfile.rs). Nothing else is a stale lock.
-STALE = re.compile(r"cannot update the lock file .+Cargo\.lock because --locked was passed to prevent this")
+# cargo's message when --locked stops a lock change (src/cargo/ops/lockfile.rs), in both wordings: cargo up to at least
+# 1.90 (a workspace may pin an older toolchain) and the newer one. Nothing else is a stale lock.
+STALE = re.compile(r"the lock file .+Cargo\.lock needs to be updated but --locked was passed to prevent this"
+                   r"|cannot update the lock file .+Cargo\.lock because --locked was passed to prevent this")
 ATTEMPTS = 3
 PAUSE_SECONDS = 10
+# A resolution takes about a second (the whole check about 2 s on a cold runner); these only stop a hung registry from
+# holding the job (30 minutes) until it is killed.
+CALL_SECONDS = 90
+BUDGET_SECONDS = 8 * 60
 
 
 def git_paths(command, *arguments, root=ROOT):
@@ -73,27 +79,43 @@ def workspaces(root=ROOT):
     return sorted(found)
 
 
-def check(folder, root=ROOT, run=subprocess.run, sleep=time.sleep):
-    """'current', 'stale' or 'unresolved' for the workspace in `folder`, printing what CI should show."""
-    lock = f"{folder}/Cargo.lock"
-    for attempt in range(1, ATTEMPTS + 1):
-        # From inside the workspace, so a .cargo/config.toml there applies as it does to its own builds.
-        result = run(["cargo", "update", "--workspace", "--locked", "--quiet"], cwd=root / folder,
-                     capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"nested locks: {lock} is current")
-            return "current"
-        if STALE.search(result.stderr):
-            print(result.stderr.strip(), file=sys.stderr)
-            print(f"::error file={lock}::{lock} no longer matches the crates it reaches. Update it with "
-                  f"`cd {folder} && cargo update --workspace` and commit the lock.")
-            return "stale"
-        if attempt < ATTEMPTS:
-            sleep(PAUSE_SECONDS)
-    print(f"nested locks: could not resolve {lock}; this is NOT a staleness finding. cargo said:")
-    print(result.stderr.strip())
+def unresolved(lock, reason):
+    print(f"nested locks: could not resolve {lock}; this is NOT a staleness finding. {reason}")
     print(f"::warning file={lock}::could not resolve {lock} (not a stale lock); its own --locked build still checks it")
     return "unresolved"
+
+
+def check(folder, deadline, root=ROOT, run=subprocess.run, sleep=time.sleep, clock=time.monotonic):
+    """'current', 'stale' or 'unresolved' for the workspace in `folder`, printing what CI should show. Nothing runs
+    past `deadline` (a `clock` reading)."""
+    lock = f"{folder}/Cargo.lock"
+    reason = "The check's time budget ran out before it."
+    for attempt in range(1, ATTEMPTS + 1):
+        left = deadline - clock()
+        if left <= 0:
+            break
+        try:
+            # From inside the workspace, so a .cargo/config.toml there applies as it does to its own builds.
+            result = run(["cargo", "update", "--workspace", "--locked", "--quiet"], cwd=root / folder,
+                         capture_output=True, text=True, timeout=min(CALL_SECONDS, left))
+        except subprocess.TimeoutExpired:
+            reason = f"cargo did not answer within {min(CALL_SECONDS, left):.0f} s."
+        except OSError as error:
+            # cargo could not be started: trying again won't change that.
+            return unresolved(lock, f"cargo did not start: {error}")
+        else:
+            if result.returncode == 0:
+                print(f"nested locks: {lock} is current")
+                return "current"
+            if STALE.search(result.stderr):
+                print(result.stderr.strip(), file=sys.stderr)
+                print(f"::error file={lock}::{lock} no longer matches the crates it reaches. Update it with "
+                      f"`cd {folder} && cargo update --workspace` and commit the lock.")
+                return "stale"
+            reason = "cargo said:\n" + result.stderr.strip()
+        if attempt < ATTEMPTS and deadline - clock() > PAUSE_SECONDS:
+            sleep(PAUSE_SECONDS)
+    return unresolved(lock, reason)
 
 
 def main(argv=None):
@@ -103,7 +125,8 @@ def main(argv=None):
     if not needs_check(args.base):
         print("nested locks: no Cargo.toml, Cargo.lock, .cargo config or toolchain file changed")
         return 0
-    results = [check(folder) for folder in workspaces()]
+    deadline = time.monotonic() + BUDGET_SECONDS
+    results = [check(folder, deadline) for folder in workspaces()]
     return 1 if "stale" in results else 0
 
 
