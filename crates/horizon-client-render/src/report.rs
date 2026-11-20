@@ -11,6 +11,7 @@
 //! they live outside authlib.
 use crate::auth;
 use serde::Serialize;
+use std::time::Duration;
 
 /// authlib's `AbuseReportLimits`: how big a report may be.
 /// `getAbuseReportLimits` returns `DEFAULTS` whatever the account.
@@ -217,19 +218,33 @@ pub fn send_report(request: &AbuseReportRequest) -> Result<(), String> {
     let url = auth::endpoint(&doc, "player", "sendReport")
         .ok_or("the discovery document has no sendReport endpoint".to_owned())?;
     let body = serde_json::to_string(request).map_err(|e| e.to_string())?;
-    match auth::agent()
-        .post(&url)
-        .set(
-            "Authorization",
-            &format!("Bearer {}", session.access_token()),
-        )
+    submit_report(&url, session.access_token(), &body)
+}
+
+/// The POST itself, split from `send_report`'s assembly: no globals, so the
+/// redirect rules are testable against a loopback server. Redirects are off —
+/// ureq re-POSTs nowhere and, on a 307/308, answers the redirect itself;
+/// 301/302/303 would otherwise turn the POST into a GET whose 2xx would look
+/// like acceptance while the report body never reached the service. Only a
+/// 2xx from the endpoint counts. The agent carries `auth::agent`'s timeout
+/// and user agent with its own redirect count.
+fn submit_report(url: &str, bearer: &str, body: &str) -> Result<(), String> {
+    static AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout(Duration::from_secs(15))
+            .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
+            .build()
+    });
+    match AGENT
+        .post(url)
+        .set("Authorization", &format!("Bearer {bearer}"))
         .set("Content-Type", "application/json; charset=utf-8")
-        .send_string(&body)
+        .send_string(body)
     {
         Ok(response) => {
-            // ureq answers below 400 as Ok — including a 307/308 the POST's
-            // redirect never followed (unit.rs breaks the loop and returns the
-            // answer). Vanilla's MinecraftClient throws on anything but 2xx.
+            // ureq answers below 400 as Ok — including the redirects this
+            // request refused. Vanilla's MinecraftClient accepts only 2xx.
             if (200..300).contains(&response.status()) {
                 Ok(())
             } else {
@@ -341,5 +356,73 @@ mod tests {
         assert_eq!(limits.max_evidence_message_count, 40);
         assert_eq!(limits.leading_context_message_count, 9);
         assert_eq!(limits.trailing_context_message_count, 0);
+    }
+
+    /// One loopback server answering the four routes a redirect test needs.
+    fn loopback() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let routes = [
+                (
+                    "POST /moved",
+                    "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n",
+                ),
+                (
+                    "POST /final",
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+                ),
+                (
+                    "POST /accepted",
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+                ),
+                (
+                    "POST /refused",
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n{\"error\":\"X\",\"errorMessage\":\"the reason field\"}",
+                ),
+            ];
+            for _ in 0..3 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buffer = [0; 1024];
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                let route = request
+                    .split("\r\n")
+                    .next()
+                    .and_then(|line| routes.iter().find(|(name, _)| line.starts_with(name)));
+                let answer = route
+                    .map(|(_, answer)| *answer)
+                    .unwrap_or("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                let _ = stream.write_all(answer.as_bytes());
+                // Half-close and wait out the client's read: dropping now
+                // resets the connection mid-answer.
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let _ = stream.read(&mut buffer);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// Redirects are off: the 302 is the answer (an error, the body never
+    /// went to /final), the endpoint's 2xx is acceptance, and the service's
+    /// `errorMessage` names the error.
+    #[test]
+    fn submission_accepts_only_the_endpoints_answer() {
+        let base = loopback();
+        assert_eq!(
+            submit_report(&format!("{base}/moved"), "bearer", "{}"),
+            Err("the report service answered 302".to_owned()),
+        );
+        assert_eq!(
+            submit_report(&format!("{base}/accepted"), "bearer", "{}"),
+            Ok(())
+        );
+        assert_eq!(
+            submit_report(&format!("{base}/refused"), "bearer", "{}"),
+            Err("the reason field".to_owned()),
+        );
     }
 }
