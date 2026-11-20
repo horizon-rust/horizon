@@ -129,6 +129,23 @@ class WireStreamTest(unittest.TestCase):
         moved = [tick('punch'), tick('punch'), tick('abort', 'punch', 'move_player_pos'), tick('move_player_pos')]
         self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, moved, 3, 1, 2)], [3])
 
+    def test_a_phase_compares_from_each_client_s_answer_up_to_the_script_s_next_step(self):
+        tick = lambda *names: {'packets': [(n, {}) for n in names], 'frame': [], 'misplaced': []}  # noqa
+        # The teleport reaches vanilla in tick 1 and Horizon in tick 2; the script's next step is tick 4.
+        vanilla = [tick('a'), tick('t0'), tick('t1'), tick('t2'), tick('step'), tick()]
+        horizon = [tick('a'), tick('a'), tick('t0'), tick('t1'), tick('step'), tick()]
+        self.assertEqual(wire_stream.compare_phased(vanilla, horizon, 5, 1, 2, 4), [])
+        # On the script's clock the same streams differ from the answer on.
+        self.assertTrue(wire_stream.compare_answered(vanilla, horizon, 5, 1, 2))
+        # A difference in the phase is reported at vanilla's tick; one before the earlier answer at its own.
+        moved = [tick('a'), tick('a'), tick('t0'), tick('x'), tick('step'), tick()]
+        self.assertEqual([d[0] for d in wire_stream.compare_phased(vanilla, moved, 5, 1, 2, 4)], [2])
+        early = [tick('b'), tick('a'), tick('t0'), tick('t1'), tick('step'), tick()]
+        self.assertEqual([d[0] for d in wire_stream.compare_phased(vanilla, early, 5, 1, 2, 4)], [0])
+        # With no step after the teleport the phase runs to the script's last tick, never past it on either side.
+        ends = [tick('a'), tick('a'), tick('t0'), tick('t1'), tick('t2'), tick('after')]
+        self.assertEqual(wire_stream.compare_phased(vanilla[:4] + [tick('t3')], ends, 4, 1, 2, 5), [])
+
     def test_compare_reports_the_first_field_that_differs(self):
         tick = lambda y: {'packets': [('move_player_pos', {'x': 0.5, 'y': y})], 'frame': [], 'misplaced': []}  # noqa
         diffs = wire_stream.compare([tick(-60.0)], [tick(-60.0000001)], 0)

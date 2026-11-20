@@ -233,6 +233,22 @@ def compare_answered(vanilla, horizon, ticks, av, ah):
     return sorted(out, key=lambda d: d[0])
 
 
+def compare_phased(vanilla, horizon, ticks, av, ah, until):
+    """compare, for a scenario whose second phase starts when the client has applied the server's answer (a
+    teleport to a fixed place, which also zeroes the player's motion): the ticks before the earlier answer
+    compare on the script's clock; from the answers on, vanilla's tick av + k compares with Horizon's ah + k.
+    A step of the script stays on the script's clock, so the phase ends before the script's next step
+    (`until`) or after its last tick, on both clients. The ticks one client waited longer for the answer are
+    the server's timing, not compared. Numbers are vanilla's; both answers must come before `until`."""
+    out = compare(vanilla, horizon, min(av, ah) - 1)
+    packets = lambda run, i: run[i]['packets'] if i < len(run) else None  # noqa: E731
+    for k in range(min(until, ticks + 1) - max(av, ah)):
+        v, h = packets(vanilla, av + k), packets(horizon, ah + k)
+        if v != h:
+            out.append((av + k, v, h))
+    return out
+
+
 MOVES = {'move_player_pos', 'move_player_pos_rot', 'move_player_rot', 'move_player_status_only'}
 
 
