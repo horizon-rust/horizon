@@ -98,6 +98,32 @@ impl Stats {
     pub fn custom(&mut self, key: &str, n: i32) {
         namespaced(key, |key| self.add("custom", key, n));
     }
+    /// `StatsCounter.setValue` for every statistic: `values` in place of the counters, those
+    /// it lacks back to 0. Each changed one is reset then raised to its value for the
+    /// scoreboard criteria to follow, and is dirty for the client's next request.
+    pub fn replace(&mut self, values: BTreeMap<String, BTreeMap<String, i32>>) {
+        let old = std::mem::take(&mut self.values);
+        let value = |all: &BTreeMap<String, BTreeMap<String, i32>>, ty: &str, key: &str| {
+            all.get(ty).and_then(|m| m.get(key)).copied().unwrap_or(0)
+        };
+        let keys: BTreeSet<(String, String)> = old
+            .iter()
+            .chain(&values)
+            .flat_map(|(ty, m)| m.keys().map(move |key| (ty.clone(), key.clone())))
+            .collect();
+        for (ty, key) in keys {
+            let new = value(&values, &ty, &key);
+            if value(&old, &ty, &key) == new {
+                continue;
+            }
+            self.events.push((ty.clone(), key.clone(), None));
+            if new != 0 {
+                self.events.push((ty.clone(), key.clone(), Some(new)));
+            }
+            self.mark_dirty(&ty, &key);
+        }
+        self.values = values;
+    }
     /// `ServerStatsCounter.markAllDirty`: everything goes out on the next request.
     pub fn mark_all_dirty(&mut self) {
         self.dirty = self
@@ -165,15 +191,35 @@ impl Stats {
             "DataVersion": horizon_world::DATA_VERSION,
         })
     }
-    /// `ServerStatsCounter.save`: a failure is logged, and the old file is left whole.
+    /// `ServerStatsCounter.save`: written whole (`save::write_durable`), so a crash or a full disk
+    /// leaves the old file; a failure is logged.
     pub fn write(&self, path: &Path) {
         if let Err(e) = self.try_write(path) {
-            log::warn!("{e}");
+            log::warn!("could not save the statistics file {}: {e}", path.display());
         }
     }
-    /// [`Self::write`], returning why it failed.
-    pub fn try_write(&self, path: &Path) -> Result<(), String> {
-        write_player_json(path, &self.to_json())
+    /// [`Self::write`], reporting why it failed. The old file is left as it was then.
+    pub fn try_write(&self, path: &Path) -> std::io::Result<()> {
+        let text = serde_json::to_string_pretty(&self.to_json()).map_err(std::io::Error::other)?;
+        horizon_client::save::write_durable(path, text.as_bytes())
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+    /// The counters of a snapshot a mod hands over (`player_set_statistics`), read strictly: a JSON
+    /// object with a `stats` object of type objects of whole numbers that fit an `i32`. Anything else is
+    /// None, so a half-valid snapshot never replaces live counters; `{"stats":{}}` is the explicit reset.
+    pub fn from_snapshot(json: &serde_json::Value) -> Option<Self> {
+        let all = json.get("stats")?.as_object()?;
+        let mut stats = Self {
+            loaded: true,
+            ..Self::default()
+        };
+        for (ty, entries) in all {
+            let map = stats.values.entry(ty.clone()).or_default();
+            for (key, v) in entries.as_object()? {
+                map.insert(key.clone(), i32::try_from(v.as_i64()?).ok()?);
+            }
+        }
+        Some(stats)
     }
 }
 /// A player's advancements or statistics file written whole (`save::write_durable`): a crash
@@ -291,37 +337,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&world);
     }
 
-    /// A stats file is replaced whole: when the new one cannot be written, the old one is still
-    /// there as it was, and the failure is returned.
+    /// An advancements file is replaced whole: when the new one cannot be written, the old one is
+    /// still there as it was, and the failure names the file.
     #[test]
-    fn a_failed_stats_write_keeps_the_old_file_and_is_reported() {
+    fn a_failed_player_file_write_keeps_the_old_file_and_is_reported() {
         let world = std::env::temp_dir().join(format!(
-            "horizon-stats-durable-{}-{:?}",
+            "horizon-player-json-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&world);
-        let path = player_json(&world, "stats", [1, 2, 3, 4]);
-        let mut stats = Stats {
-            loaded: true,
-            ..Stats::default()
-        };
-        stats.add("used", "minecraft:diamond_sword", 4);
-        stats.try_write(&path).unwrap();
-        let good = std::fs::read_to_string(&path).unwrap();
-        assert!(good.contains("minecraft:diamond_sword"));
+        let path = player_json(&world, "advancements", [1, 2, 3, 4]);
+        let good = serde_json::json!({"minecraft:story/root": {"done": true}});
+        write_player_json(&path, &good).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
         // A folder where the new file goes: it cannot be created.
         let file = path.file_name().unwrap().to_str().unwrap();
         std::fs::create_dir(path.with_file_name(format!("{file}_new"))).unwrap();
-        stats.add("used", "minecraft:diamond_sword", 1);
-        let error = stats.try_write(&path).unwrap_err();
-        assert!(error.contains("is not saved"), "{error}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
-        // A folder in the file's place: nothing is written over it.
-        let folder = player_json(&world, "stats", [5, 6, 7, 8]);
-        std::fs::create_dir_all(&folder).unwrap();
-        assert!(stats.try_write(&folder).is_err());
-        assert!(folder.is_dir());
+        let error = write_player_json(&path, &serde_json::json!({})).unwrap_err();
+        assert!(error.contains(file), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         let _ = std::fs::remove_dir_all(&world);
     }
 
@@ -400,5 +435,42 @@ mod tests {
         );
         s.mark_all_dirty();
         assert_eq!(s.take_dirty().len(), 3);
+    }
+
+    /// A snapshot is read whole or not at all; the file the mod's counters are saved to is replaced
+    /// atomically and a failed save leaves the old one.
+    #[test]
+    fn a_snapshot_is_validated_whole_and_a_save_is_atomic() {
+        let ok = serde_json::json!({"stats": {"minecraft:mined": {"minecraft:stone": 3}}});
+        let read = Stats::from_snapshot(&ok).unwrap();
+        assert_eq!(read.values["minecraft:mined"]["minecraft:stone"], 3);
+        assert!(
+            Stats::from_snapshot(&serde_json::json!({"stats": {}}))
+                .unwrap()
+                .values
+                .is_empty()
+        );
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({"DataVersion": 1}),
+            serde_json::json!({"stats": []}),
+            serde_json::json!({"stats": {"minecraft:mined": 5}}),
+            serde_json::json!({"stats": {"minecraft:mined": {"minecraft:stone": "3"}}}),
+            serde_json::json!({"stats": {"minecraft:mined": {"minecraft:stone": 2_147_483_648_i64}}}),
+            serde_json::json!({"stats": {"minecraft:mined": {"minecraft:stone": 1.5}}}),
+        ] {
+            assert!(Stats::from_snapshot(&bad).is_none(), "{bad}");
+        }
+        let dir = std::env::temp_dir().join(format!("stats-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("p.json");
+        read.try_write(&path).unwrap();
+        assert!(!dir.join("p.json_new").exists());
+        let before = std::fs::read_to_string(&path).unwrap();
+        // the temporary file cannot be made (its name is a directory): the old file stays whole
+        std::fs::create_dir(dir.join("p.json_new")).unwrap();
+        assert!(Stats::default().try_write(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
