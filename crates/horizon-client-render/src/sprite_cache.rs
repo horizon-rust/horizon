@@ -281,7 +281,7 @@ mod tests {
         bytes.extend_from_slice(&7u64.to_le_bytes());
         bytes.extend_from_slice(&1u32.to_le_bytes());
         put_bytes(&mut bytes, b"a:b");
-        for field in [1, 1, 1, 30_000_000] {
+        for field in [1u32, 1, 1, 30_000_000] {
             bytes.extend_from_slice(&field.to_le_bytes());
         }
         put_bytes(&mut bytes, &[0; 4]);
