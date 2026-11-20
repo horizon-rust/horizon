@@ -32,7 +32,7 @@ mod spawn_egg_mob_tests;
 #[path = "../../creatures/spectator_view_tests.rs"]
 mod spectator_view_tests;
 mod world_view;
-use super::api_values::{TryIntoApi, TryIntoEngine};
+use super::api_values::TryIntoApi;
 use super::level_sounds::LevelSound;
 use super::piston_push::Lid;
 use super::{
@@ -253,7 +253,7 @@ pub(super) struct Creatures {
     /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
     pub shoulder_time: std::collections::HashMap<[i32; 4], i64>,
     /// The cat spawner's countdown (`CatSpawner.nextTick`).
-    pub cat_tick: i32,
+    pub cat: super::cat_spawner::CatSpawner,
     /// Each level's custom spawners, built when its first tick asks (game/mobs/custom_spawners.rs).
     pub custom_spawners: std::collections::HashMap<super::Dim, mod_api::CustomSpawners>,
     /// Native sounds waiting for the server host to be available.
@@ -630,7 +630,7 @@ impl Game<'_> {
             SpawnSite::Finalizing(reason) => match self.finalize_with(&mut mob, reason, None) {
                 Finalized::Cancelled => return self.discard_unjoined_mob(mob.id),
                 Finalized::Skipped => return Some(mob),
-                Finalized::Done => {}
+                Finalized::Done => horizon_client::mobs::shulker::finalize_spawn(&mut mob),
             },
             // A plain spawn finalizes as a summoned one (vanilla's /summon
             // and egg path): its few reason-gated arms behave the same.
@@ -642,6 +642,7 @@ impl Game<'_> {
                     &difficulty,
                     horizon_client::mobs::spawn_rules::Reason::MobSummoned,
                 );
+                horizon_client::mobs::shulker::finalize_spawn(&mut mob);
             }
         }
         Some(mob)
@@ -1874,7 +1875,9 @@ impl Game<'_> {
                 drops: &mut snapshots,
                 cancel: &mut cancel,
             });
-            if let Ok(mut next) = snapshots.try_into_engine(self.items()) {
+            if let Ok(mut next) =
+                super::api_values::item_drops_into_engine(&snapshots, self.items())
+            {
                 for (drop, original) in next.iter_mut().zip(&drops) {
                     drop.random = original.random;
                 }
@@ -2109,7 +2112,18 @@ impl Game<'_> {
             a.spawn_velocity = Some(p.velocity);
             a.spawn_rot = Some((p.pitch, p.yaw));
         }
-        self.creatures.projectiles.push(p);
+        // A projectile that already has a join number (a bounced arrow put back
+        // after its hit) keeps its place in the tick order; a new one goes last.
+        if p.join.is_joined() {
+            let join = p.join;
+            let at = self
+                .creatures
+                .projectiles
+                .partition_point(|q| q.join < join);
+            self.creatures.projectiles.insert(at, p);
+        } else {
+            self.creatures.projectiles.push(p);
+        }
         self.native_projectile_launch(player, &name, id, kind);
         id
     }
@@ -3451,11 +3465,8 @@ impl Game<'_> {
                 MobEvent::Reinforcements { mob, target } => self.call_reinforcements(mob, target),
                 MobEvent::VillagerMeet { mob, other } => self.villager_meet(mob, other),
                 MobEvent::VillagerTrade { mob, player } => self.villager_traded_by(mob, player),
-                MobEvent::VillagerOffers { mob } => {
-                    if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
-                        self.ensure_offers(i);
-                    }
-                }
+                MobEvent::VillagerOffers { mob } => self.merchant_offers_generated(mob),
+                MobEvent::VillagerRestocked { mob } => self.merchant_restocked(mob),
                 MobEvent::VillagerBirth {
                     parent,
                     partner,
@@ -7801,7 +7812,7 @@ impl Game<'_> {
                 && self.cull_entity_camera_bounds(lo, hi)
                 && let Some((mark, _)) = skinned
             {
-                if self.pack_shadow_casters.0 {
+                if self.occlusion.shadow_casters.0 {
                     let mut frame = self.skin_frame.borrow_mut();
                     let end = frame.vertices as usize;
                     horizon_client::gfx::pack_draw::EntitySpan::hide(
@@ -7859,12 +7870,12 @@ impl Game<'_> {
         // keep the existing exact mesh-culling path.
         if self.settings.horizon.entity_culling == EntityCullingMode::Asynchronous
             && self
-                .async_occlusion_culler
-                .as_ref()
+                .occlusion
+                .asynchronous()
                 .is_some_and(|culler| culler.camera_is_stationary())
             && self.settings.horizon.entity_culling_precheck != 0
             && self.mobs.len() >= self.settings.horizon.entity_culling_precheck as usize
-            && !self.pack_shadow_casters.0
+            && !self.occlusion.shadow_casters.0
             && mod_api::__private::mods().is_empty()
         {
             self.mob_geometry_inner::<true>(camera, alpha, out);

@@ -12,6 +12,13 @@ pub(in crate::gfx) fn on(device: &wgpu::Device) -> bool {
     device.features().contains(RAY_QUERY)
 }
 
+impl crate::gfx::Renderer {
+    /// Whether the device traces rays (`on`): a pack's ray-only data is worth building.
+    pub fn ray_queries(&self) -> bool {
+        on(&self.device)
+    }
+}
+
 /// What buffers that BLAS builds read (the quad indices) need on top of their own usage:
 /// nothing without ray queries, so the off path's buffers are main's.
 pub(in crate::gfx) fn blas_input(device: &wgpu::Device) -> wgpu::BufferUsages {
@@ -120,7 +127,7 @@ pub(super) fn pick(requested: bool, offered: wgpu::Features) -> wgpu::Features {
 }
 
 /// The device's opt-in to `features`' experimental ones.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn experimental(features: wgpu::Features) -> wgpu::ExperimentalFeatures {
     if features.contains(RAY_QUERY) {
         horizon_hdr::experimental_features()

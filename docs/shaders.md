@@ -7,7 +7,7 @@ signature, input, resource and limit is in the generated
 
 **Shader API 0.1 is retired (#15886).** A 0.1 pack is refused with `needs shader API 0.1; this Horizon serves 0.2`:
 it stays in the list, and the game draws without it. To move one, set `api = "0.2"` and treat colours as linear light,
-as [api/shaders.md](api/shaders.md#shader-api-02-experimental) describes; the example pack Golden Hour 2.0.0 was moved
+as [api/shaders.md](api/shaders.md#shader-api-02) describes; the example pack Golden Hour 2.0.0 was moved
 that way.
 
 Shader packs in the Iris/OptiFine format are a separate feature with its own loader; this page is only about
@@ -15,10 +15,11 @@ Horizon's own format.
 
 | Part | Where | State |
 |---|---|---|
-| Format, stages, check | `crates/horizon-shader-api` | API 0.2, experimental |
+| Format, stages, check | `crates/horizon-shader-api` | API 0.2, final (preview) |
 | Authoring tool | `horizon-shader` (same crate) | `new`, `check`, `pack` |
 | Templates | `crates/horizon-shader-api/templates/` | post, sky, material |
 | Example pack | `crates/horizon-shader-api/packs/golden_hour` | a warm sky and two post passes |
+| Horizon's HDR look as a pack | `crates/horizon-shader-api/packs/horizon_hdr` | material, entity and tonemap stages over the look file the renderer itself starts with |
 | In the game: every stage | Options > Video Settings > Shaders > Shader Packs | sky, material, post passes, hot reload |
 | The registry and the launcher | `shader` kind ([modding/src/reference/registry-index.md](modding/src/reference/registry-index.md)); the Mods page's Shader packs tab | checked, then installed into `shaderpacks/` |
 
@@ -55,7 +56,10 @@ my_pack 0.1.0 (shader API 0.2): FAILED
 Put the pack folder (or its `.hshader`) in `shaderpacks/` beside `options.txt` (Open Pack Folder opens it) and pick
 it on Options > Video Settings > Shaders > Shader Packs..., which lists Horizon's packs, marked (Horizon), beside packs in the
 `shaders/` format; one runs at a time, and clicking it again turns it off. `HORIZON_SHADER_PACK=<its folder or file
-name>` runs a pack whatever the page says, for development. The game checks the pack first, and refuses one that
+name>` runs a pack whatever the page says, for development. `HORIZON_TERRAIN_LOOKS=1` makes terrain keep each quad's
+own tint, directional shade, ambient occlusion and face beside its vertices while one of Horizon's packs
+runs, as a pack whose material or vertex stage reads `tint`, `shade`, `ao` or `face` does, for the engine's
+own tests: they take a third again the terrain's memory, and the world loads again when such a pack starts or stops. The game checks the pack first, and refuses one that
 fails, with its problems in the chat. While it runs, the game looks at the pack twice a second: save a file
 and the pack is checked and rebuilt in place ("Shader pack ... reloaded"); if the new version fails, the chat says
 where. A stage that fails keeps the last good version drawing; a manifest that is refused (another API line, a
@@ -75,7 +79,7 @@ options are saved to `shaderpacks/<pack>.txt` (`NAME=value` lines), and the pack
 
 ## Testing a pack frame by frame
 
-A pack that keeps something from frame to frame (`history`, eased values) draws a little differently in every run,
+A pack that keeps something from frame to frame (kept resources, eased values) draws a little differently in every run,
 as frames come when they come. With `HORIZON_STILL=1` and the world frozen the scene holds still
 ([agent-control.md](agent-control.md#repeatable-screenshots)), and
 
@@ -83,7 +87,7 @@ as frames come when they come. With `HORIZON_STILL=1` and the world frozen the s
 horizon-ctl screenshot-sequence 64 50 frame64.png
 ```
 
-starts the pack over as if just loaded (black `history`, eased values from the start) and draws 64 frames 50 ms
+starts the pack over as if just loaded (eased values from the start) and draws 64 frames 50 ms
 apart on its clock: frame n has `frame_index` n, `time` (n - 1) × 0.05 and `delta_time` 0.05 (0 on frame 1). The
 64th is written to `frame64.png` (and `frame64-hdr.png` with HDR output on) before the reply. STEP_MS may be a
 decimal: `16.666667` steps a 60 fps clock. The same build, GPU
@@ -127,11 +131,12 @@ by Horizon: a pack changes how things look, not how they are drawn.
 | `[material]` | `fn material(input: MaterialInput) -> Surface` | the lit colour of each point of a block's surface, before the alpha test and fog: every terrain section and distant tile, solid, cutout and translucent (not entities, block entities or particles) |
 | `[entity]` | `fn entity(input: EntityInput) -> Surface` | the lit colour of each point of an entity or a block entity (mobs, players, armour, chests, banners), before the alpha test, the enchantment glint and fog; `input.kind` says which. Items and particles keep Horizon's lighting for now |
 | `[weather]` | `fn weather(input: WeatherInput) -> vec4<f32>` | the colour of each point of a rain or snow streak, blended over the world with its alpha; Horizon's light and fog aren't applied, so the pack applies its own |
-| `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` | a full-screen pass over the world's picture (up to 8, in order), under the hand and HUD; its alpha is ignored |
+| `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` | a full-screen pass over the world's picture (up to 12, in order), under the hand and HUD; its alpha is ignored |
 | `[tonemap]` | `fn tonemap(input: TonemapInput) -> vec3<f32>` | the post chain's picture for the display, from 0 to `frame.headroom`; without it Horizon's curve runs |
 
 A pack has at least one stage; a stage it leaves out keeps vanilla's look. Each input says what vanilla would draw
-(`input.color` in the sky and post stages; `albedo * tint * vec4(lightmap, 1.0)` for a material), so a pack can start
+(`input.color` in the sky and post stages; `albedo * shaded_tint * vec4(lightmap, 1.0)` for a material, `shaded_tint`
+being vanilla's vertex colour, the quad's `tint` times its `shade` and `ao`), so a pack can start
 from vanilla and change only what it means to.
 
 Every colour a stage reads or returns is linear light: 1.0 is vanilla's white, and more is brighter, on SDR and HDR
@@ -215,11 +220,10 @@ changes, from at most 2048 sources, the nearest first.
 
 ## Ray tracing
 
-A pack of API 0.2 can trace rays through the world from its post passes, its material stage and its compute passes. It
-asks with an empty `[ray_tracing]` table (the pack needs a `[[post]]` pass, a `[[before_world]]` pass or a `[material]`
-stage), and its post stage gets the trace functions, as do its material stage and its compute and `[[before_world]]`
-passes where their files call one ([the reference](api/shaders-reference-0.2.md#ray-tracing) has
-`RayHit`'s fields):
+A pack of API 0.2 can trace rays through the world from its post, material, entity and compute stages. The pack
+declares an empty `[ray_tracing]` table and includes a `[[post]]` pass, a `[[before_world]]` pass, a `[material]` or an
+`[entity]` stage. Post passes get the trace functions. The other supported stages get them where their files name
+one. See the [reference](api/shaders-reference-0.2.md#ray-tracing) for `RayHit`'s fields:
 
 ```toml
 api = "0.2"
@@ -240,8 +244,13 @@ let hit = trace(position * 0.99, direction, 64.0);   // hit.distance < 0.0: noth
 ```
 
 `trace` returns the nearest solid surface along a ray, with what the material stage would get for that point (`albedo`,
-`tint`, `light`, `uv`, `material`, `tags`, `emission`, `fluid`, `translucent`, `tangent`) and its `position`, `normal`
-and `distance`; `trace_any` only says whether something is in the way, which is all a shadow needs. Origins are camera-relative, as `view_position` gives them, and
+`uv`, `material`, `tags`, `fluid`, `translucent`, `tangent`, and on a terrain hit `tint`, `shade` and `ao`)
+and its `position`, `normal`, `back` and `distance`. `light` excludes dynamic light. Terrain `emission` comes
+from the vertex and gives the block's light level over 15. A pack that reads hit `tint`, `shade` or `ao` queues
+fresh meshes for loaded sections. A hit without a usable look record uses baked vertex colour and 1 for both
+`shade` and `ao`.
+`trace_any` only says whether something is in the way, which is all a shadow needs. Origins are camera-relative,
+as `view_position` gives them, and
 rays pass through the clear texels of leaves and plants, and through water, stained glass and ice, which are in a
 [layer of their own](#layers). `frame.ray_distance` is the distance the scene covers in every direction; a longer ray
 is allowed and may still hit geometry toward the corners, and no clamp is needed. Horizon keeps the scene; the look is the pack's: Horizon
@@ -250,7 +259,7 @@ and the check refuses a pack that names one itself.
 
 | | |
 | --- | --- |
-| In the scene today | Terrain within 8 chunks of the camera, in two layers: solid terrain (cut-outs and lava included), which `trace` reads, and translucent terrain (water, stained glass, ice), which [`trace_layers`](#layers) reads; `frame.ray_distance` is how far it surely reaches. For a pack that names `RAY_ENTITY`, a third layer: [the entities within that reach](#entities), in view or not |
+| In the scene today | Terrain within 8 chunks of the camera, in two layers: solid terrain (cut-outs and lava included), which `trace` reads, and translucent terrain (water, stained glass, ice), which [`trace_layers`](#layers) reads; `frame.ray_distance` is how far it surely reaches. For a pack that names `RAY_ENTITY`, a third layer: [the entities within that reach](#entities), in view or not. For a pack with `lights = true` under `[ray_tracing]`, [the light sources around the camera](#light-sources) |
 | Not in it yet | Block entities at rest (a closed chest) or out of view, the hand, distant terrain tiles |
 | Turning it on | Pick the pack and start the game with it, on a GPU and graphics API with hardware ray queries: the device needs them from its creation, so in a game started without them a pack picked while it runs traces from the next start, and the shader pack screen says so. `HORIZON_RAY_TRACING=1` asks for ray queries and keeps the scene with any pack or none; any other value of it turns ray tracing off |
 | Without it | The pack loads and runs as it is: `frame.has_ray_tracing` is 0, `trace` misses and `trace_any` is false. Branch on `has_ray_tracing` and keep a look that works without rays. It is also 0 in a pack none of whose stages calls a trace function |
@@ -321,7 +330,7 @@ Every other pack is built and runs as without it.
 | --- | --- |
 | In it | Within the scene's reach, mobs, players (third person, and the others), armour stands, item frames, paintings, projectiles, vehicles, falling blocks and block displays, whether the camera draws them this frame or not (behind it, beside it, hidden behind terrain), so turning the camera changes nothing; the block entities at rest that the block entity cache keeps (on in every graphics preset: closed chests, shulker boxes, bells, decorated pots, banners, within vanilla's 64 blocks), in view or not; and the other block entities the camera draws (a chest while it opens) |
 | Not in it | Particles, world text and name tags, the hand, the camera's own body in first person, items Horizon draws itself (a dropped item, a framed one), translucent items, breaking cracks, entity shadows, energy swirls, beams, portals, lightning, glowing outlines, additive glows; other block entities out of view (a chest opening behind the camera) |
-| A hit | `entity` true. `albedo` the entity texture's texel in linear light, `tint`, `light` and `uv` its vertices' (the colour vanilla multiplies in, alpha included; block and sky light; the atlas position), `normal` the face's against the ray, `tangent` from its uvs; `material`, `tags`, `emission` and `fluid` 0, `translucent` false, and `hit_normal_map` and `hit_specular_map` give their defaults |
+| A hit | `entity` true. `albedo` the entity texture's texel in linear light, `tint`, `light` and `uv` its vertices' (the colour vanilla multiplies in, alpha included; block and sky light; the atlas position), `normal` the face's against the ray, `tangent` from its uvs, `shade` vanilla's entity shade for the face (the Nether's in the Nether), `ao` 1; `material`, `tags`, `emission` and `fluid` 0, `translucent` false, and `hit_normal_map` and `hit_specular_map` give their defaults |
 | A ray stops | Where vanilla's alpha test keeps the entity's pixel, `(texel * tint).a` 0.1 or more, from either side of the face (on the dying dragon's dissolve, where vanilla's mask keeps it). A pack's own `[entity]` alpha is not the layer's: the scene runs no pack code |
 | Cost | For a pack that names the layer: the models of the entities within reach that the camera doesn't draw, posed on the CPU every frame, and one BLAS of the frame's entity quads and the TLAS built again every frame. The cached block entities have a BLAS a section, built again only when that section's change (a chest opens or closes, one is placed or broken) |
 
@@ -330,6 +339,54 @@ A mob's traced shadow on what a post pass lights, starting off the surface as fr
 ```wgsl
 let shadowed = trace_any_layers(position + normal * 0.01, frame.sun_direction, 64.0, RAY_SOLID | RAY_ENTITY);
 ```
+
+#### Light sources
+
+With `lights = true` under `[ray_tracing]`, a stage whose files name `ray_lights_near`, `ray_light`, `ray_light_at`,
+`ray_light_count` or `RayLight` (outside a comment) also gets the light sources around the camera: the blocks that
+give off light, up to 1024 of them nearest the camera first, and a grid of 8-block cells 128 blocks across over them,
+each listing the sources whose light reaches it (at most 24, the strongest there first). A pass then aims shadow rays
+at the few sources its cell lists instead of every source in the world. Without the key the five names are the pack's
+own, and a pass that doesn't name them doesn't bind them (one storage buffer fewer).
+
+| | |
+| --- | --- |
+| A source | `RayLight`: `position`, its block's centre, camera-relative to the player's camera as `trace` takes it; `level`, vanilla's light level of the block (1 to 15); `color`, its `[[lights]]` colour, linear as `block_light_color`'s, white for a block the pack gives none; `material`, its `[[materials]]` id as `RayHit.material` reports it, 0 for none (from one fixed model of the state: weighted models with different materials can differ) |
+| `ray_lights_near(position)` | The sources whose light reaches some part of the cell of the camera-relative `position`, as `vec2<u32>(first, count)` of indices to read with `ray_light_at` (`0xffffffffu` past the cell's count, which `ray_light` reads as level 0); none outside the grid. Candidates: the pack's own falloff and a trace decide what each gives. Ranked at the cell's nearest point, not at `position`: testing only the first few shows the cells' edges |
+| `ray_light(i)`, `ray_light_count()` | The source `i` of the whole list, below `ray_light_count()` (level 0 past it): the sources of the sections the grid and 15 blocks around it touch, so some lie up to a section beyond where their light reaches the grid |
+| Not listed | Fluids: lava lakes don't light through the list (a ray meets the lava's surface, with its `emission`) |
+| The grid | A convenience over the list with fixed choices; for others, read the list and build a grid of your own into a kept buffer in a compute or `[[before_world]]` pass |
+| When it changes | Rebuilt on a CPU worker when the camera moves on to another 16-block step, and at most every 100 ms when a light source is placed or removed; it reaches the passes a frame or two later, its positions still relative to the current camera |
+| Without the scene | The names are still there: `ray_light_count()` is 0 and `ray_lights_near` lists nothing |
+
+Block light that walls stop, from a post pass (`position` and `normal` as above). A full glowing block (glowstone)
+is in the scene itself, so the ray ends where it enters the source's block, or it would hit the source:
+
+```wgsl
+// How far along `direction` the ray from `origin` enters the block centred on `center`.
+fn block_entry(origin: vec3<f32>, direction: vec3<f32>, center: vec3<f32>) -> f32 {
+    let tiny = vec3<f32>(1e-6);
+    let inverse = 1.0 / select(direction, tiny, abs(direction) < tiny);
+    let near = min((center - 0.5 - origin) * inverse, (center + 0.5 - origin) * inverse);
+    return max(max(near.x, near.y), near.z);
+}
+
+let origin = position + normal * 0.02;
+let near = ray_lights_near(position);
+var light = vec3<f32>(0.0);
+for (var i = 0u; i < near.y; i++) {
+    let source = ray_light(ray_light_at(near.x + i));
+    let to = source.position - origin;
+    let d = length(to);
+    let falloff = max(1.0 - d / source.level, 0.0);
+    let reach = block_entry(origin, to / d, source.position) - 0.01;
+    if falloff > 0.0 && (reach <= 0.0 || !trace_any(origin, to / d, reach)) {
+        light += source.color * falloff * falloff * max(dot(normal, to / d), 0.0);
+    }
+}
+```
+
+`crates/horizon-shader-api/packs/traced_lights` is that pass as a pack.
 
 **In the material stage.** Translucent terrain (water, stained glass, ice) is blended where `material` shades it and
 leaves no surface for a post pass to light, so that is where its rays go. `input.position` and `input.normal` are
@@ -358,6 +415,17 @@ if input.translucent && frame.has_ray_tracing == 1u {
 
 `crates/horizon-shader-api/packs/traced_water` is the smallest pack that traces from `material`: water that mixes in
 what a reflected ray hits.
+
+**In the entity stage.** `entity` traces as `material` does, with the same functions, the same cost per fragment and
+the same rule: an entity stage whose files name no trace function is built as without `[ray_tracing]`. Its rays run
+in the world's colour pass only; the shadow map's entities don't run the stage. `input.position` and `input.normal`
+are camera-relative and in world axes, and a ray with `RAY_ENTITY` in its layers can hit the entity it starts on, so
+start it off the surface as from terrain:
+
+```wgsl
+let start = input.position + input.normal * 0.05;
+let shadowed = frame.has_ray_tracing == 1u && trace_any(start, frame.sun_direction, 64.0);
+```
 
 ## Compute passes and kept resources
 

@@ -37,20 +37,24 @@
 //! block entities the renderer keeps on the GPU have a BLAS a section (step 3, `retained.rs`),
 //! their instances after the stream's.
 
+use std::collections::VecDeque;
+
 use glam::DVec3;
 
 use horizon_shader_api::stages::{RAY_ENTITY, RAY_SOLID, RAY_TRANSLUCENT};
 
 use crate::block_entity_render::StaticSectionSnapshot;
-use crate::fast_hash::FxHashMap;
+use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::gfx::{Renderer, SectionGpu, SectionKey, arena::Arena, resident::Resident};
-use crate::mesher::{TerrainVertex, Vertex};
+use crate::mesher::{QuadLook, TerrainVertex, Vertex};
 use retained::Retained;
 
 /// BLAS builds per frame at most: a world that just loaded builds over a few frames.
 const BUILDS_PER_FRAME: usize = 512;
 /// Bytes per vertex in the store.
 const STRIDE: u64 = std::mem::size_of::<TerrainVertex>() as u64;
+/// Bytes per quad in the look store.
+const LOOK: u64 = std::mem::size_of::<QuadLook>() as u64;
 /// Vertices the store starts with.
 const FIRST_STORE: u64 = 1 << 20;
 /// Vertices the store holds at most: an instance's custom data holds its first quad in 24 bits.
@@ -77,53 +81,67 @@ impl Renderer {
         }
     }
 
-    /// Runs `pack` from now on (none: no Horizon pack). The scene follows it: a pack that
-    /// declares `[ray_tracing]` keeps the scene there is, or gets one built from the sections
-    /// resident now; another pack, or none, drops it (`query::wanted`: with
-    /// `HORIZON_RAY_TRACING=1` every pack keeps one). Called before the pack's first frame, so
-    /// the scene is there when it gathers what it traces. A rebuild of the pack that runs keeps
-    /// its kept resources (`NativePack::carry`); else they go before the new pack's are made.
-    /// Why `pack` was refused, if it was (`native_pack::install_kept`): then the pack that ran
-    /// keeps running, unless it can't.
-    pub(in crate::gfx) fn replace_native(
+    /// Runs `pack` from now on (none: no pack's pipeline), its manifest's metadata gone until
+    /// the caller sets the new one. The scene follows it: a pack that declares `[ray_tracing]`
+    /// keeps the scene there is, or gets one built from the sections resident now; another pack,
+    /// or none, drops it (`query::wanted`: with `HORIZON_RAY_TRACING=1` every pack keeps
+    /// one). Called before the pack's first frame, so the scene is there when it gathers what it
+    /// traces. A rebuild of the pack that runs keeps what it kept from frame to frame
+    /// (`ExternalPipeline::take_over`); else that goes before the new pack's is made.
+    /// Why `pack` was refused, if it was (`take_over` found no room for what it keeps): then
+    /// nothing changes and the pack that ran keeps running with its metadata, unless it can't,
+    /// and then none runs.
+    pub(in crate::gfx) fn replace_executor(
         &mut self,
-        mut pack: Option<crate::gfx::native_pack::NativePack>,
+        mut pack: Option<Box<dyn crate::gfx::external::ExternalPipeline>>,
     ) -> Option<String> {
-        // A frame still on the submit thread binds the kept resources `install_kept` destroys:
-        // its submission would fail on them.
+        // A frame still on the submit thread binds the kept resources `take_over` or `retire`
+        // destroys: its submission would fail on them.
         self.land_frame();
-        if let (Some(new), Some(old)) = (&mut pack, &mut self.native) {
-            new.carry(old);
-        }
-        // The R the pack's frames get (`NativePack::start_frame`), before its first.
-        let size = (self.world_post).pack_render_size([self.config.width, self.config.height]);
-        let install = crate::gfx::native_pack::install_kept;
-        if let Err((refused, runs)) =
-            install(&self.device, pack.as_mut(), self.native.as_mut(), size)
-        {
-            if !runs {
-                self.replace_native(None);
+        let capabilities = pack.as_ref().and_then(|p| p.capabilities());
+        // The size the pack's frames draw at (`NativePack::start_frame`), before its first.
+        let window = [self.config.width, self.config.height];
+        let upscaled = capabilities.is_some_and(|c| c.engine_upscale);
+        let size = (self.world_post).pack_render_size(window, upscaled);
+        let taken = match (&mut pack, &mut self.external) {
+            (Some(new), old) => new.take_over(&self.device, old.as_deref_mut(), size),
+            (None, Some(old)) => {
+                old.retire(&self.device);
+                Ok(())
             }
-            return Some(refused);
+            (None, None) => Ok(()),
+        };
+        if let Err(refused) = taken {
+            if !refused.old_runs {
+                self.replace_executor(None);
+            }
+            return Some(refused.why);
         }
-        let capabilities = pack
-            .as_ref()
-            .map(crate::gfx::native_pack::NativePack::capabilities);
         let traces = capabilities.is_some_and(|c| c.ray_scene);
         follow(
             &mut self.ray_scene,
             &self.device,
             super::query::wanted(super::query::switch(), traces),
         );
-        self.native = pack;
+        // TAA's history holds what the pipeline that ran drew (rule 6 of docs/hdr-passes.md).
+        if pack.is_some() || self.external.is_some() {
+            self.world_post.forget_history();
+        }
+        // A pack the renderer resolves gets TAA at its world's size from its first frame on,
+        // unless TAA may upscale it.
+        (self.world_post)
+            .hold_upscale(capabilities.is_some_and(|c| c.engine_resolve && !c.engine_upscale));
+        // The arenas' looks follow before the next frame (`follow_terrain_looks`).
+        self.external = pack;
         self.executor = capabilities;
+        self.pack_metadata = None;
         None
     }
 
     /// Every section is gone (a new world, a new dimension): so are the pack's kept resources.
     pub(in crate::gfx) fn ray_clear(&mut self) {
-        if let Some(epochs) = self.native.as_mut().and_then(|n| n.frame.epochs.as_mut()) {
-            epochs.note(horizon_shader_api::kept::REASON_WORLD);
+        if let Some(pipeline) = &mut self.external {
+            pipeline.world_cleared();
         }
         if let Some(rt) = &mut self.ray_scene {
             rt.clear();
@@ -173,6 +191,8 @@ impl Renderer {
         let Some(rt) = &mut self.ray_scene else {
             return;
         };
+        rt.nether = frame.nether_lighting;
+        rt.set_looks(&self.device, self.ray_looks);
         crate::spans::time("ray scene", || {
             rt.prepare(
                 &self.device,
@@ -190,7 +210,7 @@ impl Renderer {
     /// Whether the scene has the entity layer: the device traces, and the native pack's rays
     /// read the layer (its files name `RAY_ENTITY`). The game then names the stream's entities.
     pub fn traces_entities(&self) -> bool {
-        self.ray_scene.is_some() && self.native.as_ref().is_some_and(|n| n.traces_entities())
+        self.ray_scene.is_some() && self.executor.is_some_and(|c| c.ray_entities)
     }
 
     /// The camera-relative box of the columns the scene spans around `camera`'s, while it has the
@@ -410,17 +430,26 @@ impl Layer {
             Self::Translucent => s.translucent,
         }
     }
+
+    /// Section `s`'s looks of its quads in it, one a quad in the store's order, while the scene
+    /// keeps them (`SectionGpu::ray_looks`); else none.
+    fn looks(self, s: &SectionGpu) -> &[QuadLook] {
+        &s.ray_looks[self as usize]
+    }
 }
 
 /// A section's quads of one layer: what a BLAS and a slot of the store hold.
 type Part = (SectionKey, Layer);
 
 /// The terrain's acceleration structures.
-pub(in crate::gfx) struct RayScene {
+pub struct RayScene {
     /// Each part's BLAS, while it has quads within reach.
     blas: FxHashMap<Part, wgpu::Blas>,
     /// Parts meshed again or emptied since their BLAS was built.
     dirty: Vec<Part>,
+    /// Cached slots that need looks without rebuilding their geometry.
+    look_retries: VecDeque<Part>,
+    look_retry_limit: usize,
     tlas: wgpu::Tlas,
     /// The TLAS's instances of the solid layer, which come first in it.
     solid_instances: u32,
@@ -457,16 +486,20 @@ pub(in crate::gfx) struct RayScene {
     entities: Option<Entities>,
     /// Where the entity layer's instances of retained block entities start, after the stream's.
     retained_instances: u32,
+    /// The frame lights entities as in the Nether (`Frame::nether_lighting`, `ray_prepare`).
+    nether: bool,
 }
 
 /// What a trace reads this frame (spec #15624).
-pub(in crate::gfx) struct Traced<'a> {
+pub struct Traced<'a> {
     pub tlas: &'a wgpu::Tlas,
     /// How many of its instances are solid terrain's, the first ones: a hit on a later one is
     /// on translucent terrain.
     pub solid_instances: u32,
     /// The sections' vertices: an instance's custom data is its quads' first here.
     pub store: &'a wgpu::Buffer,
+    /// The look of each quad of `store`, while the native pack's rays read them.
+    pub looks: Option<&'a wgpu::Buffer>,
     /// Where translucent terrain's instances end: the next is the entity layer's.
     pub translucent_instances: u32,
     /// The entity layer, while the native pack's rays read it.
@@ -477,12 +510,14 @@ pub(in crate::gfx) struct Traced<'a> {
     /// The camera in the TLAS's space: from the anchor column's corner along x and z, the
     /// world's y.
     pub camera: [f32; 3],
+    /// Entities are lit as in the Nether: the entity layer's `RayHit.shade`.
+    pub nether: bool,
     /// Blocks from the camera, along x and along z, the TLAS spans whichever way one goes.
     pub distance: f32,
 }
 
 /// What a trace reads of the entity layer.
-pub(in crate::gfx) struct TracedEntities<'a> {
+pub struct TracedEntities<'a> {
     /// The stream's vertices, as far as a binding holds them.
     pub vertices: wgpu::BufferBinding<'a>,
     pub atlas: &'a wgpu::TextureView,
@@ -510,6 +545,8 @@ impl RayScene {
         Some(Self {
             blas: FxHashMap::default(),
             dirty: Vec::new(),
+            look_retries: VecDeque::new(),
+            look_retry_limit: BUILDS_PER_FRAME,
             tlas: out_of_memory_free(device, || create_tlas(device, 1024))?,
             solid_instances: 0,
             anchor: None,
@@ -527,11 +564,12 @@ impl RayScene {
             translucent_instances: 0,
             entities: None,
             retained_instances: 0,
+            nether: false,
         })
     }
 
     /// The scene a renderer starts with: one only when `HORIZON_RAY_TRACING=1` asks for it with
-    /// any pack or none; otherwise the pack that loads brings it (`Renderer::replace_native`).
+    /// any pack or none; otherwise the pack that loads brings it (`Renderer::replace_executor`).
     pub(in crate::gfx) fn forced(device: &wgpu::Device) -> Option<Self> {
         super::query::wanted(super::query::switch(), false)
             .then(|| Self::new(device))
@@ -560,12 +598,26 @@ impl RayScene {
             tlas: &self.tlas,
             solid_instances: self.solid_instances,
             store: &self.unpacker.store,
+            looks: self.unpacker.looks.as_ref(),
             translucent_instances: self.translucent_instances,
             entities,
             generation: self.generation,
             camera,
+            nether: self.nether,
             distance,
         })
+    }
+
+    /// Keeps the quads' looks (`on`: the native pack's rays read them) or none.
+    fn set_looks(&mut self, device: &wgpu::Device, on: bool) {
+        if self.unpacker.set_looks(device, on) {
+            self.generation += 1;
+            self.look_retries.clear();
+            self.look_retry_limit = BUILDS_PER_FRAME;
+            if on {
+                self.look_retries.extend(self.blas.keys().copied());
+            }
+        }
     }
 
     fn mark(&mut self, key: SectionKey) {
@@ -576,6 +628,8 @@ impl RayScene {
         self.slots.clear();
         self.blas.clear();
         self.dirty.clear();
+        self.look_retries.clear();
+        self.look_retry_limit = BUILDS_PER_FRAME;
         self.to_compact.clear();
         self.compacting.clear();
         self.anchor = None;
@@ -679,7 +733,8 @@ impl RayScene {
         // parts wanted or the camera's column change. A cut instance list would put parts on the
         // wrong side of `solid_instances`. The first frame needs no more than the first TLAS
         // holds (`BUILDS_PER_FRAME`), so it never keeps one that was never built.
-        let near = |part: &Part| within(&part.0, column, self.reach);
+        let reach = self.reach;
+        let near = |part: &Part| within(&part.0, column, reach);
         let entity_layer = self
             .entities
             .as_ref()
@@ -740,7 +795,7 @@ impl RayScene {
                     let (unpacker, generation) = (&mut self.unpacker, &mut self.generation);
                     let first = self.slots.alloc(part, u64::from(quads) * 4, |vertices| {
                         // Asked only for a larger store: true is a new one.
-                        let grown = unpacker.fit(device, encoder, vertices);
+                        let grown = unpacker.fit(device, encoder, vertices, look_buffer);
                         *generation += u64::from(grown);
                         grown
                     });
@@ -781,6 +836,9 @@ impl RayScene {
         }
         self.dirty.drain(..taken);
         self.dirty.extend(deferred);
+        self.upload_looks(encoder, sections, &builds, |records| {
+            stage_looks(device, records)
+        });
         if builds.is_empty() && !changed && self.anchor == Some(column) && self.entities.is_none() {
             return;
         }
@@ -859,6 +917,67 @@ impl RayScene {
         entries.extend(retained.into_iter().flat_map(|r| r.builds(indices)));
         encoder.build_acceleration_structures(entries.iter(), std::iter::once(&self.tlas));
         self.anchor = Some(column);
+    }
+
+    fn upload_looks(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        sections: &Resident<SectionGpu>,
+        builds: &[Build<'_>],
+        mut stage: impl FnMut(&[QuadLook]) -> Option<wgpu::Buffer>,
+    ) {
+        let Some(looks) = self.unpacker.looks.as_ref() else {
+            return;
+        };
+        let mut retries = Vec::new();
+        if !self.look_retries.is_empty() {
+            // A dirty section's records may belong to a replacement mesh. Its normal build
+            // will write the looks once the new geometry can take its slot.
+            let pending: FxHashSet<_> = self
+                .dirty
+                .iter()
+                .copied()
+                .chain(builds.iter().map(|b| b.part))
+                .collect();
+            self.look_retries.retain(|part| !pending.contains(part));
+            let count = self.look_retries.len().min(self.look_retry_limit);
+            retries.extend(
+                self.look_retries
+                    .drain(..count)
+                    .filter_map(|part @ (key, layer)| {
+                        let section = sections.find(key)?;
+                        let (first, vertices) = self.slots.slot(part)?;
+                        let quads = layer.quads(section);
+                        (vertices == u64::from(quads) * 4).then_some(LookWrite {
+                            part,
+                            first,
+                            quads,
+                            section,
+                        })
+                    }),
+            );
+        }
+        // Stage retries independently of fresh builds so a steady stream of new sections
+        // cannot keep a small retry from fitting.
+        let fresh: Vec<_> = builds.iter().map(LookWrite::from).collect();
+        for writes in [&retries[..], &fresh[..]] {
+            if write_looks(encoder, looks, writes, &mut stage) {
+                continue;
+            }
+            let failed = writes
+                .iter()
+                .filter(|w| w.records().is_some())
+                .map(|w| w.part);
+            // Retry smaller batches and put failed parts at the back so a large
+            // part cannot prevent smaller ones from getting their looks back.
+            let before = self.look_retries.len();
+            self.look_retries.extend(failed);
+            let count = self.look_retries.len() - before;
+            self.look_retry_limit = self.look_retry_limit.min((count / 2).max(1));
+        }
+        if self.look_retries.is_empty() {
+            self.look_retry_limit = BUILDS_PER_FRAME;
+        }
     }
 }
 
@@ -975,6 +1094,11 @@ pub(in crate::gfx) struct RtJob {
 struct Unpacker {
     pipeline: wgpu::ComputePipeline,
     store: wgpu::Buffer,
+    /// The look of each quad of `store`, while the native pack's rays read them (`set_looks`):
+    /// a part's are written with its vertices, from its section's copy. It grows with `store`.
+    looks: Option<wgpu::Buffer>,
+    /// Whether the log said the look store couldn't be made, since it last was.
+    looks_logged: bool,
 }
 
 impl Unpacker {
@@ -986,7 +1110,36 @@ impl Unpacker {
         Some(Self {
             pipeline: unpack_pipeline(device),
             store,
+            looks: None,
+            looks_logged: false,
         })
+    }
+
+    /// A look store beside the store (`on`) or none; whether that changed. Without the video
+    /// memory for one the rays read every quad as without a look, and a later frame asks again.
+    /// The scene fills slots already resident once the store is available.
+    fn set_looks(&mut self, device: &wgpu::Device, on: bool) -> bool {
+        let before = self.looks.is_some();
+        if on != before {
+            self.looks = on
+                .then(|| look_buffer(device, self.store.size() / STRIDE))
+                .flatten();
+            if on && self.looks.is_none() {
+                self.log_look_refusal();
+            } else {
+                self.looks_logged = false;
+            }
+        }
+        self.looks.is_some() != before
+    }
+
+    fn log_look_refusal(&mut self) {
+        if !std::mem::replace(&mut self.looks_logged, true) {
+            log::warn!(
+                "Horizon renderer: no video memory for the ray tracing look store; \
+                 hits use vertex colours until it can be allocated"
+            );
+        }
     }
 
     /// A store of `vertices` when it holds fewer: the larger one gets the old contents first
@@ -998,6 +1151,7 @@ impl Unpacker {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         vertices: u64,
+        grow_looks: impl FnOnce(&wgpu::Device, u64) -> Option<wgpu::Buffer>,
     ) -> bool {
         if vertices * STRIDE <= self.store.size() {
             return true;
@@ -1012,6 +1166,15 @@ impl Unpacker {
         };
         encoder.copy_buffer_to_buffer(&self.store, 0, &store, 0, self.store.size());
         self.store = store;
+        if let Some(old) = self.looks.take() {
+            self.looks = grow_looks(device, vertices);
+            if let Some(new) = &self.looks {
+                encoder.copy_buffer_to_buffer(&old, 0, new, 0, old.size());
+            } else {
+                // Optional looks cannot set the geometry store's permanent capacity limit.
+                self.log_look_refusal();
+            }
+        }
         true
     }
 
@@ -1144,6 +1307,85 @@ pub(in crate::gfx) fn unpack_page(
 /// draws do (`section_corner`).
 pub(in crate::gfx) fn unpack_shader() -> String {
     crate::gfx::terrain_shader() + include_str!("../../rt_unpack.wgsl")
+}
+
+struct LookWrite<'a> {
+    part: Part,
+    first: u64,
+    quads: u32,
+    section: &'a SectionGpu,
+}
+
+impl<'a> From<&Build<'a>> for LookWrite<'a> {
+    fn from(build: &Build<'a>) -> Self {
+        Self {
+            part: build.part,
+            first: build.first,
+            quads: build.quads,
+            section: build.s,
+        }
+    }
+}
+
+impl LookWrite<'_> {
+    fn records(&self) -> Option<&[QuadLook]> {
+        let looks = self.part.1.looks(self.section);
+        (looks.len() == self.quads as usize).then_some(looks)
+    }
+}
+
+/// Writes the looks of new builds and cached slots. A refused staging allocation clears the
+/// affected slots before they can be traced and leaves their records eligible for retry.
+fn write_looks(
+    encoder: &mut wgpu::CommandEncoder,
+    looks: &wgpu::Buffer,
+    writes: &[LookWrite<'_>],
+    stage: impl FnOnce(&[QuadLook]) -> Option<wgpu::Buffer>,
+) -> bool {
+    let all: Vec<QuadLook> = writes
+        .iter()
+        .filter_map(LookWrite::records)
+        .flatten()
+        .copied()
+        .collect();
+    let staged = (!all.is_empty()).then(|| stage(&all)).flatten();
+    let mut at = 0;
+    for write in writes {
+        let (offset, size) = (write.first / 4 * LOOK, u64::from(write.quads) * LOOK);
+        match staged.as_ref().filter(|_| write.records().is_some()) {
+            Some(staged) => {
+                encoder.copy_buffer_to_buffer(staged, at, looks, offset, size);
+                at += size;
+            }
+            None => encoder.clear_buffer(looks, offset, Some(size)),
+        }
+    }
+    all.is_empty() || staged.is_some()
+}
+
+fn stage_looks(device: &wgpu::Device, records: &[QuadLook]) -> Option<wgpu::Buffer> {
+    let bytes = bytemuck::cast_slice(records);
+    let buffer = out_of_memory_free(device, || {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Ray tracing: looks to write"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        })
+    })?;
+    buffer.get_mapped_range_mut(..).ok()?.copy_from_slice(bytes);
+    buffer.unmap();
+    Some(buffer)
+}
+
+/// The look store of a store of `vertices`: a look a quad.
+fn look_buffer(device: &wgpu::Device, vertices: u64) -> Option<wgpu::Buffer> {
+    crate::gfx::arena::try_create(
+        device,
+        "Ray tracing: section looks",
+        vertices / 4 * LOOK,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+    )
 }
 
 fn store_buffer(device: &wgpu::Device, vertices: u64) -> Option<wgpu::Buffer> {
@@ -1372,7 +1614,15 @@ mod retained;
 
 #[cfg(test)]
 #[path = "entity_tests.rs"]
-mod entity_tests;
+pub(in crate::gfx) mod entity_tests;
+
+#[cfg(test)]
+#[path = "terrain_tests.rs"]
+mod terrain_tests;
+
+#[cfg(test)]
+#[path = "looks_tests.rs"]
+pub(in crate::gfx) mod looks_tests;
 
 #[cfg(test)]
 mod tests {

@@ -255,7 +255,11 @@ fn keep(value: &str) -> Result<Keep, String> {
     }
 }
 
-fn resource(r: RawResource, ray_tracing: bool, motion: bool) -> Result<Resource, String> {
+fn resource(
+    r: RawResource,
+    ray_tracing: Option<&crate::manifest::RayTracing>,
+    motion: bool,
+) -> Result<Resource, String> {
     let name = &r.name;
     let previous = format!("{name}_previous");
     // WGSL's own functions and types too: a global by such a name hides them from the prelude.
@@ -492,7 +496,7 @@ pub(crate) fn check(
     raw: Vec<RawResource>,
     before_world: Vec<Stage>,
     post: &[Stage],
-    ray_tracing: bool,
+    ray_tracing: Option<&crate::manifest::RayTracing>,
     motion: bool,
     resets: Vec<(String, String)>,
 ) -> Result<Kept, String> {
@@ -623,13 +627,13 @@ pub(crate) fn drawn(m: &Stage, kept: &Kept, draws: &str) -> Result<(), String> {
     }
 }
 
-/// The kept textures of the post target budget, by name: an `output` naming a kept texture
-/// writes it, at its own size (no `scale`), never its `_previous` nor an integer one
+/// The kept textures of the post target budget, by name, format and scale: an `output` naming a
+/// kept texture writes it, at its own size (no `scale`), never its `_previous` nor an integer one
 /// (`Format::is_uint`), which only a compute pass writes; each R-relative kept texture counts.
 pub(crate) fn kept_targets<'a>(
     post: &[Stage],
     resources: &'a [Resource],
-) -> Result<Vec<&'a str>, String> {
+) -> Result<Vec<(&'a str, Format, f32)>, String> {
     for p in post {
         let Some(output) = &p.output else { continue };
         if let Some(r) = resources.iter().find(|r| r.name == *output)
@@ -665,7 +669,9 @@ pub(crate) fn kept_targets<'a>(
     }
     Ok(resources
         .iter()
-        .filter(|r| matches!(r.shape, Shape::Scaled { .. }))
-        .map(|r| r.name.as_str())
+        .filter_map(|r| match r.shape {
+            Shape::Scaled { format, scale } => Some((r.name.as_str(), format, scale)),
+            _ => None,
+        })
         .collect())
 }
