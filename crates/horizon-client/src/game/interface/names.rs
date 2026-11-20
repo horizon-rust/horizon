@@ -9,6 +9,7 @@
 use super::{Game, view_vector};
 use horizon_client::{
     block_entity_render::vertex_light,
+    fast_hash::{FxHashMap, FxHashSet},
     hud::{HudAtlas, HudBatch, HudVertex},
     mesher::Vertex,
     mobs::{Mob, Who},
@@ -16,6 +17,7 @@ use horizon_client::{
     scoreboard as sb,
     text::Text,
 };
+use std::borrow::Cow;
 
 /// The world size of one text pixel in a name tag: `Matrix4f.scale(0.025F, -0.025F, 0.025F)`.
 pub(super) const NAME_TAG_UNIT: f32 = 0.025;
@@ -66,10 +68,11 @@ impl NameTagLayouts {
         alpha: u32,
         background: bool,
     ) -> usize {
-        // At most 512 * 512 HUD vertices (~10 MiB), plus short text keys. Longer tags and
+        // At most 2048 * 512 HUD vertices (covers 1000+ players across both normal and
+        // see-through name tag passes without per-frame cache thrashing). Longer tags and
         // excess lines still render normally. Animated/random glyphs and live inline skins
         // must go through the font each time, including legacy formatting supplied by hooks.
-        const MAX_LINES: usize = 512;
+        const MAX_LINES: usize = 2048;
         const MAX_VERTICES: usize = 512;
         let slot = self.next;
         self.next += 1;
@@ -175,6 +178,7 @@ impl Game<'_> {
         Some(t)
     }
     /// The other players' models and names: the players a server sends.
+    #[allow(dead_code)]
     fn other_players(&self) -> Vec<(&Mob, String)> {
         let mut out = Vec::new();
         let indices = first_mob_indices(&self.mobs);
@@ -221,9 +225,12 @@ impl Game<'_> {
         self.name_tags_with_hooks(camera, alpha, !mod_api::__private::mods().is_empty())
     }
     fn name_tags_with_hooks(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
-        self.collect_name_tags(camera, alpha, hooks, None)
+        self.collect_name_tags(camera, alpha, hooks)
     }
-    fn collect_name_tags(
+    fn collect_name_tags(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
+        self.collect_name_tags_culled(camera, alpha, hooks, None)
+    }
+    fn collect_name_tags_culled(
         &self,
         camera: glam::DVec3,
         alpha: f64,
@@ -235,8 +242,25 @@ impl Game<'_> {
         let name_format = hooks && mod_api::__private::listened(mod_api::HookId::PlayerNameFormat);
         let viewer = self.player_team();
         let mut tags = Vec::new();
-        let players = self.other_players();
-        let player_ids = named_by_player_list(&players);
+        let players: Vec<(&Mob, &str)> = match self.remote.as_ref() {
+            Some(r) => {
+                let mut indices =
+                    FxHashMap::with_capacity_and_hasher(self.mobs.len(), Default::default());
+                for (index, mob) in self.mobs.iter().enumerate() {
+                    indices.entry(mob.id).or_insert(index);
+                }
+                r.player_names_iter()
+                    .filter_map(|(id, name)| Some((&self.mobs[*indices.get(&id)?], name)))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let has_below_name = self
+            .score
+            .board
+            .display_objective(sb::SLOT_BELOW_NAME)
+            .is_some();
+        let player_ids: FxHashSet<u32> = players.iter().map(|(player, _)| player.id).collect();
         let named = self.mobs.iter().filter_map(|m| {
             // Already named by the player list: a second tag would sit on the
             // first (`named_by_player_list`). A mob a mod's pre hook canceled has none.
@@ -245,15 +269,14 @@ impl Game<'_> {
             }
             // A mannequin with no name still shows its description.
             let name = match &m.custom_name {
-                Some(name) => name.clone(),
+                Some(name) => Cow::Borrowed(name.as_str()),
                 None if hooks || m.species() == horizon_client::mobs::Species::Mannequin => {
-                    String::new()
+                    Cow::Borrowed("")
                 }
                 None => return None,
             };
             // The tag's per-entity distance (vanilla's default is 64) is
-            // measured to the entity: copy the name only for a mob the frame
-            // can show it on.
+            // measured to the entity: check distance before emitting the mob.
             let at = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
             let max = m.name_tag_distance();
             (at.distance_squared(camera) < max * max).then_some((m, name, false))
@@ -263,7 +286,8 @@ impl Game<'_> {
         let players = players
             .into_iter()
             .filter(|(m, _)| !self.render_canceled(m.id))
-            .chain(own)
+            .map(|(m, name)| (m, Cow::Borrowed(name)))
+            .chain(own.map(|(m, name)| (m, Cow::Owned(name))))
             .map(|(m, name)| (m, name, true));
         // Who is riding whom: asked once per tag below, and rescanning every entity
         // for each tag made this quadratic in the number of loaded entities.
@@ -300,12 +324,6 @@ impl Game<'_> {
             let at = match marks.top {
                 Some(top) => p + glam::DVec3::Y * cosmetic_lift(top, m.model_scale()),
                 None => p,
-            };
-            // A player's scores and team go by name, a mob's by UUID.
-            let holder = if player {
-                Some(name.clone())
-            } else {
-                self.persist.uuids.get(&m.id).map(|u| uuid_text(*u))
             };
             let team = if player {
                 self.score.board.players_team(&name)
@@ -374,11 +392,11 @@ impl Game<'_> {
             }
             // getDisplayName: the name in the team's prefix, suffix and colour.
             let member = if player {
-                Text::untrusted(&name)
+                Text::untrusted(&*name)
             } else {
                 m.custom_name_text
                     .clone()
-                    .unwrap_or_else(|| Text::untrusted(&name))
+                    .unwrap_or_else(|| Text::untrusted(&*name))
             };
             // StringDecomposer.iterateFormatted: `§` codes a server leaves
             // inside the team prefix or the name itself apply at draw time.
@@ -406,11 +424,20 @@ impl Game<'_> {
                     lines.push((text, 0.0));
                     lift = f64::from(9.0f32 * 1.15 * 0.025);
                 }
-            } else if distance_sqr < m.below_name_distance().powi(2)
-                && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
-            {
-                lines.push((score.resolve_legacy(), 0.0));
-                lift = f64::from(9.0f32 * 1.15 * 0.025);
+            } else if has_below_name && distance_sqr < m.below_name_distance().powi(2) {
+                // A player's scores go by name, a mob's by UUID.
+                let score = if player {
+                    self.below_name_text(&name)
+                } else {
+                    self.persist
+                        .uuids
+                        .get(&m.id)
+                        .and_then(|u| self.below_name_text(&uuid_text(*u)))
+                };
+                if let Some(score) = score {
+                    lines.push((score.resolve_legacy(), 0.0));
+                    lift = f64::from(9.0f32 * 1.15 * 0.025);
+                }
             }
             lines.push((shown, lift));
             let l = self.world.light(
@@ -601,10 +628,16 @@ impl Game<'_> {
         // The text alpha that goes with getBackgroundOpacity(0.25):
         // max((0.25 + 0.75) / 2, 0.5), as ARGB.color (the floor of 255 times it).
         const FADED: u32 = 0x7F;
-        let mut patches = Vec::new();
         let mut layouts = std::mem::take(&mut self.name_tag_layouts);
         layouts.begin_frame(&self.gui.atlas);
-        for tag in self.collect_name_tags(
+        let mut batch = HudBatch::new(
+            [1, 1],
+            horizon_client::hud::GuiScale {
+                requested: 1,
+                unicode: false,
+            },
+        );
+        for tag in self.collect_name_tags_culled(
             camera,
             alpha,
             !mod_api::__private::mods().is_empty(),
@@ -616,7 +649,7 @@ impl Game<'_> {
             if tag.discrete {
                 self.mark_translucent_entity(out.len(), "minecraft:name_tag");
                 let light = vertex_light(tag.light);
-                patches.extend(self.styled_name_tag_quads(
+                self.styled_name_tag_quads_batched(
                     o,
                     &tag.lines,
                     FADED,
@@ -627,14 +660,15 @@ impl Game<'_> {
                     out,
                     tag.marks,
                     Some(&mut layouts),
-                ));
+                    &mut batch,
+                );
                 continue;
             }
             // LightCoordsUtil.lightCoordsWithEmission(lightCoords, 2).
             let lit = (tag.light >> 4).max(2) << 4 | (tag.light & 15).max(2);
             self.mark_entity(out.len(), "minecraft:name_tag");
             let light = vertex_light(lit);
-            patches.extend(self.styled_name_tag_quads(
+            self.styled_name_tag_quads_batched(
                 o,
                 &tag.lines,
                 0xFF,
@@ -645,9 +679,10 @@ impl Game<'_> {
                 out,
                 tag.marks,
                 Some(&mut layouts),
-            ));
+                &mut batch,
+            );
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
-            patches.extend(self.styled_name_tag_quads(
+            self.styled_name_tag_quads_batched(
                 o,
                 &tag.lines,
                 FADED,
@@ -658,11 +693,12 @@ impl Game<'_> {
                 see_through,
                 tag.marks,
                 Some(&mut layouts),
-            ));
+                &mut batch,
+            );
         }
         layouts.end_frame();
         self.name_tag_layouts = layouts;
-        self.map_patches.extend(patches);
+        self.map_patches.extend(batch.patches);
     }
     /// The lines of one name tag, `o` from the camera: the text at
     /// `text_alpha` in its layer, on the translucent black background
@@ -680,7 +716,14 @@ impl Game<'_> {
         unit: f32,
         out: &mut Vec<Vertex>,
     ) -> Vec<horizon_client::font::Patch> {
-        self.styled_name_tag_quads(
+        let mut batch = HudBatch::new(
+            [1, 1],
+            horizon_client::hud::GuiScale {
+                requested: 1,
+                unicode: false,
+            },
+        );
+        self.styled_name_tag_quads_batched(
             o,
             lines,
             text_alpha,
@@ -691,13 +734,15 @@ impl Game<'_> {
             out,
             Marks::default(),
             None,
-        )
+            &mut batch,
+        );
+        batch.patches
     }
 
     /// [`Self::name_tag_quads`], with Horizon's marks on the last line (the name): the Horizon
     /// player's mark before the text, a name tag style's badge after it and its line under the
     /// background.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     fn styled_name_tag_quads(
         &self,
         o: glam::DVec3,
@@ -709,8 +754,36 @@ impl Game<'_> {
         unit: f32,
         out: &mut Vec<Vertex>,
         marks: Marks,
-        mut layouts: Option<&mut NameTagLayouts>,
+        layouts: Option<&mut NameTagLayouts>,
     ) -> Vec<horizon_client::font::Patch> {
+        let mut batch = HudBatch::new(
+            [1, 1],
+            horizon_client::hud::GuiScale {
+                requested: 1,
+                unicode: false,
+            },
+        );
+        self.styled_name_tag_quads_batched(
+            o, lines, text_alpha, background, text_layer, light, unit, out, marks, layouts,
+            &mut batch,
+        );
+        Vec::new()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn styled_name_tag_quads_batched(
+        &self,
+        o: glam::DVec3,
+        lines: &[(Text, f64)],
+        text_alpha: u32,
+        background: bool,
+        text_layer: u32,
+        light: u32,
+        unit: f32,
+        out: &mut Vec<Vertex>,
+        marks: Marks,
+        mut layouts: Option<&mut NameTagLayouts>,
+        batch: &mut HudBatch,
+    ) {
         // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
         const BACKGROUND: u32 = 0x3F00_0000;
         // The camera's facing (Camera.rotation()), turned round in third-person
@@ -727,13 +800,6 @@ impl Game<'_> {
         let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
         let up = right.cross(forward).normalize_or_zero();
         let away = forward.as_vec3() * 0.002;
-        let mut batch = HudBatch::new(
-            [1, 1],
-            horizon_client::hud::GuiScale {
-                requested: 1,
-                unicode: false,
-            },
-        );
         let last = lines.len().saturating_sub(1);
         for (n, (text, lift)) in lines.iter().enumerate() {
             let o = (o + glam::DVec3::new(0.0, *lift, 0.0)).as_vec3();
@@ -749,14 +815,9 @@ impl Game<'_> {
             // Font.prepareText, as any text: bold, italic, fonts and each
             // glyph's own box (accented.png's are 12 pixels tall).
             let behind = match layouts.as_deref_mut() {
-                Some(layouts) => layouts.name_tag(
-                    &mut batch,
-                    &self.gui.atlas,
-                    text,
-                    y0,
-                    text_alpha,
-                    background,
-                ),
+                Some(layouts) => {
+                    layouts.name_tag(batch, &self.gui.atlas, text, y0, text_alpha, background)
+                }
                 None => batch.name_tag(
                     &self.gui.atlas,
                     text,
@@ -818,8 +879,6 @@ impl Game<'_> {
                 }
             }
         }
-        // Glyphs rasterized on first use (Unifont's) upload with the frame.
-        batch.patches
     }
 }
 
@@ -835,6 +894,7 @@ fn name_tag_in_view(
         && frustum.is_none_or(|view| view.intersects(min, max))
 }
 
+#[allow(dead_code)]
 fn first_mob_indices(mobs: &[Mob]) -> std::collections::HashMap<u32, usize> {
     let mut indices = std::collections::HashMap::with_capacity(mobs.len());
     for (index, mob) in mobs.iter().enumerate() {
@@ -862,8 +922,8 @@ fn collect_vehicle_ids(
     passenger_vehicles: impl IntoIterator<Item = u32>,
     local_riding: Option<u32>,
     local_entity_id: Option<u32>,
-) -> std::collections::HashSet<u32> {
-    let mut ridden: std::collections::HashSet<u32> = mobs
+) -> FxHashSet<u32> {
+    let mut ridden: FxHashSet<u32> = mobs
         .iter()
         .filter_map(|o| o.extra.mount)
         .chain(mobs.iter().filter_map(|m| m.extra.rider.map(|_| m.id)))
@@ -892,9 +952,8 @@ fn collect_vehicle_ids(
 ///
 /// Built whether or not native mods are loaded. It was briefly built only with
 /// them, as a fast path, and without them both tags were drawn on top of each
-/// other on every server that names its players this way. The set is small --
-/// the players in view -- and `other_players` has already allocated a name
-/// string for each, so skipping it saved very little.
+/// other on every server that names its players this way.
+#[allow(dead_code)]
 fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }

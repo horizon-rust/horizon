@@ -6890,8 +6890,10 @@ impl Game<'_> {
             Vec::new()
         };
         // ExperienceOrb.followNearbyPlayer: the players an orb may go for,
-        // their feet and the point `eyeHeight / 2` above them.
-        let followed: Vec<([f64; 3], [f64; 3])> = {
+        // their feet and the point `eyeHeight / 2` above them. Skip building when no orbs exist.
+        let followed: Vec<([f64; 3], [f64; 3])> = if self.orbs.is_empty() {
+            Vec::new()
+        } else {
             let own = self
                 .player
                 .as_ref()
@@ -6926,36 +6928,43 @@ impl Game<'_> {
         let driven = self.driven_mount().map(|m| m.id);
         // Cat.handleLieDown: the sleeping players (another's, drawn lying in
         // a bed, and this client's own) a lying cat can lie on top of.
-        let sleepers: Vec<horizon_core::geometry::Aabb> = self
-            .remote
-            .as_ref()
-            .map(|r| {
-                self.mobs
-                    .iter()
-                    .filter(|m| {
-                        r.level_players.contains_key(&(m.id as i32)) && m.extra.ints[1] != 0
-                    })
-                    .map(|m| {
-                        let p = m.position;
-                        horizon_core::geometry::Aabb::new(
-                            horizon_core::geometry::Vec3::new(p.x - 0.1, p.y, p.z - 0.1),
-                            horizon_core::geometry::Vec3::new(p.x + 0.1, p.y + 0.2, p.z + 0.1),
-                        )
-                    })
-                    .chain(self.sleeping.map(|bed| {
-                        let p = horizon_core::geometry::Vec3::new(
-                            f64::from(bed[0]) + 0.5,
-                            f64::from(bed[1]) + 0.6875,
-                            f64::from(bed[2]) + 0.5,
-                        );
-                        horizon_core::geometry::Aabb::new(
-                            horizon_core::geometry::Vec3::new(p.x - 0.1, p.y, p.z - 0.1),
-                            horizon_core::geometry::Vec3::new(p.x + 0.1, p.y + 0.2, p.z + 0.1),
-                        )
-                    }))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let sleepers: Vec<horizon_core::geometry::Aabb> = if self
+            .mobs
+            .iter()
+            .any(|m| m.species() == horizon_client::mobs::Species::Cat)
+        {
+            self.remote
+                .as_ref()
+                .map(|r| {
+                    self.mobs
+                        .iter()
+                        .filter(|m| {
+                            r.level_players.contains_key(&(m.id as i32)) && m.extra.ints[1] != 0
+                        })
+                        .map(|m| {
+                            let p = m.position;
+                            horizon_core::geometry::Aabb::new(
+                                horizon_core::geometry::Vec3::new(p.x - 0.1, p.y, p.z - 0.1),
+                                horizon_core::geometry::Vec3::new(p.x + 0.1, p.y + 0.2, p.z + 0.1),
+                            )
+                        })
+                        .chain(self.sleeping.map(|bed| {
+                            let p = horizon_core::geometry::Vec3::new(
+                                f64::from(bed[0]) + 0.5,
+                                f64::from(bed[1]) + 0.6875,
+                                f64::from(bed[2]) + 0.5,
+                            );
+                            horizon_core::geometry::Aabb::new(
+                                horizon_core::geometry::Vec3::new(p.x - 0.1, p.y, p.z - 0.1),
+                                horizon_core::geometry::Vec3::new(p.x + 0.1, p.y + 0.2, p.z + 0.1),
+                            )
+                        }))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -9865,15 +9874,16 @@ impl Game<'_> {
     /// Status for `horizon-ctl status`.
     /// The other players' entities in the level and their names (their
     /// profiles', which outlive the player list's entries).
+    #[allow(dead_code)]
     pub(super) fn remote_player_names(&self) -> Vec<(u32, String)> {
-        let Some(r) = self.remote.as_ref() else {
-            return Vec::new();
-        };
-        r.level_players
-            .iter()
-            .filter(|(_, uuid)| **uuid != r.profile)
-            .filter_map(|(id, uuid)| Some((*id as u32, r.level_player_name(*id, uuid)?.to_owned())))
-            .collect()
+        self.remote
+            .as_ref()
+            .map(|r| {
+                r.player_names_iter()
+                    .map(|(id, name)| (id, name.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     /// `ClientClockManager.tick`: the clock moves on by the game time that
     /// passed since its last tick, at its rate. A game time the server sets
@@ -10621,6 +10631,12 @@ impl Remote {
             .get(&id)
             .or_else(|| self.players.get(uuid))
             .map(String::as_str)
+    }
+    pub(in crate::game) fn player_names_iter(&self) -> impl Iterator<Item = (u32, &str)> + '_ {
+        self.level_players
+            .iter()
+            .filter(move |(_, uuid)| **uuid != self.profile)
+            .filter_map(move |(id, uuid)| Some((*id as u32, self.level_player_name(*id, uuid)?)))
     }
     /// Listed UUIDs always have a tab entry; removal clears both together.
     pub(super) fn listed_player_count(&self) -> usize {

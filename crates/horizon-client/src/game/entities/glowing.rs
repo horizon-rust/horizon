@@ -43,9 +43,8 @@ impl Game<'_> {
     pub(super) fn mob_outline(&self, m: &Mob) -> Option<u32> {
         let vanilla = m.is_currently_glowing().then(|| {
             let team = if &*m.kind.id == "minecraft:player" {
-                let names = self.remote_player_names();
-                let name = names.into_iter().find(|(id, _)| *id == m.id);
-                name.and_then(|(_, name)| self.score.board.players_team(&name))
+                self.remote_player_name(m.id)
+                    .and_then(|name| self.score.board.players_team(name))
             } else {
                 self.mob_team_of(m)
             };
