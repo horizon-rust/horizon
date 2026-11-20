@@ -91,6 +91,54 @@ class ParityRunnerTests(unittest.TestCase):
              "--example", "old"],
         ])
 
+    def test_a_prebuild_cargo_run_says_where_its_time_went(self):
+        command = ["cargo", "build", "--locked", "--profile", "release", "-p", "horizon-world", "--features", "f",
+                   "--example", "a", "--example", "b", "--bins"]
+        lines = [(10.0, "    Blocking waiting for file lock on package cache\n"),
+                 (12.0, "    Blocking waiting for file lock on build directory\n"),
+                 (700.0, "   Compiling serde v1.0.0\n"),
+                 (900.0, "   Compiling horizon-world v0.1.0 (/w)\n"),
+                 (1000.0, "    Finished `release` profile [optimized] target(s) in 16m 40s\n")]
+        self.assertEqual(parity.describe_cargo_build(command, lines, 0.0, 1001.0),
+                         "release -p horizon-world --features f 3 targets: 1001s, 2 crates compiled, "
+                         "2s waiting for the package cache lock, 688s waiting for the build directory lock")
+        # Still waiting when the run ended (it failed or was stopped).
+        self.assertEqual(parity.describe_cargo_build(["cargo", "build", "--locked", "--example", "a"],
+                                                     [(5.0, "Blocking waiting for file lock on build directory\n")],
+                                                     0.0, 65.0),
+                         "dev 1 target: 65s, 0 crates compiled, 60s waiting for the build directory lock")
+
+    def test_the_prebuild_still_returns_a_failed_runs_errors(self):
+        script = ("import sys; print('Blocking waiting for file lock on build directory', file=sys.stderr, flush=True); "
+                  "print('   Compiling x v1', file=sys.stderr); sys.exit(1)")
+        with mock.patch.object(parity, "target_packages", return_value={}), \
+                mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", script]]), \
+                mock.patch("builtins.print") as printed:
+            self.assertEqual(parity.prebuild([], 2),
+                             (False, "Blocking waiting for file lock on build directory\n   Compiling x v1\n"))
+        self.assertIn("1 crate compiled", printed.call_args_list[0].args[0])
+
+    def test_the_prebuild_machine_and_cache_lines(self):
+        self.assertEqual(parity.describe_machine(12, (3.14, 2.0, 1.0), (9.0, 6.5, 2.25)),
+                         "machine: 12 CPUs, load (1/5/15 min) at start 3.1 2.0 1.0, end 9.0 6.5 2.2")
+        self.assertEqual(parity.describe_machine(8, None, None), "machine: 8 CPUs")
+        self.assertEqual(parity.describe_sccache({"hits": 10, "misses": 5}, {"hits": 410, "misses": 7}),
+                         "compiler cache (whole sccache server): 400 hits, 2 misses")
+        for before in (None, {"hits": 500, "misses": 5}):  # none, or a server restarted meanwhile
+            self.assertEqual(parity.describe_sccache(before, {"hits": 410, "misses": 7}),
+                             "compiler cache: not in use, or its counts could not be read")
+        stats = ("Compile requests                   500\nCache hits                         410\n"
+                 "Cache hits (Rust)                  410\nCache misses                         7\n"
+                 "Cache hits rate                  98.33 %\n")
+        with mock.patch.object(parity.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, stdout=stats)) as run:
+            self.assertEqual(parity.sccache_stats({"RUSTC_WRAPPER": "/opt/homebrew/bin/sccache"}),
+                             {"hits": 410, "misses": 7})
+            self.assertIsNone(parity.sccache_stats({}))
+            self.assertEqual(run.call_count, 1)
+        with mock.patch.object(parity.subprocess, "run", side_effect=OSError):
+            self.assertIsNone(parity.sccache_stats({"RUSTC_WRAPPER": "sccache"}))
+
     def test_a_probe_binary_depends_only_on_the_probes_it_ran(self):
         commands = [["/t/release/examples/world_probe", "a_fixture", "/dir"],
                     ["cargo", "run", "-p", "horizon-client", "--example", "client_probe", "--", "b_fixture"]]

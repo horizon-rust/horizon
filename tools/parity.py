@@ -723,11 +723,115 @@ def prebuild(artifacts, jobs):
     environment["CARGO_BUILD_JOBS"] = str(jobs)
     errors = ""
     packages = target_packages()
-    for command in prebuild_commands(artifacts, packages):
-        result = subprocess.run(command, cwd=ROOT, env=environment, capture_output=True, text=True)
-        if result.returncode:
-            errors += result.stderr
+    commands = prebuild_commands(artifacts, packages)
+    load, stats = machine_load(), sccache_stats(environment)
+    for number, command in enumerate(commands, 1):
+        started = time.monotonic()
+        # Stderr is read line by line, timed, so the summary can tell lock waits from compiling; stdout, which
+        # Cargo leaves empty here, was discarded before too.
+        with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                              text=True) as process:
+            try:
+                lines = [(time.monotonic(), line) for line in process.stderr]
+                process.wait()
+            except BaseException:
+                process.kill()  # as subprocess.run does
+                raise
+        if process.returncode:
+            errors += "".join(line for _, line in lines)
+        report(lambda: f"cargo {number}/{len(commands)}: "
+                       f"{describe_cargo_build(command, lines, started, time.monotonic())}")
+    report(lambda: describe_machine(os.cpu_count(), load, machine_load()))
+    report(lambda: describe_sccache(stats, sccache_stats(environment)))
     return not errors, errors
+
+
+def report(line):
+    """Print a prebuild measurement; one that fails is left out rather than failing the run."""
+    try:
+        print(f"  {line()}", flush=True)
+    except Exception:
+        pass
+
+
+CARGO_LOCK_WAIT = re.compile(r"^\s*Blocking waiting for file lock on (.+?)\s*$")
+
+
+def describe_cargo_build(command, lines, started, ended):
+    """One prebuild Cargo run as a log line: what it built, its wall time, how many crates Cargo compiled (it names
+    only those; fresh ones need -v), and how long it sat behind another build's file lock before going on.
+
+    lines: [(monotonic time, stderr line)]. A wait runs from Cargo's `Blocking waiting for file lock on <what>` to
+    its next line, or to the end of the run."""
+    profile, selection, targets = "dev", [], 0
+    arguments = iter(command[2:])
+    for argument in arguments:
+        if argument == "--profile":
+            profile = next(arguments, profile)
+        elif argument in ("--example", "--bin"):
+            next(arguments, None)
+            targets += 1
+        elif argument in ("--examples", "--bins"):
+            targets += 1
+        elif argument != "--locked":
+            selection.append(argument)
+    compiled = sum(1 for _, line in lines if line.lstrip().startswith("Compiling "))
+    waits, waiting = {}, None
+    for at, line in lines:
+        if waiting:
+            waits[waiting[1]] = waits.get(waiting[1], 0) + at - waiting[0]
+            waiting = None
+        lock = CARGO_LOCK_WAIT.match(line)
+        if lock:
+            waiting = (at, lock.group(1))
+    if waiting:
+        waits[waiting[1]] = waits.get(waiting[1], 0) + ended - waiting[0]
+    built = " ".join([profile, *selection, f"{targets} target{'s' * (targets != 1)}"])
+    text = f"{built}: {ended - started:.0f}s, {compiled} crate{'s' * (compiled != 1)} compiled"
+    for lock, seconds in waits.items():
+        text += f", {seconds:.0f}s waiting for the {lock} lock"
+    return text
+
+
+def machine_load():
+    """The 1, 5 and 15 minute load averages, or None where the system has none (Windows)."""
+    try:
+        return os.getloadavg()
+    except (AttributeError, OSError):
+        return None
+
+
+def describe_machine(cpus, before, after):
+    loads = ", ".join(f"{when} {' '.join(f'{value:.1f}' for value in load)}"
+                      for when, load in (("start", before), ("end", after)) if load)
+    return f"machine: {cpus or '?'} CPUs" + (f", load (1/5/15 min) at {loads}" if loads else "")
+
+
+SCCACHE_COUNTS = re.compile(r"^Cache (hits|misses)\s+(\d+)\s*$", re.MULTILINE)
+
+
+def sccache_stats(environment):
+    """sccache's {"hits": n, "misses": n} when the build goes through it (RUSTC_WRAPPER names sccache or
+    tools/ci/compiler-cache.sh, which calls it), else None; None too when the counts can't be read."""
+    wrapper = os.path.basename(environment.get("RUSTC_WRAPPER", ""))
+    if os.path.splitext(wrapper)[0].lower() != "sccache" and wrapper != "compiler-cache.sh":
+        return None
+    program = shutil.which("sccache", path=environment.get("PATH")) if wrapper == "compiler-cache.sh" \
+        else environment["RUSTC_WRAPPER"]
+    try:
+        result = subprocess.run([program, "--show-stats"], capture_output=True, text=True, timeout=30)
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+        return None
+    counts = dict((name, int(value)) for name, value in SCCACHE_COUNTS.findall(result.stdout))
+    return counts if not result.returncode and len(counts) == 2 else None
+
+
+def describe_sccache(before, after):
+    if not before or not after or any(after[count] < before[count] for count in before):  # restarted server
+        return "compiler cache: not in use, or its counts could not be read"
+    # The server is the machine's, so other builds running meanwhile count too.
+    return (f"compiler cache (whole sccache server): {after['hits'] - before['hits']} hits, "
+            f"{after['misses'] - before['misses']} misses")
 
 
 LARGE_OUTPUT = 64 << 20
