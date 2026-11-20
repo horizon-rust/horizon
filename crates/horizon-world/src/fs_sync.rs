@@ -7,6 +7,12 @@ use std::path::Path;
 /// opened and synced there the way POSIX allows, so a rename there stays
 /// only as durable as NTFS's journal makes it.
 pub fn sync_dir(folder: &Path) -> io::Result<()> {
+    // A bare file name's parent is "": the working directory.
+    let folder = if folder.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        folder
+    };
     #[cfg(unix)]
     match std::fs::File::open(folder)?.sync_all() {
         // Some filesystems (network and FUSE ones among them) refuse to sync
