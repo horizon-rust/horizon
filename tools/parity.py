@@ -1700,7 +1700,9 @@ def fresh_decisions():
         DECISIONS.write_text("")
         return DECISIONS
     except OSError as error:
-        print(f"warning: no oracle reuse summary this run ({DECISIONS} can't be written: {type(error).__name__})",
+        # The repository-relative name only: CI logs are public, and the checkout's path says nothing useful.
+        name = DECISIONS.relative_to(ROOT) if DECISIONS.is_relative_to(ROOT) else DECISIONS.name
+        print(f"warning: no oracle reuse summary this run ({name} can't be written: {type(error).__name__})",
               flush=True)
         return None
 

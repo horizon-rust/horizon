@@ -311,12 +311,18 @@ def bytes_digest(path):
 def content_digest(path):
     """What a file holds, or every file under a folder, through linked folders too (a datapack folder may link packs
     in): the target's content is what the oracle reads, and each link's resolved target is part of it. A folder
-    reached twice (a link cycle) is named once. Raises OSError for what can't be read."""
+    reached twice (a link cycle) is named once. Raises OSError for what can't be read, an ancestor that can't be
+    searched included: only a path that isn't there is "missing"."""
+    import stat as modes
     path = os.path.abspath(path)
-    if os.path.isfile(path):
-        return bytes_digest(path)
-    if not os.path.isdir(path):
+    try:
+        mode = os.stat(path).st_mode
+    except (FileNotFoundError, NotADirectoryError):
         return "missing"
+    if modes.S_ISREG(mode):
+        return bytes_digest(path)
+    if not modes.S_ISDIR(mode):
+        return "other"
     entries, seen = [["", "at", os.path.realpath(path)]], set()
 
     def walk(folder, relative):
@@ -363,7 +369,9 @@ def runtime_digest(program):
     its class library (lib/modules) and of the JVM's native library, and the `-version` text these give. A JDK updated
     or replaced in place changes the key even when it prints the same version. Only a launcher at <home>/bin/ of a JDK
     home holding all three as regular files can be keyed: not a stub that picks a JDK itself (/usr/bin/java beside a
-    /usr/lib/modules folder). Raises Unkeyed, or OSError for a file that vanished meanwhile."""
+    /usr/lib/modules folder). A launcher inside a JDK-shaped folder that hands the call to another JDK (a wrapper
+    script or binary put there) can't be told apart from outside, and is not supported. Raises Unkeyed, or OSError
+    for a file that vanished meanwhile."""
     launcher = os.path.realpath(program)
     folder = os.path.dirname(launcher)
     home = os.path.dirname(folder)
@@ -374,10 +382,13 @@ def runtime_digest(program):
         raise Unkeyed("the launcher is not in a JDK's bin folder")
 
     def stamp(path):
-        stat = os.stat(path)
-        return [stat.st_size, stat.st_mtime_ns]
+        """Which file it is (its real path, device and inode) and its last change (size, mtime, ctime): a link
+        retargeted to a file of the same size and mtime changes it too."""
+        real = os.path.realpath(path)
+        stat = os.stat(real)
+        return [real, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
-    fingerprint = [launcher, stamp(launcher), bytes_digest(release), stamp(modules), os.path.relpath(vm, home),
+    fingerprint = [stamp(launcher), stamp(release), bytes_digest(release), stamp(modules), os.path.relpath(vm, home),
                    stamp(vm)]
     cached = CACHE / "versions" / digest(fingerprint)
     try:
@@ -467,8 +478,6 @@ def main():
         passthrough("passthrough-off")
     if "-version" in arguments or "--version" in arguments:
         passthrough("passthrough-version")
-    if any(environment.get(variable) for variable in UNKEYED):
-        return relay("passthrough-jvm-options")
     try:
         hashes = Hashes()
     except Uncached as reason:
@@ -478,6 +487,9 @@ def main():
     stdin = stdin_identity(hashes)
     if stdin is None:
         passthrough("passthrough-pipe")
+    # After the older passthroughs, so that a call main's shim gave to execv still goes there.
+    if any(environment.get(variable) for variable in UNKEYED):
+        return relay("passthrough-jvm-options")
     # What can't be fingerprinted is never reused, and never a traceback (its paths would reach the harness's log).
     try:
         runtime = runtime_digest(program)

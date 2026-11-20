@@ -10,9 +10,7 @@ import unittest
 from unittest import mock
 
 from tools import parity, parity_shard
-
-# The JVM's own variables, which tools/parity_shim.py can't key (its UNKEYED).
-UNKEYED_VARIABLES = ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH")
+from tools.parity_shim import UNKEYED as UNKEYED_VARIABLES  # the JVM's and javac's own variables, never keyed
 
 
 class ParityRunnerTests(unittest.TestCase):
@@ -515,6 +513,7 @@ class ShimDecisionSummaryTests(unittest.TestCase):
             with mock.patch.object(parity, "DECISIONS", Path(temp)), mock.patch("builtins.print") as said:
                 self.assertIsNone(parity.fresh_decisions())
             self.assertIn("no oracle reuse summary", said.call_args.args[0])
+            self.assertNotIn(temp, said.call_args.args[0])  # the repository-relative name only: CI logs are public
             notes = Path(temp) / "decisions.jsonl"
             notes.write_text("an earlier run's\n")
             with mock.patch.object(parity, "DECISIONS", notes):
@@ -670,6 +669,10 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.call(check=False, JAVA_TOOL_OPTIONS="-Dx=1").returncode, 247)
         self.assertEqual(self.reasons(), ["passthrough-failed", "passthrough-jvm-options"])
 
+    def test_a_piped_call_with_jvm_options_is_passed_through_as_on_main(self):
+        self.call(stdin=self.subprocess.PIPE, JAVA_TOOL_OPTIONS="-Dx=1")
+        self.assertEqual(self.reasons(), ["passthrough-pipe"])
+
     def test_jvm_options_from_the_environment_are_never_reused(self):
         for variable in UNKEYED_VARIABLES:
             with self.subTest(variable=variable):
@@ -691,6 +694,19 @@ class OracleReuseTests(unittest.TestCase):
         (self.bin.parent / "lib" / "server" / "libjvm.so").write_text("another vm")
         self.assertEqual(self.oracle(), 3)
         self.assertEqual(self.reasons(), ["java-runtime"])
+
+    def test_a_runtime_link_retargeted_to_an_equal_looking_file_changes_the_key(self):
+        server = self.bin.parent / "lib" / "server"
+        for name in ("a.so", "b.so"):
+            (server / name).write_text("vm")
+            os.utime(server / name, ns=(10**18, 10**18))
+        (server / "libjvm.so").unlink()
+        (server / "libjvm.so").symlink_to(server / "a.so")
+        self.assertEqual(self.oracle(), 1)
+        (server / "libjvm.so").unlink()
+        (server / "libjvm.so").symlink_to(server / "b.so")  # the same size and mtime, another file
+        self.assertEqual(self.oracle(), 2)
+        self.assertEqual(self.reasons(), ["no-record", "java-runtime"])
 
     def test_a_launcher_outside_a_whole_jdk_is_never_reused(self):
         home = self.bin.parent
@@ -795,6 +811,20 @@ class OracleReuseTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(self.reasons(), ["passthrough-unreadable"])
 
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root searches any folder")
+    def test_an_order_file_behind_an_unsearchable_folder_is_not_keyed_as_missing(self):
+        locked = self.input.parent.parent / "locked"
+        locked.mkdir()
+        (locked / "order.txt").write_text("a\n")
+        locked.chmod(0)
+        try:
+            result = self.call(HORIZON_ORDER=str(locked / "order.txt"))
+        finally:
+            locked.chmod(0o755)
+        self.assertEqual(result.stdout, "done\n")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.reasons(), ["passthrough-unreadable"])
+
     def test_notes_that_cannot_be_written_change_nothing(self):
         # A folder where the file should be: every open fails.
         self.env["PARITY_SHIM_DECISIONS"] = str(self.input.parent)
@@ -857,14 +887,14 @@ class OracleReuseTests(unittest.TestCase):
         (folder / "java").chmod(0o755)
 
     def test_a_wrapper_that_looks_java_up_on_path_reaches_the_real_one(self):
-        # A wrapper in a JDK's bin/ of its own, so that the shim keys it.
-        wrapper = self.bin.parent / "wrapper-jdk" / "bin"
+        # Outside a JDK, the wrapper is never keyed (passthrough-runtime): each call reaches the real one.
+        wrapper = self.bin.parent / "wrapper"
         self.wrapper(wrapper)
-        self.jdk(wrapper.parent)
         self.env["PATH"] = f"{self.shim}:{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
         self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}"
         self.assertEqual(self.oracle(), 1)
-        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 2)
+        self.assertEqual(self.reasons(), ["passthrough-runtime"] * 2)
 
     def test_a_wrapper_that_puts_the_shim_back_stops_with_a_reason(self):
         wrapper = self.bin.parent / "wrapper"
