@@ -24,7 +24,7 @@ use horizon_world::{
     edge_backoff::{self, EdgeBackoffInput, EdgeBackoffWorld},
     entity_move::{self, CollisionFlags, EntityMoveWorld, MovementHistory, MoverType},
     entity_obstruction::EntityIdentity,
-    ground_support::{GroundState, compare_positions, find_supporting_block},
+    ground_support::{GroundState, find_supporting_block},
     living_air::{self, LivingAirWorld},
     living_fall::ImpulseContext,
     living_motion::{self, LivingMotionWorld},
@@ -559,8 +559,6 @@ pub struct PlayerMotion {
     pub border: Option<horizon_core::geometry::border::BorderGeometry>,
     /// A mod's boxes in which the level's blocks don't stop this player (arismoko/horizon#3717).
     pub collision_exclusions: horizon_world::collision_exclusions::CollisionExclusions,
-    /// Cached `(creative, attributes.version())` from the last `update_player_attributes` sync.
-    pub creative_reach_cache: Option<(bool, u64)>,
 }
 impl PlayerMotion {
     /// `ServerGamePacketListenerImpl.handleMovePlayer`: the movement the client
@@ -715,9 +713,13 @@ impl PlayerMotion {
         self.dimensions.bounds(self.position)
     }
     pub fn attribute(&mut self, name: &str) -> Result<f64> {
+        let key = self
+            .attributes
+            .key(name)
+            .ok_or_else(|| format!("missing movement attribute {name}"))?;
         Ok(self
             .attributes
-            .value_of(name, ValueKind::Computed)
+            .value(Some(key), ValueKind::Computed)
             .map_err(attribute_error)?)
     }
     /// Add (or remove) a transient attribute modifier, e.g. from equipment
@@ -1253,16 +1255,16 @@ impl MotionWorld<'_, '_, '_> {
     /// ServerboundPlayerCommandPacket comes before the tick's move).
     pub fn replayed_tick(&mut self, keys: crate::sprint::Keys, sprinting: bool) -> Result<()> {
         self.player.replaying = true;
-        let result = if self.try_fast_stationary_replayed_tick(keys, sprinting)? {
-            Ok(())
-        } else {
-            self.local_tick(keys, |player, _| {
+        let result = match self.try_fast_stationary_replayed_tick(keys, sprinting) {
+            Ok(true) => Ok(()),
+            Ok(false) => self.local_tick(keys, |player, _| {
                 if player.sprinting == sprinting {
                     Ok(())
                 } else {
                     player.set_sprinting(sprinting)
                 }
-            })
+            }),
+            Err(err) => Err(err),
         };
         self.player.replaying = false;
         result
@@ -1334,12 +1336,30 @@ impl MotionWorld<'_, '_, '_> {
             || !p.position.y.is_finite()
             || !p.position.z.is_finite()
             || p.position.y != p.position.y.floor()
-            || !p
-                .attributes
-                .has_instance_without_modifier("minecraft:movement_speed", "minecraft:powder_snow")
         {
             return Ok(false);
         }
+        let speed_key = p.attributes.key("minecraft:movement_speed");
+        if p.attributes.lookup(speed_key.as_ref()).is_none()
+            || self
+                .player
+                .attributes
+                .has_modifier(speed_key, "minecraft:powder_snow")
+                .map_err(attribute_error)?
+        {
+            return Ok(false);
+        }
+        if let Some(bounce_key) = self.player.attributes.key("minecraft:bounciness")
+            && self
+                .player
+                .attributes
+                .value(Some(bounce_key), ValueKind::Computed)
+                .map_err(attribute_error)?
+                != 0.0
+        {
+            return Ok(false);
+        }
+        let p = &*self.player;
         let bounds = p.bounds();
         if !self.entities.is_empty() {
             let entity_box = Aabb::new(
@@ -1416,6 +1436,7 @@ impl MotionWorld<'_, '_, '_> {
                 if props.coefficients.friction != 0.6
                     || props.coefficients.speed_factor != 1.0
                     || props.coefficients.bounce_restitution != 0.0
+                    || crate::block_contact::restitution_listens(floor_state)
                     || props.fence
                     || props.wall
                     || props.coefficients.fence_gate
@@ -1484,6 +1505,15 @@ impl MotionWorld<'_, '_, '_> {
         position: Vec3,
         bounds: Aabb,
     ) -> Option<BlockPos> {
+        fn compare_positions(left: BlockPos, right: BlockPos) -> i32 {
+            if left.y != right.y {
+                left.y.wrapping_sub(right.y)
+            } else if left.z != right.z {
+                left.z.wrapping_sub(right.z)
+            } else {
+                left.x.wrapping_sub(right.x)
+            }
+        }
         if !below
             || !position.x.is_finite()
             || !position.y.is_finite()
@@ -1815,6 +1845,7 @@ impl MotionWorld<'_, '_, '_> {
                 if props.coefficients.friction != 0.6
                     || props.coefficients.speed_factor != 1.0
                     || props.coefficients.bounce_restitution != 0.0
+                    || crate::block_contact::restitution_listens(floor_state)
                     || props.fence
                     || props.wall
                     || props.coefficients.fence_gate
