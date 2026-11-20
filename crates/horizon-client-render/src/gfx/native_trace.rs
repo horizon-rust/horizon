@@ -666,7 +666,9 @@ impl TerrainTrace {
 
     /// Joins the frame's group, as it is now, with `scene`, this frame's, and the kept
     /// resources the material reads (`reads`): the terrain draws with these pipelines while
-    /// there is a scene.
+    /// there is a scene. Without one (the Ray Tracing setting turned it off, say) the groups go
+    /// with it: they hold the dropped scene's buffers, and a later scene's generations start
+    /// over, so one could match theirs.
     pub(in crate::gfx) fn bind(
         &mut self,
         device: &wgpu::Device,
@@ -676,6 +678,7 @@ impl TerrainTrace {
     ) {
         self.on = scene.is_some();
         let Some(scene) = scene else {
+            self.group = None;
             return;
         };
         let stamp = reads.map(|r| r.made());

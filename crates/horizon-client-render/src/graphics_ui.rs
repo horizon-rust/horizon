@@ -9,7 +9,7 @@ use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrLook,
         HdrMode, HdrSetup as Setup, LeafCullingMode, Overlay, Pacing, ParallelTickMode,
-        ParticleCullingMode, PresentMode, Preset, Upscaling,
+        ParticleCullingMode, PresentMode, Preset, RayTracingMode, Upscaling,
     },
     graphics_style::Cost,
     lang,
@@ -119,6 +119,8 @@ pub enum H {
     HdrLook,
     BatteryMode,
     ShadowCache,
+    /// Hardware ray tracing for packs that declare it (`Graphics::ray_tracing`): Auto, On or Off.
+    RayTracing,
     /// Opens the shader pack list (`options_ui::Page::ShaderPacks`).
     ShaderPacks,
     GraphicsApi,
@@ -550,6 +552,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         H::ShadowCache,
                         Saves,
                         "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                    ),
+                    h(
+                        H::RayTracing,
+                        High,
+                        "Ray tracing for packs that use it: Auto as the pack asks, On always, Off never.",
                     ),
                 ],
             )],
@@ -996,6 +1003,7 @@ impl H {
             ),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
+            H::RayTracing => labelled("Ray Tracing", g.ray_tracing.label()),
             // A press across the row, as Calibrate...: the list it opens shows the pick.
             H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
@@ -1141,6 +1149,7 @@ impl H {
             H::HdrLook => g.hdr_look = step(&HdrLook::ALL, g.hdr_look, back),
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
+            H::RayTracing => g.ray_tracing = step(&RayTracingMode::ALL, g.ray_tracing, back),
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
             H::Pacing => {
@@ -1359,6 +1368,7 @@ impl Item {
                         | H::FrameGeneration
                         | H::BatteryMode
                         | H::ShadowCache
+                        | H::RayTracing
                         | H::GraphicsApi
                         | H::TranslucentBatching
                 )

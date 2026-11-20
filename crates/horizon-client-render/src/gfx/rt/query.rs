@@ -61,9 +61,10 @@ pub(in crate::gfx) enum Switch {
     Off,
 }
 
-/// This process's switch: the one place the environment is read.
-pub(in crate::gfx) fn switch() -> Switch {
-    resolve(std::env::var_os("HORIZON_RAY_TRACING").as_deref())
+/// Effective switch combining `HORIZON_RAY_TRACING` (when set, it overrides the setting)
+/// and the player's `Graphics::ray_tracing` setting.
+pub(in crate::gfx) fn switch_with(mode: crate::graphics::RayTracingMode) -> Switch {
+    resolve_with(std::env::var_os("HORIZON_RAY_TRACING").as_deref(), mode)
 }
 
 /// The switch `HORIZON_RAY_TRACING` set to `var` makes: only `1` forces it on, and a value that
@@ -73,6 +74,17 @@ fn resolve(var: Option<&std::ffi::OsStr>) -> Switch {
         None => Switch::Pack,
         Some(v) if v == "1" => Switch::On,
         Some(_) => Switch::Off,
+    }
+}
+
+fn resolve_with(var: Option<&std::ffi::OsStr>, mode: crate::graphics::RayTracingMode) -> Switch {
+    if var.is_some() {
+        return resolve(var);
+    }
+    match mode {
+        crate::graphics::RayTracingMode::Auto => Switch::Pack,
+        crate::graphics::RayTracingMode::On => Switch::On,
+        crate::graphics::RayTracingMode::Off => Switch::Off,
     }
 }
 
@@ -86,10 +98,8 @@ pub(in crate::gfx) fn wanted(switch: Switch, traces: bool) -> bool {
     }
 }
 
-/// The features to request on `adapter`: ray queries, when wanted and offered. `traces`: the
-/// shader pack picked at startup declares `[ray_tracing]` (the device can't add them later).
-pub(in crate::gfx) fn features(adapter: &wgpu::Adapter, traces: bool) -> wgpu::Features {
-    let wanted = wanted(switch(), traces);
+/// The features to request on `adapter`: ray queries, when `wanted` and offered.
+pub(in crate::gfx) fn features(adapter: &wgpu::Adapter, wanted: bool) -> wgpu::Features {
     let features = pick(wanted, adapter.features());
     if wanted {
         let info = adapter.get_info();
@@ -148,7 +158,11 @@ impl crate::gfx::Renderer {
         let output = (self.output).with_pack(self.shader_pack_kind().is_some());
         let offered = self.adapter.features().contains(RAY_QUERY);
         crate::gfx::output::EffectiveOutput {
-            rays: Some(status(switch(), offered, on(&self.device))),
+            rays: Some(status(
+                switch_with(self.ray_tracing_mode),
+                offered,
+                on(&self.device),
+            )),
             ..output
         }
     }
@@ -184,6 +198,28 @@ mod tests {
         assert_eq!(status(Switch::Pack, false, false), Unsupported);
         assert_eq!(status(Switch::On, false, false), Unsupported);
         assert_eq!(status(Switch::Off, true, false), Off);
+    }
+
+    #[test]
+    fn graphics_ray_tracing_setting_respects_env_override_and_modes() {
+        use crate::graphics::RayTracingMode;
+        let os = |v: &str| Some(std::ffi::OsString::from(v));
+        assert_eq!(resolve_with(None, RayTracingMode::Auto), Switch::Pack);
+        assert_eq!(resolve_with(None, RayTracingMode::On), Switch::On);
+        assert_eq!(resolve_with(None, RayTracingMode::Off), Switch::Off);
+        // Environment override always takes precedence over the persisted setting.
+        assert_eq!(
+            resolve_with(os("1").as_deref(), RayTracingMode::Off),
+            Switch::On
+        );
+        assert_eq!(
+            resolve_with(os("0").as_deref(), RayTracingMode::On),
+            Switch::Off
+        );
+        assert_eq!(
+            resolve_with(os("0").as_deref(), RayTracingMode::Auto),
+            Switch::Off
+        );
     }
 
     #[test]
