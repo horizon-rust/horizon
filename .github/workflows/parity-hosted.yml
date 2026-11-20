@@ -20,10 +20,6 @@ permissions:
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
   HORIZON_TELEMETRY_URL: "off"
-  # Only a run of main writes the caches every other run starts from (docs/ci-runners.md#hosted-parity). Today the
-  # only such run is a dispatch on main; the allow-list keeps an event that reports main's ref for another's code (a
-  # pull_request_target) out if a trigger is added.
-  SAVE_CACHES: ${{ github.ref == 'refs/heads/main' && contains(fromJSON('["workflow_dispatch", "push", "schedule"]'), github.event_name) && 'true' || 'false' }}
 
 jobs:
   # Which harnesses, on how many runners: no secret and no game data here.
@@ -41,6 +37,12 @@ jobs:
       java: ${{ steps.keys.outputs.java }}
       lock: ${{ steps.keys.outputs.lock }}
       prepare: ${{ steps.keys.outputs.prepare }}
+      # Only a run of main writes the caches every other run starts from (docs/ci-runners.md#hosted-parity). Today the
+      # only such run is a dispatch on main; the allow-list keeps an event that reports main's ref for another's code (a
+      # pull_request_target) out if a trigger is added. An output and not a variable: the oracle shim keys every
+      # variable the harnesses see, and main's saving run and a reading run would then never share a record. Computed
+      # here, not by a step, so nothing of the checked-out commit can set it.
+      saves: ${{ github.ref == 'refs/heads/main' && contains(fromJSON('["workflow_dispatch", "push", "schedule"]'), github.event_name) && 'true' || 'false' }}
     steps:
       # First, so nothing else can fail before it: a run without the data's secrets (a fork's, Dependabot's) runs
       # nothing, and `hosted parity (advisory)` fails saying so. Only whether they are set reaches this job.
@@ -150,7 +152,7 @@ jobs:
   # software Vulkan for the harnesses that start the game). It starts from main's caches (docs/ci-runners.md#hosted-
   # parity): the build folders in the clear (no game data in them); the dataset's encrypted chunks as they are; the
   # prepared resources, oracle results and parity state sealed and authenticated by tools/ci/sealed-cache.sh. Only a
-  # run of main (SAVE_CACHES) writes any of them.
+  # run of main (the plan's `saves`) writes any of them.
   run:
     name: hosted parity ${{ matrix.shard }}/${{ matrix.of }} (${{ matrix.group }})
     needs: plan
@@ -347,7 +349,7 @@ jobs:
       # main, what the build folders hold now is noted: only Cargo may add to them before they are saved.
       - name: Source dates of the restored build
         env:
-          SAVES_BUILD: ${{ env.SAVE_CACHES == 'true' && matrix.saves_build && steps.target.outputs.cache-hit != 'true' }}
+          SAVES_BUILD: ${{ needs.plan.outputs.saves == 'true' && matrix.saves_build && steps.target.outputs.cache-hit != 'true' }}
         run: |
           set -euo pipefail
           mkdir -p .local/parity-target target
@@ -410,11 +412,11 @@ jobs:
           path: ${{ runner.temp }}/parity-hosted-logs/
           if-no-files-found: ignore
           retention-days: 3
-      # The saves: main's runs only (SAVE_CACHES), whether its harnesses passed or not, once they ran. An entry whose
+      # The saves: main's runs only (the plan's `saves`), whether its harnesses passed or not, once they ran. An entry whose
       # exact key exists (the same commit again) is not saved twice. The dataset and the prepared resources are the
       # same for every shard (the first saves them), the build folders for every shard of a group (its first).
       - name: Save the encrypted dataset
-        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == 1 && steps.fetch.outputs.cache == 'refreshed' }}
+        if: ${{ !cancelled() && needs.plan.outputs.saves == 'true' && matrix.shard == 1 && steps.fetch.outputs.cache == 'refreshed' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.VANILLA_DATA_CACHE }}
@@ -423,7 +425,7 @@ jobs:
       # which holds only while nothing but Cargo writes there.
       - name: Only Cargo wrote into the build folders
         id: owned
-        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.saves_build && steps.target.outputs.cache-hit != 'true' && steps.harnesses.outcome != 'skipped' }}
+        if: ${{ !cancelled() && needs.plan.outputs.saves == 'true' && matrix.saves_build && steps.target.outputs.cache-hit != 'true' && steps.harnesses.outcome != 'skipped' }}
         run: |
           if python3 tools/ci/cargo_owned.py check "$RUNNER_TEMP/cargo-owned.json" .local/parity-target target; then
             echo "clear=true" >> "$GITHUB_OUTPUT"
@@ -442,7 +444,7 @@ jobs:
       # but the build (the rest are links to the data), and parity.py's shared passes; the prepared resources once.
       - name: Seal for the caches
         id: seal
-        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.trusted.outputs.sealed == 'true' && steps.fetch.outputs.digest != '' && steps.harnesses.outcome != 'skipped' }}
+        if: ${{ !cancelled() && needs.plan.outputs.saves == 'true' && steps.trusted.outputs.sealed == 'true' && steps.fetch.outputs.digest != '' && steps.harnesses.outcome != 'skipped' }}
         env:
           VANILLA_DATA_PASSPHRASE: ${{ secrets.VANILLA_DATA_PASSPHRASE }}
           SEAL_PREPARED: ${{ matrix.shard == 1 && steps.prepared.outputs.cache-hit != 'true' }}

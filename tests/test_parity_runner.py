@@ -891,8 +891,8 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.reasons(), ["environment", "environment", "environment", "hit"])
 
     def test_a_call_on_another_hosted_runner_replays(self):
-        # Blacksmith sets these per VM (its name and id, its Turborepo cache's address and token, its own services'
-        # address and port): two runners' calls that differ only in them are the same call.
+        # A Blacksmith runner sets these per VM (its name and id, its Turborepo cache's address and token, and two
+        # undocumented ones): two runners' calls that differ only in them are the same call.
         first = dict(PETNAME="calm-otter", VM_ID="vm-1", TURBO_API="http://10.0.0.1:1", TURBO_TOKEN="a",
                      GIT_MIRROR_PROXY_URL="http://10.0.0.1:3", METADATA_PORT="1")
         second = dict(PETNAME="brisk-heron", VM_ID="vm-2", TURBO_API="http://10.0.0.2:2", TURBO_TOKEN="b",

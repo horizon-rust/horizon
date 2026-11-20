@@ -56,8 +56,9 @@ PATH_OPTIONS = {"-cp", "-classpath", "--class-path", "-sourcepath", "--source-pa
 # Variables left out of the key: they change between runs of the same call, and no oracle reads them (tools/parity.py's
 # bookkeeping, a CI job's ids and the commits and token its parity workflows pass (parity.yml, parity-main.yml,
 # parity-hosted.yml), an ssh or terminal session's state, the per-harness game folder, and what a Blacksmith runner
-# sets per VM: its PETNAME and VM_ID, TURBO_API and TURBO_TOKEN for its Turborepo cache, and GIT_MIRROR_PROXY_URL
-# and METADATA_PORT for its own services). Every other variable, one never seen before included, is part of the key.
+# sets per VM: its PETNAME and VM_ID, TURBO_API and TURBO_TOKEN for its Turborepo cache, and GIT_MIRROR_PROXY_URL and
+# METADATA_PORT, set by the runner, their meaning inferred from the names only: a git mirror proxy and a metadata
+# service). Every other variable, one never seen before included, is part of the key.
 IGNORED_PREFIXES = ("PARITY_", "GITHUB_", "RUNNER_", "ACTIONS_", "BLACKSMITH_", "SSH_", "XDG_SESSION_")
 IGNORED = {"PWD", "OLDPWD", "SHLVL", "_", "TERM", "TERM_SESSION_ID", "COLUMNS", "LINES", "INVOCATION_ID",
            "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "HORIZON_HOME", "BASE_SHA", "HEAD_SHA", "MAIN_SHA", "GH_TOKEN",

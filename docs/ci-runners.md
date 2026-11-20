@@ -142,8 +142,10 @@ gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>               
     branch that edits it.
   - Only a commit on a branch of this repository runs, resolved once to a full SHA that every job uses.
 - **Caches.** A fork's pull request can restore this repository's cache entries, and a branch's copy of the workflow
-  can name any key. So only a run of main writes them (`SAVE_CACHES`: today a dispatch on main), and what is made from
-  the data goes into one only sealed. Every other run restores and saves nothing. No sticky disk, no sccache.
+  can name any key. So only a run of main writes them (the plan job's `saves`: today a dispatch on main), and what is
+  made from the data goes into one only sealed. Every other run restores and saves nothing. No sticky disk, no
+  sccache. `saves` is a job output, not a variable: the oracle shim keys every variable the harnesses see, so a
+  variable that differs between main's saving run and a reading run would make every reading run miss.
   - The build folders (`.local/parity-target`, `target/`), in the clear, one entry per probe group, keyed by the
     toolchain and `Cargo.lock` and restored from the newest. A differential check (2026-11-20) found nothing of the
     data in them. Main saves them only when `tools/ci/cargo_owned.py` finds that nothing but Cargo wrote there

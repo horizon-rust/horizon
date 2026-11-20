@@ -165,8 +165,8 @@ class HostedParityTests(unittest.TestCase):
     request can restore this repository's cache entries, so only main's runs write them, and nothing made from the
     data goes into one, an artifact or a log unsealed: the build folders (no game data) are the only clear entry."""
 
-    SAVE_CACHES = ("  SAVE_CACHES: ${{ github.ref == 'refs/heads/main' && contains(fromJSON('[\"workflow_dispatch\", "
-                   "\"push\", \"schedule\"]'), github.event_name) && 'true' || 'false' }}\n")
+    SAVES = ("${{ github.ref == 'refs/heads/main' && contains(fromJSON('[\"workflow_dispatch\", \"push\", \"schedule\"]'), "
+             "github.event_name) && 'true' || 'false' }}")
     SECRET_STEPS = ["Fetch the vanilla data", "Unseal the restored caches", "Seal for the caches"]
 
     @classmethod
@@ -210,7 +210,7 @@ class HostedParityTests(unittest.TestCase):
         self.assertLess(self.names.index("Unseal the restored caches"), checkout)
         # Sealing comes after the harnesses: on main only, whose code it is.
         self.assertGreater(self.names.index("Seal for the caches"), self.names.index("The shard's harnesses"))
-        self.assertIn("env.SAVE_CACHES == 'true'", self.step("Seal for the caches")["if"])
+        self.assertIn("needs.plan.outputs.saves == 'true'", self.step("Seal for the caches")["if"])
         self.assertEqual(set(self.workflow[True]), {"workflow_dispatch"})
         # The default branch's copies of the scripts, or none: never the tested commit's.
         script = self.step("The fetch and seal scripts, from the default branch")["run"]
@@ -246,15 +246,16 @@ class HostedParityTests(unittest.TestCase):
                 self.assertNotEqual(run({**good, name: value}), 0)
 
     def test_only_mains_runs_save(self):
-        self.assertIn(self.SAVE_CACHES, self.text)
+        # The plan job's own expression, not a step's output: nothing the checkout runs can set it.
+        self.assertEqual(self.workflow["jobs"]["plan"]["outputs"]["saves"], self.SAVES)
         gates = {"owned": "Only Cargo wrote into the build folders", "seal": "Seal for the caches"}
         for name in gates.values():
-            self.assertIn("env.SAVE_CACHES == 'true'", self.step(name)["if"], name)
+            self.assertIn("needs.plan.outputs.saves == 'true'", self.step(name)["if"], name)
         saves = [step for step in self.steps if step.get("uses", "").startswith("actions/cache/save@")]
         self.assertEqual(len(saves), 4)
         for step in saves:
             condition = step["if"]
-            self.assertTrue("env.SAVE_CACHES == 'true'" in condition
+            self.assertTrue("needs.plan.outputs.saves == 'true'" in condition
                             or any(f"steps.{id}.outputs." in condition for id in gates), step["name"])
         # No action that restores and saves at once, no sticky disk, no compiler cache.
         for body in self.workflow["jobs"].values():
@@ -262,6 +263,24 @@ class HostedParityTests(unittest.TestCase):
                 uses = step.get("uses", "")
                 self.assertFalse(re.search(r"^actions/cache@|sticky|useblacksmith/|rust-cache", uses), uses)
         self.assertEqual(self.workflow["jobs"]["run"]["env"]["HORIZON_NO_SCCACHE"], "1")
+
+    def test_the_harnesses_see_nothing_that_differs_between_a_saving_and_a_reading_run(self):
+        # The oracle shim keys every variable the harnesses see but those it ignores (tools/parity_shim.py): one that
+        # differs between main's saving run and a reading run (whether it saves, the event, the ref, a pull request's
+        # number) would make every reading run miss main's records.
+        sys.path.insert(0, str(ROOT / "tools"))
+        import parity_shim
+        harnesses = self.names.index("The shard's harnesses")
+        seen = {**self.workflow["env"], **self.workflow["jobs"]["run"]["env"], **self.steps[harnesses].get("env", {})}
+        self.assertNotIn("SAVE_CACHES", seen)
+        for name, value in seen.items():
+            if name not in parity_shim.IGNORED and not name.startswith(parity_shim.IGNORED_PREFIXES):
+                self.assertNotIn("${{", str(value), name)
+        # Nor does a step before them write one for the steps after it.
+        for step in self.steps[:harnesses]:
+            for line in step.get("run", "").splitlines():
+                if "GITHUB_ENV" in line:
+                    self.assertNotRegex(line, r"\$\{\{|SAVE", step.get("name"))
 
     def test_only_the_build_folders_are_cached_in_the_clear(self):
         clear = {".local/parity-target", "target"}
