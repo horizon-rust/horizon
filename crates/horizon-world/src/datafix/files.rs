@@ -44,7 +44,7 @@ pub fn read_dat(path: &Path) -> io::Result<Option<Tag>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let limits = Limits::default();
+    let limits = Limits::saved();
     let raw = Compression::Gzip.decode(&bytes, limits.max_bytes)?;
     let (root, _) = nbt::read_named(&raw, limits).map_err(|e| invalid(e.to_string()))?;
     Ok(Some(root.tag))
@@ -57,7 +57,7 @@ pub fn read_saved_dat(path: &Path) -> io::Result<Option<Tag>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let limits = Limits::default();
+    let limits = Limits::saved();
     let raw = if bytes.starts_with(&[0x1f, 0x8b]) {
         Compression::Gzip.decode(&bytes, limits.max_bytes)?
     } else {
@@ -76,7 +76,7 @@ pub fn write_dat(path: &Path, tag: &Tag) -> io::Result<()> {
         name: JavaString::default(),
         tag: tag.clone(),
     };
-    let raw = nbt::write_named(&root, Limits::default()).map_err(|e| invalid(e.to_string()))?;
+    let raw = nbt::write_named(&root, Limits::saved()).map_err(|e| invalid(e.to_string()))?;
     fs::write(path, Compression::Gzip.encode(&raw)?)
 }
 
@@ -762,6 +762,7 @@ fn upgrade_regions_with_threads(
     }
     let staging = folder.join(".datafix");
     fs::create_dir_all(&staging)?;
+    clear_staging(folder, &staging)?;
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let failed: Mutex<Option<(usize, io::Error)>> = Mutex::new(None);
@@ -803,11 +804,43 @@ fn upgrade_regions_with_threads(
     fs::remove_dir(&staging)
 }
 
+/// Empty the staging folder of an upgrade that stopped half-way. Its region
+/// files and temporaries are copies of files still in `folder`. A `c.X.Z.mcc`
+/// is one too, unless a region file already moved out without it (as the
+/// upgrader did before it moved these files): then the region's stub needs it,
+/// so it moves out when `folder` has no file of that name, and is dropped
+/// when it does.
+fn clear_staging(folder: &Path, staging: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(staging)? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path.file_name().unwrap_or_default();
+        let is_external = name.to_str().is_some_and(|name| {
+            let parts: Vec<_> = name.split('.').collect();
+            parts.len() == 4
+                && parts[0] == "c"
+                && parts[1].parse::<i32>().is_ok()
+                && parts[2].parse::<i32>().is_ok()
+                && parts[3] == "mcc"
+        });
+        let target = folder.join(name);
+        if is_external && !target.try_exists()? {
+            fs::rename(&path, &target)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 /// One file of [`upgrade_regions`]: every chunk fixed, then the file written
-/// anew in `staging` and moved over the old one. A file without chunks (most
-/// of a large world's are empty) has nothing to fix and is left as it is.
+/// anew in `staging` and moved over the old one, its oversized chunks'
+/// `c.X.Z.mcc` files first. A file without chunks (most of a large world's
+/// are empty) has nothing to fix and is left as it is.
 fn upgrade_region_file(path: &Path, staging: &Path, fix: &impl Fn(&mut Tag)) -> io::Result<()> {
-    let limits = Limits::default();
+    let limits = Limits::saved();
     let mut region = RegionFile::open(path)?;
     let positions: Vec<_> = region.chunks().map(|(p, _)| p).collect();
     if positions.is_empty() {
@@ -832,7 +865,18 @@ fn upgrade_region_file(path: &Path, staging: &Path, fix: &impl Fn(&mut Tag)) -> 
     for (pos, record) in &records {
         writer.write(*pos, record)?;
     }
+    let externals = writer.external_files().to_vec();
     writer.finish()?;
+    // The `.mcc` files go before the region that points to them: a stop in
+    // between leaves the old region, which reads its own chunks or these
+    // upgraded copies, never a stub whose file is missing (a dropped chunk).
+    let folder = path.parent().unwrap_or(Path::new("."));
+    for external in externals {
+        fs::rename(
+            &external,
+            folder.join(external.file_name().unwrap_or_default()),
+        )?;
+    }
     fs::rename(&temporary, path)
 }
 
@@ -1136,6 +1180,7 @@ pub fn upgrade_world_with(base: &Path, progress: &UpgradeProgress) -> io::Result
 #[cfg(test)]
 mod upgrade_tests {
     use super::*;
+    use horizon_core::position::ChunkPos;
 
     fn level_version(base: &Path) -> i32 {
         let root = read_dat(&base.join("level.dat")).unwrap().unwrap();
@@ -1332,5 +1377,103 @@ mod upgrade_tests {
         );
         assert!(!dir.join(".datafix").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A fix that only marks the chunk upgraded, so the tests below see the
+    /// moves and limits and not the chunk fixes.
+    fn stamp(tag: &mut Tag) {
+        set(tag, "DataVersion", Tag::Int(CURRENT));
+    }
+
+    /// `r.0.0.mca` in `dir` with one old chunk at `pos` carrying `payload`.
+    fn region_with_chunk(dir: &Path, pos: ChunkPos, payload: Tag, compression: Compression) {
+        fs::create_dir_all(dir).unwrap();
+        let mut region = RegionFile::open_writable(dir.join("r.0.0.mca"), true).unwrap();
+        let mut tag = old_chunk(pos.x, pos.z);
+        set(&mut tag, "Payload", payload);
+        let root = NamedTag {
+            name: "".into(),
+            tag,
+        };
+        let record = ChunkRecord::from_nbt(&root, compression, 7, Limits::saved()).unwrap();
+        region.write(pos, &record).unwrap();
+    }
+
+    fn read_chunk(dir: &Path, pos: ChunkPos) -> Tag {
+        let mut region = RegionFile::open(dir.join("r.0.0.mca")).unwrap();
+        let record = region.read(pos).unwrap().expect("the chunk reads");
+        record.nbt(Limits::saved()).unwrap().tag
+    }
+
+    /// A chunk too large for its region file lives in its own `c.X.Z.mcc`
+    /// beside it: the upgraded one replaces the old, the staging folder goes,
+    /// and a retry gets past what a stopped run left in staging, including an
+    /// upgraded region's `.mcc` that never left it.
+    #[test]
+    fn oversized_chunk_moves_out_with_its_region() {
+        let base = std::env::temp_dir().join(format!("horizon-mcc-upgrade-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let pos = ChunkPos::new(3, 4);
+        let external = "c.3.4.mcc";
+        // Stored uncompressed, the chunk takes more than 255 sectors.
+        let payload = Tag::ByteArray(vec![7; 1_100_000]);
+        for case in ["first", "leftover", "stranded"] {
+            let dir = base.join(case);
+            region_with_chunk(&dir, pos, payload.clone(), Compression::None);
+            assert!(
+                dir.join(external).is_file(),
+                "{case}: the fixture is external"
+            );
+            let staging = dir.join(".datafix");
+            match case {
+                // A stopped run's copies in staging, the old files in place.
+                "leftover" => {
+                    fs::create_dir_all(&staging).unwrap();
+                    fs::write(staging.join(external), b"partial").unwrap();
+                    fs::write(staging.join("r.0.0.mca"), b"partial").unwrap();
+                }
+                // The region moved out, its `.mcc` left in staging.
+                "stranded" => {
+                    fs::create_dir_all(&staging).unwrap();
+                    fs::rename(dir.join(external), staging.join(external)).unwrap();
+                }
+                _ => {}
+            }
+
+            upgrade_regions_with_threads(&dir, &Progress::none(), stamp, 1).unwrap();
+            assert!(!staging.exists(), "{case}: staging is gone");
+            assert!(dir.join(external).is_file(), "{case}: the .mcc is beside");
+            let chunk = read_chunk(&dir, pos);
+            assert_eq!(data_version(&chunk, -1), CURRENT, "{case}: upgraded");
+            assert_eq!(chunk.get("Payload"), Some(&payload), "{case}: content kept");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The upgrader reads chunks and `.dat` files as the game loads them: past
+    /// the default node cap, within the saved-data limits.
+    #[test]
+    fn files_past_the_default_node_cap_upgrade() {
+        let base = std::env::temp_dir().join(format!("horizon-big-nbt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let nodes = Limits::default().max_nodes + 1;
+        let payload = || Tag::List(vec![Tag::Byte(1); nodes]);
+        let whole =
+            |tag: &Tag| matches!(tag.get("Payload"), Some(Tag::List(l)) if l.len() == nodes);
+
+        let region = base.join("region");
+        let pos = ChunkPos::new(1, 2);
+        region_with_chunk(&region, pos, payload(), Compression::Zlib);
+        upgrade_regions_with_threads(&region, &Progress::none(), stamp, 1).unwrap();
+        let chunk = read_chunk(&region, pos);
+        assert_eq!(data_version(&chunk, -1), CURRENT);
+        assert!(whole(&chunk));
+        drop(chunk);
+
+        let file = base.join("data/minecraft/big.dat");
+        write_dat(&file, &Tag::compound([("Payload", payload())])).unwrap();
+        assert!(whole(&read_dat(&file).unwrap().unwrap()));
+        assert!(whole(&read_saved_dat(&file).unwrap().unwrap()));
+        let _ = fs::remove_dir_all(&base);
     }
 }

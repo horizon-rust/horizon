@@ -618,6 +618,12 @@ impl RegionWriter {
         Ok(())
     }
 
+    /// The `c.X.Z.mcc` files written so far beside the destination, one per
+    /// oversized chunk.
+    pub fn external_files(&self) -> &[PathBuf] {
+        &self.externals
+    }
+
     pub fn finish(mut self) -> io::Result<()> {
         if self.failed {
             return Err(invalid("cannot publish a failed region writer"));

@@ -338,7 +338,7 @@ impl RegionStorageUpgrader {
         file: &Path,
         pos: ChunkPos,
     ) -> io::Result<bool> {
-        let limits = Limits::default();
+        let limits = Limits::saved();
         if open.reader.as_ref().is_none_or(|(path, _)| path != file) {
             open.reader = Some((file.to_path_buf(), RegionFile::open(file)?));
         }
