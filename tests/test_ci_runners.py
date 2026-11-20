@@ -6,6 +6,7 @@
 - Neither takes a job that holds a secret or whose token can push, publish or start workflows: playhorizon is a
   partner's server, and a checks runner keeps what a fork's job left behind.
 """
+import hashlib
 import os
 import re
 import shutil
@@ -204,7 +205,7 @@ class HostedParityTests(unittest.TestCase):
         for name in self.SECRET_STEPS:
             run = self.step(name)["run"]
             self.assertNotRegex(run, r"\b(python3?|bash) +(\./)?tools/|\$GITHUB_WORKSPACE/tools/", name)
-            fetched = re.findall(r"^fetched (\S+)$", run, re.M)
+            fetched = re.findall(r"^fetched (\S+) \|\| \{$", run, re.M)
             self.assertTrue(fetched, name)
             self.assertEqual(set(re.findall(r'"\$private/([a-z.-]+)"', run.split("\nfetched ", 1)[1])), set(fetched),
                              name)
@@ -248,8 +249,59 @@ class HostedParityTests(unittest.TestCase):
         self.assertIn("export PATH=/usr/bin:/bin", prologue)
         self.assertIn('curl -q -fsS --proto =https', prologue)
         self.assertIn("contents/tools/ci/$1?ref=$TRUSTED_SHA", prologue)
+        # The trusted commit is the default branch's, named by its explicit ref.
+        trusted = self.step("The commit of the trusted scripts", self.plan)["run"]
+        self.assertIn('git/ref/heads/$DEFAULT', trusted)
+        self.assertNotIn("/commits/", trusted)
         # The token reaches curl on its stdin, never its command line.
         self.assertNotRegex(prologue, r'curl[^|]*\$GH_TOKEN')
+
+    LINUX_STEP = (sys.platform == "linux" and os.access("/usr/bin/bash", os.X_OK)
+                  and not os.access("/usr/bin", os.W_OK), "needs Linux, with /usr/bin not writable")
+
+    def run_secret_step(self, script, folder):
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(folder), "TRUSTED_SHA": "0" * 40, "GH_TOKEN": "token",
+               "GITHUB_REPOSITORY": "owner/repo", "GITHUB_WORKSPACE": str(folder), "RUNNER_TEMP": str(folder),
+               "GITHUB_OUTPUT": str(folder / "output"), "BASH_ENV": "", "ENV": ""}
+        return subprocess.run([*self.SHELL.replace("{0}", "").split(), "-c", script], env=env, capture_output=True,
+                              text=True)
+
+    @unittest.skipUnless(*LINUX_STEP)
+    def test_a_downloaded_script_runs_only_as_the_blob_the_api_names(self):
+        # verified, from the steps' own prologue: not empty, and git's blob id of the bytes equals the API's.
+        def blob(data):
+            return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+        script = b"#!/usr/bin/env bash\necho fetched\n"
+        cases = [(script, blob(script), 0), (script + b" ", blob(script), 1), (script, blob(script).upper(), 1),
+                 (script, blob(script)[:39], 1), (script, "", 1), (b"", blob(b""), 1),
+                 (b"\0" * 70000, blob(b"\0" * 70000), 0)]
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            for data, expected, status in cases:
+                with self.subTest(size=len(data), expected=expected):
+                    (folder / "script.sh").write_bytes(data)
+                    result = self.run_secret_step(self.prologue("Fetch the vanilla data")
+                                                  + f'\nverified "{folder}/script.sh" "{expected}"\n', folder)
+                    self.assertEqual(result.returncode, status, result.stderr)
+
+    @unittest.skipUnless(*LINUX_STEP)
+    def test_a_script_that_does_not_verify_stops_the_fetch_and_skips_the_seal_steps(self):
+        # Fetching fails closed (no data); unsealing and sealing go on without the cache. Nothing runs either way.
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            for name, status, line in [("Fetch the vanilla data", 1, "::error::"),
+                                       ("Unseal the restored caches", 0, "::warning::"),
+                                       ("Seal for the caches", 0, "::warning::")]:
+                with self.subTest(name):
+                    marker = folder / "ran"
+                    prologue, rest = self.step(name)["run"].split("\nfetched ", 1)
+                    script = (prologue + f"\nfetched() {{ return 1; }}\nisolated() {{ touch {marker}; }}\n"
+                              + "fetched " + rest)
+                    result = self.run_secret_step(script, folder)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertIn(line, result.stdout)
+                    self.assertFalse(marker.exists())
 
     @unittest.skipUnless(sys.platform == "linux" and os.access("/usr/bin/bash", os.X_OK)
                          and not os.access("/usr/bin", os.W_OK), "needs Linux, with /usr/bin not writable")

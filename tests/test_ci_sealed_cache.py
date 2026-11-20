@@ -76,6 +76,8 @@ class SealedCacheTests(unittest.TestCase):
     def member(name, kind=tarfile.REGTYPE, link="", data=b"x"):
         info = tarfile.TarInfo(name)
         info.type, info.linkname = kind, link
+        if kind == tarfile.DIRTYPE:
+            info.mode = 0o755
         if kind == tarfile.REGTYPE:
             info.size = len(data)
             return info, data
@@ -182,11 +184,27 @@ class SealedCacheTests(unittest.TestCase):
             "an absolute name": [self.member("/" + local + "/x")],
             "a name outside both folders": [self.member(str(self.root).lstrip("/") + "/elsewhere/x")],
             "a name with ..": [self.member(local + "/../../escape")],
-            "a link out by an absolute target": [self.member(local + "/link", tarfile.SYMTYPE, "/etc")],
-            "a link out by a relative target": [self.member(local + "/link", tarfile.SYMTYPE, "../" * 12 + "etc")],
+            "a name twice": [self.member(local + "/x", data=b"1"), self.member(local + "/x", data=b"2")],
+            # No symbolic link at all, inside or out: a target is never resolved, so none can lead through another.
+            "a symbolic link inside": [self.member(local + "/b", tarfile.DIRTYPE),
+                                       self.member(local + "/a", tarfile.SYMTYPE, "b")],
+            "a link through a link": [self.member(local + "/b", tarfile.DIRTYPE),
+                                      self.member(local + "/a", tarfile.SYMTYPE, "b"),
+                                      self.member(local + "/c", tarfile.SYMTYPE, "a/../" + "../" * 12 + "etc")],
+            "a link listed after a member under it": [self.member(local + "/a/x"),
+                                                      self.member(local + "/a", tarfile.SYMTYPE, "/etc")],
+            "a symbolic link out": [self.member(local + "/link", tarfile.SYMTYPE, "/etc")],
             "a hard link out": [self.member(local + "/hard", tarfile.LNKTYPE, "etc/passwd")],
-            "a member under a link": [self.member(local + "/a", tarfile.SYMTYPE, "/" + local + "/b"),
-                                      self.member(local + "/a/x")],
+            "a hard link before its file": [self.member(local + "/hard", tarfile.LNKTYPE, local + "/probe"),
+                                            self.member(local + "/probe", data=b"binary")],
+            "a hard link to a folder": [self.member(local + "/d", tarfile.DIRTYPE),
+                                        self.member(local + "/hard", tarfile.LNKTYPE, local + "/d")],
+            "a hard link to a hard link": [self.member(local + "/probe", data=b"binary"),
+                                           self.member(local + "/one", tarfile.LNKTYPE, local + "/probe"),
+                                           self.member(local + "/two", tarfile.LNKTYPE, local + "/one")],
+            "a hard link to a name not quite the file's": [
+                self.member(local + "/probe", data=b"binary"),
+                self.member(local + "/hard", tarfile.LNKTYPE, local + "/./probe")],
             "a pipe": [self.member(local + "/pipe", tarfile.FIFOTYPE)],
             "a device": [self.member(local + "/null", tarfile.CHRTYPE)],
         }
@@ -195,16 +213,40 @@ class SealedCacheTests(unittest.TestCase):
                 self.forge(members)
                 self.assert_discarded("it holds a member that may not be unpacked")
 
-    def test_links_inside_the_two_folders_are_kept(self):
-        # As in the prepared resources (links to the data under RUNNER_TEMP) and Cargo's hard-linked binaries.
-        data = str(self.temp / "vanilla/shared-local/minecraft")
+    def test_a_hard_link_to_a_file_listed_before_it_is_kept(self):
+        # Cargo's binaries: each in deps/ and, linked, in the profile folder.
         local = self.inside(".local")
-        self.forge([self.member(local + "/minecraft", tarfile.SYMTYPE, data),
-                    self.member(local + "/probe", data=b"binary"),
-                    self.member(local + "/probe-0123", tarfile.LNKTYPE, local + "/probe")])
+        self.forge([self.member(local + "/d", tarfile.DIRTYPE),
+                    self.member(local + "/d/probe-0123", data=b"binary"),
+                    self.member(local + "/probe", tarfile.LNKTYPE, local + "/d/probe-0123")])
         stage, _ = self.unseal()
-        self.assertEqual(os.readlink(stage / local / "minecraft"), data)
-        self.assertEqual((stage / local / "probe-0123").read_bytes(), b"binary")
+        self.assertEqual((stage / local / "probe").read_bytes(), b"binary")
+        self.assertEqual((stage / local / "probe").stat().st_ino, (stage / local / "d/probe-0123").stat().st_ino)
+
+    def test_sealing_leaves_symbolic_links_out_and_keeps_hard_links(self):
+        # As the prepared resources' links to the data and the shim's java link, which each run makes again.
+        (self.folder / "minecraft").symlink_to(self.temp, target_is_directory=True)
+        (self.folder / "java").symlink_to(self.file)
+        os.link(self.file, self.folder / "linked.txt")
+        result = self.run_script("seal", "oracle", KEY, self.archive, self.folder)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("left out 2 links and special files", result.stdout)
+        stage, _ = self.unseal()
+        copy = stage / str(self.folder).lstrip("/")
+        self.assertFalse((copy / "minecraft").is_symlink() or (copy / "java").is_symlink())
+        self.assertEqual((copy / "linked.txt").stat().st_ino, (copy / "oracle-cache/out.txt").stat().st_ino)
+        self.assertEqual((copy / "linked.txt").read_bytes(), b"oracle output\n")
+
+    def test_an_unpacking_that_fails_leaves_no_stage_even_with_read_only_folders(self):
+        # A file under a file fails tar halfway, after a folder without write access was made: nothing reaches the
+        # stage, and the private folder goes too.
+        local = self.inside(".local")
+        locked, _ = self.member(local + "/locked", tarfile.DIRTYPE)
+        locked.mode = 0o555
+        self.forge([(locked, None), self.member(local + "/locked/y"), self.member(local + "/a"),
+                    self.member(local + "/a/x")])
+        self.assert_discarded("it did not unpack")
+        self.assertEqual([path.name for path in self.temp.iterdir() if path.name.startswith("sealed-cache.")], [])
 
     def test_padding_after_the_end_of_the_archive_is_read_and_ignored(self):
         # tar pads to whole records; a check that stopped at the end marker would leave zstd writing into a closed pipe.

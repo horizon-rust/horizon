@@ -77,8 +77,11 @@ jobs:
           DEFAULT: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT" --jq .sha)
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit for $DEFAULT"; exit 1; }
+          # The branch by its explicit ref: a tag or another ref of the same name never stands in for it.
+          [[ "$DEFAULT" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::bad default branch name"; exit 1; }
+          ref="repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT"
+          sha=$(gh api "$ref" --jq 'select(.object.type == "commit") | .object.sha')
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit for heads/$DEFAULT"; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/contents/tools/ci/fetch-vanilla-data.sh?ref=$sha" --silent ||
             { echo "::error::no tools/ci/fetch-vanilla-data.sh on $DEFAULT"; exit 1; }
           sealed=true
@@ -297,11 +300,23 @@ jobs:
           private=$(mktemp -d /tmp/trusted.XXXXXXXX)
           trap 'rm -rf "$private"' EXIT
           mkdir "$private/home"
-          fetched() {
+          api() {  # api ACCEPT PATH FILE; the token goes on stdin, never on a command line
             printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
               env -i HOME="$private/home" PATH=/usr/bin:/bin curl -q -fsS --proto =https --retry 3 --max-time 120 -K - \
-                -H "Accept: application/vnd.github.raw" -o "$private/$1" \
-                "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/tools/ci/$1?ref=$TRUSTED_SHA"
+                -H "Accept: $1" -o "$3" "https://api.github.com/repos/$GITHUB_REPOSITORY/$2"
+          }
+          # verified FILE ID: FILE is not empty and its git blob id, sha1 of "blob <length>\0" and its bytes, is ID.
+          verified() {
+            [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ -s "$1" ] &&
+              [ "$({ printf 'blob %d\0' "$(stat -c %s "$1")"; cat "$1"; } | sha1sum | cut -c1-40)" = "$2" ]
+          }
+          # fetched NAME: tools/ci/NAME at the trusted commit into the private folder, its bytes checked against the
+          # blob id the API names for that path at that commit, asked for separately.
+          fetched() {
+            api application/vnd.github+json "contents/tools/ci/$1?ref=$TRUSTED_SHA" "$private/$1.json" &&
+              api application/vnd.github.raw "contents/tools/ci/$1?ref=$TRUSTED_SHA" "$private/$1" &&
+              verified "$private/$1" "$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' \
+                "$private/$1.json" 2> /dev/null)"
           }
           isolated() {
             local secrets=$1 name extra=()
@@ -314,7 +329,11 @@ jobs:
                 'for name in $1; do IFS= read -r -d "" "$name"; export "$name"; done; shift; exec bash --noprofile --norc "$@"' \
                 isolated "$secrets" "$@"
           }
-          fetched fetch-vanilla-data.sh
+          fetched fetch-vanilla-data.sh || {
+            echo "::error::tools/ci/fetch-vanilla-data.sh at $TRUSTED_SHA did not download, or is not the blob the API" \
+              "names: no data, the shard stops"
+            exit 1
+          }
           isolated "VANILLA_DATA_DEPLOY_KEY VANILLA_DATA_PASSPHRASE" VANILLA_DATA_CACHE="$VANILLA_DATA_CACHE" -- \
             "$private/fetch-vanilla-data.sh" "$HORIZON_SHARED_SOURCE" "$DATASET"
       # The keys of this shard's sealed entries, from the parts above and the dataset's digest: the same strings name
@@ -386,11 +405,23 @@ jobs:
           private=$(mktemp -d /tmp/trusted.XXXXXXXX)
           trap 'rm -rf "$private"' EXIT
           mkdir "$private/home"
-          fetched() {
+          api() {  # api ACCEPT PATH FILE; the token goes on stdin, never on a command line
             printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
               env -i HOME="$private/home" PATH=/usr/bin:/bin curl -q -fsS --proto =https --retry 3 --max-time 120 -K - \
-                -H "Accept: application/vnd.github.raw" -o "$private/$1" \
-                "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/tools/ci/$1?ref=$TRUSTED_SHA"
+                -H "Accept: $1" -o "$3" "https://api.github.com/repos/$GITHUB_REPOSITORY/$2"
+          }
+          # verified FILE ID: FILE is not empty and its git blob id, sha1 of "blob <length>\0" and its bytes, is ID.
+          verified() {
+            [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ -s "$1" ] &&
+              [ "$({ printf 'blob %d\0' "$(stat -c %s "$1")"; cat "$1"; } | sha1sum | cut -c1-40)" = "$2" ]
+          }
+          # fetched NAME: tools/ci/NAME at the trusted commit into the private folder, its bytes checked against the
+          # blob id the API names for that path at that commit, asked for separately.
+          fetched() {
+            api application/vnd.github+json "contents/tools/ci/$1?ref=$TRUSTED_SHA" "$private/$1.json" &&
+              api application/vnd.github.raw "contents/tools/ci/$1?ref=$TRUSTED_SHA" "$private/$1" &&
+              verified "$private/$1" "$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' \
+                "$private/$1.json" 2> /dev/null)"
           }
           isolated() {
             local secrets=$1 name extra=()
@@ -403,7 +434,11 @@ jobs:
                 'for name in $1; do IFS= read -r -d "" "$name"; export "$name"; done; shift; exec bash --noprofile --norc "$@"' \
                 isolated "$secrets" "$@"
           }
-          fetched sealed-cache.sh
+          fetched sealed-cache.sh || {
+            echo "::warning::tools/ci/sealed-cache.sh at $TRUSTED_SHA did not download, or is not the blob the API" \
+              "names: this run starts cold"
+            exit 0
+          }
           for entry in "prepared $PREPARED" "oracle $ORACLE_PREFIX" "build $BUILD_PREFIX"; do
             read -r label key <<< "$entry"
             isolated VANILLA_DATA_PASSPHRASE -- "$private/sealed-cache.sh" unseal "$label" "$key" "$SEALED/$label/archive" \
@@ -482,22 +517,20 @@ jobs:
         run: bash tools/ci/vanilla-data.sh
       # The oracles' shims (tools/parity_shim.py) share one hash database. On a cold cache the first ones all create
       # it and switch it to WAL at once, and a shim can fail there ("database is locked"), failing its harness's first
-      # run. Created here first, alone. A damaged one (an entry cut short) is only a cache of file hashes: made again.
+      # run. Created here first, alone. A damaged one (an entry cut short) is only a cache of file hashes: made again,
+      # as the shims also do with one that fails later.
       - name: The oracle cache, created before the harnesses start
         env:
           PARITY_SHIM_CACHE: ${{ github.workspace }}/.local/parity-runner/oracle-cache
         run: |
           python3 - <<'EOF'
-          import sqlite3, sys
+          import sys
           sys.path.insert(0, "tools")
           import parity_shim
-          try:
-              parity_shim.Hashes()
-          except sqlite3.DatabaseError:
+          hashes = parity_shim.Hashes()  # a damaged one is made again (Hashes), never an error
+          if hashes.remade:
               print("::warning::the oracle shim's hash database is damaged: made again")
-              for path in parity_shim.CACHE.glob("hashes.*"):
-                  path.unlink()
-              parity_shim.Hashes()
+          hashes.close()
           EOF
       - name: The shard's harnesses
         id: harnesses
@@ -583,11 +616,23 @@ jobs:
           private=$(mktemp -d /tmp/trusted.XXXXXXXX)
           trap 'rm -rf "$private"' EXIT
           mkdir "$private/home"
-          fetched() {
+          api() {  # api ACCEPT PATH FILE; the token goes on stdin, never on a command line
             printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
               env -i HOME="$private/home" PATH=/usr/bin:/bin curl -q -fsS --proto =https --retry 3 --max-time 120 -K - \
-                -H "Accept: application/vnd.github.raw" -o "$private/$1" \
-                "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/tools/ci/$1?ref=$TRUSTED_SHA"
+                -H "Accept: $1" -o "$3" "https://api.github.com/repos/$GITHUB_REPOSITORY/$2"
+          }
+          # verified FILE ID: FILE is not empty and its git blob id, sha1 of "blob <length>\0" and its bytes, is ID.
+          verified() {
+            [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ -s "$1" ] &&
+              [ "$({ printf 'blob %d\0' "$(stat -c %s "$1")"; cat "$1"; } | sha1sum | cut -c1-40)" = "$2" ]
+          }
+          # fetched NAME: tools/ci/NAME at the trusted commit into the private folder, its bytes checked against the
+          # blob id the API names for that path at that commit, asked for separately.
+          fetched() {
+            api application/vnd.github+json "contents/tools/ci/$1?ref=$TRUSTED_SHA" "$private/$1.json" &&
+              api application/vnd.github.raw "contents/tools/ci/$1?ref=$TRUSTED_SHA" "$private/$1" &&
+              verified "$private/$1" "$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' \
+                "$private/$1.json" 2> /dev/null)"
           }
           isolated() {
             local secrets=$1 name extra=()
@@ -600,7 +645,11 @@ jobs:
                 'for name in $1; do IFS= read -r -d "" "$name"; export "$name"; done; shift; exec bash --noprofile --norc "$@"' \
                 isolated "$secrets" "$@"
           }
-          fetched sealed-cache.sh
+          fetched sealed-cache.sh || {
+            echo "::warning::tools/ci/sealed-cache.sh at $TRUSTED_SHA did not download, or is not the blob the API" \
+              "names: this run saves nothing"
+            exit 0
+          }
           seal() { isolated VANILLA_DATA_PASSPHRASE -- "$private/sealed-cache.sh" seal "$@"; }
           if [ "$SEAL_PREPARED" = true ] && [ -d "$HORIZON_PREPARED_CACHE/prepared/$PREPARE" ]; then
             seal prepared "$PREPARED" "$SEALED/prepared/archive" "$HORIZON_PREPARED_CACHE/prepared/$PREPARE"

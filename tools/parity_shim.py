@@ -128,18 +128,26 @@ def busy(error):
     return isinstance(error, sqlite3.OperationalError) and any(word in str(error) for word in ("locked", "busy"))
 
 
-def prepare(path, deadline):
+def prepare(path, deadline, damaged=None):
     """Make the hash database ready, in place: created if missing, switched to WAL, its table made; each step does
     nothing if already done. Shims starting together on an empty cache each switched it to WAL, and those that lost
     failed ("database is locked": 63 of 960 on Linux, 2026-11-20), failing their harness's first run. Now one does it
     under hashes.lock while the others wait for the lock. A shim from before this lock ignores it: meeting one
-    mid-way, this retries until the deadline. The file is never replaced, as another process may have it open."""
+    mid-way, this retries until the deadline. The file is replaced only when damaged: `damaged` is the inode of the
+    file a shim found damaged, removed first if it is still that file (another shim may have made it again already).
+    A process that has the old one open keeps using it, unlinked."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_name("hashes.lock"), "a+b") as handle:
         while not file_lock.lock(handle, wait=False):
             if time.monotonic() >= deadline:
                 raise Uncached("another process held hashes.lock throughout")
             time.sleep(0.02)
+        try:
+            if damaged is not None and os.stat(path).st_ino == damaged:
+                for name in (path.name, f"{path.name}-wal", f"{path.name}-shm"):
+                    path.with_name(name).unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
         def in_time():
             if time.monotonic() >= deadline:
                 raise Uncached("the database stayed locked")
@@ -164,35 +172,88 @@ def prepare(path, deadline):
 
 
 class Hashes:
-    """Content hashes keyed by path, size and mtime, shared by parallel harnesses."""
+    """Content hashes keyed by path, size and mtime, shared by parallel harnesses. Only a memo: when the database
+    fails in any way, at open or at any later lookup or store (a cache entry restored in part, a damaged page met
+    mid-run), that lookup is a miss, the file is hashed itself, and the database is made again, once; should the new
+    one fail too, this process hashes every file itself. It never fails the call. A database only busy past its
+    timeout is not damaged: that lookup is a miss and the database stays."""
 
     def __init__(self):
-        path = CACHE / "hashes.sqlite"
+        self.path = CACHE / "hashes.sqlite"
+        self.db, self.inode, self.remade = None, None, False
         # The clock starts before the warm probe, which keeps the usual busy timeout (no less patient than before
         # the lock): time it spent waiting counts against the setup that may follow.
         deadline = time.monotonic() + INIT_SECONDS
+        try:
+            seen = os.stat(self.path).st_ino
+        except OSError:
+            seen = None
+        try:
+            self.open(deadline)
+        except sqlite3.Error:
+            self.close()
+            self.remake(seen, deadline)
+
+    def open(self, deadline):
         # A warm cache: the header and one schema query, no lock.
-        if in_wal_mode(path):
-            self.db = sqlite3.connect(path, timeout=60)
+        if in_wal_mode(self.path):
+            self.db = sqlite3.connect(self.path, timeout=60)
             try:
                 if self.db.execute(TABLE).fetchone():
+                    self.inode = os.stat(self.path).st_ino
                     return
             except sqlite3.OperationalError as error:
                 if not busy(error):
                     raise
-            self.db.close()
-        prepare(path, deadline)
-        self.db = sqlite3.connect(path, timeout=60)
+            self.close()
+        prepare(self.path, deadline)
+        self.db = sqlite3.connect(self.path, timeout=60)
+        self.inode = os.stat(self.path).st_ino
+
+    def close(self):
+        if self.db is not None:
+            try:
+                self.db.close()
+            except sqlite3.Error:
+                pass
+        self.db = None
+
+    def remake(self, damaged, deadline):
+        self.remade = True
+        try:
+            prepare(self.path, deadline, damaged)
+            self.db = sqlite3.connect(self.path, timeout=60)
+            self.db.execute(TABLE).fetchone()
+            self.inode = os.stat(self.path).st_ino
+        except (sqlite3.Error, OSError, Uncached):
+            self.close()
+
+    def failed(self, error):
+        if busy(error):
+            return
+        damaged = self.inode
+        self.close()
+        if not self.remade:
+            self.remake(damaged, time.monotonic() + INIT_SECONDS)
 
     def file(self, path):
         stat = os.stat(path)
-        row = self.db.execute("select size, mtime, sha from hashes where path = ?", (path,)).fetchone()
-        if row and row[0] == stat.st_size and row[1] == stat.st_mtime_ns:
-            return row[2]
+        if self.db is not None:
+            try:
+                row = self.db.execute("select size, mtime, sha from hashes where path = ?", (path,)).fetchone()
+                if row and row[0] == stat.st_size and row[1] == stat.st_mtime_ns:
+                    return row[2]
+            except sqlite3.Error as error:
+                self.failed(error)
         with open(path, "rb") as stream:
             sha = hashlib.file_digest(stream, "sha256").hexdigest()
-        self.db.execute("insert or replace into hashes values (?, ?, ?, ?)", (path, stat.st_size, stat.st_mtime_ns, sha))
-        self.db.commit()
+        if self.db is not None:
+            try:
+                self.db.execute("insert or replace into hashes values (?, ?, ?, ?)",
+                                (path, stat.st_size, stat.st_mtime_ns, sha))
+                self.db.commit()
+            except sqlite3.Error as error:
+                self.failed(error)
         return sha
 
 
@@ -465,21 +526,68 @@ def machine():
 
 
 INCOMPLETE = object()
+STREAMS = ("stdout", "stderr")
+
+
+def stream_stamp(data):
+    return [len(data), hashlib.sha256(data).hexdigest()]
 
 
 def recorded(record):
     """The record of a call, None when there is none, INCOMPLETE when one is there but can't be read (a cache entry
-    cut short or damaged): then the call runs, never fails for it."""
+    cut short or damaged) or has no stamps of its streams (made before they were recorded): then the call runs, never
+    fails for it."""
     try:
         saved = json.loads(record.read_text())
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
         return INCOMPLETE
-    shape = isinstance(saved, dict) and isinstance(saved.get("inputs"), dict) and \
-        isinstance(saved.get("outputs"), dict) and all(stamp is None or isinstance(stamp, list)
-                                                       for stamp in saved["outputs"].values())
+    if not isinstance(saved, dict):
+        return INCOMPLETE
+    outputs, streams = saved.get("outputs"), saved.get("streams")
+    shape = isinstance(saved.get("inputs"), dict) and isinstance(outputs, dict) and \
+        all(stamp is None or isinstance(stamp, list) for stamp in outputs.values()) and \
+        isinstance(streams, dict) and all(isinstance(stamp, list) and len(stamp) == 2 and isinstance(stamp[0], int)
+                                          and isinstance(stamp[1], str) for stamp in map(streams.get, STREAMS))
     return saved if shape else INCOMPLETE
+
+
+def replayable(key, saved):
+    """The recorded stdout and stderr, or None when either is missing, unreadable, or not the stream the record was
+    made with (its length or SHA-256 differs): one cut short, or one of another write of the same call."""
+    streams = []
+    for name in STREAMS:
+        try:
+            data = (CACHE / f"{key}.{name}").read_bytes()
+        except OSError:
+            return None
+        if stream_stamp(data) != saved["streams"][name]:
+            return None
+        streams.append(data)
+    return streams
+
+
+def publish(key, record, streams, document):
+    """Write a call's streams, then its record, each to a temporary name renamed into place: a reader sees each file
+    whole, old or new, never cut short. The record holds each stream's length and SHA-256, so a record read with
+    streams of another write is told apart. What a crash (or a second shim recording the same call at once) leaves:
+    - before the first rename: the old record and old streams, which replay only as they did before;
+    - between the renames: the old record with one or both new streams, which are not the ones it stamped (a miss),
+      unless a new stream has the same bytes as the old, which replays correctly;
+    - after the last rename: the new record and its streams (a hit).
+    Without an old record, streams alone are no record (a miss). Temporary files a crash leaves are never read."""
+    pending = [(CACHE / f"{key}.{name}.{os.getpid()}.tmp", CACHE / f"{key}.{name}", data)
+               for name, data in zip(STREAMS, streams)]
+    pending.append((record.with_suffix(f".{os.getpid()}.tmp"), record, json.dumps(document).encode()))
+    try:
+        for temporary, _, data in pending:
+            temporary.write_bytes(data)
+        for temporary, target, _ in pending:
+            temporary.replace(target)
+    finally:
+        for temporary, _, _ in pending:
+            temporary.unlink(missing_ok=True)
 
 
 def unrecorded(index, variables, runtime):
@@ -584,10 +692,9 @@ def main():
     else:
         reason, details = stale(saved, paths, hashes) or (None, {})
     if reason is None:
-        # Both read before either is written: a record whose output went missing (a cache entry cut short) is a miss.
-        try:
-            replayed = (CACHE / f"{key}.stdout").read_bytes(), (CACHE / f"{key}.stderr").read_bytes()
-        except OSError:
+        # Both read and checked before either is written: a stream missing or not the record's is a miss.
+        replayed = replayable(key, saved)
+        if replayed is None:
             reason, details = "incomplete-record", {}
     if reason is None:
         note_outputs(saved["outputs"])
@@ -607,12 +714,10 @@ def main():
     outputs = {path: stamp for path, stamp in after.items() if stamp is not None and before.get(path) != stamp}
     for path in outputs:
         inputs.pop(path, None)
-    (CACHE / f"{key}.stdout").write_bytes(captured["stdout"])
-    (CACHE / f"{key}.stderr").write_bytes(captured["stderr"])
-    temporary = record.with_suffix(f".{os.getpid()}.tmp")
-    temporary.write_text(json.dumps({"command": command, "environment": variables, "runtime": runtime,
-                                     "inputs": inputs, "outputs": outputs, "seconds": round(seconds, 3)}))
-    temporary.replace(record)
+    streams = [bytes(captured[name]) for name in STREAMS]
+    publish(key, record, streams, {"command": command, "environment": variables, "runtime": runtime, "inputs": inputs,
+                                   "outputs": outputs, "seconds": round(seconds, 3),
+                                   "streams": {name: stream_stamp(data) for name, data in zip(STREAMS, streams)}})
     try:  # only for saying why a later call missed: never worth failing this one
         index.parent.mkdir(exist_ok=True)
         temporary = index.with_suffix(f".{os.getpid()}.tmp")

@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import json
 import os
 import shutil
@@ -916,6 +917,154 @@ class OracleReuseTests(unittest.TestCase):
             self.assertEqual(self.oracle(), runs)
         self.assertEqual(self.oracle(), 5)
         self.assertEqual(self.reasons(), ["no-record", *["incomplete-record"] * 4, "hit"])
+
+    def test_a_stream_that_is_not_the_records_is_a_miss(self):
+        # The record stamps each stream's length and SHA-256: one cut short, swapped, or of another write of the same
+        # call is a miss (and is recorded anew), never replayed. A record from before the stamps is a miss too.
+        cache = Path(self.env["PARITY_SHIM_CACHE"])
+        self.assertEqual(self.oracle(), 1)
+        record = next(cache.glob("*.json"))
+        stdout, stderr = record.with_suffix(".stdout"), record.with_suffix(".stderr")
+        self.assertEqual(json.loads(record.read_text())["streams"]["stdout"],
+                         [5, hashlib.sha256(b"done\n").hexdigest()])
+
+        def swap():
+            first, second = stdout.read_bytes(), stderr.read_bytes()
+            stdout.write_bytes(second)
+            stderr.write_bytes(first)
+
+        def unstamped():
+            saved = json.loads(record.read_text())
+            del saved["streams"]
+            record.write_text(json.dumps(saved))
+
+        damages = [lambda: stdout.write_bytes(b"do"), swap, lambda: stdout.write_bytes(b"dXne\n"),
+                   lambda: stderr.write_bytes(b"x"), unstamped]
+        for runs, damage in enumerate(damages, 2):
+            damage()
+            self.assertEqual(self.oracle(), runs)
+        self.assertEqual(self.oracle(), 6)
+        self.assertEqual(self.reasons(), ["no-record", *["incomplete-record"] * 5, "hit"])
+
+    def test_a_record_is_written_after_its_streams_and_a_crash_between_never_replays_wrong_output(self):
+        from tools import parity_shim
+
+        class Crash(Exception):
+            pass
+
+        def state(key, record):
+            saved = parity_shim.recorded(record)
+            return None if saved is None else parity_shim.replayable(key, saved)
+
+        def document(streams):
+            return {"inputs": {}, "outputs": {}, "streams": {name: parity_shim.stream_stamp(data)
+                                                             for name, data in zip(parity_shim.STREAMS, streams)}}
+
+        old, new = [b"old out\n", b"old err\n"], [b"new out\n", b"new err\n"]
+        # After how many renames the write stops: 0 (none), 1 (stdout), 2 (both streams), 3 (all, no crash).
+        for old_streams, renames, expected in [(old, 0, old), (old, 1, None), (old, 2, None), (old, 3, new),
+                                               (None, 0, None), (None, 1, None), (None, 2, None), (None, 3, new)]:
+            with self.subTest(old=bool(old_streams), renames=renames), tempfile.TemporaryDirectory() as temp, \
+                    mock.patch.object(parity_shim, "CACHE", Path(temp)):
+                key, record = "k", Path(temp) / "k.json"
+                if old_streams:
+                    parity_shim.publish(key, record, old_streams, document(old_streams))
+                replace, done = Path.replace, []
+
+                def stopping(path, target):
+                    if len(done) == renames:
+                        raise Crash()
+                    done.append(target)
+                    return replace(path, target)
+
+                with mock.patch.object(Path, "replace", stopping):
+                    try:
+                        parity_shim.publish(key, record, new, document(new))
+                    except Crash:
+                        pass
+                # Streams first, the record last; no temporary file is left.
+                self.assertEqual([path.name for path in done], ["k.stdout", "k.stderr", "k.json"][:renames])
+                self.assertEqual(sorted(path.name for path in Path(temp).iterdir() if path.suffix == ".tmp"), [])
+                self.assertEqual(state(key, record), expected)
+
+    def test_a_hash_database_that_fails_at_any_point_is_a_miss_and_made_again(self):
+        import sqlite3
+        from tools import parity_shim
+        expected = hashlib.sha256(Path(parity_shim.__file__).read_bytes()).hexdigest()
+
+        class Failing:
+            """A connection whose every statement meets a damaged page."""
+            def execute(self, *args):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+            def commit(self):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity_shim, "CACHE", Path(temp) / "cache"):
+            path = parity_shim.CACHE / "hashes.sqlite"
+            hashes = parity_shim.Hashes()
+            hashes.db.execute("insert into hashes values ('marker', 0, 0, 'x')")
+            hashes.db.commit()
+            # A lookup that fails mid-run: the file is hashed itself and the database is made again (the marker is
+            # gone), and the next lookup uses the new one.
+            hashes.db.close()
+            hashes.db = Failing()
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            self.assertIsNotNone(hashes.db)
+            self.assertIsNone(hashes.db.execute("select 1 from hashes where path = 'marker'").fetchone())
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            # Failing again after being made again: this process hashes every file itself, still never failing.
+            hashes.db.close()
+            hashes.db = Failing()
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            self.assertIsNone(hashes.db)
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            # A store that fails (the lookup passed) is the same.
+            hashes = parity_shim.Hashes()
+
+            class FailingStore(Failing):
+                def execute(self, statement, *args):
+                    if statement.startswith("select"):
+                        return sqlite3.connect(":memory:").execute("select 1 where 0")
+                    return super().execute(statement, *args)
+
+            hashes.db.close()
+            hashes.db = FailingStore()
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            self.assertFalse(isinstance(hashes.db, FailingStore))
+            hashes.close()
+            # A file that is no database at all, as a restore cut short leaves it: opened, found damaged, made again.
+            for name in ("hashes.sqlite-wal", "hashes.sqlite-shm"):
+                (parity_shim.CACHE / name).unlink(missing_ok=True)
+            path.write_bytes(b"not a database" * 512)
+            hashes = parity_shim.Hashes()
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            self.assertTrue(parity_shim.in_wal_mode(path))
+            hashes.close()
+            # Only busy: a miss for that lookup, and the database stays.
+            hashes = parity_shim.Hashes()
+            inode = path.stat().st_ino
+
+            class Busy(Failing):
+                def execute(self, *args):
+                    raise sqlite3.OperationalError("database is locked")
+
+            hashes.db.close()
+            hashes.db = busy = Busy()
+            self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            self.assertIs(hashes.db, busy)
+            self.assertEqual(path.stat().st_ino, inode)
+
+    def test_a_damaged_hash_database_never_fails_the_call(self):
+        cache = Path(self.env["PARITY_SHIM_CACHE"])
+        cache.mkdir()
+        (cache / "hashes.sqlite").write_bytes(b"\x00garbage" * 1024)
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.reasons(), ["no-record", "hit"])
 
     def test_an_environment_miss_names_every_variable_that_differs(self):
         # Against the last run of the same command line: one changed, one added, one gone, and an ignored one that

@@ -136,16 +136,19 @@ gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>               
     the steps that run `tools/ci/sealed-cache.sh` (below). The scripts write them to a private folder, remove that
     folder before they end, and print only sizes, counts and timings.
   - Fetching and unsealing run before the tested commit is checked out, sealing after the harnesses on main only.
-    Each of those steps takes its script from the GitHub API at the default branch's commit (resolved by the plan
-    job, which restores nothing) into a new private folder, and runs it under `/usr/bin/bash` with `env -i`,
-    `PATH=/usr/bin:/bin`, an empty `HOME`, no `BASH_ENV`/`ENV`, and the secrets on standard input. Nothing a
-    secret step executes or reads as code comes from the workspace, `.git` or a restored path. Without the fetch
-    script the shard stops; without `sealed-cache.sh` it starts cold. The workflow file itself comes from the
-    dispatched ref, so who may dispatch (write access) is still the guard against a branch that edits it.
+    Each of those steps takes its script from the GitHub API at the default branch's commit (resolved through
+    `heads/<branch>` by the plan job, which restores nothing) into a new private folder, checks that it is not empty
+    and that its git blob id is the one the API names for that path (asked for separately), and runs it under
+    `/usr/bin/bash` with `env -i`, `PATH=/usr/bin:/bin`, an empty `HOME`, no `BASH_ENV`/`ENV`, and the secrets on
+    standard input. Nothing a secret step executes or reads as code comes from the workspace, `.git` or a restored
+    path. Without the fetch script, or with one that fails the check, the shard stops; without `sealed-cache.sh` it
+    starts cold and saves nothing. The workflow file itself comes from the dispatched ref, so who may dispatch
+    (write access) is still the guard against a branch that edits it.
   - What this does not stop: a restore extracts with absolute paths, so a hostile entry can write any file the
     runner user owns, among them the code of a later action step (the cache action, node). Code run that way
     shares the secret steps' user and could watch them. Branch-scoped cache entries (GitHub's rule, and
-    Blacksmith's default) are what keeps such an entry from a run of main.
+    Blacksmith's default, which the owner confirms in its dashboard) are what keeps such an entry from a run of
+    main.
   - Only a commit on a branch of this repository runs, resolved once to a full SHA that every job uses.
 - **Caches.** A fork's pull request can restore this repository's cache entries, and a branch's copy of the workflow
   can name any key. So only a run of main writes them, and what is made from the data goes into one only sealed.
@@ -160,14 +163,20 @@ gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>               
     group, keyed by the toolchain and `Cargo.lock`), the prepared resources, and the oracle results with the
     parity state. Sealing is tar, zstd, the dataset's own encryption (AES-256-CBC, PBKDF2), then HMAC-SHA256 with
     a second key derived from the passphrase, over the entry's kind, its full cache key and the ciphertext.
-    Unsealing checks the tag and that the key has the prefix the run asked for, decrypts, then lists the archive
-    and refuses absolute paths, `..`, links that leave the folder, and special files before it extracts. An entry
-    that fails is discarded with a warning, and the run goes on cold. The build is sealed too because a build
-    script could copy data into it, and so that the binaries the harnesses run are authenticated.
+    Sealing takes folders and regular files only: symbolic links stay out (each run makes its own again: the
+    prepared resources' links to the data, the shim's `java` and `javac`). Unsealing checks the tag and that the key
+    has the prefix the run asked for, decrypts, then lists the archive. It refuses absolute or `..` names, a name
+    twice, any symbolic link, a hard link other than to a regular file listed before it by exact name (Cargo's
+    binaries), and special files, then extracts into a new empty folder with `--keep-old-files`, renamed into place
+    only when whole. An entry that fails is discarded with a warning, and the run goes on cold. The build is sealed
+    too because a build script could copy data into it, and so that the binaries the harnesses run are
+    authenticated.
   - Incremental builds are on (`CARGO_INCREMENTAL=1`) and `tools/ci/source_mtimes.py` gives unchanged sources their
     old dates, so a change rebuilds only what it touches. A damaged date file, oracle record or hash database is a
-    miss with a warning, never a red job. The oracle shim's runtime memo (`.local/parity-runner/runtime-memo`,
-    guarded by one machine's file stat data) is never sealed or restored.
+    miss, never a red job. An oracle record holds the length and SHA-256 of its output streams, which are written
+    before it under temporary names: a stream cut short or of another write is a miss, never replayed. The oracle
+    shim's runtime memo (`.local/parity-runner/runtime-memo`, guarded by one machine's file stat data) is never
+    sealed or restored.
 - **What never leaves the runner** unsealed: the data, what is prepared from it, and `.local/` but the build. None
   of it goes into an artifact.
 - **What is public.** The job logs and the uploaded logs hold what `parity.yml`'s public runs already show: compared

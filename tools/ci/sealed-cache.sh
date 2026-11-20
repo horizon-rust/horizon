@@ -15,11 +15,15 @@
 # unseal takes the KEY from ARCHIVE.mac only when it starts with PREFIX (the key this run computes, up to where it
 # restores by prefix), and checks the tag before it decrypts anything: an entry someone without the passphrase wrote,
 # one sealed under another LABEL, or one sealed for another key (an older dataset's under a newer key) is never
-# decrypted. It then lists the archive, and unpacks it into STAGE (a new folder under RUNNER_TEMP, laid out as from
-# /, which the workflow moves into place) only if every member is a file, folder or link inside the two folders
-# below: no absolute or `..` name, no link leading out of them, no member under a link, no device, pipe or other
-# special file. Whatever fails (no tag, a wrong tag or key, a broken archive, a refused member) is a warning: STAGE is
-# removed and the run goes on cold, never fails for it. Nothing in an archive is ever run.
+# decrypted. It then lists the archive, and unpacks it into STAGE (a new, empty folder under RUNNER_TEMP, laid out as
+# from /, which the workflow moves into place) only if every member is a folder, a regular file, or a hard link to a
+# regular file listed before it by its exact name (Cargo links each binary in deps/ to the profile folder), each
+# inside the two folders below and named once. Anything else is refused: an absolute or `..` name, a symbolic link of
+# any kind, a device, pipe or other special file. No entry needs a symbolic link: sealing leaves them out, and what
+# makes them (tools/ci/vanilla-data.sh, tools/parity.py's shim links) makes them again each run. So the stage never
+# holds a symbolic link, and tar has nothing to follow. Whatever fails (no tag, a wrong tag or key, a broken archive,
+# a refused member) is a warning: STAGE is removed and the run goes on cold, never fails for it. Nothing in an
+# archive is ever run.
 #
 # FOLDERs are absolute paths under the checkout or RUNNER_TEMP. An excluded PATH (a file or folder in them, such as
 # the oracle shim's machine-local runtime memo) is never sealed, and unseal removes it from the stage should an
@@ -48,7 +52,8 @@ allowed() { case "$1/" in "$workspace"/?*|"$temp"/?*) return 0 ;; *) return 1 ;;
 for path in "${excluded[@]}"; do allowed "$path" || { echo "::error::an excluded path must be under the checkout or RUNNER_TEMP"; exit 2; }; done
 
 work=$(mktemp -d "$temp/sealed-cache.XXXXXX")
-cleanup() { rm -rf "$work"; }
+# An entry may hold folders without write access: made writable first, so nothing of it is left behind.
+cleanup() { chmod -R u+rwX "$work" 2> /dev/null; rm -rf "$work" 2> /dev/null || true; }
 trap cleanup EXIT
 printf '%s' "${VANILLA_DATA_PASSPHRASE//[$'\r\n']/}" > "$work/passphrase"
 unset VANILLA_DATA_PASSPHRASE
@@ -94,22 +99,15 @@ import posixpath, sys, tarfile
 roots = sys.argv[1:]
 def inside(name):
     return name == posixpath.normpath(name) and any(name == root or name.startswith(root + "/") for root in roots)
-links, files, refused = set(), set(), 0
+names, files, refused = set(), set(), 0
 try:
     with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", bufsize=1 << 20) as archive:
         for member in archive:
             name = member.name.rstrip("/") if member.isdir() else member.name
-            parents = {name[:index] for index, char in enumerate(name) if char == "/"}
-            ok = inside(name) and name not in links and not parents & links
-            if member.issym():
-                # The stage is laid out as from /: an absolute target is read from there, a relative one from the link.
-                target = member.linkname
-                target = posixpath.normpath(target.lstrip("/") if target.startswith("/")
-                                            else posixpath.join(posixpath.dirname(name), target))
-                ok = ok and inside(target)
-                links.add(name)
-            elif member.islnk():
-                ok = ok and inside(member.linkname) and member.linkname in files
+            ok = inside(name) and name not in names
+            names.add(name)
+            if member.islnk():
+                ok = ok and member.linkname in files
             elif member.isreg() and not member.issparse():
                 files.add(name)
             elif not member.isdir():
@@ -130,28 +128,34 @@ case "$mode" in
     for folder in "$@"; do
       folder=$(realpath -m "$folder")
       allowed "$folder" || { echo "::error::a sealed folder must be under the checkout or RUNNER_TEMP"; exit 2; }
-      [ -e "$folder" ] && members+=("${folder#/}")
+      [ -d "$folder" ] && [ ! -L "$folder" ] && members+=("${folder#/}")
     done
     [ "${#members[@]}" -gt 0 ] || { echo "nothing to seal"; exit 0; }
     mkdir -p "$(dirname "$archive")"
-    # Member names are relative to / and anchored: an excluded folder is left out with everything under it.
-    patterns=()
-    for path in "${excluded[@]}"; do patterns+=("--exclude=${path#/}"); done
-    tar -C / --format=posix --pax-option=delete=atime,delete=ctime --anchored "${patterns[@]}" \
-      -cf - -- "${members[@]}" |
+    # Folders and regular files only, named relative to /, never followed; an excluded path is left out with
+    # everything under it. Symbolic links and special files stay out (unseal would refuse them).
+    pruned=()
+    for path in "${excluded[@]}"; do pruned+=(-path "${path#/}" -o); done
+    walk() { (cd / && find "${members[@]}" \( "${pruned[@]}" -false \) -prune -o "$@"); }
+    walk \( -type d -o -type f \) -print0 > "$work/members"
+    left=$(walk ! -type d ! -type f -print | wc -l)
+    tar -C / --format=posix --pax-option=delete=atime,delete=ctime --null --no-recursion -T "$work/members" -cf - |
       zstd -q -T0 -3 |
       openssl enc -e "${cipher[@]}" > "$work/archive"
     mac seal "$work/archive" "$work/archive.mac"
     mv "$work/archive" "$archive"
     mv "$work/archive.mac" "$archive.mac"
     echo "sealed ${#members[@]} folders, $(du -sk "${members[@]/#//}" | awk '{s+=$1} END {print s}') KiB," \
-      "into $(( $(stat -c %s "$archive") / 1024 )) KiB in $((SECONDS - started)) s"
+      "into $(( $(stat -c %s "$archive") / 1024 )) KiB in $((SECONDS - started)) s; left out $left links and" \
+      "special files"
     ;;
   unseal)
     stage=$(realpath -m "${1:?stage}")
     case "$stage/" in "$temp"/?*) ;; *) echo "::error::the stage must be under RUNNER_TEMP"; exit 2 ;; esac
     [ ! -e "$stage" ] || { echo "::error::the stage already exists"; exit 2; }
-    discard() { echo "::warning::$label cache entry discarded ($1): this run starts without it"; rm -rf "$stage"; exit 0; }
+    # Nothing reaches STAGE but a whole, checked unpacking (renamed there last): what a failure leaves is in the
+    # private folder, which goes with it.
+    discard() { echo "::warning::$label cache entry discarded ($1): this run starts without it"; exit 0; }
     if [ ! -f "$archive" ] || [ -L "$archive" ]; then echo "no $label cache entry"; exit 0; fi
     if [ ! -f "$archive.mac" ] || [ -L "$archive.mac" ]; then discard "no authentication tag"; fi
     status=0
@@ -164,17 +168,24 @@ case "$mode" in
     zstd -dcq < "$work/inner.tar.zst" 2> /dev/null | listed || status=$?
     [ "$status" -ne 10 ] || discard "it holds a member that may not be unpacked"
     [ "$status" -eq 0 ] || discard "it did not unpack"
-    mkdir -p "$stage"
-    # tar stops at the end marker; the rest (padding) is read away so zstd does not end with SIGPIPE. Never
-    # --ignore-zeros: it would unpack members after the marker, which the listing did not see.
+    # Into a new, empty folder: nothing in it that tar could follow or write through. --keep-old-files: a name
+    # already there (none can be, as each is named once) fails the unpacking instead of being replaced. Without
+    # --absolute-names, tar takes no absolute or `..` name either. tar stops at the end marker; the rest (padding) is
+    # read away so zstd does not end with SIGPIPE. Never --ignore-zeros: it would unpack members after the marker,
+    # which the listing did not see.
+    unpacked=$work/stage
+    mkdir "$unpacked"
     zstd -dcq < "$work/inner.tar.zst" 2> /dev/null |
-      { tar -C "$stage" -x --no-same-owner 2> /dev/null && cat > /dev/null; } || discard "it did not unpack"
+      { tar -C "$unpacked" -x --no-same-owner --keep-old-files 2> /dev/null && cat > /dev/null; } ||
+      discard "it did not unpack"
     for path in "${excluded[@]}"; do
-      if [ -e "$stage$path" ] || [ -L "$stage$path" ]; then
-        rm -rf "${stage:?}$path"
+      if [ -e "$unpacked$path" ] || [ -L "$unpacked$path" ]; then
+        rm -rf "${unpacked:?}$path"
         echo "::warning::the $label cache entry held an excluded path: removed before it is placed"
       fi
     done
+    mkdir -p "$(dirname "$stage")"
+    mv -T "$unpacked" "$stage"
     echo "unsealed $label: $(( $(stat -c %s "$archive") / 1024 )) KiB in $((SECONDS - started)) s"
     ;;
   *) echo "::error::seal or unseal"; exit 2 ;;
