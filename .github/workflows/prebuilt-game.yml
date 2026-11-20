@@ -1,5 +1,8 @@
 name: prebuilt game
+run-name: prebuilt game${{ inputs.off_main && ' (off main)' || '' }}
 # Manual recovery route under the same release authority as Nightly. Default is a full dry run.
+# The commit gets the Nightly's base rule (nightly.py base, docs/release-flow.md): on main, or, in a dry run with
+# off_main only, a commit a dry-run/* branch holds. Nothing on this route saves a cache (tests/test_nightly.py).
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +14,10 @@ on:
         description: Build, smoke, index and sign with a throwaway key; publish nothing
         type: boolean
         default: true
+      off_main:
+        description: The commit is off main (a dry run only, a commit a dry-run/* branch holds)
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -31,17 +38,28 @@ jobs:
           ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # The rule's own code comes from this workflow's commit, never from the commit it judges.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .trusted
+          sparse-checkout: tools
+          persist-credentials: false
       - id: source
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ inputs.commit || github.sha }}
           PUBLISH: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
+          OFF_MAIN: ${{ inputs.off_main }}
           RELEASES_PAUSED: ${{ vars.RELEASES_PAUSED }}
         run: |
           set -euo pipefail
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "$(git rev-parse HEAD)" == "$COMMIT" ]] || exit 1
+          git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          DRY_RUN=$([[ "$PUBLISH" == true ]] && echo false || echo true) NIGHTLY_OFF_MAIN="$OFF_MAIN" \
+            python3 .trusted/tools/ci/nightly.py base "$COMMIT"
           if [[ "$PUBLISH" == true ]]; then
             git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
             python3 tools/prebuilt_game.py authorize "$COMMIT"

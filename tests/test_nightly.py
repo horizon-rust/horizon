@@ -3,6 +3,7 @@ import copy
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -584,7 +585,8 @@ class OffMainDryRunTests(unittest.TestCase):
             for name in ("fix", "union", "dependabot", "pull", "nightly", "queue"):
                 with self.subTest(name=name), self.assertRaisesRegex(
                         SystemExit, r"no dry-run/\* branch .* Push the commit to dry-run/<name>, dispatch the workflow "
-                                    r"from main with base=<full sha> and off_main=true, and delete the branch"):
+                                    r"from main with base=<full sha> \(the prebuilt game's: commit=<full sha>\) and "
+                                    r"off_main=true, and delete the branch"):
                     self.base(clone, shas[name], dry=True, off_main=True)
             for name in ("refs/pull-1", "f" * 40, "nonsense"):
                 with self.subTest(name=name), self.assertRaises(SystemExit):
@@ -658,6 +660,11 @@ class PrebuiltGameSecretsTests(unittest.TestCase):
         source = next(s for s in jobs["source"]["steps"] if s.get("id") == "source")
         self.assertEqual(source["env"]["PUBLISH"], "${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}")
         self.assertIn('python3 tools/prebuilt_game.py authorize "$COMMIT"', source["run"])
+        # ... and that value is the only `publish` the job hands on: never a literal true (PrebuiltGameBaseTests runs
+        # the script and reads what it wrote).
+        self.assertEqual(jobs["source"]["outputs"]["publish"], "${{ steps.source.outputs.publish }}")
+        self.assertEqual([line.strip() for line in source["run"].splitlines() if "publish=" in line],
+                         ['echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"'])
         # The keys name sdk-publish's own interface, and nothing else in this workflow reads a secret.
         sdk = yaml.safe_load((WORKFLOWS / "sdk-publish.yml").read_text())
         self.assertEqual(set(sdk[True]["workflow_call"]["secrets"]), set(jobs["publish"]["secrets"]))
@@ -665,3 +672,109 @@ class PrebuiltGameSecretsTests(unittest.TestCase):
             if "secrets." in line:
                 self.assertIn(real, line)
         self.assertNotIn("secrets", jobs["build"])
+
+
+class PrebuiltGameBaseTests(unittest.TestCase):
+    """prebuilt-game.yml's commit gets the Nightly's base rule (nightly.py base): on main, or in a dry run with
+    `off_main` only, a commit a dry-run/* branch holds. Runs the source step's own script in a clone that has every
+    commit, as a fork's commit is there for anyone who asks GitHub for its SHA."""
+
+    def source(self, clone: Path, commit: str, publish: bool, off_main: bool):
+        tools = clone / ".trusted" / "tools"
+        if not tools.exists():  # what the workflow's second checkout puts there: this commit's tools
+            (tools / "ci").mkdir(parents=True)
+            for name in ("ci/nightly.py", "ci/nightly_set.py", "release_train.py"):
+                shutil.copy(WORKFLOWS.parents[1] / "tools" / name, tools / name)
+        git = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+        subprocess.run(["git", "checkout", "-q", "--detach", commit], cwd=clone, env={**os.environ, **git}, check=True)
+        step = next(s for s in yaml.safe_load((WORKFLOWS / "prebuilt-game.yml").read_text())["jobs"]["source"]["steps"]
+                    if s.get("id") == "source")
+        output = clone.parent / "output"
+        output.write_text("")
+        env = {**os.environ, **git, "COMMIT": commit, "PUBLISH": "true" if publish else "false",
+               "OFF_MAIN": "true" if off_main else "false", "GITHUB_OUTPUT": str(output),
+               "GITHUB_REPOSITORY": "horizon-rust/horizon", "GH_TOKEN": ""}
+        # By its PATH entry: on Windows a bare "bash" can start WSL's, which drops the environment.
+        done = subprocess.run([shutil.which("bash"), "-c", step["run"]], cwd=clone, env=env, capture_output=True,
+                              text=True)
+        return done.returncode, done.stdout + done.stderr, [line for line in output.read_text().splitlines() if line]
+
+    def test_the_source_step_takes_main_or_a_dry_run_branch_marked_off_main(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clone, shas = repository(Path(folder))
+            for name, off_main in (("main", False), ("branch", True)):
+                with self.subTest(name=name):
+                    code, text, outputs = self.source(clone, shas[name], publish=False, off_main=off_main)
+                    self.assertEqual(code, 0, text)
+                    # A dry run hands on publish=false, whatever the commit.
+                    self.assertEqual(outputs, [f"commit={shas[name]}", "publish=false"])
+
+    def test_the_source_step_refuses_everything_else_before_it_writes_an_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clone, shas = repository(Path(folder))
+            refused = [("branch", False, False, "is not on main"), ("main", False, True, "off_main is set")]
+            # A pull request's head, a fork snapshot, Dependabot's, the Nightly's own and the merge queue's branches,
+            # and another branch of this repository: in the clone, but no dry-run/* branch holds them.
+            refused += [(name, False, True, r"no dry-run/\* branch") for name in
+                        ("pull", "union", "dependabot", "nightly", "queue", "fix")]
+            # A real run: the commit must be on main, `off_main` or not, before `authorize` is reached.
+            refused += [("branch", True, False, "is not on main"), ("branch", True, True, "is not on main"),
+                        ("main", True, True, "off_main is set")]
+            for name, publish, off_main, why in refused:
+                with self.subTest(name=name, publish=publish, off_main=off_main):
+                    code, text, outputs = self.source(clone, shas[name], publish=publish, off_main=off_main)
+                    self.assertNotEqual(code, 0)
+                    self.assertRegex(text, why)
+                    self.assertEqual(outputs, [])
+
+    def test_the_rule_runs_from_this_workflows_commit_and_the_run_name_says_off_main(self):
+        text = (WORKFLOWS / "prebuilt-game.yml").read_text()
+        workflow = yaml.safe_load(text)
+        self.assertEqual(text.split("\nrun-name: ", 1)[1].split("\n", 1)[0],
+                         "prebuilt game${{ inputs.off_main && ' (off main)' || '' }}")
+        self.assertEqual(workflow[True]["workflow_dispatch"]["inputs"]["off_main"],
+                         {"description": "The commit is off main (a dry run only, a commit a dry-run/* branch holds)",
+                          "type": "boolean", "default": False})
+        steps = workflow["jobs"]["source"]["steps"]
+        trusted = next(s for s in steps if s.get("with", {}).get("path") == ".trusted")
+        self.assertEqual(trusted["with"]["ref"], "${{ github.sha }}")
+        self.assertEqual(trusted["with"]["sparse-checkout"], "tools")
+        source = next(s for s in steps if s.get("id") == "source")
+        self.assertLess(steps.index(trusted), steps.index(source))
+        self.assertEqual(source["env"]["OFF_MAIN"], "${{ inputs.off_main }}")
+        self.assertIn('python3 .trusted/tools/ci/nightly.py base "$COMMIT"', source["run"])
+        # The real run's own refusals stay, after the rule.
+        self.assertLess(source["run"].index("nightly.py base"), source["run"].index("prebuilt_game.py authorize"))
+
+
+class PrebuiltGameCacheTests(unittest.TestCase):
+    """Nothing on the prebuilt route saves a cache: a dry run's commit need not be on main, and its build scripts run
+    in jobs whose cache scope is main's when it is dispatched from main. Only these actions, on GitHub's own
+    runners (no sticky disks, no machine-wide compiler cache), with no cache input; no compiler cache wrapper."""
+
+    ROUTE = ("prebuilt-game.yml", "prebuilt-game-build.yml", "sdk-publish.yml")
+    ACTIONS = {"actions/checkout", "actions/setup-python", "actions/upload-artifact", "actions/download-artifact",
+               "dtolnay/rust-toolchain"}
+    HOSTED = {"ubuntu-latest", "ubuntu-22.04", "windows-latest", "macos-15"}
+    WORDS = ("sccache", "RUSTC_WRAPPER", "runner-env.sh", "compiler-cache.sh", "stickydisk", "rust-cache")
+
+    def test_no_job_on_the_route_saves_a_cache(self):
+        for name in self.ROUTE:
+            workflow = yaml.safe_load((WORKFLOWS / name).read_text())
+            self.assertFalse(any(word in str(workflow.get("env", {})) for word in self.WORDS), name)
+            for job_name, job in workflow["jobs"].items():
+                where = f"{name} {job_name}"
+                if "uses" in job:  # a reusable workflow: one of the route's own, checked here too
+                    self.assertIn(job["uses"].removeprefix("./.github/workflows/"), self.ROUTE, where)
+                    continue
+                runs_on = job["runs-on"]
+                if runs_on == "${{ matrix.os }}":
+                    runs_on = {entry["os"] for entry in job["strategy"]["matrix"]["include"]}
+                self.assertLessEqual(set([runs_on] if isinstance(runs_on, str) else runs_on), self.HOSTED, where)
+                self.assertFalse(any(word in str(job.get("env", {})) for word in self.WORDS), where)
+                for step in job["steps"]:
+                    if "uses" in step:
+                        self.assertIn(step["uses"].split("@")[0], self.ACTIONS, where)
+                        self.assertFalse([key for key in step.get("with", {}) if "cache" in key], (where, step))
+                    for word in self.WORDS:
+                        self.assertNotIn(word, str(step.get("run", "")) + str(step.get("env", {})), (where, step))
