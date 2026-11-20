@@ -478,6 +478,17 @@ class CompileLockTests(unittest.TestCase):
         self.assertEqual(verdict["env"]["HORIZON_COMPILE_LOCK_ROLE"], "off")
         parity = [step.get("run", "") for step in load("parity.yml")["jobs"]["parity"]["steps"]]
         self.assertEqual(len([run for run in parity if run.startswith("exec python3 tools/parity.py")]), 2)
+        # The launcher's Mac leg on main: tests and launcher in one turn, before the steps that run them; branch
+        # builds (GitHub's Macs) never run it.
+        launcher = load("launcher.yml")["jobs"]["build"]
+        names = [step.get("name") for step in launcher["steps"]]
+        turn = launcher["steps"][names.index("The launcher and its tests, compiled in their turn")]
+        self.assertEqual(turn["if"], "matrix.mac && needs.decide.outputs.main == 'true'")
+        self.assertIn("exec bash ../tools/ci/compile-lock.sh build -- bash -c \"$compile\"", turn["run"])
+        self.assertIn("cargo test --release --locked --no-run", turn["run"])
+        self.assertLess(names.index("The launcher and its tests, compiled in their turn"),
+                        names.index("Test every launcher target in a scratch home"))
+        self.assertTrue(launcher["timeout-minutes"].startswith("${{ matrix.mac && 90 ||"))
         vanilla = (ROOT / "tools/ci/vanilla-data.sh").read_text(encoding="utf-8")
         self.assertIn('lock="bash tools/ci/compile-lock.sh ${HORIZON_COMPILE_LOCK_ROLE:-pr} --"', vanilla)
         self.assertEqual(vanilla.count("$lock "), 2)
