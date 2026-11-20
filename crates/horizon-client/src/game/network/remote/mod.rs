@@ -7931,7 +7931,7 @@ impl Game<'_> {
     /// `Minecraft.startUseItem`'s block turn for `hand`: a use that swung drops
     /// the hand (`LocalPlayer.itemUsed`) when it spent the held item or the
     /// player has infinite materials.
-    fn remote_use_block(&mut self, hand: Hand) -> bool {
+    pub(super) fn remote_use_block(&mut self, hand: Hand) -> bool {
         let before = self.with_hand(hand, |g| g.held().map(|s| s.count));
         let swings = self.swings_started;
         let done = self.remote_use_item_on(hand);
@@ -8093,7 +8093,9 @@ impl Game<'_> {
     /// Whether a main-hand right click with `held` would end on the block hit, for the gameplay
     /// guide: what `remote_block_reacts` answers on its dry level.
     pub(super) fn block_takes_click(&mut self, hit: &super::Hit, held: Option<&ItemStack>) -> bool {
-        self.remote_block_reacts(hit, held).0.consumes_action()
+        self.remote_block_reacts(Hand::Main, hit, held)
+            .0
+            .consumes_action()
     }
     /// `InteractionResult.CONSUME` for this click: the block keeps it and does nothing, so the
     /// item in hand never gets it either (an empty flower pot, a pressed button).
@@ -8103,19 +8105,19 @@ impl Game<'_> {
         held: Option<&ItemStack>,
     ) -> bool {
         matches!(
-            self.remote_block_reacts(hit, held).0,
+            self.remote_block_reacts(Hand::Main, hit, held).0,
             InteractionResult::Consume
         )
     }
 
-    /// Whether the block hit takes a main-hand right click with `held`
-    /// (`BlockState.useItemOn`, then `useWithoutItem`), once the caller let
-    /// the block react (no sneaking with full hands): a door, a button, a
-    /// container, and the blocks it changed. Vanilla's client runs it on its
-    /// own level first; this runs it on a copy, and `predict_use` keeps the
-    /// changes it predicts.
+    /// Whether the block hit takes a right click with `held` in `hand`
+    /// (`BlockState.useItemOn`, then `useWithoutItem` for the main hand only):
+    /// a door, a button, a container, and the blocks it changed. Vanilla's
+    /// client runs it on its own level first; this runs it on a copy, and
+    /// `predict_use` keeps the changes it predicts.
     fn remote_block_reacts(
         &mut self,
+        hand: Hand,
         hit: &super::Hit,
         held: Option<&ItemStack>,
     ) -> (InteractionResult, DryUse) {
@@ -8129,10 +8131,14 @@ impl Game<'_> {
         if self.jukebox_takes(hit.pos, held) {
             return (InteractionResult::Success, DryUse::default());
         }
-        // RespawnAnchorBlock.useItemOn: PASS when the off hand's glowstone is to
-        // charge the anchor, so useWithoutItem doesn't run and the off hand's turn
-        // comes (glowstone in this hand charges it in `use_item_on`).
-        if !self.anchor_takes(hit.pos, held) && self.anchor_takes(hit.pos, self.offhand.as_ref()) {
+        // RespawnAnchorBlock.useItemOn: PASS when the main hand's turn leaves the
+        // off hand's glowstone to charge the anchor, so useWithoutItem doesn't run
+        // and the off hand's turn comes (glowstone in this hand charges it in
+        // `use_item_on`).
+        if hand == Hand::Main
+            && !self.anchor_takes(hit.pos, held)
+            && self.anchor_takes(hit.pos, self.offhand.as_ref())
+        {
             return (InteractionResult::Pass, DryUse::default());
         }
         // BeehiveBlock.useItemOn: shears or a glass bottle on a full hive
@@ -8151,13 +8157,14 @@ impl Game<'_> {
         if self.composter_takes(hit.pos, held) {
             return (InteractionResult::Success, DryUse::default());
         }
-        self.remote_block_template(hit, held, false)
+        self.remote_block_template(hand, hit, held, false)
     }
 
     /// The shared dry-level boundary for a normal block use or the empty
     /// method requested by a canceled `BLOCK` phase's `TryWithEmptyHand`.
     pub(super) fn remote_block_template(
         &mut self,
+        hand: Hand,
         hit: &super::Hit,
         held: Option<&ItemStack>,
         without_item: bool,
@@ -8189,8 +8196,22 @@ impl Game<'_> {
                 use horizon_world::level::LevelAccess as _;
                 let state = level.block_state(hit.block);
                 b.use_without_item(&mut level, &mut ticks, state, hit, player)
-            } else {
+            } else if hand == Hand::Main {
                 b.use_item_on(&mut level, &mut ticks, hit, player, held.map(|s| &*s.item))
+            } else {
+                // `ServerPlayerGameMode.useItemOn`: only the main hand follows a
+                // TRY_WITH_EMPTY_HAND with `useWithoutItem`.
+                use horizon_world::level::LevelAccess as _;
+                let state = level.block_state(hit.block);
+                b.block_use_item_on(
+                    &mut level,
+                    &mut ticks,
+                    state,
+                    hit,
+                    player,
+                    held.map(|s| &*s.item),
+                )
+                .unwrap_or(InteractionResult::Pass)
             };
             (result, (level.changed.into_iter().collect(), level.sounds))
         })
