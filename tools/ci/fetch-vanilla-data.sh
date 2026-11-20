@@ -58,6 +58,13 @@ if [ -n "$cache" ]; then
     git -C "$work/repo" show "HEAD:$dataset/MANIFEST" > "$manifest" 2> /dev/null || { echo "::error::no dataset $dataset"; exit 1; }
     expected=$(sed -n 's/^sha256 \([0-9a-f]\{64\}\)$/\1/p' "$manifest")
     mapfile -t chunks < <(sed -n '2,$p' "$manifest")
+    # Only plain files are read from the restored folder: a link, a pipe or a device there is never opened.
+    plain=true
+    [ -d "$cache/$dataset" ] && [ ! -L "$cache/$dataset" ] && [ ! -L "$cache" ] || plain=false
+    for chunk in MANIFEST "${chunks[@]}"; do
+      [[ "$chunk" =~ ^[A-Za-z0-9._-]+$ && -f "$cache/$dataset/$chunk" && ! -L "$cache/$dataset/$chunk" ]] || plain=false
+    done
+    if [ "$plain" != true ]; then from=$work/repo; continue; fi
     cached=$(cd "$cache/$dataset" 2> /dev/null && cat -- "${chunks[@]}" 2> /dev/null < /dev/null | sha256sum | cut -c1-64) || cached=
     cmp -s "$manifest" "$cache/$dataset/MANIFEST" && [ -n "$expected" ] && [ "$cached" = "$expected" ] || from=$work/repo
   done

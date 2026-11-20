@@ -464,6 +464,24 @@ def machine():
     return digest([machine_id, os.uname().nodename, home.st_dev, home.st_ino, parent.st_dev])
 
 
+INCOMPLETE = object()
+
+
+def recorded(record):
+    """The record of a call, None when there is none, INCOMPLETE when one is there but can't be read (a cache entry
+    cut short or damaged): then the call runs, never fails for it."""
+    try:
+        saved = json.loads(record.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return INCOMPLETE
+    shape = isinstance(saved, dict) and isinstance(saved.get("inputs"), dict) and \
+        isinstance(saved.get("outputs"), dict) and all(stamp is None or isinstance(stamp, list)
+                                                       for stamp in saved["outputs"].values())
+    return saved if shape else INCOMPLETE
+
+
 def unrecorded(index, variables, runtime):
     """Why no record matches this call's key: what changed since the call last ran with this command line."""
     try:
@@ -558,15 +576,23 @@ def main():
     record = CACHE / f"{key}.json"
     # The last key this command line ran under, to say why a call found no record.
     index = CACHE / "calls" / f"{digest(command)}.json"
-    saved = json.loads(record.read_text()) if record.exists() else None
+    saved = recorded(record)
     if saved is None:
         reason, details = unrecorded(index, variables, runtime)
+    elif saved is INCOMPLETE:
+        reason, details = "incomplete-record", {}
     else:
         reason, details = stale(saved, paths, hashes) or (None, {})
     if reason is None:
+        # Both read before either is written: a record whose output went missing (a cache entry cut short) is a miss.
+        try:
+            replayed = (CACHE / f"{key}.stdout").read_bytes(), (CACHE / f"{key}.stderr").read_bytes()
+        except OSError:
+            reason, details = "incomplete-record", {}
+    if reason is None:
         note_outputs(saved["outputs"])
-        sys.stdout.buffer.write((CACHE / f"{key}.stdout").read_bytes())
-        sys.stderr.buffer.write((CACHE / f"{key}.stderr").read_bytes())
+        sys.stdout.buffer.write(replayed[0])
+        sys.stderr.buffer.write(replayed[1])
         decide(name, "hit", saved.get("seconds"), key)
         return 0
     before = snapshot(paths)

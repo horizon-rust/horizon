@@ -1,9 +1,14 @@
-"""tools/ci/sealed-cache.sh: what a cache entry holds of the vanilla data is encrypted and authenticated, and an entry
-that fails its check is discarded with a warning (the run goes on cold), never decrypted and never a failure."""
+"""tools/ci/sealed-cache.sh: what a cache entry holds of the vanilla data is encrypted and authenticated for its cache
+key, and an entry that fails its check, or holds a member that may not be unpacked, is discarded with a warning (the
+run goes on cold), never decrypted or unpacked, and never a failure."""
+import hashlib
+import hmac
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools/ci/sealed-cache.sh"
 NEEDED = ("bash", "openssl", "zstd", "tar")
+KEY = "parity-oracle-v2-0123456789abcdef-java-rust-folders-other-abc123-1"
+PREFIX = "parity-oracle-v2-0123456789abcdef-java-rust-folders-other-"
 
 
 @unittest.skipUnless(sys.platform == "linux" and Path("/usr/bin/python3").exists()
@@ -34,15 +41,46 @@ class SealedCacheTests(unittest.TestCase):
                "VANILLA_DATA_PASSPHRASE": passphrase}
         return subprocess.run(["bash", str(SCRIPT), *map(str, arguments)], env=env, capture_output=True, text=True)
 
-    def seal(self):
-        result = self.run_script("seal", "oracle", self.archive, self.folder)
+    def seal(self, key=KEY):
+        result = self.run_script("seal", "oracle", key, self.archive, self.folder)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def unseal(self, label="oracle", passphrase="correct horse"):
+    def unseal(self, label="oracle", passphrase="correct horse", prefix=PREFIX):
         stage = self.temp / "stage"
-        result = self.run_script("unseal", label, self.archive, stage, passphrase=passphrase)
+        shutil.rmtree(stage, ignore_errors=True)
+        result = self.run_script("unseal", label, prefix, self.archive, stage, passphrase=passphrase)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return stage, result.stdout
+
+    def forge(self, members, passphrase="correct horse", key=KEY):
+        """An entry sealed with the right passphrase and key around a tar of `members` ((TarInfo, bytes or None)
+        pairs): what only main's sealing step could write, so only the member check stands between it and the stage."""
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+            for info, data in members:
+                archive.addfile(info, io.BytesIO(data) if data is not None else None)
+        packed = subprocess.run(["zstd", "-q", "-T0", "-3"], input=buffer.getvalue(), capture_output=True, check=True)
+        secret = self.root / "passphrase"
+        secret.write_text(passphrase)
+        self.archive.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["openssl", "enc", "-e", "-aes-256-cbc", "-pbkdf2", "-iter", "600000", "-md", "sha256", "-pass",
+                        f"file:{secret}", "-out", str(self.archive)], input=packed.stdout, check=True)
+        mac_key = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), b"horizon-rust/horizon sealed-cache MAC key v1",
+                                      600000)
+        message = b"horizon sealed-cache v2\0oracle\0" + key.encode() + b"\0" + self.archive.read_bytes()
+        Path(f"{self.archive}.mac").write_text(f"{key}\n{hmac.new(mac_key, message, 'sha256').hexdigest()}\n")
+
+    @staticmethod
+    def member(name, kind=tarfile.REGTYPE, link="", data=b"x"):
+        info = tarfile.TarInfo(name)
+        info.type, info.linkname = kind, link
+        if kind == tarfile.REGTYPE:
+            info.size = len(data)
+            return info, data
+        return info, None
+
+    def inside(self, path):
+        return str(self.workspace / path).lstrip("/")
 
     def assert_discarded(self, why, **unseal):
         stage, out = self.unseal(**unseal)
@@ -69,7 +107,7 @@ class SealedCacheTests(unittest.TestCase):
     def test_an_entry_sealed_under_another_label_is_discarded(self):
         self.seal()
         stage = self.temp / "stage"
-        result = self.run_script("unseal", "prepared", self.archive, stage)
+        result = self.run_script("unseal", "prepared", PREFIX, self.archive, stage)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(stage.exists())
         self.assertIn("::warning::prepared cache entry discarded (its authentication tag does not match)", result.stdout)
@@ -93,7 +131,7 @@ class SealedCacheTests(unittest.TestCase):
         memo = self.folder / "runtime-memo"
         (memo / "jdk").mkdir(parents=True)
         (memo / "jdk/hashes.json").write_bytes(b"{}")
-        result = self.run_script("seal", "oracle", self.archive, "--exclude", memo, self.folder)
+        result = self.run_script("seal", "oracle", KEY, self.archive, "--exclude", memo, self.folder)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         stage, _ = self.unseal()
         self.assertTrue((stage / str(self.file).lstrip("/")).exists())
@@ -106,7 +144,7 @@ class SealedCacheTests(unittest.TestCase):
         (memo / "x.json").write_bytes(b"{}")
         self.seal()
         stage = self.temp / "stage"
-        result = self.run_script("unseal", "oracle", self.archive, "--exclude", memo, stage)
+        result = self.run_script("unseal", "oracle", PREFIX, self.archive, "--exclude", memo, stage)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((stage / str(self.file).lstrip("/")).exists())
         self.assertFalse((stage / str(memo).lstrip("/")).exists())
@@ -115,9 +153,56 @@ class SealedCacheTests(unittest.TestCase):
     def test_only_folders_under_the_checkout_or_runner_temp_are_sealed(self):
         outside = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, outside)
-        result = self.run_script("seal", "oracle", self.archive, outside)
+        result = self.run_script("seal", "oracle", KEY, self.archive, outside)
         self.assertEqual(result.returncode, 2)
         self.assertFalse(self.archive.exists())
+
+    def test_an_entry_sealed_for_another_key_is_discarded(self):
+        # An older dataset's entry, valid under its own key, put under the key of a newer one.
+        self.seal(key="parity-oracle-v2-fedcba9876543210-java-rust-folders-other-abc123-1")
+        self.assert_discarded("it was sealed for another key")
+
+    def test_the_key_beside_the_tag_is_authenticated(self):
+        self.seal(key="parity-oracle-v2-fedcba9876543210-java-rust-folders-other-abc123-1")
+        tags = Path(f"{self.archive}.mac")
+        tags.write_text(KEY + "\n" + tags.read_text().splitlines()[1] + "\n")
+        self.assert_discarded("its authentication tag does not match")
+
+    def test_an_entry_of_the_same_prefix_unseals(self):
+        # Restored by prefix: another commit's or shard's entry of the same dataset, toolchains and group.
+        self.seal(key=PREFIX + "def456-2")
+        stage, _ = self.unseal()
+        self.assertTrue((stage / str(self.file).lstrip("/")).exists())
+
+    def test_members_that_may_not_be_unpacked_discard_the_entry(self):
+        local = self.inside(".local")
+        cases = {
+            "an absolute name": [self.member("/" + local + "/x")],
+            "a name outside both folders": [self.member(str(self.root).lstrip("/") + "/elsewhere/x")],
+            "a name with ..": [self.member(local + "/../../escape")],
+            "a link out by an absolute target": [self.member(local + "/link", tarfile.SYMTYPE, "/etc")],
+            "a link out by a relative target": [self.member(local + "/link", tarfile.SYMTYPE, "../" * 12 + "etc")],
+            "a hard link out": [self.member(local + "/hard", tarfile.LNKTYPE, "etc/passwd")],
+            "a member under a link": [self.member(local + "/a", tarfile.SYMTYPE, "/" + local + "/b"),
+                                      self.member(local + "/a/x")],
+            "a pipe": [self.member(local + "/pipe", tarfile.FIFOTYPE)],
+            "a device": [self.member(local + "/null", tarfile.CHRTYPE)],
+        }
+        for case, members in cases.items():
+            with self.subTest(case):
+                self.forge(members)
+                self.assert_discarded("it holds a member that may not be unpacked")
+
+    def test_links_inside_the_two_folders_are_kept(self):
+        # As in the prepared resources (links to the data under RUNNER_TEMP) and Cargo's hard-linked binaries.
+        data = str(self.temp / "vanilla/shared-local/minecraft")
+        local = self.inside(".local")
+        self.forge([self.member(local + "/minecraft", tarfile.SYMTYPE, data),
+                    self.member(local + "/probe", data=b"binary"),
+                    self.member(local + "/probe-0123", tarfile.LNKTYPE, local + "/probe")])
+        stage, _ = self.unseal()
+        self.assertEqual(os.readlink(stage / local / "minecraft"), data)
+        self.assertEqual((stage / local / "probe-0123").read_bytes(), b"binary")
 
 
 if __name__ == "__main__":

@@ -904,6 +904,19 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.last()["variables"], ["TURBO_TEAM"])
         self.assertEqual(self.reasons(), ["no-record", "hit", "environment"])
 
+    def test_a_record_cut_short_is_a_miss_and_not_a_failure(self):
+        # As a cache entry restored in part leaves it: the call runs again, records anew, then replays.
+        cache = Path(self.env["PARITY_SHIM_CACHE"])
+        self.assertEqual(self.oracle(), 1)
+        record = next(cache.glob("*.json"))
+        damages = [lambda: record.with_suffix(".stdout").unlink(), lambda: record.with_suffix(".stderr").unlink(),
+                   lambda: record.write_text(record.read_text()[:20]), lambda: record.write_text('{"inputs": []}')]
+        for runs, damage in enumerate(damages, 2):
+            damage()
+            self.assertEqual(self.oracle(), runs)
+        self.assertEqual(self.oracle(), 5)
+        self.assertEqual(self.reasons(), ["no-record", *["incomplete-record"] * 4, "hit"])
+
     def test_an_environment_miss_names_every_variable_that_differs(self):
         # Against the last run of the same command line: one changed, one added, one gone, and an ignored one that
         # changed too, which is not named. Names only: no value reaches the line.
