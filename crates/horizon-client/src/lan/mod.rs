@@ -34,17 +34,20 @@ pub mod forwarding;
 pub mod guest;
 pub mod guest_list;
 pub mod handoff;
+pub mod handshake_gate;
 pub mod hub;
 pub mod import;
 mod io_pool;
 pub mod menu;
 pub mod menu_extra_rev;
+pub mod packet_counts;
 #[cfg(test)]
 mod payload_bounds_tests;
 pub mod player_shown;
 pub mod playerdata;
 pub mod prediction;
 pub mod recipes;
+mod recording;
 mod registry_names;
 pub mod scoreboard;
 mod sound_order;
@@ -487,6 +490,8 @@ pub struct Shared {
     turned_away: Mutex<(usize, Option<Instant>)>,
     /// A stop waits for a proxy to move the players out (`arrivals::StopWait`): no login comes in.
     shutting_down: AtomicBool,
+    /// The mods' say over a login connection's handshake (`player_handshake`).
+    pub handshake: handshake_gate::Gate,
 }
 impl Shared {
     /// The registries and tags a new connection is sent.
@@ -782,6 +787,7 @@ impl Lan {
             closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
             shutting_down: AtomicBool::new(false),
+            handshake: handshake_gate::Gate::default(),
             random: Mutex::new(horizon_java_properties::now_millis() as u64 | 1),
             config,
         });

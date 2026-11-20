@@ -37,6 +37,12 @@ Read identity through `player.uuid()`, `player.name(host)`,
 connection IP without a port, including the forwarded address behind a Velocity
 proxy. An acting player without a known connection has an empty address.
 
+`player.connect_address(host)` gives the host and port the client typed to connect (`play.example.com`, 25570): the
+name a server with several was reached by, which is not the IP in `address`. It is the handshake's own, cut at its first
+NUL (where a proxy appends its data), and a transfer's is the one the transferring server gave. It is `None` for a
+fake player, the single-player owner and a client that typed nothing. A mod can announce a resource pack URL under it
+that this client can reach.
+
 The online list includes connected players during nested player turns. Name,
 permission and address reads work for connected players whose bodies are displaced
 by another player's turn; stale handles are refused. Entity and living handles
@@ -48,6 +54,8 @@ custom dimensions. Both accept `&dyn Host`. On a server they identify the player
 current dimension, even when another dimension is ticking. On a client they
 identify the local player's level. Unknown, disconnected, replaced or stale handles
 return `None`.
+
+Game profiles (server only): `host.profile_by_uuid(uuid)` and `host.profile_by_name(name)` (any case) return the `GameProfile` the server knows: an online player's, with its properties, else the name from the user cache (`usercache.json`, on a dedicated server), without properties. Neither asks Mojang, and `None` means neither the server nor its cache knows the player. To change a skin, `player.set_profile_property(host, "textures", value, signature)` sets the `textures` property (Mojang's base64 value and its signature). Other players see it once `player.refresh(host)` sends the player to them again; the player's own client keeps its current skin until they change level or join again. A property set this way is published and returned by the two lookups; `player.profile(host)` keeps returning the properties the player logged in with.
 
 ## Messages and visibility
 
@@ -69,6 +77,27 @@ UUID: you can use a retained handle after disconnection until its world epoch
 closes. You cannot target arbitrary offline UUIDs. Retain the handle value, not a
 borrowed service.
 
+`player.set_sidebar(host, Some(Sidebar::new(title, vec![SidebarLine::new(text, Some(value))])))` shows a
+sidebar on that one player's client, in place of the one shown before; `None` takes it away. Up to 15 lines
+are shown, top first, each with its text and an optional right-hand value. The sidebar is not stored in the
+world's scoreboard, so `/scoreboard` and other players do not see it, and it is gone when the player leaves.
+It returns `Ok(false)` for a player who is not online; a text the boundary refuses changes nothing.
+
+To change only the name in the Tab list, use `player.set_list_name(host, Some(text))`.
+Everyone sees the new name at once, colours included; `None` shows the nickname or real
+name again. The name is kept by UUID until a mod sets it again or the server stops, also
+across a leave and rejoin. The `player_tab_list_name_format` hook still has the last word,
+and chat, name tags and commands keep the real name. The call returns `false` for a stale
+handle, an unavailable server list or a player who is not online.
+
+The reads `player.latency(host)`, `player.hidden(host)` and `player.nickname(host)`
+return what the calls above set. Latency is the Tab list ping in milliseconds
+(`Option<i32>`, `0` until the first keep-alive answer). `hidden` is the level
+`hide` set, `None` when shown (`Option<Option<u8>>`). `nickname` is the nickname
+in place of the player's name, `None` when there is none (`Option<Option<String>>`).
+An outer `None` means a stale or unavailable player for all three, a client or an
+unjoinable world for `hidden`, and no server list for `nickname`.
+
 ## Chat lines and respawn
 
 Keeping a public chat line from some players (an ignore list, a chat channel, a party chat): the `chat_recipient`
@@ -87,6 +116,12 @@ hook (from `server_tick`, say). It returns `Result<(), RespawnRefusal>`, and eac
 this order: `Client`, `InPlayerHook` (a player's state is swapped in), `Stale` (no player on this server behind the
 handle), `NoConnection` (a fake player, or the world's own player in a single-player world, which respawns through its
 own screen) and `Alive` (health above 0 and the game not won: the case the button ignores; a player who has won the game and is watching the End poem is respawned even alive, on the next server tick, as the button does).
+
+`player.set_velocity(host, [x, y, z])` sets a server player's velocity in blocks a tick and sends it to their client, as
+Paper's `Player.setVelocity` does (`player_set_velocity`, `WorldOnly` access). The value replaces the player's velocity,
+where `entity_push` adds to it, and the client moves by it from its next tick. It returns `false`, with the velocity
+unchanged, for a stale or unavailable player, a displaced outer player or a component that is not finite.
+`entity_set_velocity` refuses players.
 
 ## Player rules and sleep
 
@@ -144,6 +179,14 @@ read the distances in chunks; `host.server_set_view_distance(d)` and
 dedicated server and return `false` otherwise. `server.properties` is not
 written.
 
+Mob and packet diagnostics are separate switches that are off by default.
+`host.mob_cost_sampling(true)` times each mob's own tick, riders included, summed
+by level and mob type; `host.take_mob_costs()` returns what was sampled since the
+last call, costliest first, and clears it. `host.count_packets(true)` counts every
+player's play packets by id and direction, for the whole server;
+`player.take_packet_counts(host)` returns one player's counts since the last call
+and clears them. Both switches return `false` on a client.
+
 ## World mutation: chunks, blocks shown and placed as a player
 
 For mods that write blocks by other means (an editor's own section writes, a schematic) and then have to make the game and the client agree. Server only. Each method returns `Result` and names every refusal; a refusal changes nothing.
@@ -192,3 +235,12 @@ The inventory menu has no slot for body or saddle. All four player data writes
 (`set_inventory_slot`, `set_ender_chest_slot`, `give_stack`, `set_persistent_data`)
 are undone by an open transaction abort; equipment effects and overflow drops
 wait for the outermost commit.
+
+## Player statistics
+
+Statistics are read and replaced whole, not one at a time. `player.statistics(host)` returns all of a player's
+statistics as the JSON text of their `stats/<uuid>.json` save file, or `None` for a stale or unavailable player and on
+a client. `player.set_statistics(host, json)` replaces all of them with a JSON object of that form and returns `false`,
+changing nothing, for text that is not an object or for a stale, unavailable or dead player. A statistic the text lacks
+goes back to 0, scoreboard criteria follow the changed values, and the client sees them on its next request. Server only;
+`player_stat_award` is not heard.

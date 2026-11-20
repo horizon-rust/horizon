@@ -1106,11 +1106,11 @@ impl Game<'_> {
     pub(super) fn lan_broadcast_world_spawn(&self) {
         if let Some(host) = &self.lan {
             for guest in host.hub.guests.iter().filter(|guest| guest.placed) {
-                guest.send(
-                    &host
-                        .hub
-                        .default_spawn(self.world_spawn_position(), self.level.world_spawn_angle),
-                );
+                guest.send(&host.hub.default_spawn(
+                    self.level.spawn_dimension(),
+                    self.world_spawn_position(),
+                    self.level.world_spawn_angle,
+                ));
             }
         }
     }
@@ -1636,9 +1636,7 @@ impl Game<'_> {
         };
         let write = |dir: &str, json: &serde_json::Value| {
             let path = super::stats::player_json(&self.world_root, dir, uuid);
-            let text = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
-            horizon_client::save::write_durable(&path, text.as_bytes())
-                .map_err(|e| format!("{} is not saved: {e}", path.display()))
+            super::stats::write_player_json(&path, json)
         };
         write(
             "advancements",
@@ -2457,9 +2455,12 @@ impl Game<'_> {
         if self.level_pass.packets_drained {
             return;
         }
+        // The mods hear the handshakes the connection threads wait on before the tick's joins.
+        self.answer_handshakes();
         let Some(mut host) = self.lan.take() else {
             return;
         };
+        crate::game::dedicated::crash_fixture("hub", || host.hub.guests.iter().any(|g| g.placed));
         let holding = lan::Holding::start();
         // Last tick's tracked entities: enough for place collision and joins
         // before this tick moves anyone.
@@ -2474,6 +2475,7 @@ impl Game<'_> {
                 next_entity: &mut self.next_entity,
                 spawn,
                 spawn_angle: self.level.world_spawn_angle,
+                spawn_dimension: self.level.spawn_dimension(),
                 difficulty: i32::from(self.ui.difficulty),
                 difficulty_locked: self.level.difficulty_locked,
                 clock_rate,
@@ -2812,6 +2814,7 @@ impl Game<'_> {
                     next_entity: &mut self.next_entity,
                     spawn,
                     spawn_angle: self.level.world_spawn_angle,
+                    spawn_dimension: self.level.spawn_dimension(),
                     difficulty: i32::from(self.ui.difficulty),
                     difficulty_locked: self.level.difficulty_locked,
                     clock_rate,
@@ -3078,6 +3081,7 @@ impl Game<'_> {
             next_entity: &mut self.next_entity,
             spawn,
             spawn_angle: self.level.world_spawn_angle,
+            spawn_dimension: self.level.spawn_dimension(),
             difficulty: i32::from(self.ui.difficulty),
             difficulty_locked: self.level.difficulty_locked,
             clock_rate,
@@ -5216,6 +5220,26 @@ pub(crate) mod world_spawn_sync_tests {
                 spawns(&rx).is_empty(),
                 "unchanged respawn data is not broadcast again"
             );
+            // RespawnData.of(level.dimension(), ..): the same block set from the
+            // End is a changed RespawnData, sent with the End as its dimension.
+            game.as_console(|game| {
+                assert!(game.run_command("execute in minecraft:the_end run setworldspawn 100 140 -20"))
+            });
+            let sent = spawns(&rx);
+            assert_eq!(sent.len(), 1, "a spawn that only changes dimension is broadcast");
+            assert_eq!(sent[0].pos.dimension, "minecraft:the_end");
+            assert_eq!(sent[0].pos.pos, [100, 140, -20]);
+            game.as_console(|game| {
+                assert!(game.run_command("execute in minecraft:the_end run setworldspawn 9 70 -4"))
+            });
+            let sent = spawns(&rx);
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0].pos.dimension, "minecraft:the_end");
+            assert_eq!(sent[0].pos.pos, [9, 70, -4]);
+            println!(
+                "world-spawn\toverride\t{}\t{}\t{}\t{}",
+                sent[0].pos.dimension, sent[0].pos.pos[0], sent[0].pos.pos[1], sent[0].pos.pos[2]
+            );
             game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12")));
             let sent = spawns(&rx);
             assert_eq!(sent.len(), 1);
@@ -5795,6 +5819,86 @@ mod advancement_records;
 #[cfg(test)]
 include!("advancement_save_tests.rs");
 
+#[cfg(test)]
+mod merchant_restock_tests {
+    #[test]
+    #[ignore = "daily"]
+    fn restock_refreshes_the_open_guest_menu_and_survives_close() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let rx = super::world_spawn_sync_tests::host_for(&mut game);
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.update(0, |guest| guest.dimension = "minecraft:overworld".into());
+        game.lan = Some(host);
+        assert!(game.run_command(concat!(
+            "summon villager 0.5 80 2.5 {NoAI:1b,Silent:1b,Xp:20,",
+            "VillagerData:{profession:\"minecraft:cleric\",level:2,type:\"minecraft:plains\"},",
+            "Offers:{Recipes:[{buy:{id:\"minecraft:emerald\",count:4},",
+            "sell:{id:\"minecraft:glass\",count:3},uses:12,maxUses:12,",
+            "rewardExp:0b,xp:1,priceMultiplier:0f,demand:0,specialPrice:0}]}}"
+        )));
+        let mob = game.mobs.last().unwrap();
+        let id = mob.id;
+        let mut session = horizon_client::merchant::Session::new(
+            mob.extra.trade.as_ref().unwrap().offers.clone(),
+            true,
+        );
+        session.xp = 20;
+        session.level = 2;
+        game.lan_open_merchant(
+            1,
+            super::super::trading::MerchantState {
+                session: Box::new(session),
+                scroll: 0,
+                dragging: false,
+                focused: None,
+                mob: Some(id),
+                name: Some("Restock".into()),
+            },
+        );
+        let offers = || {
+            rx.try_iter()
+                .filter_map(|out| {
+                    let horizon_client::lan::Out::Packet(body) = out else {
+                        return None;
+                    };
+                    let mut reader = horizon_protocol::buf::Reader::new(&body);
+                    let id = reader.varint().unwrap();
+                    match horizon_protocol::packets::play::Clientbound::decode(id, reader.rest())
+                        .unwrap()
+                    {
+                        horizon_protocol::packets::play::Clientbound::MerchantOffers(packet) => {
+                            Some(packet)
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let opened = offers();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].offers[0].uses, 12);
+        let live = game.mobs[0].extra.trade.as_mut().unwrap();
+        live.offers[0].uses = 0;
+        live.offers[0].demand = 12;
+        game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+            guest.effects.add(horizon_client::effects::EffectInstance::new(
+                "hero_of_the_village", 1000, 0,
+            ));
+        });
+        game.merchant_restocked(id);
+        let restocked = offers();
+        assert_eq!(restocked.len(), 1);
+        assert_eq!(restocked[0].offers[0].uses, 0);
+        assert_eq!(restocked[0].offers[0].demand, 12);
+        assert_eq!(restocked[0].offers[0].special_price, -1);
+        assert!(game.lan_merchant_closed(1, Some(opened[0].container)));
+        let saved = game.mobs[0].extra.trade.as_ref().unwrap();
+        assert_eq!(saved.offers[0].uses, 0);
+        assert_eq!(saved.offers[0].demand, 12);
+    }
+}
 #[cfg(test)]
 mod merchant_packet_tests {
     //! Vanilla notifyTrade changes the live offer while its frozen owner retains
