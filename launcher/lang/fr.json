@@ -1369,5 +1369,9 @@
   "Performance mode draws solid panels, without glass or blur.": "Mode performance dessine des panneaux unis, sans verre ni flou.",
   "This theme's night draws solid panels, without glass or blur.": "La nuit de ce thème dessine des panneaux unis, sans verre ni flou.",
   "The server gets a copy: your single-player world stays as it is.": "Le serveur en reçoit une copie, votre monde solo reste tel quel.",
-  "You have no single-player world yet: play one first, or choose New world.": "Vous n'avez pas encore de monde solo : créez-en un ou sélectionnez Nouveau Monde"
+  "You have no single-player world yet: play one first, or choose New world.": "Vous n'avez pas encore de monde solo : créez-en un ou sélectionnez Nouveau Monde",
+  "In the game, Multiplayer, Join a Tailcat world, paste the invitation. One host at a time: stop it to make another.": "In the game, Multiplayer, Join a Tailcat world, paste the invitation. One host at a time: stop it to make another.",
+  "Or share this server over Tailcat: friends join with an invitation, with no Tailscale account on either side.": "Or share this server over Tailcat: friends join with an invitation, with no Tailscale account on either side.",
+  "Starting the Tailcat helper… the first time, it is downloaded and checked.": "Starting the Tailcat helper… the first time, it is downloaded and checked.",
+  "Tailcat · no account": "Tailcat · no account"
 }

@@ -190,6 +190,85 @@ struct Watch {
     keep: u32,
 }
 
+#[derive(Default)]
+struct TailcatHost {
+    running: Option<horizon_platform::hooks::tailcat::Running>,
+    target: Option<(u16, String)>,
+}
+
+impl TailcatHost {
+    fn reconcile(&mut self, shared: &Shared, dir: &Path, config: &Config) {
+        let target = config
+            .tailcat
+            .host
+            .then(|| (config.server.port, config.server.bind.clone()));
+        if target == self.target && self.running.as_mut().is_some_and(|r| r.is_alive()) {
+            return;
+        }
+        self.running = None;
+        self.target = None;
+        let Some((port, bind)) = target else {
+            return;
+        };
+        if let Some(error) = tailcat_bind_error(&bind) {
+            note(shared, "WARN", &format!("Tailcat is on but {error}"));
+            return;
+        }
+        let cache = dir.join(".horizon").join("tailcat");
+        match horizon_platform::hooks::tailcat::host(port, &cache) {
+            Ok((running, invite)) => {
+                self.running = Some(running);
+                self.target = Some((port, bind));
+                note(
+                    shared,
+                    "INFO",
+                    &format!("Tailcat: friends join this server with the invitation {invite}"),
+                );
+            }
+            Err(e) => note(
+                shared,
+                "WARN",
+                &format!("Tailcat is on but the helper did not start: {e}"),
+            ),
+        }
+    }
+}
+
+fn tailcat_bind_error(bind: &str) -> Option<String> {
+    let bind = bind.trim();
+    let reject = || {
+        Some(format!(
+            "server.bind {bind:?} cannot reach the helper's loopback target; leave it empty or use a loopback/wildcard address"
+        ))
+    };
+    if bind.is_empty() {
+        return None;
+    }
+    if let Ok(ip) = bind.parse::<std::net::IpAddr>() {
+        return if ip.is_loopback() || ip.is_unspecified() {
+            None
+        } else {
+            reject()
+        };
+    }
+    let host = if let Some(host) = bind
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']').map(|(host, _)| host))
+    {
+        host
+    } else if let Some((host, port)) = bind.rsplit_once(':')
+        && port.parse::<u16>().is_ok()
+    {
+        host
+    } else {
+        bind
+    };
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) if ip.is_loopback() || ip.is_unspecified() => None,
+        _ => reject(),
+    }
+}
+
 pub fn run(dir: &Path) -> Result<(), String> {
     signals::install();
     let config = Config::load(dir)?;
@@ -237,11 +316,13 @@ pub fn run(dir: &Path) -> Result<(), String> {
     let console = console_lines();
     let mut crashes: Vec<Instant> = Vec::new();
     let mut watch: Option<Watch> = None;
+    let mut tailcat = TailcatHost::default();
     let (mut program, mut resources) = (program, resources);
     loop {
         // Read again before every start: edits to server.toml apply on the next restart, and so does a
         // switch to another release.
         let config = Config::load(dir)?;
+        tailcat.reconcile(&shared, dir, &config);
         // Queued while the game ran, stopped or was already stopping: applied before this start,
         // whatever ended the last game, not left for some later restart.
         if let Some(w) = apply_queued(&shared, dir, &config) {
@@ -914,6 +995,16 @@ fn send_stop(stdin: &mut Option<std::process::ChildStdin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tailcat_bind_must_reach_the_loopback_target() {
+        for bind in ["", "127.0.0.1", "::1", "0.0.0.0", "[::]:25565"] {
+            assert!(tailcat_bind_error(bind).is_none(), "{bind}");
+        }
+        for bind in ["192.168.1.10", "example.com", "[::1"] {
+            assert!(tailcat_bind_error(bind).is_some(), "{bind}");
+        }
+    }
 
     /// A restore asked for while the game is stopped is done before the next start (the loop's
     /// head runs `apply_queued`), not left queued for some later restart.

@@ -20,6 +20,7 @@ const SERVER_ADDRESS: crate::clipboard::FieldId = ("server.address", 0);
 const SERVER_DIRECT: crate::clipboard::FieldId = ("server.direct", 0);
 const FRIEND_CODE: crate::clipboard::FieldId = ("friend.code", 0);
 const FRIEND_RELAY: crate::clipboard::FieldId = ("friend.relay", 0);
+const TAILCAT_INVITE: crate::clipboard::FieldId = ("tailcat.invite", 0);
 
 /// The result of pinging one address.
 #[derive(Clone, Debug)]
@@ -139,6 +140,12 @@ pub enum Screen {
         relay: String,
         focus: u8,
     },
+    /// Join a Tailcat world with its `mcl1_...` invitation (no Tailscale
+    /// account needed; the helper opens a loopback listener).
+    Tailcat {
+        invite: String,
+        focus: u8,
+    },
     /// A page a crate registered at the title screen's Friends icon, as a form.
     Page(Form),
     Disconnected {
@@ -205,6 +212,7 @@ impl Screen {
             Self::Direct { .. } => "direct_connect",
             Self::ConfirmDelete { .. } => "server_delete",
             Self::Friend { .. } => "friends_join",
+            Self::Tailcat { .. } => "tailcat_join",
             Self::Page(form) => form.id(),
             Self::Disconnected { .. } => "disconnected",
         }
@@ -656,7 +664,11 @@ impl Screen {
                 let x = ((w - 308.0) / 2.0).floor();
                 let saved = selected.is_some_and(|i| i < servers.len());
                 let label = |key: &str, fallback: &str| crate::lang::get_or(key, fallback);
-                vec![
+                #[cfg(feature = "friends")]
+                let (bottom_x, bottom_w, bottom_step, back_i) = (x + 1.0, 58.0, 62.0, 4.0);
+                #[cfg(not(feature = "friends"))]
+                let (bottom_x, bottom_w, bottom_step, back_i) = (x, 74.0, 78.0, 3.0);
+                let mut buttons = vec![
                     b(
                         x,
                         h - 52.0,
@@ -681,37 +693,68 @@ impl Screen {
                         true,
                         42,
                     ),
+                ];
+                buttons.push(b(
+                    bottom_x,
+                    h - 28.0,
+                    bottom_w,
+                    &label("selectServer.edit", "Edit"),
+                    saved,
+                    43,
+                ));
+                buttons.push(b(
+                    bottom_x + bottom_step,
+                    h - 28.0,
+                    bottom_w,
+                    &label("selectServer.delete", "Delete"),
+                    saved,
+                    44,
+                ));
+                buttons.push(b(
+                    bottom_x + bottom_step * 2.0,
+                    h - 28.0,
+                    bottom_w,
+                    &label("selectServer.refresh", "Refresh"),
+                    true,
+                    45,
+                ));
+                #[cfg(feature = "friends")]
+                buttons.push(b(
+                    bottom_x + bottom_step * 3.0,
+                    h - 28.0,
+                    bottom_w,
+                    &label("multiplayer.tailcat", "Tailcat"),
+                    true,
+                    48,
+                ));
+                buttons.push(b(
+                    bottom_x + bottom_step * back_i,
+                    h - 28.0,
+                    bottom_w,
+                    &label("gui.back", "Back"),
+                    true,
+                    46,
+                ));
+                buttons
+            }
+            Self::Tailcat { invite, .. } => {
+                let join = is_tailcat_invite(invite);
+                vec![
                     b(
-                        x,
-                        h - 28.0,
-                        74.0,
-                        &label("selectServer.edit", "Edit"),
-                        saved,
-                        43,
+                        half(w) - 100.0,
+                        quarter(h) + 96.0 + 12.0,
+                        200.0,
+                        &crate::lang::get_or("selectServer.select", "Join Server"),
+                        join,
+                        52,
                     ),
                     b(
-                        x + 78.0,
-                        h - 28.0,
-                        74.0,
-                        &label("selectServer.delete", "Delete"),
-                        saved,
-                        44,
-                    ),
-                    b(
-                        x + 156.0,
-                        h - 28.0,
-                        74.0,
-                        &label("selectServer.refresh", "Refresh"),
+                        half(w) - 100.0,
+                        quarter(h) + 120.0 + 12.0,
+                        200.0,
+                        &crate::lang::get_or("gui.cancel", "Cancel"),
                         true,
-                        45,
-                    ),
-                    b(
-                        x + 234.0,
-                        h - 28.0,
-                        74.0,
-                        &label("gui.back", "Back"),
-                        true,
-                        46,
+                        53,
                     ),
                 ]
             }
@@ -909,6 +952,9 @@ impl Screen {
                 "multiplayer/friend",
                 get("horizon.multiplayer.join_friend", "Join a Friend"),
             ),
+            Self::Tailcat { .. } => {
+                ScreenInfo::new("multiplayer/tailcat", get("multiplayer.tailcat", "Tailcat"))
+            }
             // DisconnectedScreen: its title and the reason.
             Self::Disconnected { reason, .. } => ScreenInfo::new(
                 "multiplayer/disconnected",
@@ -1275,6 +1321,26 @@ impl Screen {
                     scroll.amount,
                 );
             }
+            Self::Tailcat { invite, focus } => {
+                centered(
+                    batch,
+                    &crate::lang::get_or("multiplayer.tailcat.title", "Join a Tailcat World"),
+                    20.0,
+                    u32::MAX,
+                );
+                Self::field(
+                    atlas,
+                    batch,
+                    caret,
+                    focused_at,
+                    &crate::lang::get_or("multiplayer.tailcat.invite", "Invite Code"),
+                    invite,
+                    TAILCAT_INVITE,
+                    max,
+                    (53.0, 64.0),
+                    *focus == 0,
+                );
+            }
             Self::Edit {
                 index,
                 name,
@@ -1440,6 +1506,10 @@ impl Screen {
                 address: direct_address(address),
                 lan: false,
             },
+            Self::Tailcat { invite, .. } if is_tailcat_invite(invite) => Outcome::Connect {
+                address: tailcat_address(invite),
+                lan: false,
+            },
             Self::List {
                 servers,
                 selected,
@@ -1570,6 +1640,13 @@ impl Screen {
             }
             (Self::List { .. }, Some(45)) => return Outcome::Open(Box::new(Self::list(saves))),
             (Self::List { .. }, Some(46)) => return Outcome::Back,
+            #[cfg(feature = "friends")]
+            (Self::List { .. }, Some(48)) => {
+                *self = Self::Tailcat {
+                    invite: String::new(),
+                    focus: 0,
+                }
+            }
             (
                 Self::List {
                     servers,
@@ -1700,6 +1777,7 @@ impl Screen {
                 Self::Edit { .. }
                 | Self::Direct { .. }
                 | Self::Friend { .. }
+                | Self::Tailcat { .. }
                 | Self::Disconnected { .. },
                 Some(51 | 53 | 54 | 57),
             ) => return Outcome::Open(Box::new(Self::list(saves))),
@@ -1709,6 +1787,12 @@ impl Screen {
                 remember_direct_join(saves, &address);
                 return Outcome::Connect {
                     address,
+                    lan: false,
+                };
+            }
+            (Self::Tailcat { invite, .. }, Some(52)) if is_tailcat_invite(invite) => {
+                return Outcome::Connect {
+                    address: tailcat_address(invite),
                     lan: false,
                 };
             }
@@ -1736,6 +1820,11 @@ impl Screen {
                         *focus = i;
                     }
                 }
+            }
+            (Self::Tailcat { focus, .. }, None)
+                if (64.0..84.0).contains(&y) && (half(w) - 100.0..half(w) + 100.0).contains(&x) =>
+            {
+                *focus = 0;
             }
             _ => {}
         }
@@ -1870,6 +1959,8 @@ impl Screen {
             Self::Friend { focus: 0, .. } => 64.0,
             Self::Friend { focus: 1, .. } => 105.0,
             Self::Friend { .. } => return None,
+            Self::Tailcat { focus: 0, .. } => 64.0,
+            Self::Tailcat { .. } => return None,
             Self::Page(form) => return form.focused_box(),
             _ => return None,
         };
@@ -1896,6 +1987,10 @@ impl Screen {
                 1 => Some(relay),
                 _ => None,
             },
+            Self::Tailcat {
+                invite, focus: 0, ..
+            } => Some(invite),
+            Self::Tailcat { .. } => None,
             _ => None,
         }
     }
@@ -1903,7 +1998,7 @@ impl Screen {
     pub fn has_fields(&self) -> bool {
         matches!(
             self,
-            Self::Edit { .. } | Self::Friend { .. } | Self::Page(_)
+            Self::Edit { .. } | Self::Friend { .. } | Self::Tailcat { .. } | Self::Page(_)
         )
     }
     /// Join a friend, with the relay the player set before.
@@ -1974,6 +2069,8 @@ impl Screen {
             Self::Direct { .. } => SERVER_DIRECT,
             Self::Friend { focus: 0, .. } => FRIEND_CODE,
             Self::Friend { .. } => FRIEND_RELAY,
+            Self::Tailcat { focus: 0, .. } => TAILCAT_INVITE,
+            Self::Tailcat { .. } => return None,
             _ => return None,
         };
         let max = self.max_length();
@@ -1981,7 +2078,7 @@ impl Screen {
     }
     /// Invite codes with IPv6 and a relay run past a server address's 128.
     fn max_length(&self) -> usize {
-        if matches!(self, Self::Friend { .. }) {
+        if matches!(self, Self::Friend { .. } | Self::Tailcat { .. }) {
             256
         } else {
             128
@@ -1994,6 +2091,28 @@ impl Screen {
     pub fn tab_dir(&mut self, reverse: bool, buttons: &[u8], button: &mut Option<u8>) {
         if let Self::Page(form) = self {
             return form.tab_dir(reverse, buttons, button);
+        }
+        // One text field, then the buttons.
+        if let Self::Tailcat { focus, .. } = self {
+            let stops = 1 + buttons.len();
+            let at = match *button {
+                Some(id) => buttons.iter().position(|&b| b == id).map(|i| 1 + i),
+                None => Some(0),
+            }
+            .unwrap_or(0);
+            let next = if reverse {
+                (at + stops - 1) % stops
+            } else {
+                (at + 1) % stops
+            };
+            if next == 0 {
+                *focus = 0;
+                *button = None;
+            } else {
+                *focus = 1;
+                *button = Some(buttons[next - 1]);
+            }
+            return;
         }
         let (Self::Edit { focus, .. } | Self::Friend { focus, .. }) = self else {
             return;
@@ -2038,7 +2157,7 @@ impl Screen {
 /// `selectServer.defaultName`, which keeps the server's resource pack and Code
 /// of Conduct answers. A friend's invite gets none.
 pub fn remember_direct_join(saves: &Path, address: &str) {
-    if address.starts_with(crate::net::FRIEND) {
+    if address.starts_with(crate::net::FRIEND) || address.starts_with(crate::net::TAILCAT) {
         return;
     }
     let file = servers_file(saves);
@@ -2062,6 +2181,16 @@ fn direct_address(address: &str) -> String {
     } else {
         address.trim().to_owned()
     }
+}
+/// A Tailcat invitation: the helper's `mcl1_` prefix (copied whitespace ignored).
+fn is_tailcat_invite(invite: &str) -> bool {
+    let code: String = invite.chars().filter(|c| !c.is_whitespace()).collect();
+    code.starts_with(crate::tailcat::INVITE_PREFIX)
+}
+/// The Tailcat join address: Horizon's prefix, then the stripped invitation.
+fn tailcat_address(invite: &str) -> String {
+    let invite: String = invite.chars().filter(|c| !c.is_whitespace()).collect();
+    format!("{}{invite}", crate::net::TAILCAT)
 }
 /// Y positions on the disconnect screen.
 struct DisconnectedLayout {
@@ -2169,6 +2298,46 @@ mod tests {
             }
             outcome => outcome,
         }
+    }
+
+    #[test]
+    fn tailcat_footer_and_focus_follow_the_friends_feature() {
+        let screen = Screen::List {
+            servers: Vec::new(),
+            selected: None,
+            pings: Arc::default(),
+            icons: Arc::default(),
+            lan: Scanner::for_tests(Vec::new()),
+            scroll: Default::default(),
+            held: None,
+        };
+        let buttons = screen.buttons(640.0, 480.0);
+        let bottom: Vec<_> = buttons.iter().filter(|b| b.1 == 452.0).collect();
+        #[cfg(feature = "friends")]
+        {
+            assert_eq!(bottom.len(), 5);
+            assert!(bottom.iter().all(|b| b.2 == 58.0));
+            assert!(bottom.iter().any(|b| b.5 == 48));
+        }
+        #[cfg(not(feature = "friends"))]
+        {
+            assert_eq!(bottom.len(), 4);
+            assert!(bottom.iter().all(|b| b.2 == 74.0));
+            assert!(bottom.iter().all(|b| b.5 != 48));
+        }
+
+        let mut tailcat = Screen::Tailcat {
+            invite: "mcl1_abc".into(),
+            focus: 1,
+        };
+        assert!(tailcat.focused_box((640.0, 480.0)).is_none());
+        assert!(tailcat.focused_text().is_none());
+        tailcat = Screen::Tailcat {
+            invite: "mcl1_abc".into(),
+            focus: 0,
+        };
+        assert!(tailcat.focused_box((640.0, 480.0)).is_some());
+        assert!(tailcat.focused_text().is_some());
     }
 
     #[test]
