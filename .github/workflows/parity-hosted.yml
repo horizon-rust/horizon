@@ -299,6 +299,7 @@ jobs:
           LEFT_OUT: ${{ needs.plan.outputs.left_out }}
           LOGS: ${{ steps.logs.outcome }}
         run: |
+          set -o pipefail  # a step's default shell is bash -e only: without it, tee's success would hide a failure
           python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
           import json, os, sys
           from pathlib import Path
