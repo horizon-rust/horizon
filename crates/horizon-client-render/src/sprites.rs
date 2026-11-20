@@ -2254,7 +2254,12 @@ mod png_size_tests {
             super::side_within(1 << 28, super::LAYERS_AT_LEAST, maps),
             128
         );
-        assert_eq!(super::side_within(u32::MAX, u64::MAX, u64::MAX), 16_384);
+        assert_eq!(super::side_within(u32::MAX, 1, u64::MAX), 16_384);
+        // Every input at its maximum: no overflow, the smallest side.
+        assert_eq!(
+            super::side_within(u32::MAX, u64::MAX, u64::MAX),
+            super::SPRITE_SIZE
+        );
         assert_eq!(super::side_within(16_385, 1, u64::MAX), 16_384);
     }
 

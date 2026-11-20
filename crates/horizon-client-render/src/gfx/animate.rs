@@ -581,12 +581,6 @@ fn mix_level(frames: &[u8], [_, current, next, millis, edge]: [u32; 5], width: u
     out
 }
 
-/// The mip chain a frame's layer is made of, and its first level's edge.
-/// `mipmap::generate` makes a sprite scaled up by whole pixels to the
-/// array's size from its own size's chain, its first level repeated into the
-/// larger levels: that chain, which the shader repeats. Any other sprite: its
-/// chain at the array's size.
-#[cfg(test)]
 /// The first level's edge of a layer's chains: its native side when that is a power of two
 /// below the layers' `size` (the array's upper levels repeat it), else `size`.
 fn chain_edge(settings: &[Settings], layer: u32, size: u32) -> u32 {
@@ -609,6 +603,12 @@ fn chain_budget(edge: u32, count: usize, limit: u64) -> Option<u64> {
     (bytes <= limit).then_some(bytes)
 }
 
+/// The mip chain a frame's layer is made of, and its first level's edge.
+/// `mipmap::generate` makes a sprite scaled up by whole pixels to the
+/// array's size from its own size's chain, its first level repeated into the
+/// larger levels: that chain, which the shader repeats. Any other sprite: its
+/// chain at the array's size.
+#[cfg(test)]
 fn source_chain(pixels: &[u8], size: u32, settings: &[Settings], layer: u32) -> (Vec<u8>, u32) {
     let (mut chains, edge) = source_chains(&[pixels], size, settings, layer);
     (chains.swap_remove(0), edge)
