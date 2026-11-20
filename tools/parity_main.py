@@ -10,8 +10,8 @@
 so a run tests every merge since the last green one (`tools/parity.py --changed <base>`), however many landed while
 the previous run went on. `verdict` reads the harnesses that failed (.local/parity-runner/last-run.json, only this
 run's when PARITY_RUN_ID is set) and runs them again at HEAD: it exits 0 when they all pass there (a flake, counted as a
-pass), else 1, and writes verdict.json (each failed harness's tries, and the repeat flakers: those not on known_flaky
-that needed that rerun to pass in 3 of the last 10 runs). The gate runs it; `bisect` does the same and, where some
+pass), else 1, and writes verdict-<PARITY_RUN_ID>.json (each failed harness's tries, and the repeat flakers: those
+not on known_flaky that needed that rerun to pass in 3 of the last 10 runs). The gate runs it; `bisect` does the same and, where some
 fail again, checks out the first-parent merges between BASE and HEAD by halves and runs only those harnesses, then
 names, for each of them that fails again at HEAD and passes at BASE, the first merge it fails on (written to $GITHUB_STEP_SUMMARY and, with --comment, on its pull request). HEAD is checked out again at the end.
 
@@ -37,9 +37,9 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "horizon-rust/horizon")
 LAST_RUN = ROOT / ".local" / "parity-runner" / "last-run.json"
 # {"since": the base, "results": {commit: {harness: it failed there}}, "named": {harness: the merge commented on}}
 BISECT = ROOT / ".local" / "parity-runner" / "bisect.json"
-# tools/parity.py's record of each harness's last run (whether it was retried); read for verdict.json.
+# tools/parity.py's record of each harness's last run (whether it was retried); read for the verdict report.
 STATE = ROOT / ".local" / "parity-runner" / "state.json"
-# What `verdict` found; the workflow uploads it.
+# What `verdict` found, as verdict-<PARITY_RUN_ID>.json where that is set (verdict_path); the workflow uploads it.
 VERDICT = ROOT / ".local" / "parity-runner" / "verdict.json"
 # The last HISTORY_RUNS gate runs, oldest first: [{"run", "head", "rerun_passed": [harness]}]. Kept on the runner
 # beside state.json, so no API call; written whole and renamed, so a cancelled run leaves the old file, never half one.
@@ -134,16 +134,16 @@ def hosts_entries(key):
 
 def judge_at_head(since, timeout):
     """All `verdict` does, and what `bisect` does before its search: read the harnesses the run's batch failed and run
-    them again at HEAD. Returns (code, failed, at_head, head, commits): code 1 where there is nothing to judge (no
-    rerun), 0 where every failed harness passes when run again (a flake, counted as a pass), None where those of
-    at_head fail again."""
+    them again at HEAD, recording that in bisect.json and checking HEAD out again. Returns (code, failed, at_head, head,
+    commits, the bisect.json state): code 1 where there is nothing to judge (no rerun), 0 where every failed harness
+    passes when run again (a flake, counted as a pass), None where those of at_head fail again."""
     try:
         recorded = json.loads(LAST_RUN.read_text(encoding="utf-8")) if LAST_RUN.exists() else {}
         if not isinstance(recorded, dict):
             raise ValueError("not a JSON object")
     except (OSError, ValueError) as error:
         print(f"{LAST_RUN.name} can't be read ({error}): the run fails.")
-        return 1, [], [], None, []
+        return 1, [], [], None, [], None
     # tools/parity.py records its PARITY_RUN_ID with the list. One that stopped before recording leaves an earlier
     # run's list (the run before, or a bisect's last probe), whose harnesses may pass here: that passed a batch
     # nothing judged. Without the variable (a run by hand) any list is taken, as before.
@@ -151,7 +151,7 @@ def judge_at_head(since, timeout):
     if run_id and recorded.get("run") != run_id:
         report(f"parity-main: {LAST_RUN.name} is from run {recorded.get('run')}, not this one ({run_id}): "
                "tools/parity.py stopped before recording its failed harnesses, so the run fails.")
-        return 1, [], [], None, []
+        return 1, [], [], None, [], None
     failed = recorded.get("failed") or []
     # tools/parity.py doesn't fail a run for a known failing harness (tools/parity_hosts.json), so a probe running one
     # would pass where it fails, and a merge that broke another harness could be blamed for it too.
@@ -159,20 +159,30 @@ def judge_at_head(since, timeout):
     failed = [name for name in failed if name not in known and name.split("#")[0] not in known]
     if not failed:
         print("No failed harness recorded, known failing ones aside: nothing to bisect.")
-        return 1, [], [], None, []
+        return 1, [], [], None, [], None
     head = git("rev-parse", "HEAD").stdout.strip()
     commits = git("rev-list", "--first-parent", "--reverse", f"{since}..{head}").stdout.split()
     if not commits:
         print("No merge since the base.")
-        return 1, failed, [], head, commits
+        return 1, failed, [], head, commits, None
+    state = earlier_search(since)
     # HEAD is run again whatever an earlier run saw there: it is the run's verdict.
-    print(f"--- {head[:9]} {git('log', '-1', '--format=%s', head).stdout.strip()}", flush=True)
-    git("checkout", "-q", "--detach", head)
-    at_head = run_harnesses(failed, timeout)
-    flakes = [name for name in failed if name not in at_head]
-    if flakes:
-        report(f"parity-main: {', '.join(flakes)} pass when run again at {head[:9]}: a flake, counted as a pass.")
-    return (None if at_head else 0), failed, at_head, head, commits
+    state["results"].pop(head, None)
+    try:
+        print(f"--- {head[:9]} {git('log', '-1', '--format=%s', head).stdout.strip()}", flush=True)
+        git("checkout", "-q", "--detach", head)
+        at_head = run_harnesses(failed, timeout)
+        state["results"][head] = {name: name in at_head for name in failed}
+        # Written on every path, as `bisect` always did: a run whose record can't be written is red, for both commands.
+        BISECT.parent.mkdir(parents=True, exist_ok=True)
+        BISECT.write_text(json.dumps(state), encoding="utf-8")
+        flakes = [name for name in failed if name not in at_head]
+        if flakes:
+            report(f"parity-main: {', '.join(flakes)} pass when run again at {head[:9]}: a flake, counted as a pass.")
+    finally:
+        # HEAD checked out again however the rerun ended, as `bisect` always did (its search does it again at its end).
+        git("checkout", "-q", "--detach", head)
+    return (None if at_head else 0), failed, at_head, head, commits, state
 
 
 def harness_records():
@@ -214,40 +224,58 @@ def repeat_flakers(runs):
     """[(harness, how many of runs it passed in only when run again)] for those that did in REPEATS or more and are
     not on known_flaky (tools/parity.py retries those itself, and their entry already says why)."""
     flaky = hosts_entries("known_flaky")
-    counts = Counter(name for run in runs for name in set(run.get("rerun_passed") or []))
+    counts = Counter(name for run in runs if isinstance(run.get("rerun_passed"), list)
+                     for name in set(run["rerun_passed"]) if isinstance(name, str))
     return sorted((name, count) for name, count in counts.items()
                   if count >= REPEATS and name not in flaky and name.split("#")[0] not in flaky)
 
 
+def verdict_path():
+    """This attempt's report (verdict-<run id>-<attempt>.json), so the workflow never uploads an earlier one's."""
+    run_id = os.environ.get("PARITY_RUN_ID")
+    return VERDICT.with_name(f"verdict-{run_id}.json") if run_id else VERDICT
+
+
 def verdict(since, timeout):
-    """The gate run's verdict: judge_at_head's exit code, and 1 where `bisect` would go on to search. Writes
-    verdict.json and the flake history; that bookkeeping never changes the exit code."""
-    VERDICT.unlink(missing_ok=True)
+    """The gate run's verdict: judge_at_head's exit code, and 1 where `bisect` would go on to search. Writes the report
+    (verdict_path) and the flake history; neither, nor their failing, changes the exit code."""
+    path = verdict_path()
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        print(f"note: {path.name} left from before ({error!r})", file=sys.stderr)
     before = harness_records()
-    code, failed, at_head, head, _ = judge_at_head(since, timeout)
+    code, failed, at_head, head, _, _ = judge_at_head(since, timeout)
     reran = code != 1
     code = 1 if code is None else code
+    # Each part is on its own: a failing history never keeps the report from being written, nor either the exit code.
+    harnesses, flakers = {}, []
     try:
         after = harness_records()
-        harnesses = {}
         for name in failed:
             harnesses[name] = tries(before.get(name) or {"status": "fail"}, "batch")
             if reran:
                 # A rerun tools/parity.py didn't record (it stopped) leaves the batch's record: only its result is known.
                 rerun = after.get(name) if after.get(name) not in (None, before.get(name)) else {}
                 harnesses[name] += tries(dict(rerun, status="fail" if name in at_head else "pass"), "rerun at HEAD")
-        run_id = os.environ.get("PARITY_RUN_ID")
         head = head or git("rev-parse", "HEAD", check=False).stdout.strip()
+    except Exception as error:  # noqa: BLE001 - a record of the run is never worth changing its verdict
+        print(f"note: the tries are incomplete ({error!r})", file=sys.stderr)
+    try:
         passed_again = [name for name in failed if name not in at_head] if reran else []
-        flakers = repeat_flakers(flake_history({"run": run_id, "head": head, "rerun_passed": passed_again}))
+        flakers = repeat_flakers(flake_history({"run": os.environ.get("PARITY_RUN_ID"), "head": head,
+                                                "rerun_passed": passed_again}))
         for name, count in flakers:
             report(f"parity-main: {name} passed only when run again in {count} of the last {HISTORY_RUNS} runs and "
                    "is not on known_flaky (tools/parity_hosts.json): a repeat flaker. It doesn't fail the run.")
-        write_whole(VERDICT, {"head": head, "base": since, "run_id": os.environ.get("GITHUB_RUN_ID"),
-                              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"), "exit_code": code,
-                              "harnesses": harnesses, "repeat_flakers": [name for name, _ in flakers]})
-    except Exception as error:  # noqa: BLE001 - a record of the run is never worth changing its verdict
-        print(f"note: verdict.json not written ({error!r})", file=sys.stderr)
+    except Exception as error:  # noqa: BLE001
+        print(f"note: no flake history ({error!r})", file=sys.stderr)
+    try:
+        write_whole(path, {"head": head, "base": since, "run_id": os.environ.get("GITHUB_RUN_ID"),
+                           "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"), "exit_code": code,
+                           "harnesses": harnesses, "repeat_flakers": [name for name, _ in flakers]})
+    except Exception as error:  # noqa: BLE001
+        print(f"note: {path.name} not written ({error!r})", file=sys.stderr)
     return code
 
 
@@ -262,16 +290,10 @@ def history():
 
 
 def bisect(since, timeout, comment, budget=90):
-    code, failed, at_head, head, commits = judge_at_head(since, timeout)
-    if code == 1:
-        return 1
-    state = earlier_search(since)
+    code, failed, at_head, head, commits, state = judge_at_head(since, timeout)
+    if code is not None:
+        return code
     results = state["results"]
-    results[head] = {name: name in at_head for name in failed}
-    BISECT.parent.mkdir(parents=True, exist_ok=True)
-    BISECT.write_text(json.dumps(state), encoding="utf-8")
-    if code == 0:
-        return 0
     deadline = None  # set once the base ran: the budget is for the search between it and HEAD
 
     def fails(commit, names, again=False):

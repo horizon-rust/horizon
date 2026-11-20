@@ -175,15 +175,17 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   50 minutes, so a hung rerun ends red. The search for the merge that broke a harness is no longer part of the run:
   it held the only gate runner for up to an hour. Run it by hand on a machine whose
   `.local/parity-runner/last-run.json` holds the failed harnesses (`python3 tools/parity.py <them>` on the run's
-  commit writes it; `verdict.json` lists them): `python3 tools/parity_main.py bisect <base> [--comment]` reruns
+  commit writes it; the verdict report lists them): `python3 tools/parity_main.py bisect <base> [--comment]` reruns
   them at HEAD as the gate did, then checks out the batch's first-parent merges by halves, names the first merge they
-  fail on and, with `--comment`, comments on its pull request. It has 90 minutes (`--budget`), then says between which merges each
-  harness broke; a later search from the same base goes on from there (`.local/parity-runner/bisect.json`).
-- `verdict.json` (the run's `parity-main-verdict` artifact) holds the head, the base, the run id and attempt, the
-  exit code, each failed harness's tries (the batch's, its retry if `tools/parity.py` gave one, the rerun at HEAD) and
-  `repeat_flakers`: harnesses not on `known_flaky` that passed only when run again in 3 or more of the last 10 runs
-  (kept in `.local/parity-runner/verdict-history.json` on the runner). The run's summary names each; they don't fail
-  it: put one on `known_flaky` with its issue, or fix it.
+  fail on and, with `--comment`, comments on its pull request. It has 90 minutes (`--budget`), then says between
+  which merges each harness broke; a later search from the same base goes on from there
+  (`.local/parity-runner/bisect.json`).
+- The verdict report, `verdict-<run id>-<attempt>.json` (the run's `parity-main-verdict` artifact, uploaded best
+  effort), holds the head, the base, the run id and attempt, the exit code, each failed harness's tries (the batch's,
+  its retry if `tools/parity.py` gave one, the rerun at HEAD) and `repeat_flakers`: harnesses not on `known_flaky`
+  that passed only when run again in 3 or more of the last 10 runs (kept in
+  `.local/parity-runner/verdict-history.json` on the runner). The run's summary names each; they don't fail it: put
+  one on `known_flaky` with its issue, or fix it. Neither the report nor the history can change the verdict.
 - Nightlies build only on a commit both `checks` and `parity-main` passed on (`tools/release_train.py`,
   `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. They take the
   newest such commit even when a later batch failed: that failure is in merges the green commit doesn't contain, so

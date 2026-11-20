@@ -91,11 +91,14 @@ jobs:
         run: python3 tools/parity_main.py verdict "$BASE_SHA"
       - name: Upload the verdict
         if: ${{ !cancelled() && steps.harnesses.outcome == 'failure' }}
+        # Best effort: the artifact service never decides the run. Only this attempt's report (its name holds
+        # PARITY_RUN_ID), never one an earlier attempt left on the runner.
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: parity-main-verdict
-          path: .local/parity-runner/verdict.json
-          if-no-files-found: warn
+          path: .local/parity-runner/verdict-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: ignore
           retention-days: 7
       - name: A run whose harnesses passed, for the flake history
         if: steps.harnesses.outcome == 'success'
