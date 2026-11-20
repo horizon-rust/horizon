@@ -704,10 +704,15 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
     })
 }
 
+/// The owned types the transport's control payloads reach, which no call names: `InitInput`, what
+/// a mod's start receives, is a list of `PackageInfo`. The core hash mixes in their layouts.
+const CONTROL_OWNED: &[&str] = &["mod_api::PackageInfo"];
+
 /// What a wasm mod and the game check each other by when it loads (`mod_surface::boundary`):
 /// every call's key, signature hash and the owned types it reaches, as `call_layouts` mixes them,
-/// and a fingerprint of the core hash's inputs that the source holds (the hand-written codecs and
-/// the transport values `codecs` reads, the file roots and the prepared ABI).
+/// a fingerprint of the core hash's inputs that the source holds (the hand-written codecs and
+/// the transport values `codecs` reads, and the prepared hooks' ABI) and the owned types the
+/// core reaches. The owned types' shapes are left for the surface export to fill in.
 pub(crate) fn boundary(
     root: &Path,
     surface: &Surface<'_>,
@@ -735,7 +740,10 @@ pub(crate) fn boundary(
                 export,
                 owned: found
                     .iter()
-                    .map(|def| surface.types.defs[*def].rust.clone())
+                    .map(|def| mod_surface::boundary::Owned {
+                        path: surface.types.defs[*def].rust.clone(),
+                        shape: None,
+                    })
                     .collect(),
             },
         )
@@ -743,6 +751,13 @@ pub(crate) fn boundary(
     Ok(mod_surface::boundary::Boundary {
         schema: mod_surface::boundary::SCHEMA,
         core: format!("{core:016x}"),
+        core_owned: CONTROL_OWNED
+            .iter()
+            .map(|path| mod_surface::boundary::Owned {
+                path: (*path).into(),
+                shape: None,
+            })
+            .collect(),
         calls,
     })
 }

@@ -242,9 +242,7 @@ fn export_here(root: &Path) -> Result<Export, String> {
     let boundary = Boundary::from_wire(&wire);
     let calls = crate::wire::boundary(root, &wire)?;
     let mut index = wire.types.index;
-    let mut export = build(root, &mut index, &catalog.hooks, &boundary)?;
-    export.boundary = Some(calls);
-    Ok(export)
+    build(root, &mut index, &catalog.hooks, &boundary, Some(calls))
 }
 
 /// The `///` text of `attrs`, one line each, a leading space dropped.
@@ -579,6 +577,7 @@ pub(crate) fn build(
     index: &mut Index<'_>,
     hooks: &[catalog::Hook],
     boundary: &Boundary,
+    mut calls: Option<mod_surface::boundary::Boundary>,
 ) -> Result<Export, String> {
     // The facade crate is indexed for this walk only.
     index.add_crate("horizon_mod_api", "crates/horizon-mod-api/src");
@@ -783,6 +782,28 @@ pub(crate) fn build(
                 .then(|| layouts.key(writer.index, record.item))
         })
         .collect();
+    // The owned types the calls and the core reach, hidden ones too, by the path the glue
+    // names them by (`mod_api::PackageInfo`).
+    let owned_keys: HashMap<String, String> = calls
+        .iter()
+        .flat_map(|b| {
+            b.core_owned
+                .iter()
+                .chain(b.calls.iter().flat_map(|c| &c.owned))
+        })
+        .filter_map(|owned| {
+            let path = owned.path.split('<').next()?.trim();
+            let path = path.strip_prefix("mod_api::").unwrap_or(path);
+            // A type's record is at its defining path; the glue names it by any public one.
+            let id = by_path.get(path).copied().or_else(|| {
+                pending
+                    .iter()
+                    .find(|record| record.paths.iter().any(|p| p == path))
+                    .map(|record| record.item)
+            })?;
+            Some((owned.path.clone(), layouts.key(writer.index, id)))
+        })
+        .collect();
     layouts.finish(writer.index);
     let mut shapes = Shapes::new(&layouts.table);
     let mut types = Vec::new();
@@ -819,6 +840,19 @@ pub(crate) fn build(
         types.push(built);
     }
 
+    if let Some(calls) = &mut calls {
+        let mut fill = |owned: &mut mod_surface::boundary::Owned| {
+            owned.shape = owned_keys
+                .get(&owned.path)
+                .and_then(|key| shapes.shape(key).ok());
+        };
+        calls.core_owned.iter_mut().for_each(&mut fill);
+        calls
+            .calls
+            .iter_mut()
+            .flat_map(|c| c.owned.iter_mut())
+            .for_each(&mut fill);
+    }
     let hooks = hook_records(hooks, &types, &mut notes);
     let parts = part_records(&hooks, &traits, &mut notes);
     capabilities.extend(manifest_capabilities(root, &mut notes));
@@ -839,7 +873,7 @@ pub(crate) fn build(
         )
         .with_behaviours(behaviours),
         notes,
-        boundary: None,
+        boundary: calls,
     })
 }
 

@@ -4,14 +4,16 @@
 //! The game compares each call a mod imports or exports by its key and its hash: the call's
 //! signature hash, which writes out every borrowing record it reaches field by field in
 //! declaration order, mixed with the run-time `Wire` layout of every owned type it reaches. Every
-//! mod is also checked by the core hash: the transport's values, the hand-written codecs, the NBT
-//! tag ids and limits, the file roots and the prepared ABI. A minimal mod imports nearly every
-//! call, so a change to an existing call or to the core refuses every wasm mod built before it.
+//! mod is also checked by the core hash: the transport's values and control payloads, the
+//! hand-written codecs, the NBT tag ids and limits, the file roots and the prepared ABI. A minimal
+//! mod imports nearly every call, so a change to an existing call or to the core refuses every
+//! wasm mod built before it.
 //!
-//! [`Boundary`] holds the parts the generator can see: each call's signature hash and the owned
-//! types it reaches, and a fingerprint of the core's inputs. The owned types' layouts come from
-//! the surface's `shape`: [`apply`] makes a layout change of an owned type an existing call
-//! reaches breaking. A call or type that is new is never a change here.
+//! [`Boundary`] holds what the source says of those: each call's signature hash, the owned types
+//! it reaches with their [shapes](crate::shape) (hidden ones too), and a fingerprint of the core's
+//! source inputs with the owned types its control payloads reach. [`apply`] adds every change to
+//! an existing call or to the core to a surface diff, as breaking. A call that is new is never a
+//! change here.
 use crate::Surface;
 use crate::diff::{Change, ChangeKind, Class, Diff, Verdict};
 use serde::{Deserialize, Serialize};
@@ -24,8 +26,12 @@ pub const SCHEMA: u32 = 1;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Boundary {
     pub schema: u32,
-    /// A fingerprint of everything the core hash is made of that the source holds.
+    /// A fingerprint of everything the core hash is made of that the source holds, except the
+    /// layouts of `core_owned`.
     pub core: String,
+    /// The owned types the core's control payloads reach (`PackageInfo`, which a mod's start
+    /// receives).
+    pub core_owned: Vec<Owned>,
     pub calls: Vec<Call>,
 }
 
@@ -37,9 +43,19 @@ pub struct Call {
     /// The generator's signature hash, an export's mixed with its id, as 16 hex digits.
     pub signature: String,
     pub export: bool,
-    /// The owned types it reaches through its arguments, answer and borrowing records, by path
-    /// (`mod_api::PlayerWorldRefusal`), sorted.
-    pub owned: Vec<String>,
+    /// The owned types it reaches through its arguments, answer and borrowing records, sorted by
+    /// path.
+    pub owned: Vec<Owned>,
+}
+
+/// An owned type a call or the core reaches.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Owned {
+    /// As the generated glue names it (`mod_api::PlayerWorldRefusal`).
+    pub path: String,
+    /// Its wire layout hash; `None` for a type that crosses by a hand-written codec, which the
+    /// core fingerprint covers.
+    pub shape: Option<String>,
 }
 
 impl Boundary {
@@ -79,25 +95,43 @@ fn call_id(key: &str, surfaces: [&Surface; 2]) -> String {
     found.unwrap_or_else(|| format!("call:{key}"))
 }
 
-/// The surface type an owned path names (`mod_api::item::Stack<T>` is `type:item::Stack` or a
-/// type exported as `item::Stack`).
-fn type_id(path: &str, surface: &Surface) -> Option<String> {
+/// The id an owned type's change is reported under: its surface record
+/// (`mod_api::item::Stack<T>` is `type:item::Stack` or a type exported as `item::Stack`), or
+/// `type:<path>` for a hidden one.
+fn type_id(path: &str, surfaces: [&Surface; 2]) -> String {
     let path = path.split('<').next().unwrap_or(path).trim();
     let path = path
         .strip_prefix("mod_api::")
         .or_else(|| path.strip_prefix("crate::"))
         .unwrap_or(path);
     let id = format!("type:{path}");
-    surface
-        .types
+    surfaces
         .iter()
+        .flat_map(|s| &s.types)
         .find(|t| t.id == id || t.paths.iter().any(|p| p == path))
-        .map(|t| t.id.clone())
+        .map_or(id, |t| t.id.clone())
 }
 
-/// Adds to `diff` the changes of the boundary from `old` to `new`, and makes a wire layout change
-/// of an owned type an existing call reaches breaking. `old_surface` and `new_surface` are the
-/// surfaces `diff` compared.
+fn shape(shape: &Option<String>) -> String {
+    shape
+        .as_ref()
+        .map_or_else(|| "none".into(), |s| format!("`{s}`"))
+}
+
+/// What reaches a type whose layout changed, for its line.
+fn reachers(by: &BTreeSet<String>) -> String {
+    let named: Vec<String> = by.iter().take(3).cloned().collect();
+    let more = by.len().saturating_sub(named.len());
+    let mut text = named.join(", ");
+    if more > 0 {
+        text += &format!(" and {more} more");
+    }
+    text
+}
+
+/// Adds to `diff` the changes of the boundary from `old` to `new`, all breaking: a changed core,
+/// an existing call gone or changed, and a layout change of an owned type an existing call or the
+/// core reaches. `old_surface` and `new_surface` are the surfaces `diff` compared.
 pub fn apply(
     diff: &mut Diff,
     old_surface: &Surface,
@@ -105,16 +139,54 @@ pub fn apply(
     old: &Boundary,
     new: &Boundary,
 ) {
+    let surfaces = [new_surface, old_surface];
     let mut lines: BTreeMap<String, Vec<String>> = BTreeMap::new();
     if old.core != new.core {
         lines.entry("core:wire".into()).or_default().push(format!(
-            "the wire core changed (`{}` → `{}`): a transport value, a hand-written codec, the NBT tag ids or limits, a file root or the prepared ABI; {REFUSED}",
+            "the wire core changed (`{}` → `{}`): a transport value or control payload, a hand-written codec, the NBT tag ids or limits, or a prepared hook's ABI; {REFUSED}",
             old.core, new.core
         ));
     }
+    // Owned types whose layout changed: their layouts, and what reaches them.
+    type Layouts = BTreeMap<String, (Option<String>, Option<String>, BTreeSet<String>)>;
+    let mut layouts = Layouts::new();
+    let mut compare = |before: &[Owned], after: &[Owned], by: String| {
+        for was in before {
+            if let Some(now) = after.iter().find(|o| o.path == was.path)
+                && now.shape != was.shape
+            {
+                layouts
+                    .entry(was.path.clone())
+                    .or_insert((was.shape.clone(), now.shape.clone(), BTreeSet::new()))
+                    .2
+                    .insert(by.clone());
+            }
+        }
+    };
+    let owned_paths =
+        |owned: &[Owned]| -> BTreeSet<String> { owned.iter().map(|o| o.path.clone()).collect() };
+    let changed_set = |key: &str, before: &[Owned], after: &[Owned]| {
+        let (before, after) = (owned_paths(before), owned_paths(after));
+        let list = |set: Vec<&String>| {
+            set.iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        (before != after).then(|| {
+            format!(
+                "{key}: the owned types it reaches changed (gained: {}; lost: {}): {REFUSED}",
+                list(after.difference(&before).collect()),
+                list(before.difference(&after).collect()),
+            )
+        })
+    };
+    compare(&old.core_owned, &new.core_owned, "the wire core".into());
+    if let Some(line) = changed_set("the wire core", &old.core_owned, &new.core_owned) {
+        lines.entry("core:wire".into()).or_default().push(line);
+    }
     let after: BTreeMap<&str, &Call> = new.calls.iter().map(|c| (c.key.as_str(), c)).collect();
     for call in &old.calls {
-        let id = call_id(&call.key, [new_surface, old_surface]);
         let mut said = Vec::new();
         match after.get(call.key.as_str()) {
             None => said.push(format!("call `{}` is gone: {REFUSED}", call.key)),
@@ -132,52 +204,44 @@ pub fn apply(
                         call.key, call.signature, now.signature
                     ));
                 }
-                if now.owned != call.owned {
-                    let before: BTreeSet<&String> = call.owned.iter().collect();
-                    let later: BTreeSet<&String> = now.owned.iter().collect();
-                    let list = |set: Vec<&&String>| {
-                        set.iter()
-                            .map(|p| format!("`{p}`"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    };
-                    said.push(format!(
-                        "call `{}`: the owned types it reaches changed (gained: {}; lost: {}): {REFUSED}",
-                        call.key,
-                        list(later.difference(&before).collect()),
-                        list(before.difference(&later).collect()),
-                    ));
-                }
+                let key = format!("call `{}`", call.key);
+                said.extend(changed_set(&key, &call.owned, &now.owned));
+                compare(&call.owned, &now.owned, format!("`{}`", call.key));
             }
         }
         if !said.is_empty() {
-            lines.entry(id).or_default().extend(said);
+            lines
+                .entry(call_id(&call.key, surfaces))
+                .or_default()
+                .extend(said);
         }
     }
-    // A layout change of an owned type an existing call reaches changes that call's hash.
-    let reached: BTreeSet<String> = old
-        .calls
-        .iter()
-        .flat_map(|c| &c.owned)
-        .filter_map(|path| type_id(path, old_surface))
-        .collect();
-    for change in diff.changes.iter_mut() {
-        if !reached.contains(&change.id) || change.kind != ChangeKind::Changed {
-            continue;
-        }
+    for (path, (was, now, by)) in layouts {
+        let id = type_id(&path, surfaces);
+        let reached = format!("reached by {}, so {REFUSED}", reachers(&by));
+        // The surface's own line for the same change says it affects wasm mods only.
         let mut raised = false;
-        for line in change.what.iter_mut() {
-            let wire = line.starts_with("wire layout:")
-                || line.starts_with("wire form:")
-                || line.starts_with("no longer crosses");
-            if wire && line.ends_with("affects wasm mods only") {
-                let kept = line.trim_end_matches("affects wasm mods only");
-                *line = format!("{kept}an existing call reaches it, so {REFUSED}");
-                raised = true;
+        if let Some(change) = diff.changes.iter_mut().find(|c| c.id == id) {
+            for line in change.what.iter_mut() {
+                let wire = line.starts_with("wire layout:")
+                    || line.starts_with("wire form:")
+                    || line.starts_with("no longer crosses");
+                if wire && line.ends_with("affects wasm mods only") {
+                    let kept = line.trim_end_matches("affects wasm mods only");
+                    *line = format!("{kept}{reached}");
+                    raised = true;
+                }
+            }
+            if raised {
+                change.class = Class::Breaking;
             }
         }
-        if raised {
-            change.class = Class::Breaking;
+        if !raised {
+            lines.entry(id).or_default().push(format!(
+                "wire layout: {} → {}: {reached}",
+                shape(&was),
+                shape(&now)
+            ));
         }
     }
     for (id, said) in lines {

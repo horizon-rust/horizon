@@ -49,9 +49,9 @@ one of three classes:
   variant added to an exhaustive enum; a required item added to a trait mods implement; an impl a type no longer
   has; a behaviour removed. Anything that makes the game refuse a wasm mod built before it: an existing call gone or
   with another signature hash (its arguments or answer, or a field of a borrowing record they reach, reordered too), a
-  call reaching other owned types, a wire layout change of an owned type an existing call reaches (an enum variant
-  inserted or appended too), and a change to the wire core (`core:wire`: a transport value, a hand-written codec,
-  the NBT tag ids or limits, a file root or the prepared ABI).
+  call reaching other owned types, a wire layout change of an owned type an existing call or the core reaches, hidden
+  ones too (an enum variant inserted or appended too), and a change to the wire core (`core:wire`: a transport
+  value or control payload, a hand-written codec, the NBT tag ids or limits, or a prepared hook's ABI).
 - **Conditional**: it breaks only some mods, which the [fit test](04-fit.md) finds from each mod's source (except a
   behaviour's `version`, which no fit report shows: a mod relies on a behaviour without naming it). A field
   added to a struct mods can build, or an argument added to a hook (only a mod that writes it out in full); a struct
@@ -67,7 +67,9 @@ same report for two published builds.
 
 When the `verify (mod points)` check runs on a pull request, its summary carries this report, comparing the merge
 base with the head; `--calls` adds the calls and core each build's wasm mods are checked by (`horizon-stage surface
-ROOT OUT --calls CALLS` writes them). It reports, and fails the check only when:
+ROOT OUT --calls CALLS` writes them). The head's `horizon-stage` exports both trees, so a change to the generator
+itself (its file roots or prepared ids, how it hashes a call) shows in neither. It reports, and fails the check only
+when:
 
 - the head's tree cannot be exported;
 - with the gate on, no comparison can run: the base cannot be found or fetched, or the head's tool cannot read it;
