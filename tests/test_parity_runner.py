@@ -891,15 +891,28 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.reasons(), ["environment", "environment", "environment", "hit"])
 
     def test_a_call_on_another_hosted_runner_replays(self):
-        # Blacksmith sets these per VM (its name and id, its Turborepo cache's address and token): two runners'
-        # calls that differ only in them are the same call.
-        first = dict(PETNAME="calm-otter", VM_ID="vm-1", TURBO_API="http://10.0.0.1:1", TURBO_TOKEN="a")
-        second = dict(PETNAME="brisk-heron", VM_ID="vm-2", TURBO_API="http://10.0.0.2:2", TURBO_TOKEN="b")
+        # Blacksmith sets these per VM (its name and id, its Turborepo cache's address and token, its own services'
+        # address and port): two runners' calls that differ only in them are the same call.
+        first = dict(PETNAME="calm-otter", VM_ID="vm-1", TURBO_API="http://10.0.0.1:1", TURBO_TOKEN="a",
+                     GIT_MIRROR_PROXY_URL="http://10.0.0.1:3", METADATA_PORT="1")
+        second = dict(PETNAME="brisk-heron", VM_ID="vm-2", TURBO_API="http://10.0.0.2:2", TURBO_TOKEN="b",
+                      GIT_MIRROR_PROXY_URL="http://10.0.0.2:4", METADATA_PORT="2")
         self.assertEqual(self.oracle(**first), 1)
         self.assertEqual(self.oracle(**second), 1)
         # Only those names: a variable that merely starts like one is still in the key.
         self.assertEqual(self.oracle(**second, TURBO_TEAM="x"), 2)
+        self.assertEqual(self.last()["variables"], ["TURBO_TEAM"])
         self.assertEqual(self.reasons(), ["no-record", "hit", "environment"])
+
+    def test_an_environment_miss_names_every_variable_that_differs(self):
+        # Against the last run of the same command line: one changed, one added, one gone, and an ignored one that
+        # changed too, which is not named. Names only: no value reaches the line.
+        self.assertEqual(self.oracle(HORIZON_PHASE="full", HORIZON_A="1", HORIZON_GONE="x", VM_ID="vm-1"), 1)
+        self.assertEqual(self.oracle(HORIZON_PHASE="terrain", HORIZON_A="1", HORIZON_NEW="y", VM_ID="vm-2"), 2)
+        line = self.last()
+        self.assertEqual(line["reason"], "environment")
+        self.assertEqual(line["variables"], ["HORIZON_GONE", "HORIZON_NEW", "HORIZON_PHASE"])
+        self.assertNotIn("terrain", json.dumps(line))
 
     def test_a_datapack_folder_is_keyed_through_its_linked_folders(self):
         root = self.input.parent.parent

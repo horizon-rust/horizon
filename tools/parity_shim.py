@@ -55,13 +55,14 @@ MACHINE_ID = "/etc/machine-id"  # systemd's, on Linux; none on macOS
 PATH_OPTIONS = {"-cp", "-classpath", "--class-path", "-sourcepath", "--source-path", "-p", "--module-path"}
 # Variables left out of the key: they change between runs of the same call, and no oracle reads them (tools/parity.py's
 # bookkeeping, a CI job's ids and the commits and token its parity workflows pass (parity.yml, parity-main.yml,
-# parity-hosted.yml), an ssh or terminal session's state, the per-harness game folder, and the runner's identity:
-# Blacksmith gives each VM its own PETNAME and VM_ID, and TURBO_API and TURBO_TOKEN for its Turborepo cache). Every
-# other variable, one never seen before included, is part of the key.
+# parity-hosted.yml), an ssh or terminal session's state, the per-harness game folder, and what a Blacksmith runner
+# sets per VM: its PETNAME and VM_ID, TURBO_API and TURBO_TOKEN for its Turborepo cache, and GIT_MIRROR_PROXY_URL
+# and METADATA_PORT for its own services). Every other variable, one never seen before included, is part of the key.
 IGNORED_PREFIXES = ("PARITY_", "GITHUB_", "RUNNER_", "ACTIONS_", "BLACKSMITH_", "SSH_", "XDG_SESSION_")
 IGNORED = {"PWD", "OLDPWD", "SHLVL", "_", "TERM", "TERM_SESSION_ID", "COLUMNS", "LINES", "INVOCATION_ID",
            "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "HORIZON_HOME", "BASE_SHA", "HEAD_SHA", "MAIN_SHA", "GH_TOKEN",
-           "HARNESSES", "SHARD", "PETNAME", "VM_ID", "TURBO_API", "TURBO_TOKEN"}
+           "HARNESSES", "SHARD", "PETNAME", "VM_ID", "TURBO_API", "TURBO_TOKEN", "GIT_MIRROR_PROXY_URL",
+           "METADATA_PORT"}
 # Variables naming a file or folder an oracle reads: what is in it is part of the key, as the name stays when it
 # changes. HORIZON_ORDER's file is written from Horizon's own ticket order (tools/test_decorated_region_parity.py).
 CONTENT_VARIABLES = {"HORIZON_ORDER", "HORIZON_DATAPACKS"}
