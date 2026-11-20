@@ -139,20 +139,28 @@ def main(argv):
         del args[index:index + 2]
     [checkout] = args
     environ = dict(os.environ)
-    if job_count_allowed(environ):
-        print(f"allowed: {JOBS}")
     found = problems(checkout, environ, top)
     if found:
         for line in found:
             print(f"::error::{line}")
         print("::error::cargo would use configuration from outside the checkout; remove it from the runner")
         return 1
-    home = os.path.join(os.environ["RUNNER_TEMP"], "cargo-home")
-    shutil.rmtree(home, ignore_errors=True)
-    os.mkdir(home)
-    with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-        env.write(f"CARGO_HOME={home}\n")
-    print(f"CARGO_HOME={home}")
+    # Fixed messages only, no path and no exception text: both would show the runner's variables in a public log.
+    try:
+        home = os.path.join(os.environ["RUNNER_TEMP"], "cargo-home")
+        shutil.rmtree(home, ignore_errors=True)
+        os.mkdir(home)
+    except Exception:
+        print("::error::could not create the run's cargo home")
+        return 1
+    try:
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+            env.write(f"CARGO_HOME={home}\n")
+    except Exception:
+        print("::error::could not write the run's environment file")
+        return 1
+    if job_count_allowed(environ):
+        print(f"allowed: {JOBS}")
     # game-build.yml accepts the run only when this is its last line: an empty or cut-off download prints nothing.
     print(CLEAN)
     return 0

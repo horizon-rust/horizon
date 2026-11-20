@@ -38,7 +38,8 @@ class CargoIsolationTests(unittest.TestCase):
         runner_temp.mkdir(exist_ok=True)
         github_env = runner_temp / "github-env"
         github_env.touch()
-        environ = clean_environ(RUNNER_TEMP=str(runner_temp), GITHUB_ENV=str(github_env), **extra)
+        environ = clean_environ(RUNNER_TEMP=str(runner_temp), GITHUB_ENV=str(github_env))
+        environ.update(extra)
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/cargo_isolation.py"), str(self.checkout),
                                  "--top", str(self.top)], env=environ, capture_output=True, text=True)
         return result, runner_temp / "cargo-home", github_env.read_text()
@@ -52,7 +53,26 @@ class CargoIsolationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(list(home.iterdir()), [])
         self.assertEqual(github_env, f"CARGO_HOME={home}\n")
-        self.assertTrue(result.stdout.endswith(cargo_isolation.CLEAN + "\n"), result.stdout)
+        self.assertEqual(result.stdout, cargo_isolation.CLEAN + "\n")
+        # No path from the runner's variables in either stream.
+        for text in (str(runner_temp), runner_temp.name, "runner-temp", "cargo-home"):
+            self.assertNotIn(text, result.stdout + result.stderr)
+
+    def test_setup_failures_print_a_fixed_message_and_no_path(self):
+        unopenable = self.top / "missing-env-dir-7f3a" / "github-env"
+        result, home, _ = self.run_guard(GITHUB_ENV=str(unopenable))
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "::error::could not write the run's environment file\n")
+        self.assertEqual(result.stderr, "")
+        self.assertNotIn("missing-env-dir-7f3a", output)
+        self.assertNotIn("Traceback", output)
+        self.assertNotIn(cargo_isolation.CLEAN, output)
+        not_a_folder = self.top / "plain-file-9c1e"
+        not_a_folder.write_text("")
+        result, _, _ = self.run_guard(RUNNER_TEMP=str(not_a_folder))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout + result.stderr, "::error::could not create the run's cargo home\n")
 
     def test_a_config_at_each_ancestor_fails(self):
         levels = [self.checkout.parent, self.checkout.parent.parent, self.top]
@@ -106,12 +126,18 @@ class CargoIsolationTests(unittest.TestCase):
         for value in ("1", "6", "10", "9999"):
             with self.subTest(value=value):
                 self.assertEqual(self.problems(clean_environ(CARGO_BUILD_JOBS=value)), [])
-        result, _, _ = self.run_guard(CARGO_BUILD_JOBS="10")
+        result, _, _ = self.run_guard(CARGO_BUILD_JOBS="7385")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("allowed: CARGO_BUILD_JOBS\n", result.stdout)
-        self.assertTrue(result.stdout.endswith(cargo_isolation.CLEAN + "\n"))
+        # Named just before the last line, never with its value.
+        self.assertEqual(result.stdout, f"allowed: CARGO_BUILD_JOBS\n{cargo_isolation.CLEAN}\n")
+        self.assertNotIn("7385", result.stdout + result.stderr)
+        # Not when anything else fails the guard.
+        result, _, _ = self.run_guard(CARGO_BUILD_JOBS="10", RUSTC_WRAPPER="sccache")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("allowed:", result.stdout + result.stderr)
         # Anything else, an empty value too (unlike every other variable, where empty means unset).
-        for value in ("0", "-1", "default", "", "4 x", "4; x", " 4", "4\n", "04", "10000", "+4", "4.0"):
+        for value in ("0", "-1", "default", "", "4 x", "4; x", " 4", "4\n", "04", "10000", "+4", "4.0",
+                      "1٢", "١", "1２"):
             with self.subTest(value=value):
                 self.assertEqual(self.problems(clean_environ(CARGO_BUILD_JOBS=value)),
                                  ["variable set: CARGO_BUILD_JOBS (not a plain job count)"])
