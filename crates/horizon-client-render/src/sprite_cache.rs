@@ -10,6 +10,9 @@ const MAGIC: &[u8; 4] = b"HSPR";
 /// Bump when `Decoded` or the decoding in `Sprites::decode` changes.
 const VERSION: u32 = 3;
 const FILE: &str = "horizon-sprites.cache";
+/// The most pixel bytes one entry's frames may hold: a full atlas, the most one decoded image
+/// may be (`hud::read_png`).
+const MAX_ENTRY_BYTES: u64 = (crate::hud::MAX_ATLAS_SIZE as u64).pow(2) * 4;
 
 /// What decoding one texture gives, before it takes a layer.
 #[derive(Clone)]
@@ -138,9 +141,25 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         let side = r.u32()?;
         let frame_size = [r.u32()?, r.u32()?];
         let frame_count = r.u32()?;
-        let mut frames = Vec::new();
+        // Checked before anything is copied: the shape, then the frames' total against what the
+        // file holds and against a full atlas (what one decoded image may be), then each length.
+        if frame_count == 0 || frame_size.contains(&0) || frame_size[0].max(frame_size[1]) != side {
+            return None;
+        }
+        let frame_len = u128::from(frame_size[0]) * u128::from(frame_size[1]) * 4;
+        let count = u128::from(frame_count);
+        if count * (frame_len + 4) > r.0.len() as u128
+            || count * frame_len > u128::from(MAX_ENTRY_BYTES)
+        {
+            return None;
+        }
+        let mut frames = Vec::with_capacity(frame_count as usize);
         for _ in 0..frame_count {
-            frames.push(r.bytes()?.to_vec());
+            let frame = r.bytes()?;
+            if frame.len() as u128 != frame_len {
+                return None;
+            }
+            frames.push(frame.to_vec());
         }
         let animation = String::from_utf8(r.bytes()?.to_vec()).ok()?;
         let has_animation = r.take(1)?[0] != 0;
@@ -154,16 +173,6 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         };
         let alpha_cutoff_bias = f32::from_bits(r.u32()?);
         let flags = r.take(1)?[0];
-        let frame_len = (frame_size[0] as usize)
-            .checked_mul(frame_size[1] as usize)?
-            .checked_mul(4)?;
-        if frames.is_empty()
-            || frame_size.contains(&0)
-            || frame_size[0].max(frame_size[1]) != side
-            || frames.iter().any(|f| f.len() != frame_len)
-        {
-            return None;
-        }
         entries.insert(
             name,
             Decoded {
@@ -239,6 +248,21 @@ mod tests {
         let mut extra = bytes.clone();
         extra.push(0);
         assert!(parse(&extra, 7).is_none());
+    }
+    /// An entry declaring far more frames than the file holds is a miss before anything is
+    /// reserved for them.
+    #[test]
+    fn a_huge_frame_count_with_a_short_payload_is_a_miss() {
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&7u64.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        put_bytes(&mut bytes, b"a:b");
+        for field in [16, 16, 16, u32::MAX] {
+            bytes.extend_from_slice(&field.to_le_bytes());
+        }
+        put_bytes(&mut bytes, &[0; 16 * 16 * 4]);
+        assert!(parse(&bytes, 7).is_none());
     }
     /// A frame size with a zero side is a miss: its texture is decoded again, never read
     /// from empty frames.
