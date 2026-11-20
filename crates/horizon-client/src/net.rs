@@ -1646,13 +1646,13 @@ fn configure(
     }
 }
 
-<<<<<<< HEAD
 /// A server brand this client negotiates Horizon's protocol with. Velocity
 /// appends ` (Velocity)` to the brand the server sent, so an exact `horizon`
 /// would leave a proxied Horizon server looking like vanilla.
 fn horizon_server_brand(brand: &str) -> bool {
     brand == "horizon" || brand.starts_with("horizon (")
-=======
+}
+
 /// A failed `horizon:payloads` negotiation. In the first configuration it names the server's
 /// build (`None`: one from before builds were named, so older) and this one, unless they are the
 /// same; a reconfiguration keeps the negotiation's own error.
@@ -1668,7 +1668,6 @@ fn negotiation_refused(initial: bool, server_build: Option<&str>, error: &str) -
         },
         None => Reason::plain(error),
     }
->>>>>>> upstream/main
 }
 
 #[horizon_mod_api_macros::replaceable]
