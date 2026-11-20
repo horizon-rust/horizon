@@ -298,8 +298,9 @@ class ConcurrencyTests(unittest.TestCase):
             f"group: nightly-build${{{{ ({self.dry}) && format('-dry-{{0}}', github.run_id) || '' }}}}",
             "cancel-in-progress: false",
         ])
-        self.assertIn("inputs.dry_run", self.dry)
-        self.assertIn("github.ref != 'refs/heads/main'", self.dry)
+        # Written out, so a rule changed in all three places at once still fails here.
+        self.assertEqual(self.dry, "github.event_name == 'workflow_dispatch' && "
+                                   "(inputs.dry_run || github.ref != 'refs/heads/main')")
 
     def test_the_run_name_says_dry_run_or_real_and_keeps_the_request(self):
         run_name = self.build.split("\nrun-name: ", 1)[1].split("\n", 1)[0]
