@@ -162,6 +162,7 @@ impl Game<'_> {
         let mut resume_was_on_fire = false;
         let mut resume_sampled = None;
         let mut resume_guest = None;
+        let mut guests_loaded = self.lan.is_none();
         loop {
             let mut pause = None;
             let mut retry_rider = None;
@@ -169,6 +170,7 @@ impl Game<'_> {
             // position write was captured, stop after this mob, restore the
             // list, and tell its writes while the live row is readable.
             let mut section_yield = false;
+            let mut load_guests = false;
             {
                 let ticking = self.entity_ticking_area();
                 let players = self.level_players();
@@ -232,6 +234,68 @@ impl Game<'_> {
                         continue;
                     }
                     let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
+                    if !resuming
+                        && !retried
+                        && m.species() == horizon_client::mobs::Species::Mannequin
+                        && m.extra.static_env_revision == Some(base.world.revision)
+                        && !mod_api::__private::listened(mod_api::HookId::LivingChangeTarget)
+                    {
+                        if !base.world.loaded(bx, bz) || !ticking(bx, bz) {
+                            keep[slot] = true;
+                            cursor += 1;
+                            continue;
+                        }
+                        if round.canceled(m.id) {
+                            m.despawn = mod_api::Despawn::default();
+                            cursor += 1;
+                            continue;
+                        }
+                        let bounds = m.bounds();
+                        let reach = (3.0 * f64::from(m.model_scale().max(1.0))).powi(2);
+                        let near_player = |pos: Vec3| {
+                            let dx = pos.x - m.position.x;
+                            let dy = pos.y - m.position.y;
+                            let dz = pos.z - m.position.z;
+                            dx * dx + dy * dy + dz * dz < reach
+                        };
+                        let player_near = nearest
+                            .nearest(m.position.x, m.position.y, m.position.z)
+                            .is_some_and(|p| near_player(p.position))
+                            || base.player.as_ref().is_some_and(|p| {
+                                p.alive && !p.spectator && near_player(p.position)
+                            });
+                        let clear_of_mobs = !pushes.has_for(m.id)
+                            && !grid.any_in(bounds, snapshot.len(), |idx| {
+                                let o = &snapshot[idx as usize];
+                                o.id != m.id && o.alive && o.pushable && o.bounds.intersects(bounds)
+                            });
+                        if !player_near
+                            && clear_of_mobs
+                            && m.is_static_mannequin()
+                            && m.position.y >= f64::from(base.world.bottom_y() - 64)
+                        {
+                            m.despawn = mod_api::Despawn::default();
+                            super::super::inventory_tick::equipment_inventory_tick(
+                                &self.world,
+                                self.res.facts(),
+                                level_id,
+                                &mut m.extra.equipment,
+                            );
+                            if horizon_client::mobs::ai::tick_static_mannequin(
+                                m,
+                                base.world.revision,
+                                base.world.bottom_y(),
+                            ) {
+                                ticked.insert(m.id);
+                                cursor += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    if !guests_loaded {
+                        load_guests = true;
+                        break;
+                    }
                     let seen_guest = if resuming {
                         resume_guest
                     } else if guests.is_empty() {
@@ -660,6 +724,28 @@ impl Game<'_> {
                         break;
                     }
                 }
+            }
+            if load_guests {
+                lent.give_back(&mut self.world);
+                self.mobs
+                    .restore(mobs, horizon_client::join_seq::RestoreOrder::SpawnsFirst);
+                guests = self.lan_guest_views();
+                mobs = self.mobs.lift();
+                spare = guests.first().map(|g| g.1.clone());
+                if let Some(host) = self.lan.as_mut()
+                    && !guests.is_empty()
+                {
+                    bindings = std::mem::take(&mut host.mob_players);
+                    guest_ids = host
+                        .hub
+                        .guests
+                        .iter()
+                        .map(|g| (g.conn, g.entity_id as u32))
+                        .collect();
+                }
+                lent = horizon_client::health::LentLevel::take(&mut self.world);
+                guests_loaded = true;
+                continue;
             }
             if pause.is_none() && retry_rider.is_none() && !section_yield {
                 break;

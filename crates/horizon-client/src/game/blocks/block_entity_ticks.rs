@@ -346,7 +346,7 @@ impl Game<'_> {
         this.trial_spawner_tick_positions.clear();
         this.item_columns = Some(Default::default());
         this.pass_mobs = Some(Default::default());
-        let tickers = this.world.block_entity_tickers();
+        let tickers = this.world.awake_block_entity_tickers();
         let mut last_chunk = (i32::MIN, i32::MIN);
         let mut last_chunk_ticking = false;
         for ticker in tickers.iter().copied() {
@@ -369,11 +369,11 @@ impl Game<'_> {
             {
                 continue;
             }
-            let Some((kind, mod_type)) = this
-                .world
-                .block_entities
-                .get(&pos)
-                .and_then(TickedKind::with_type)
+            let Some((kind, mod_type, entity_name)) =
+                this.world.block_entities.get(&pos).and_then(|be| {
+                    let (kind, mod_type) = TickedKind::with_type(be)?;
+                    Some((kind, mod_type, ticker_name(be)))
+                })
             else {
                 continue;
             };
@@ -401,9 +401,7 @@ impl Game<'_> {
                 continue;
             }
             horizon_threads::work::set_chunk(chunk.0, chunk.1);
-            horizon_threads::work::set_entity(horizon_threads::work::entity_id(
-                this.world.block_entities.get(&pos).map_or("", ticker_name),
-            ));
+            horizon_threads::work::set_entity(horizon_threads::work::entity_id(entity_name));
             let suppressed = !matches!(kind, TickedKind::Mod)
                 && this.native_authoritative()
                 && crate::game::code_block_owners::suppressed(
@@ -602,7 +600,7 @@ impl Game<'_> {
             return;
         }
         let at = BlockPos::new(pos.0, pos.1, pos.2);
-        self.with_level(|b, level, ticks| b.tick_daylight_detector(level, ticks, at));
+        self.with_level_light(|b, level, ticks| b.tick_daylight_detector(level, ticks, at));
         let _ = self.process_level_events();
     }
     /// `AbstractFurnaceBlockEntity.serverTick` of the furnace at `pos`, and
