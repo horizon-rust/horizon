@@ -43,7 +43,18 @@ pub struct StudioRecorder {
 
 impl StudioRecorder {
     /// Start a new recording session saving to `dest_path`.
-    pub fn start(dest_path: PathBuf, mut metadata: Metadata) -> io::Result<Self> {
+    pub fn start(dest_path: PathBuf, metadata: Metadata) -> io::Result<Self> {
+        Self::start_with_configuration(dest_path, metadata, &[])
+    }
+
+    /// As [`start`](Self::start), keeping the session's configuration-phase packets (its
+    /// registries and tags, see [`super::configuration`]) in the recording, so playback
+    /// reads the play packets' ids against them. An empty list keeps none.
+    pub fn start_with_configuration(
+        dest_path: PathBuf,
+        mut metadata: Metadata,
+        configuration: &[TimestampedPacket],
+    ) -> io::Result<Self> {
         let active = Arc::new(AtomicBool::new(true));
         let packet_count = Arc::new(AtomicU64::new(0));
         let bytes_written = Arc::new(AtomicU64::new(0));
@@ -58,6 +69,9 @@ impl StudioRecorder {
         let (sender, receiver): (SyncSender<RecordCommand>, Receiver<RecordCommand>) =
             sync_channel(RECORD_QUEUE_PACKETS);
         let mut writer = McprWriter::new(dest_path.clone(), metadata)?;
+        if !configuration.is_empty() {
+            writer.set_configuration(configuration)?;
+        }
 
         let worker_active = active.clone();
         let worker_count = packet_count.clone();

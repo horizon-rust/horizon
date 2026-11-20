@@ -2222,7 +2222,7 @@ impl Game<'_> {
             self.command_block_server_suggestions(id, range, list);
         }
     }
-    fn set_registries(&mut self, registries: Arc<Dynamic>) {
+    pub(super) fn set_registries(&mut self, registries: Arc<Dynamic>) {
         let entries: Vec<(&str, serde_json::Value)> = registries
             .registries
             .get("minecraft:enchantment")

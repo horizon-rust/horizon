@@ -26,6 +26,9 @@ pub(super) struct Replay {
     pub(super) standalone: bool,
     pub(super) last_tick: Option<std::time::Instant>,
     pub(super) virtual_tick_ms: f32,
+    /// The registries the replay was recorded with, when its file kept them: a standalone
+    /// replay applies them in place of the vanilla ones, on open and after each seek.
+    pub(super) registries: Option<std::sync::Arc<horizon_protocol::registry::Dynamic>>,
     recording_error_reported: bool,
 }
 
@@ -327,6 +330,16 @@ impl Game<'_> {
         }
     }
 
+    /// The recording's own registries, applied as a live join applies the server's, so its
+    /// biome ids, dimension types and tags mean what they meant when it was made. Run after
+    /// each fresh synthetic remote (open and standalone seek); a recording from before its
+    /// registries were kept leaves the vanilla ones.
+    fn apply_replay_registries(&mut self) {
+        if let Some(registries) = self.replay.registries.clone() {
+            self.set_registries(registries);
+        }
+    }
+
     /// Reconstruct replay state at a target timestamp. Standalone replays can
     /// safely reset their synthetic remote; an in-world replay can only seek
     /// forward because its pre-replay world must remain intact.
@@ -345,6 +358,7 @@ impl Game<'_> {
                 .seek_and_collect(target_ms)?;
             self.init_remote_for_replay()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            self.apply_replay_registries();
             packets
         } else {
             if target_ms < current_ms {
@@ -620,7 +634,13 @@ impl Game<'_> {
             is_singleplayer,
             horizon_core::release::VERSION.into(),
         );
-        match horizon_client::studio::StudioRecorder::start(path.clone(), meta) {
+        // The registries the play packets' ids index: the replay applies them on open.
+        let configuration = horizon_client::studio::configuration::packets(&r.registries);
+        match horizon_client::studio::StudioRecorder::start_with_configuration(
+            path.clone(),
+            meta,
+            &configuration,
+        ) {
             Ok(recorder) => {
                 self.replay.recording_error_reported = false;
                 r.session.start_recording(recorder, |recorder| {
@@ -687,11 +707,16 @@ impl Game<'_> {
         };
 
         let standalone = self.replay.driver.is_none() && self.remote.is_none();
-        if self.remote.is_none()
-            && let Err(error) = self.init_remote_for_replay()
-        {
+        self.replay.registries =
+            horizon_client::studio::configuration::registries(driver.configuration())
+                .map(std::sync::Arc::new);
+        let fresh_remote = self.remote.is_none();
+        if fresh_remote && let Err(error) = self.init_remote_for_replay() {
             log::error!("Failed to initialize studio replay session: {error}");
             return Ok(json!({ "ok": false, "error": error.to_string() }));
+        }
+        if fresh_remote {
+            self.apply_replay_registries();
         }
 
         let duration_ms = driver.duration_ms();
@@ -788,7 +813,7 @@ impl Game<'_> {
             horizon_protocol::packets::play::Login {
                 player_id: r.entity_id,
                 hardcore: self.level.hardcore,
-                levels: vec!["minecraft:overworld".into()],
+                levels: vec![r.level.clone()],
                 max_players: 20,
                 chunk_radius: self.settings.render_distance,
                 simulation_distance: self.settings.simulation_distance,
@@ -796,8 +821,12 @@ impl Game<'_> {
                 show_death_screen: true,
                 limited_crafting: false,
                 spawn: horizon_protocol::packets::play::SpawnInfo {
-                    dimension_type: 0,
-                    dimension: "minecraft:overworld".into(),
+                    // An id into the recording's dimension type registry (its configuration).
+                    dimension_type: r
+                        .registries
+                        .id("minecraft:dimension_type", &r.dimension.name)
+                        .unwrap_or(0),
+                    dimension: r.level.clone(),
                     seed: 0,
                     game_type: 0,
                     previous_game_type: None,
