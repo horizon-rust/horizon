@@ -474,6 +474,14 @@ pub trait PlayersBackend {
     #[access(WorldOnly)]
     fn player_sees(&self, viewer: PlayerRef, target: PlayerRef)
     -> Result<bool, PlayerWorldRefusal>;
+    /// Side: server.
+    /// All of the player's statistics as `ServerStatsCounter.toJson` writes their
+    /// `stats/<uuid>.json`: `{"stats":{"minecraft:mined":{"minecraft:stone":3},...},
+    /// "DataVersion":n}`, types and keys namespaced, empty types left out. None for a stale
+    /// or unavailable player and on a client.
+    #[access(WorldOnly)]
+    fn player_statistics(&self, player: PlayerRef) -> Option<String>;
+    /// Side: server.
     /// The player's latency in milliseconds, as the Tab list shows it
     /// (`ServerCommonPacketListenerImpl.latency`): keep-alive round trips averaged as vanilla
     /// does (`(old * 3 + new) / 4`), 0 until the first answer. 0 for a fake player and an
@@ -1081,6 +1089,14 @@ pub trait PlayersBackendMut {
     #[access(WorldOnly)]
     fn player_respawn(&mut self, player: PlayerRef) -> Result<(), RespawnRefusal>;
     /// Side: server.
+    /// The play packets the player's connection sent and received since the last call while
+    /// packets were counted (`count_packets`), by direction (sent first) then id; clears them.
+    /// Keep-alives and the disconnect are counted; packets of the login and configuration
+    /// phases are not. Empty while nothing was counted. None for a stale or unavailable
+    /// player, one with no connection (a fake player), and on a client.
+    #[access(WorldOnly)]
+    fn player_take_packet_counts(&mut self, player: PlayerRef) -> Option<Vec<PacketCount>>;
+    /// Side: server.
     /// Acknowledges the player's block actions up to `sequence`
     /// (`ServerGamePacketListenerImpl.ackBlockChangesUpTo`), for a mod that handled one itself,
     /// such as an editor's own message: the client's predicted blocks settle on the server's
@@ -1199,6 +1215,16 @@ pub trait PlayersBackendMut {
         player: PlayerRef,
         data: Compound,
     ) -> Result<(), PlayerDataRefusal>;
+    /// Side: server.
+    /// Replaces all of the player's statistics with `json` (the text `player_statistics`
+    /// gives, or another server's `stats/<uuid>.json`), as `StatsCounter.setValue` for each
+    /// (Paper's `Player.setStatistic`): a statistic `json` lacks goes back to 0, scoreboard
+    /// objectives on a statistic's criterion follow, and the client gets the changed values
+    /// the next time it asks (its statistics screen). `player_stat_award` is not heard.
+    /// False, with nothing changed, for text that is not a JSON object, a stale, unavailable
+    /// or dead player and on a client.
+    #[access(WorldOnly)]
+    fn player_set_statistics(&mut self, player: PlayerRef, json: &str) -> bool;
     /// Side: server.
     /// Sets a server player's velocity in blocks a tick and tells their
     /// client (`Entity.setDeltaMovement` with `hurtMarked`, which sends

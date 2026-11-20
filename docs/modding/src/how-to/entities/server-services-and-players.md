@@ -177,6 +177,14 @@ read the distances in chunks; `host.server_set_view_distance(d)` and
 dedicated server and return `false` otherwise. `server.properties` is not
 written.
 
+Mob and packet diagnostics are separate switches that are off by default.
+`host.mob_cost_sampling(true)` times each mob's own tick, riders included, summed
+by level and mob type; `host.take_mob_costs()` returns what was sampled since the
+last call, costliest first, and clears it. `host.count_packets(true)` counts every
+player's play packets by id and direction, for the whole server;
+`player.take_packet_counts(host)` returns one player's counts since the last call
+and clears them. Both switches return `false` on a client.
+
 ## World mutation: chunks, blocks shown and placed as a player
 
 For mods that write blocks by other means (an editor's own section writes, a schematic) and then have to make the game and the client agree. Server only. Each method returns `Result` and names every refusal; a refusal changes nothing.
@@ -225,3 +233,12 @@ The inventory menu has no slot for body or saddle. All four player data writes
 (`set_inventory_slot`, `set_ender_chest_slot`, `give_stack`, `set_persistent_data`)
 are undone by an open transaction abort; equipment effects and overflow drops
 wait for the outermost commit.
+
+## Player statistics
+
+Statistics are read and replaced whole, not one at a time. `player.statistics(host)` returns all of a player's
+statistics as the JSON text of their `stats/<uuid>.json` save file, or `None` for a stale or unavailable player and on
+a client. `player.set_statistics(host, json)` replaces all of them with a JSON object of that form and returns `false`,
+changing nothing, for text that is not an object or for a stale, unavailable or dead player. A statistic the text lacks
+goes back to 0, scoreboard criteria follow the changed values, and the client sees them on its next request. Server only;
+`player_stat_award` is not heard.
