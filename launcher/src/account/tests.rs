@@ -1372,6 +1372,55 @@ fn a_file_sealed_under_the_old_key_is_read_and_sealed_again() {
     remove_secrets_dir(&path);
 }
 
+#[test]
+fn a_portable_secrets_file_opens_on_another_computer() {
+    use chacha20poly1305::{aead::Aead, KeyInit};
+    // A portable install (#17377) carried to another folder, as on a USB drive: the file and its
+    // install secret move together.
+    let path = secrets_file("portable");
+    FileStore::portable(path.clone())
+        .set("a", "kept-secret")
+        .unwrap();
+    let moved = secrets_file("portable-moved");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::copy(&path, &moved).unwrap();
+    std::fs::copy(path.with_extension("key"), moved.with_extension("key")).unwrap();
+    let store = FileStore::portable(moved.clone());
+    assert_eq!(store.get("a").unwrap().as_deref(), Some("kept-secret"));
+    // Another computer has another identity, or none: the key takes only the install's secret.
+    let bytes = std::fs::read(&moved).unwrap();
+    let rest = bytes.strip_prefix(super::SEALED).expect("format 2");
+    let (nonce, sealed) = rest.split_at(12);
+    let secret: [u8; 32] = std::fs::read(moved.with_extension("key"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let nonce: [u8; 12] = nonce.try_into().unwrap();
+    let json = chacha20poly1305::ChaCha20Poly1305::new(&super::file_key(&[], &secret))
+        .decrypt(&nonce.into(), sealed)
+        .expect("opens without this computer's identity");
+    assert_eq!(json, b"{\"a\":\"kept-secret\"}");
+    remove_secrets_dir(&path);
+    remove_secrets_dir(&moved);
+}
+
+#[test]
+fn a_portable_secrets_file_takes_the_shared_session_lock() {
+    // Several launcher and CLI processes of one portable install renew sign-ins through the same
+    // file: they take the session lock the keychain's stores use, in the data folder.
+    let path = secrets_file("portable-lock");
+    let lock = path.parent().unwrap().join("account-session.lock");
+    assert_eq!(FileStore::portable(path.clone()).lock_file(), Some(lock));
+    // The file beside the keychain (Layered) keeps the keychain's lock alone.
+    assert_eq!(FileStore::new(path.clone()).lock_file(), None);
+    let store = FileStore::portable(path.clone());
+    let held = session::lock(&store).unwrap();
+    assert!(session::lock_within(&store, Some(Duration::from_millis(100))).is_err());
+    drop(held);
+    assert!(session::lock_within(&store, Some(Duration::from_millis(100))).is_ok());
+    remove_secrets_dir(&path);
+}
+
 const WRITER: &str = "HORIZON_TEST_SECRETS_WRITER";
 
 /// One of the processes [`processes_sharing_the_secrets_file_lose_nothing`] starts: does nothing

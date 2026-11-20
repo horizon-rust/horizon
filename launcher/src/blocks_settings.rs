@@ -29,19 +29,27 @@ impl Launcher {
             },
         ));
         // Linux: the launcher's entry in the applications menu (`horizon_launcher::desktop`).
-        let menu_entry = switch("desktop-entry", self.settings.desktop_entry(), &t).on_click(
-            cx.listener(|this, _: &ClickEvent, _, cx| {
-                let on = !this.settings.desktop_entry();
-                this.settings.desktop_entry = Some(on);
-                this.save_settings();
-                let _ = if on {
-                    horizon_launcher::desktop::install(backend::exe_path()).map(|_| ())
-                } else {
-                    horizon_launcher::desktop::remove()
-                };
-                cx.notify();
-            }),
-        );
+        // A portable launcher writes no menu entry: the switch stays off and does nothing.
+        let portable = horizon_launcher::portable::is_on();
+        let menu_entry = switch(
+            "desktop-entry",
+            self.settings.desktop_entry() && !portable,
+            &t,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if portable {
+                return;
+            }
+            let on = !this.settings.desktop_entry();
+            this.settings.desktop_entry = Some(on);
+            this.save_settings();
+            let _ = if on {
+                horizon_launcher::desktop::install(backend::exe_path()).map(|_| ())
+            } else {
+                horizon_launcher::desktop::remove()
+            };
+            cx.notify();
+        }));
         let horizon = match (&self.updates.horizon, &self.update_error) {
             (Some(r), _) => trf("{version} available", &[("version", update_name(r))]),
             (None, Some(e)) => e.clone(),
@@ -290,7 +298,9 @@ impl Launcher {
                         d.child(index_row(
                             n + 11,
                             tr("Applications menu"),
-                            Some(plain(if self.settings.desktop_entry() {
+                            Some(plain(if horizon_launcher::portable::is_on() {
+                                "You have portable mode on, so Horizon adds no icons to your desktop's menu."
+                            } else if self.settings.desktop_entry() {
                                 "Horizon and its icon are in your desktop's menu."
                             } else {
                                 "Not in your desktop's menu."

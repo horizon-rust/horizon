@@ -229,6 +229,10 @@ fn target_from(exe: &Path, appimage: Option<&Path>) -> PathBuf {
 /// Registers the launcher whatever entry is there: for the player turning it on (the Settings
 /// switch, `horizon-launcher desktop-entry`).
 pub fn install(exe: &Path) -> Result<bool, String> {
+    // A portable launcher leaves no menu entry or icon on the computers it runs on.
+    if let Some(why) = crate::portable::host_refusal() {
+        return Err(why);
+    }
     let data = data_home().ok_or("No home folder to put the menu entry in.")?;
     install_in(&data, &target(exe)).map_err(|e| format!("{}: {e}", data.display()))
 }
@@ -236,6 +240,9 @@ pub fn install(exe: &Path) -> Result<bool, String> {
 /// At start: registers the launcher only when [`needs_repair_in`] says so. Returns whether it
 /// wrote anything.
 pub fn repair(exe: &Path) -> Result<bool, String> {
+    if crate::portable::host_refusal().is_some() {
+        return Ok(false);
+    }
     let data = data_home().ok_or("No home folder to put the menu entry in.")?;
     if !needs_repair_in(&data, std::env::var_os("PATH").as_deref()) {
         return Ok(false);
@@ -243,7 +250,12 @@ pub fn repair(exe: &Path) -> Result<bool, String> {
     install_in(&data, &target(exe)).map_err(|e| format!("{}: {e}", data.display()))
 }
 
+/// Removes the launcher's entry. A portable launcher refuses: the entry there is a standalone
+/// install's on this computer, not its own.
 pub fn remove() -> Result<(), String> {
+    if let Some(why) = crate::portable::host_refusal() {
+        return Err(why);
+    }
     let data = data_home().ok_or("No home folder.")?;
     remove_in(&data).map_err(|e| format!("{}: {e}", data.display()))
 }

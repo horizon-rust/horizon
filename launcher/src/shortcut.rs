@@ -428,6 +428,9 @@ fn desktop_or_err() -> Result<PathBuf, String> {
 
 /// Makes the shortcut on this computer's desktop that plays `id`, starting `exe`.
 pub fn make(exe: &Path, id: &str, name: &str) -> Result<Vec<PathBuf>, String> {
+    if let Some(why) = crate::portable::host_refusal() {
+        return Err(why);
+    }
     let desktop = desktop_or_err()?;
     let made = make_in(
         System::here(),
@@ -451,8 +454,12 @@ pub fn make(exe: &Path, id: &str, name: &str) -> Result<Vec<PathBuf>, String> {
     Ok(made)
 }
 
-/// The instance's shortcuts on this computer.
+/// The instance's shortcuts on this computer. None for a portable launcher: any there are a
+/// standalone install's.
 pub fn find(id: &str) -> Vec<PathBuf> {
+    if crate::portable::is_on() {
+        return Vec::new();
+    }
     desktop_dir()
         .map(|d| find_in(&d, menu().as_deref(), id))
         .unwrap_or_default()
@@ -460,6 +467,9 @@ pub fn find(id: &str) -> Vec<PathBuf> {
 
 /// Moves the instance's shortcuts on this computer to the trash.
 pub fn remove(id: &str) -> Result<Vec<PathBuf>, String> {
+    if let Some(why) = crate::portable::host_refusal() {
+        return Err(why);
+    }
     remove_in(
         &desktop_or_err()?,
         menu().as_deref(),
