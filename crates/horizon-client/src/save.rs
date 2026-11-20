@@ -3115,13 +3115,10 @@ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// The folder of `path` synced, so that a rename into it is on the disk (POSIX; Windows has
 /// no folder handle to sync, and its rename is journaled by NTFS).
 fn sync_folder(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        fs::File::open(dir)?.sync_all()?;
+    match path.parent() {
+        Some(dir) => horizon_world::fs_sync::sync_dir(dir),
+        None => Ok(()),
     }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
 }
 
 fn write_dat_as(path: &Path, tag: Tag, durable: bool) -> Result<()> {

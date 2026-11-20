@@ -422,6 +422,28 @@ impl RegionFile {
         )
     }
 
+    /// The chunk as [`read`](Self::read) would give it with its `c.X.Z.mcc`
+    /// taken from `directory`: `None` unless its stub marks it as stored in
+    /// that file (and that file is there).
+    pub fn read_external_from(
+        &mut self,
+        chunk: ChunkPos,
+        directory: &Path,
+    ) -> io::Result<Option<ChunkRecord>> {
+        let i = slot(self.position, chunk)?;
+        let offset = self.offsets[i];
+        if offset == 0 {
+            return Ok(None);
+        }
+        self.file
+            .seek(SeekFrom::Start(u64::from(offset >> 8) * SECTOR as u64))?;
+        let mut header = [0; 5];
+        if self.file.read(&mut header)? < header.len() || header[4] & 128 == 0 {
+            return Ok(None);
+        }
+        read_record(&mut self.file, directory, chunk, offset, self.timestamps[i])
+    }
+
     /// Export all chunks, preserving untouched compressed bytes and timestamps.
     /// Overrides are keyed by chunk position; None deletes a chunk in the export.
     pub fn export(
