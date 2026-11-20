@@ -115,6 +115,9 @@ try:
             elif not member.isdir():
                 ok = False
             refused += not ok
+        # Read to the end: the padding after the end marker, left unread, would stop zstd with SIGPIPE.
+        for _ in iter(lambda: sys.stdin.buffer.read(1 << 20), b""):
+            pass
 except (tarfile.TarError, EOFError, OSError):
     sys.exit(11)
 sys.exit(10 if refused else 0)
@@ -162,8 +165,10 @@ case "$mode" in
     [ "$status" -ne 10 ] || discard "it holds a member that may not be unpacked"
     [ "$status" -eq 0 ] || discard "it did not unpack"
     mkdir -p "$stage"
-    zstd -dcq < "$work/inner.tar.zst" 2> /dev/null | tar -C "$stage" -x --no-same-owner 2> /dev/null ||
-      discard "it did not unpack"
+    # tar stops at the end marker; the rest (padding) is read away so zstd does not end with SIGPIPE. Never
+    # --ignore-zeros: it would unpack members after the marker, which the listing did not see.
+    zstd -dcq < "$work/inner.tar.zst" 2> /dev/null |
+      { tar -C "$stage" -x --no-same-owner 2> /dev/null && cat > /dev/null; } || discard "it did not unpack"
     for path in "${excluded[@]}"; do
       if [ -e "$stage$path" ] || [ -L "$stage$path" ]; then
         rm -rf "${stage:?}$path"

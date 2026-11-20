@@ -319,7 +319,8 @@ class HostedParityTests(unittest.TestCase):
                                       "Save the prepared resources (sealed)"),
                                      ("oracle", "Restore the oracle results and parity state (sealed)",
                                       "Save the oracle results and parity state (sealed)"),
-                                     ("build", "Restore the build folders (sealed)", "Save the build folders (sealed)")):
+                                     ("build", "Restore the build folders (sealed)",
+                                      "Save the build folders (sealed)")):
             with self.subTest(label):
                 key, prefix = ("${{ steps.entries.outputs.%s }}" % name for name in (label, label + "_prefix"))
                 restored = self.step(restore)["with"]
@@ -348,8 +349,12 @@ class HostedParityTests(unittest.TestCase):
         # Compared in the shell: an expression's == ignores case, so a branch `Main` would pass it.
         self.assertEqual(self.workflow["jobs"]["plan"]["outputs"]["saves"], "${{ steps.gate.outputs.saves }}")
         gate = self.step("Whether this run saves the caches", self.plan)
-        checkout = next(index for index, step in enumerate(self.plan) if step.get("uses", "").startswith("actions/checkout@"))
+        checkout = next(index for index, step in enumerate(self.plan)
+                        if step.get("uses", "").startswith("actions/checkout@"))
         self.assertLess(self.plan.index(gate), checkout)
+        # Nowhere else is the ref or the event compared in an expression.
+        self.assertNotRegex(self.text, r"github\.(ref|ref_name|head_ref|base_ref|event_name)\s*(==|!=)"
+                                       r"|startsWith\(github\.ref")
         main = {"REF": "refs/heads/main", "EVENT": "workflow_dispatch", "DEFAULT": "main", "PROTECTED": "true"}
         cases = [({}, "true"), ({"EVENT": "push"}, "true"), ({"EVENT": "schedule"}, "true"),
                  ({"REF": "refs/heads/Main"}, "false"), ({"REF": "refs/heads/MAIN"}, "false"),

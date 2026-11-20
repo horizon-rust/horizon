@@ -52,14 +52,16 @@ class SealedCacheTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return stage, result.stdout
 
-    def forge(self, members, passphrase="correct horse", key=KEY):
+    def forge(self, members, passphrase="correct horse", key=KEY, padding=0):
         """An entry sealed with the right passphrase and key around a tar of `members` ((TarInfo, bytes or None)
-        pairs): what only main's sealing step could write, so only the member check stands between it and the stage."""
+        pairs), followed by `padding` zero bytes: what only main's sealing step could write, so only the member
+        check stands between it and the stage."""
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for info, data in members:
                 archive.addfile(info, io.BytesIO(data) if data is not None else None)
-        packed = subprocess.run(["zstd", "-q", "-T0", "-3"], input=buffer.getvalue(), capture_output=True, check=True)
+        packed = subprocess.run(["zstd", "-q", "-T0", "-3"], input=buffer.getvalue() + bytes(padding),
+                                capture_output=True, check=True)
         secret = self.root / "passphrase"
         secret.write_text(passphrase)
         self.archive.parent.mkdir(parents=True, exist_ok=True)
@@ -203,6 +205,13 @@ class SealedCacheTests(unittest.TestCase):
         stage, _ = self.unseal()
         self.assertEqual(os.readlink(stage / local / "minecraft"), data)
         self.assertEqual((stage / local / "probe-0123").read_bytes(), b"binary")
+
+    def test_padding_after_the_end_of_the_archive_is_read_and_ignored(self):
+        # tar pads to whole records; a check that stopped at the end marker would leave zstd writing into a closed pipe.
+        local = self.inside(".local")
+        self.forge([self.member(local + "/probe", data=b"binary")], padding=4 << 20)
+        stage, _ = self.unseal()
+        self.assertEqual((stage / local / "probe").read_bytes(), b"binary")
 
 
 if __name__ == "__main__":
