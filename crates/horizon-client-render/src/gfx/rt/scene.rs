@@ -155,6 +155,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         camera: DVec3,
         frame: &crate::gfx::Frame<'_>,
+        expired_fades: Option<std::time::Instant>,
     ) {
         if self.ray_scene.is_none() || frame.title {
             return;
@@ -203,6 +204,7 @@ impl Renderer {
                 &self.indices,
                 camera,
                 stream,
+                expired_fades,
             )
         });
     }
@@ -680,7 +682,9 @@ impl RayScene {
         indices: &wgpu::Buffer,
         camera: DVec3,
         stream: Option<Stream<'_>>,
+        expired_fades: Option<std::time::Instant>,
     ) {
+        let visible = |s: &SectionGpu| !expired_fades.is_some_and(|now| s.past_lod_fade(now));
         let retained = stream.as_ref().map_or(&[][..], |s| s.retained);
         match (&mut self.entities, stream) {
             (_, None) => self.entities = None,
@@ -708,16 +712,18 @@ impl RayScene {
         // doesn't build the same ones over and over.
         let keep = self.reach + 2;
         let mut changed = self.compact(device, queue) | std::mem::take(&mut self.rebuild);
-        if self.removals != sections.removals() {
+        if self.removals != sections.removals() || expired_fades.is_some() {
             self.removals = sections.removals();
-            changed |= drop_released(&mut self.blas, &mut self.slots, |k| sections.contains(k));
+            changed |= drop_released(&mut self.blas, &mut self.slots, |k| {
+                sections.find(k).is_some_and(visible)
+            });
         }
         // A frame that keeps the old TLAS takes back what it added here.
         let dirty_before = self.dirty.len();
         if self.anchor != Some(column) {
             changed |= leave(&mut self.blas, &mut self.slots, column, keep);
             for (key, s, _) in sections.iter() {
-                if !within(&key, column, self.reach) {
+                if !within(&key, column, self.reach) || !visible(s) {
                     continue;
                 }
                 for layer in Layer::BOTH {
@@ -784,7 +790,7 @@ impl RayScene {
             let (key, layer) = part;
             match sections
                 .find(key)
-                .filter(|s| layer.quads(s) > 0 && within(&key, column, self.reach))
+                .filter(|s| layer.quads(s) > 0 && visible(s) && within(&key, column, self.reach))
             {
                 Some(s) => {
                     let quads = layer.quads(s);

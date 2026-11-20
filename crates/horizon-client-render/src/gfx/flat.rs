@@ -56,7 +56,8 @@ const QUADS: u32 = u32::MAX;
 /// The draws `prepare` gives calls of their own from, past the camera's (`usize::MAX`: none):
 /// the shadow camera's solid and translucent ones, then each world view's
 /// (`view_sections::Sections::marks`).
-pub const MARKS: usize = 2 + 2 * crate::render_views::MAX_WORLD_VIEWS;
+pub const MARKS: usize = 3 + 2 * crate::render_views::MAX_WORLD_VIEWS;
+pub const SHADOW_LOD_MARK: usize = MARKS - 1;
 const GROUP_LIMIT: u32 = 65535;
 /// The page keys of the translucent arena (`Renderer::translucent_arena`, Translucent
 /// Batching): its page plus this. The section arena's pages are their own keys, all far
@@ -1063,13 +1064,19 @@ impl Flat {
     pub fn translucent_calls(&self) -> &[Call] {
         &self.calls[self.solid_calls..self.shadow_calls[0]]
     }
+    /// The first distant-terrain shadow call.
+    pub(super) fn shadow_lod_start(&self) -> usize {
+        self.marks[SHADOW_LOD_MARK]
+    }
     /// The shadow camera's translucent calls.
     pub fn shadow_translucent_calls(&self) -> &[Call] {
         &self.calls[self.shadow_calls[1]..self.marks[2]]
     }
     /// World view `k`'s solid and translucent calls.
     pub fn view_calls(&self, k: usize) -> [&[Call]; 2] {
-        let end = self.marks.get(4 + 2 * k).map_or(self.calls.len(), |&m| m);
+        let end = self.marks[..SHADOW_LOD_MARK]
+            .get(4 + 2 * k)
+            .map_or(self.calls.len(), |&m| m);
         let [solid, translucent] = [self.marks[2 + 2 * k], self.marks[3 + 2 * k]];
         [
             &self.calls[solid..translucent],
@@ -1408,6 +1415,7 @@ mod tests {
         let (mut calls, mut ranges, mut segments) = (Vec::new(), Vec::new(), Vec::new());
         let mut marks = [usize::MAX; MARKS];
         marks[..4].copy_from_slice(&[camera, camera + 2, camera + 3, camera + 4]);
+        marks[SHADOW_LOD_MARK] = camera + 1;
         let plan = plan(
             &draws,
             &pages,
@@ -1422,17 +1430,16 @@ mod tests {
             &mut segments,
         );
         assert_eq!(plan.solid_calls, 3);
-        // the views not asked for start at the end
-        assert_eq!(
-            plan.marks,
-            [4, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]
-        );
+        assert_eq!(plan.marks[..4], [4, 6, 7, 8]);
+        assert_eq!(plan.marks[SHADOW_LOD_MARK], 5);
+        assert!(plan.marks[4..SHADOW_LOD_MARK].iter().all(|&mark| mark == 9));
         let call = |page, first, count| Call { page, first, count };
         assert_eq!(
             &calls[3..],
             [
                 call(0, 60, 18),
-                call(0, 78, 18),
+                call(0, 78, 6),
+                call(0, 84, 12),
                 call(0, 96, 6),
                 call(0, 102, 6),
                 call(0, 108, 6)

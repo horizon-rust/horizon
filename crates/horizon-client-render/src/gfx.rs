@@ -852,6 +852,11 @@ impl SectionGpu {
             0
         }
     }
+    /// Its world image has faded, though a shadow cutout can still need its mesh.
+    fn past_lod_fade(&self, now: Instant) -> bool {
+        self.leaving
+            .is_some_and(|since| now.saturating_duration_since(since) >= lod::FADE)
+    }
     /// Its vertices in `arena`, and in `translucent_arena` when `split` (there
     /// is one): (page, first vertex, vertices) of each.
     fn vertex_ranges(&self, split: bool) -> (Option<(u32, u64, u64)>, Option<(u32, u64, u64)>) {
@@ -1656,8 +1661,7 @@ pub struct Renderer {
     lod_retiring: crate::fast_hash::FxHashSet<SectionKey>,
     /// Removed sections fading out over far terrain (`leave_section`).
     lod_leaving: Vec<(SectionKey, std::time::Instant)>,
-    /// Finished tile meshes `upload_lods` has yet to upload.
-    lod_pending: Option<lod::Pending>,
+    lod_uploads: lod::Uploads,
     detail_columns: FxHashMap<(i32, i32), SectionMask>,
     /// Bumped whenever a column becomes or stops being complete.
     detail_revision: u64,
@@ -1690,6 +1694,7 @@ pub struct Renderer {
     visible_lods: Vec<lod::Visible>,
     /// The sections a shader pack's shadow camera sees (`external::ShadowView`).
     shadow_visible: Vec<resident::Visible>,
+    shadow_lods: lod::ShadowTiles,
     /// The external shader pipeline world frames call (`external`); `None` draws vanilla's way.
     external: Option<Box<dyn external::ExternalPipeline>>,
     translucent_draws: Vec<(u64, usize, [u32; 5], (u32, Option<u32>))>,
@@ -4553,7 +4558,7 @@ impl Renderer {
             lod_cutout: Default::default(),
             lod_retiring: Default::default(),
             lod_leaving: Vec::new(),
-            lod_pending: None,
+            lod_uploads: lod::Uploads::default(),
             detail_columns: Default::default(),
             detail_revision: 0,
             upload_retries: UploadRetries::default(),
@@ -4571,6 +4576,7 @@ impl Renderer {
             visible: Vec::new(),
             visible_lods: Vec::new(),
             shadow_visible: Vec::new(),
+            shadow_lods: lod::ShadowTiles::default(),
             translucent_draws: Vec::new(),
             origins: Vec::new(),
             draws: Vec::new(),
@@ -5801,7 +5807,7 @@ impl Renderer {
         self.lod_cutout.clear();
         self.lod_retiring.clear();
         self.lod_leaving.clear();
-        self.lod_pending = None;
+        self.lod_uploads = lod::Uploads::default();
         self.detail_columns.clear();
         self.detail_revision += 1;
         self.upload_retries.clear();
@@ -5849,7 +5855,7 @@ impl Renderer {
             return;
         }
         self.sections_dropped |=
-            self.sections.len() > 0 || !self.lods.is_empty() || self.lod_pending.is_some();
+            self.sections.len() > 0 || !self.lods.is_empty() || self.lod_uploads.pending.is_some();
         self.clear_sections(self.layout);
         (self.sorted_indices, self.translucent_arena) = arena::Arena::translucent_arenas(
             &self.device,
@@ -5976,22 +5982,23 @@ impl Renderer {
     /// Releases the sections that have faded out (`leave_section`).
     fn release_left(&mut self, now: std::time::Instant) {
         let mut done = Vec::new();
+        let (sections, lods) = (&self.sections, &self.lods);
         self.lod_leaving.retain(|&(key, since)| {
-            let left = now.saturating_duration_since(since) >= lod::FADE;
-            if left {
-                done.push((key, since));
+            if now.saturating_duration_since(since) < lod::FADE {
+                return true;
             }
-            !left
-        });
-        for (key, since) in done {
             // Meshed again since (the player came back): it stays.
-            if self
-                .sections
-                .find(key)
-                .is_some_and(|s| s.leaving == Some(since))
-            {
-                self.release_section(key);
+            if sections.find(key).is_none_or(|s| s.leaving != Some(since)) {
+                return false;
             }
+            if lod::retired_near_needed(lods, key) {
+                return true;
+            }
+            done.push(key);
+            false
+        });
+        for key in done {
+            self.release_section(key);
         }
     }
     pub fn remove_columns(&mut self, columns: impl IntoIterator<Item = (i32, i32)>) {
@@ -6493,8 +6500,9 @@ impl Renderer {
             holds &= arena.set_looks(&self.device, on);
         }
         if !holds || on {
-            self.sections_dropped |=
-                self.sections.len() > 0 || !self.lods.is_empty() || self.lod_pending.is_some();
+            self.sections_dropped |= self.sections.len() > 0
+                || !self.lods.is_empty()
+                || self.lod_uploads.pending.is_some();
             self.clear_sections(self.layout);
             // Flat draws size a translucent page's table by it when they make the table: it
             // changes with `clear_sections`, which drops the tables.
@@ -7781,13 +7789,19 @@ impl Renderer {
             .as_ref()
             .and_then(|p| p.1.as_ref())
             .filter(|_| !frame.title)
-            .and_then(|p| p.shadow_view(frame))
-            .or_else(|| {
-                self.external
-                    .as_ref()
-                    .filter(|_| !frame.title)?
-                    .shadow_request(&state)
-            });
+            .and_then(|p| p.shadow_view(frame));
+        let (shadow_view, lod_shadows) =
+            match shadow_view {
+                Some(view) => (Some(view), false),
+                None => self.external.as_ref().filter(|_| !frame.title).map_or(
+                    (None, false),
+                    |pipeline| {
+                        let view = pipeline.shadow_request(&state);
+                        let lods = view.is_some() && pipeline.shadow_lods();
+                        (view, lods)
+                    },
+                ),
+            };
         let pack_terrain = !frame.title
             && self
                 .pack_post
@@ -7800,12 +7814,19 @@ impl Renderer {
         // check and `prepare`, which sends their flags, and no later than the instances' `now`,
         // so a section the pass draws whole is whole there too. Title frames draw no terrain
         // (a loading screen's fade-in time is 0): they leave them as they are.
+        let fade_now = Instant::now();
         let fades = FadeInputs {
-            now: Instant::now(),
+            now: fade_now,
             fade_ms,
             uploaded: &self.section_uploaded,
             retiring: &self.lod_retiring,
         };
+        let expired_fades = self
+            .lod_leaving
+            .iter()
+            .any(|&(_, since)| fade_now.saturating_duration_since(since) >= lod::FADE)
+            .then_some(fade_now);
+        let shadow_only = |s: &SectionGpu| expired_fades.is_some_and(|now| s.past_lod_fade(now));
         if !frame.title
             && let Some(gpu) = &mut self.gpu_culling
         {
@@ -7826,6 +7847,7 @@ impl Renderer {
             && shadow_view.is_none()
             && mirror_plane.is_none()
             && !displaced
+            && expired_fades.is_none()
             && !gpu_culling::looks_lose_base_vertex(&self.info, self.terrain_looks);
         #[cfg(debug_assertions)]
         if gpu_frame {
@@ -7885,7 +7907,9 @@ impl Renderer {
         // drawn there until they have, or they popped out at once.
         self.lod_leaving_scratch.clear();
         self.lod_leaving_scratch
-            .extend(self.lod_leaving.iter().map(|&((x, _, z), _)| (x, z)));
+            .extend(self.lod_leaving.iter().filter_map(|&((x, _, z), since)| {
+                (fade_now.saturating_duration_since(since) < lod::FADE).then_some((x, z))
+            }));
         let leaving = &self.lod_leaving_scratch;
         let mut visible = std::mem::take(&mut self.visible);
         visible.clear();
@@ -7904,7 +7928,10 @@ impl Renderer {
                 },
                 gpu_frame,
                 &mut visible,
-            )
+            );
+            if expired_fades.is_some() {
+                visible.retain(|v| !shadow_only(self.sections.get(v.slot)));
+            }
         });
         #[cfg(debug_assertions)]
         assert!(
@@ -7912,27 +7939,38 @@ impl Renderer {
             "the walk reads the graph GPU culling was given"
         );
         let now = std::time::Instant::now();
+        let shadow_cull = shadow_view.as_ref().map(|v| ShadowCull {
+            light: shadow_box(v),
+            casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
+            reach: v.distance,
+        });
+        let lod_view = shadow_view
+            .as_ref()
+            .zip(shadow_cull.as_ref())
+            .filter(|_| lod_shadows);
+        let mut shadow_lods = std::mem::take(&mut self.shadow_lods);
+        shadow_lods.clear();
         let mut visible_lods = std::mem::take(&mut self.visible_lods);
         visible_lods.clear();
         if frame.title {
             visible.clear();
         } else {
-            visible_lods.extend(
-                self.lods
-                    .iter()
-                    .filter_map(|(&key, tile)| tile.visible(key, camera, &view, now)),
-            );
+            for (&key, tile) in &self.lods {
+                visible_lods.extend(tile.visible(key, camera, &view, now));
+                if let Some((shadow, cull)) = lod_view {
+                    shadow_lods.consider(key, tile, camera, cull, shadow.light, &self.lods);
+                }
+            }
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
+            if lod_view.is_some() {
+                shadow_lods.finish(&self.lods);
+            }
         }
         let mut shadow_visible = std::mem::take(&mut self.shadow_visible);
         shadow_visible.clear();
-        if let Some(v) = &shadow_view {
-            let radius = (frame.detail_distance / 16.0) as i32;
-            let light = ShadowCull {
-                light: shadow_box(v),
-                casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
-                reach: v.distance,
-            };
+        let from = resident::camera_column(camera);
+        let in_detail = |x, z| crate::streaming::in_view_distance(from, radius, x, z);
+        if let Some((v, light)) = shadow_view.as_ref().zip(shadow_cull.as_ref()) {
             let mut boxed = std::mem::take(&mut self.shadow_boxed_scratch);
             let mut seen = std::mem::take(&mut self.shadow_seen_scratch);
             crate::spans::time("shadow visibility", || {
@@ -7956,14 +7994,29 @@ impl Renderer {
                     );
                 }
                 boxed.clear();
-                self.sections
-                    .visible(camera, radius, &light, |_| true, |_, _| false, &mut boxed);
+                // A retiring full-detail column still owns its shadow while
+                // the distant meshes leave it out, even past the detail radius.
+                self.sections.visible(
+                    camera,
+                    radius,
+                    light,
+                    |_| true,
+                    |x, z| {
+                        lod_shadows
+                            && (cutout.contains(&(x, z))
+                                || shadow_lods.includes_retiring_column(x, z))
+                    },
+                    &mut boxed,
+                );
                 seen.clear();
                 seen.extend(shadow_visible.iter().map(|s| s.key));
                 shadow_visible.extend(boxed.drain(..).filter(|s| !seen.contains(&s.key)));
             });
             self.shadow_boxed_scratch = boxed;
             self.shadow_seen_scratch = seen;
+            if expired_fades.is_some() && !lod_shadows {
+                shadow_visible.retain(|v| !shadow_only(self.sections.get(v.slot)));
+            }
             // Nearest the light first, so the depth test rejects what lies under it.
             let light = v.light;
             shadow_visible.sort_unstable_by(|a, b| {
@@ -7971,11 +8024,15 @@ impl Renderer {
                 height(b).total_cmp(&height(a))
             });
             for v in &shadow_visible {
-                self.sort_unseen(&mut encoder, v.slot, v.key, camera);
+                if (!lod_shadows || in_detail(v.key.0, v.key.2))
+                    && !shadow_only(self.sections.get(v.slot))
+                {
+                    self.sort_unseen(&mut encoder, v.slot, v.key, camera);
+                }
             }
         }
         crate::spans::time("world view visibility", || {
-            self.walk_world_views(&mut encoder, frame, radius)
+            self.walk_world_views(&mut encoder, frame, radius, expired_fades)
         });
         // A `shaders/` pack that draws the terrain, or its shadow, sees it as Iris does.
         let shaders_pack = !frame.title
@@ -8022,6 +8079,14 @@ impl Renderer {
                     }
                 }
             }
+            for v in &shadow_lods.tiles {
+                let (mesh, _) = self.lods[&v.key].shadow().expect("shadow tile");
+                for &layer in &*mesh.animated_layers {
+                    let layer = layer as usize;
+                    self.active_animated_layers[layer / u64::BITS as usize] |=
+                        1_u64 << (layer % u64::BITS as usize);
+                }
+            }
             // Visibility is collected before terrain draw commands are recorded,
             // so upload the current mask here and keep animation updates ahead
             // of every draw in this command buffer. A GPU frame's walk leaves out
@@ -8029,7 +8094,8 @@ impl Renderer {
             self.animate(&mut encoder, frame.ticks, !frame.title && !gpu_frame);
         }
         let listed = visible.len() + visible_lods.len();
-        let viewed = listed + shadow_visible.len();
+        let shadow_lod_base = listed + shadow_visible.len();
+        let viewed = shadow_lod_base + shadow_lods.tiles.len();
         let instances = viewed + self.world_views.sections.sections().count();
         if instances as u64 > self.instance_capacity {
             self.instance_capacity = (instances as u64).next_power_of_two();
@@ -8076,6 +8142,7 @@ impl Renderer {
                         .iter()
                         .map(|v| section_instance(v.origin, 0, visibility(v.key))),
                 )
+                .chain(shadow_lods.tiles.iter().map(|v| lod::instance(v.origin, 0)))
                 .chain(self.world_views.sections.sections().map(|v| {
                     let code = fade_code(sections.get(v.slot), &v.key);
                     section_instance(v.origin, code, visibility(v.key))
@@ -8100,6 +8167,7 @@ impl Renderer {
                     base: s.solid_base(),
                     quads: s.solid,
                     origin: v.origin,
+                    casts_shadow: !lod_shadows || shadow_lods.casts_section(v.key, s, &self.lods),
                 })
             });
             n.prepare_displacement(external::DisplacementPrepare {
@@ -8433,33 +8501,51 @@ impl Renderer {
         self.translucency_cursor += budget;
         let translucent_draws = self.draws.len() as u32 - solid_draws;
         let section_draws = self.draws.len();
-        // The shadow camera's sections after the camera's: quads that can face the light (all of
-        // them for `every_face`), then translucent ones (in their last sorted order; depth
-        // decides there).
+        // The shadow camera's terrain after the camera's: solid quads that can face the light
+        // (all for `every_face`), then translucent sections in their last sorted order.
         let shadow_first = self.draws.len() as u32;
+        let mut shadow_lod_first = shadow_first;
         let mut shadow_translucent = std::mem::take(&mut self.shadow_translucent_scratch);
         shadow_translucent.clear();
         self.shadow_runs.clear();
         if let Some(view) = &shadow_view {
-            let base = listed;
             // How far below the nearest section to the light (squared, as bits, as `PageRuns`
             // takes distances): each band's draws go by page, a call per page and band.
             let height = |v: &resident::Visible| glam::Vec3::from(v.origin).dot(view.light);
-            let top = shadow_visible.first().map_or(0.0, height);
-            for (k, v) in shadow_visible.iter().enumerate() {
-                let s = self.sections.get(v.slot);
-                let instance = (base + k) as u32;
-                let depth = f64::from(top - height(v)).max(0.0);
-                let distance = (depth * depth).to_bits();
+            let top = shadow_visible
+                .first()
+                .map_or(f32::NEG_INFINITY, height)
+                .max(
+                    shadow_lods
+                        .tiles
+                        .first()
+                        .map_or(f32::NEG_INFINITY, |v| v.height),
+                );
+            let distance = |height| f64::from(top - height).max(0.0).powi(2).to_bits();
+            let mut draw_solid = |s: &SectionGpu, origin, instance, distance, group| {
                 let before = self.draws.len();
-                shadow_runs(&s.sides, view, v.origin, |first, quads| {
+                shadow_runs(&s.sides, view, origin, |first, quads| {
                     let start = s.solid_base() + first * 4;
                     self.draws.push([quads * 6, 1, 0, start, instance]);
                     self.draw_pages.push((s.page, None));
                 });
                 let len = self.draws.len() - before;
-                self.shadow_runs.push(distance, s.page, before, len, [0; 3]);
-                if let Some((index_page, index_start)) = s.sorted_indices {
+                self.shadow_runs
+                    .push_in(group, distance, s.page, before, len, [0; 3]);
+                len as u32
+            };
+            for (k, v) in shadow_visible.iter().enumerate() {
+                let s = self.sections.get(v.slot);
+                let instance = (listed + k) as u32;
+                let distance = distance(height(v));
+                let (x, _, z) = v.key;
+                if !lod_shadows || shadow_lods.casts_section(v.key, s, &self.lods) {
+                    shadow_lod_first += draw_solid(s, v.origin, instance, distance, 0);
+                }
+                if let Some((index_page, index_start)) = s.sorted_indices
+                    && (!lod_shadows || in_detail(x, z))
+                    && !shadow_only(s)
+                {
                     let (page, start) = s.translucent_at;
                     shadow_translucent.push((
                         distance,
@@ -8473,6 +8559,16 @@ impl Renderer {
                         (page, Some(index_page)),
                     ));
                 }
+            }
+            for (k, v) in shadow_lods.tiles.iter().enumerate() {
+                let (mesh, _) = self.lods[&v.key].shadow().expect("shadow tile");
+                draw_solid(
+                    mesh,
+                    v.origin,
+                    (shadow_lod_base + k) as u32,
+                    distance(v.height),
+                    1,
+                );
             }
         }
         let shadow_solid = self.draws.len() as u32 - shadow_first;
@@ -9166,7 +9262,10 @@ impl Renderer {
                         &self.draw_pages,
                         phase1_draws as usize,
                         solid_draws as usize,
-                        lists.marks([shadow_first, shadow_first + shadow_solid]),
+                        lists.marks(
+                            [shadow_first, shadow_first + shadow_solid],
+                            shadow_lod_first,
+                        ),
                         [opaque_end, cutout_start, phase2_cutout as usize],
                         phase2,
                         self.translucent_arena.is_some(),
@@ -9182,6 +9281,12 @@ impl Renderer {
                                     section_instance(v.origin, code, visibility(v.key)),
                                 ))
                             })
+                            .chain(shadow_lods.tiles.iter().filter_map(|v| {
+                                let (mesh, _) = lods[&v.key].shadow().expect("shadow tile");
+                                Some((mesh.flat_id?, lod::instance(v.origin, 0)))
+                            }))
+                            // If both passes draw a tile, keep the world's fade code.
+                            // The shadow shader only reads the UV step.
                             .chain(visible_lods.iter().filter_map(|v| {
                                 let id = lods[&v.key].drawn().flat_id?;
                                 Some((id, lod::instance(v.origin, v.fade)))
@@ -9193,6 +9298,12 @@ impl Renderer {
             }
             _ => false,
         };
+        self.shadow_lods = shadow_lods;
+        if lod_shadows {
+            // The retained section list also drives the block-entity shadows.
+            shadow_visible
+                .retain(|v| in_detail(v.key.0, v.key.2) && !shadow_only(self.sections.get(v.slot)));
+        }
         // Each page's group binds the page for the solid draws, flat or not.
         if let Some(looks) = &mut self.look_groups {
             looks.refresh(&self.device, &self.arena, self.translucent_arena.as_ref());
@@ -9246,7 +9357,7 @@ impl Renderer {
         self.set_up_pack_timing();
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
-        self.ray_prepare(&mut encoder, camera, frame);
+        self.ray_prepare(&mut encoder, camera, frame, expired_fades);
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
         // Post effects (a resource pack's chains, `use_depth_buffer`) read the world's depth
         // after the world pass, as `GameRenderer.render` hands them the main target's.
@@ -9437,6 +9548,7 @@ impl Renderer {
                 instances: &self.instances,
                 indirect: &self.indirect,
                 draws: [shadow_first, shadow_solid, shadow_translucent],
+                lod_start: shadow_lod_first,
                 entity_group: &self.entity_group,
                 entity_vertices: &self.entity_buffer,
                 entity_quads,

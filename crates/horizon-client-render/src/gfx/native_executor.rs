@@ -69,6 +69,10 @@ impl ExternalPipeline for NativePack {
         NativePack::shadow_request(self, state.frame)
     }
 
+    fn shadow_lods(&self) -> bool {
+        true
+    }
+
     fn prepare_displacement(
         &mut self,
         prepare: DisplacementPrepare<'_, &mut dyn Iterator<Item = Near<'_>>>,

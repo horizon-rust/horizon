@@ -82,6 +82,10 @@ pub trait ExternalPipeline: Send + std::any::Any {
     fn shadow_request(&self, _state: &FrameState<'_>) -> Option<ShadowView> {
         None
     }
+    /// Whether solid distant terrain participates in the shadow pass.
+    fn shadow_lods(&self) -> bool {
+        false
+    }
     /// After the visibility walk (title frames too, with no sections).
     fn prepare_displacement(
         &mut self,
@@ -298,6 +302,8 @@ pub struct ShadowLists<'a> {
     pub indirect: &'a wgpu::Buffer,
     /// The light's first draw, its solid draws and its translucent draws after them.
     pub draws: [u32; 3],
+    /// The first LOD draw, at the end of the solid list when there are none.
+    pub lod_start: u32,
     /// The entities' group 0 and vertices: `entity_quads` from the start, then
     /// `shadow_only_quads` before the GPU-posed outlines at `outline_base`.
     pub entity_group: &'a wgpu::BindGroup,
@@ -394,6 +400,8 @@ pub struct Near<'a> {
     pub base: u32,
     pub quads: u32,
     pub origin: [f32; 3],
+    /// This section owns the solid shadow while terrain detail changes.
+    pub casts_shadow: bool,
 }
 
 /// Sets the pipeline of the entity stream's ordinary quads, or of the `retained` block
