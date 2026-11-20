@@ -124,6 +124,7 @@ class ParityRunnerTests(unittest.TestCase):
         with mock.patch.object(parity, "target_packages", return_value={}), \
                 mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", script]]), \
                 mock.patch.object(parity, "sccache_stats", return_value=None), \
+                mock.patch.object(parity.compile_lock, "active", return_value=False), \
                 mock.patch.object(parity.locale, "getpreferredencoding", return_value="utf-8"), \
                 mock.patch("builtins.print") as printed:
             built, errors = parity.prebuild([], 2)
@@ -139,6 +140,26 @@ class ParityRunnerTests(unittest.TestCase):
             print(parity.printable(errors))
         console.flush()
         self.assertTrue(console.buffer.getvalue().endswith(b" x v1 ???\n\n"), console.buffer.getvalue())
+
+    def test_parity_mains_prebuild_ends_the_run_past_its_limit(self):
+        # A quiet Cargo run past the limit is stopped, not waited for: the line loop alone would block.
+        script = "import time; time.sleep(60)"
+        with mock.patch.object(parity, "target_packages", return_value={}), \
+                mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", script]] * 2), \
+                mock.patch.object(parity, "sccache_stats", return_value=None), \
+                mock.patch.object(parity, "PREBUILD_LIMIT", {"main": 0.5}), \
+                mock.patch.object(parity.compile_lock, "active", return_value=False), \
+                mock.patch.dict(os.environ, {"HORIZON_COMPILE_LOCK_ROLE": "main"}), \
+                mock.patch("builtins.print") as printed:
+            started = time.monotonic()
+            with self.assertRaises(SystemExit) as stopped:
+                parity.prebuild([], 2)
+        self.assertEqual(stopped.exception.code, 1)
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertTrue(printed.call_args_list[-1].args[0].startswith(
+            "::error::The probe prebuild passed its 0 min limit at cargo 1/2"))
+        # A pull request's prebuild has no limit of its own (its job's 240 min is the limit).
+        self.assertNotIn("pr", parity.PREBUILD_LIMIT)
 
     def test_the_prebuild_machine_and_cache_lines(self):
         self.assertEqual(parity.describe_machine(12, (3.14, 2.0, 1.0), (9.0, 6.5, 2.25)),

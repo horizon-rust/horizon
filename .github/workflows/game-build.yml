@@ -91,7 +91,9 @@ jobs:
           set -euo pipefail
           # target/ is gone after the clean checkout, and vanilla-data.sh builds the preparer only when it
           # prepares afresh.
-          cargo build --release --locked -p horizon-prepare
+          # Turns at compiling on the Mac mini (tools/compile_lock.py); a ref from before it builds directly.
+          lock=""; [ ! -f tools/ci/compile-lock.sh ] || lock="bash tools/ci/compile-lock.sh build --"
+          $lock cargo build --release --locked -p horizon-prepare
           # Compiled here, never taken from the runner's shared preparations: pull requests' parity jobs
           # write those (vanilla-data.sh links .local/exporters to them).
           rm -rf .local/exporters
@@ -237,7 +239,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Build the official game, horizon-ctl, horizon-prepare and horizon-server
         if: ${{ !matrix.musl }}
-        run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+        run: |
+          # Turns at compiling on the Mac mini (tools/compile_lock.py); a ref from before it builds directly.
+          lock=""; [ "${{ matrix.mac }}" != true ] || [ ! -f tools/ci/compile-lock.sh ] || lock="bash tools/ci/compile-lock.sh build --"
+          $lock cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
       - name: The official game is the game players get, under its name
         # horizon-official: horizon-client's game with Horizon's own parts plugged in (docs/layers.md, "How a
         # Horizon crate plugs in"). Everything below, the launcher and players know it as horizon-client.

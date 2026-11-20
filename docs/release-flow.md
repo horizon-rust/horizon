@@ -180,6 +180,12 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   fail on and, with `--comment`, comments on its pull request. It has 90 minutes (`--budget`), then says between
   which merges each harness broke; a later search from the same base goes on from there
   (`.local/parity-runner/bisect.json`).
+- The Mac mini's jobs take turns at compiling (`tools/compile_lock.py`, a folder in `~/.actions-runners/compile-lock`):
+  parity-main's probe prebuild, pull requests' parity prebuilds and the Nightly's and releases' Mac compiles. A pull
+  request's job starts no compile while parity-main holds the turn or waits for it; parity-main and the Mac compiles
+  wait only for the holder. Waits are bounded (parity-main 20 min, pull requests 60, Mac compiles 10), then the job
+  compiles anyway and says on whom it waited. A holder beats every minute; one silent for 15 minutes (a killed job)
+  loses the turn. parity-main's prebuild then has 120 minutes (`PREBUILD_LIMIT`), past which the run fails.
 - The verdict report, `verdict-<run id>-<attempt>.json` (the run's `parity-main-verdict` artifact, uploaded best
   effort), holds the head, the base, the run id and attempt, the exit code, each failed harness's tries (the batch's,
   its retry if `tools/parity.py` gave one, the rerun at HEAD) and `repeat_flakers`: harnesses not on `known_flaky`
