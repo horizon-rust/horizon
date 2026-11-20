@@ -346,8 +346,8 @@ Helpers:
   ```wgsl
   let optical_h = frame.projection_inverse[2];
   if optical_h.w != 0.0 {
-      let optical_view = optical_h.xyz / optical_h.w;
-      let optical_origin = (frame.view_inverse * vec4<f32>(optical_view, 0.0)).xyz;
+    let optical_view = optical_h.xyz / optical_h.w;
+    let optical_origin = (frame.view_inverse * vec4<f32>(optical_view, 0.0)).xyz;
   }
   ```
 
