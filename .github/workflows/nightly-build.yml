@@ -1,5 +1,5 @@
 name: nightly build
-run-name: nightly build${{ (github.event_name == 'workflow_dispatch' && (inputs.dry_run || github.ref != 'refs/heads/main')) && ' (dry run)' || ' (real)' }}${{ inputs.request && format(' (request {0})', inputs.request) || '' }}${{ inputs.base && format(' on {0}', inputs.base) || '' }}
+run-name: nightly build${{ (github.event_name == 'workflow_dispatch' && (inputs.dry_run || github.ref != 'refs/heads/main')) && ' (dry run)' || ' (real)' }}${{ inputs.request && format(' (request {0})', inputs.request) || '' }}${{ inputs.base && format(' on {0}', inputs.base) || '' }}${{ inputs.off_main && ' (off main)' || '' }}
 # The Nightly, the only build Horizon ships since 2026-10-28 (docs/release-flow.md "Nightly"; Ludovic). When the batch
 # train decides (release.yml, with the commit as `base`), once a night, and when a trusted
 # reviewer asks (`/nightly 2640 2642`, nightly-command.yml), it builds main plus the pull requests the reviewers
@@ -32,6 +32,8 @@ run-name: nightly build${{ (github.event_name == 'workflow_dispatch' && (inputs.
 #   gh workflow run "nightly build"                     # now (skips when the pick is the same commit as last night's)
 #   gh workflow run "nightly build" -f force=true       # build and publish even if unchanged
 #   gh workflow run "nightly build" -f dry_run=true     # build and sign with a throwaway key, publish nothing
+#   gh workflow run "nightly build" -f dry_run=true -f off_main=true -f base=<sha>   # a commit off main (a fix's
+#                                                       # branch of this repository, never a fork's), as a dry run only
 # Since 2026-11-15 only by hand (release.yml, `/nightly`, or a dispatch): no scheduled build.
 on:
   workflow_dispatch:
@@ -60,6 +62,10 @@ on:
         description: The commit of main to build on (default main's newest with green checks and parity-main)
         type: string
         default: ''
+      off_main:
+        description: The base is off main (a dry run only, a commit some branch of this repository holds)
+        type: boolean
+        default: false
       urgent:
         description: Past the day's cap of 12 builds (the train, for a release-now pull request or a forced run)
         type: boolean
@@ -108,6 +114,7 @@ jobs:
           NIGHTLY_ISSUE: ${{ inputs.issue }}
           NIGHTLY_PRS: ${{ inputs.prs }}
           NIGHTLY_BASE: ${{ inputs.base }}
+          NIGHTLY_OFF_MAIN: ${{ inputs.off_main }}
           NIGHTLY_URGENT: ${{ inputs.urgent }}
         run: |
           python3 tools/ci/nightly.py pick ${FORCE:+--force} | tee -a "$GITHUB_STEP_SUMMARY"
@@ -168,7 +175,11 @@ jobs:
     with:
       commit: ${{ needs.pick.outputs.sha }}
       publish: ${{ needs.pick.outputs.dry_run != 'true' && github.ref == 'refs/heads/main' }}
-    secrets: inherit
+    # Only the signing keys, and none in a dry run: its index and verify jobs run the built commit's own scripts.
+    # (RELEASE_SIGNING_KEY is the `release` environment's, which sdk-publish's sign job reads itself on a real run.)
+    secrets:
+      RELEASE_SIGNING_KEY: ${{ needs.pick.outputs.dry_run != 'true' && secrets.RELEASE_SIGNING_KEY || '' }}
+      RELEASE_SIGNING_KEY_NEXT: ${{ needs.pick.outputs.dry_run != 'true' && secrets.RELEASE_SIGNING_KEY_NEXT || '' }}
 
   sdk-index:
     needs: [pick, sdk, sdk-publish]

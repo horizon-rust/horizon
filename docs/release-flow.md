@@ -367,7 +367,8 @@ commits) since the commit the published Nightly was built on:
   the concurrency group `nightly-build`, which never cancels a running build. A dry run (`dry_run`, or any dispatch
   off main) gets a group of its own, `nightly-build-dry-<run id>`: it never holds up a real cut (the rerun of its
   `sdk-publish` jobs queues in the shared group) nor replaces it or another dry run as the waiting run, so a dry run
-  can start while a cut waits. The run's name says `(dry run)` or `(real)` and the `base` it was given. At most 12
+  can start while a cut waits. The run's name says `(dry run)` or `(real)` and the `base` it was given, and
+  `(off main)` for a dry run's base off main. At most 12
   builds a UTC day (the reviewers' `/nightly` builds count): past that the train waits for the next day, except for
   `release-now` and `force=true`.
 - A scheduled run takes main's newest commit where `checks` and `parity-main` passed (a later failed
@@ -857,6 +858,14 @@ gh workflow run "nightly build"                  # now; skips when the pick is t
 gh workflow run "nightly build" -f force=true    # build and publish anyway
 gh workflow run "nightly build" -f dry_run=true  # build and sign with a throwaway key, publish nothing
 ```
+
+A dry run can build a commit that is not on main yet, so a fix to the release path is tried before it merges:
+`-f dry_run=true -f off_main=true -f base=<sha>` from main. `pick` takes it only in a dry run with `off_main` set,
+and only when a branch of this repository holds it, fetched fresh: never a pull request's `refs/pull/*` head (GitHub
+hands out a fork's commits by SHA here too), nor the `nightly/*` and `gh-readonly-queue/*` branches that automation
+fills with pull requests. `off_main` with a base on main stops too, so the run's name and summary never say it
+wrongly. Such a run gets no repository secrets (the signing keys reach `sign` jobs on a real run only), and nothing
+publishes.
 
 ## Nightly audit
 
