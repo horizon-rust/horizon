@@ -1,6 +1,7 @@
 """tools/parity_main.py: the base of a parity-main run, and the bisect after a failure."""
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -269,10 +270,18 @@ class ParityMainTests(unittest.TestCase):
             self.run_command("history", None)
 
     def test_the_workflow_gives_the_verdict_and_leaves_the_search_out(self):
-        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/parity-main.yml").read_text(encoding="utf-8")
-        self.assertIn("PARITY_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}", workflow)
-        self.assertIn('python3 tools/parity_main.py verdict "$BASE_SHA"', workflow)
-        self.assertNotIn("bisect \"$BASE_SHA\"", workflow)
+        root = Path(__file__).resolve().parents[1]
+        # The repository's offline YAML parser, as tests/test_ci_concurrency.py uses it.
+        with mock.patch("sys.path", [str(root / "tools/ci/vendor/pyyaml-6.0.3.zip"), *sys.path]):
+            import yaml
+        workflow = yaml.safe_load((root / ".github/workflows/parity-main.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["parity-main"]
+        self.assertEqual(job["env"]["PARITY_RUN_ID"], "${{ github.run_id }}-${{ github.run_attempt }}")
+        commands = [step["run"].split() for step in job["steps"] if "run" in step]
+        self.assertIn(["python3", "tools/parity_main.py", "verdict", '"$BASE_SHA"'], commands)
+        self.assertFalse([command for command in commands if "bisect" in command], "the search is not in the gate run")
+        verdict = next(step for step in job["steps"] if "verdict" in step.get("run", ""))
+        self.assertEqual(verdict.get("timeout-minutes"), 50)
 
     def test_a_harness_a_commit_does_not_have_cannot_fail_there(self):
         with mock.patch.object(parity_main.subprocess, "run") as run:
