@@ -7931,7 +7931,7 @@ impl Game<'_> {
     /// `Minecraft.startUseItem`'s block turn for `hand`: a use that swung drops
     /// the hand (`LocalPlayer.itemUsed`) when it spent the held item or the
     /// player has infinite materials.
-    fn remote_use_block(&mut self, hand: Hand) -> bool {
+    pub(in crate::game) fn remote_use_block(&mut self, hand: Hand) -> bool {
         let before = self.with_hand(hand, |g| g.held().map(|s| s.count));
         let swings = self.swings_started;
         let done = self.remote_use_item_on(hand);
