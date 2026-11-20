@@ -760,7 +760,7 @@ def selected_builds(artifacts, packages=None):
         yield kind, name, profile, selection, examples
 
 
-# parity-main's probe prebuild ends the run past this, after its turn on the Mac mini (tools/compile_lock.py): loaded
+# parity-main's probe prebuild ends the run past this, after its turn on the Mac (tools/compile_lock.py): loaded
 # by other jobs' compiles it ran 2 h and more and left the harnesses too little of the job's 300 min.
 PREBUILD_LIMIT = {"main": 120 * 60}
 
@@ -768,7 +768,7 @@ PREBUILD_LIMIT = {"main": 120 * 60}
 def prebuild(artifacts, jobs):
     """Build the recorded probes before the harnesses start, so they don't serialise on Cargo's lock.
 
-    On the Mac mini's runners the Cargo runs wait for a turn on the machine (tools/compile_lock.py), as the job's
+    On the self-hosted Mac the Cargo runs wait for a turn on the machine (tools/compile_lock.py), as the job's
     HORIZON_COMPILE_LOCK_ROLE says: `main` for parity-main, else `pr`."""
     environment = run_environment()
     environment["CARGO_BUILD_JOBS"] = str(jobs)
@@ -787,13 +787,15 @@ def prebuild(artifacts, jobs):
             # Cargo leaves empty here, was discarded before too. Undecodable bytes are replaced: decoding as the
             # lines arrive must never interrupt the build. The encoding is text mode's default, named so tests can
             # pin it.
+            # Cargo leads a process group of its own, so the limit or a cancelled job ends rustc and build
+            # scripts with it, and none of them keeps the stderr pipe (and this loop) open.
             with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.PIPE, text=True, encoding=locale.getpreferredencoding(False),
-                                  errors="replace") as process:
+                                  errors="replace", start_new_session=os.name != "nt") as process:
                 # The line loop blocks while Cargo is quiet, so a timer ends a run past the limit.
                 def stop(process=process):
                     expired.set()
-                    process.kill()
+                    compile_lock.stop_group(process)
                 watchdog = threading.Timer(max(0, deadline - time.monotonic()), stop) if deadline else None
                 if watchdog:
                     watchdog.daemon = True
@@ -802,7 +804,7 @@ def prebuild(artifacts, jobs):
                     lines = [(time.monotonic(), line) for line in process.stderr]
                     process.wait()
                 except BaseException:
-                    process.kill()  # as subprocess.run does
+                    compile_lock.stop_group(process)  # its whole group, as subprocess.run kills the process
                     raise
                 finally:
                     if watchdog:
@@ -813,7 +815,7 @@ def prebuild(artifacts, jobs):
                            f"{describe_cargo_build(command, lines, started, time.monotonic())}")
             if expired.is_set():
                 print(f"::error::The probe prebuild passed its {limit // 60:.0f} min limit at cargo {number}/"
-                      f"{len(commands)} (stopped there). The Mac mini is likely loaded by other jobs' compiles: "
+                      f"{len(commands)} (stopped there). The machine is likely loaded by other jobs' compiles: "
                       "see the compile lock lines above.", flush=True)
                 sys.exit(1)
         report(lambda: describe_machine(os.cpu_count(), load, machine_load()))

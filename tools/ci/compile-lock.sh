@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# compile-lock.sh <role> -- <command>...: the command in a turn on the Mac mini (tools/compile_lock.py), for
-# game-build.yml's Mac compiles. Its build job compiles before runner-env.sh puts Homebrew's Python on PATH, so this
-# takes whichever python3 there is (/usr/bin/python3 then). A Python that can't run the module (none, Apple's stub
-# without the command line tools) never keeps the command from running: it then runs without the lock.
+# compile-lock.sh <role> -- <command>...: the command in a turn on the self-hosted Mac (tools/compile_lock.py), for
+# game-build.yml's Mac compiles. The Python process holds the turn and runs the command as its child; the command
+# never inherits the lock. The build job compiles before runner-env.sh puts Homebrew's Python on PATH, so this takes
+# whichever python3 runs the module (/usr/bin/python3 then); with none, the command runs without a turn.
 role=$1
 shift
 [ "${1:-}" = -- ] && shift

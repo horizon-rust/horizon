@@ -71,7 +71,7 @@ jobs:
     # (MAC_RUNNER: ludovics-mac-mini-release) nor parity-main's.
     runs-on: ${{ inputs.trusted && vars.MAC_RUNNER || fromJSON('["self-hosted", "macOS", "horizon-nightly"]') }}
     # Three full preparations (two isolated, one batched) besides the compile.
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -199,7 +199,7 @@ jobs:
     # Notarizing the zip can take a few minutes. The hosted Windows and Linux release builds alone took 35–40 min
     # on 2026-11-18 (run 44227464218), past the old 40. Windows x64 took 76-77 min on 2026-11-19/20 with the Polytone
     # tests in it (runs 44424401791, 44515830051); they run in `polytone-windows` beside it now.
-    timeout-minutes: ${{ matrix.mac && 60 || startsWith(matrix.name, 'windows') && 90 || 75 }}
+    timeout-minutes: ${{ matrix.mac && 120 || startsWith(matrix.name, 'windows') && 90 || 75 }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
       # The release's version, built in (horizon_core::release): --version, user agents, crash reports and

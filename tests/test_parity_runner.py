@@ -142,9 +142,14 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertTrue(console.buffer.getvalue().endswith(b" x v1 ???\n\n"), console.buffer.getvalue())
 
     def test_parity_mains_prebuild_ends_the_run_past_its_limit(self):
-        # A quiet Cargo run past the limit is stopped, not waited for: the line loop alone would block.
+        # A quiet Cargo run past the limit is stopped, not waited for: the line loop alone would block. On POSIX its
+        # child (a rustc, a build script) keeps stderr open and ignores SIGTERM: the whole group still ends.
         script = "import time; time.sleep(60)"
+        if os.name == "posix":
+            script = ("import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import signal, time; "
+                      "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)']); time.sleep(60)")
         with mock.patch.object(parity, "target_packages", return_value={}), \
+                mock.patch.object(parity.compile_lock, "GRACE", 1), \
                 mock.patch.object(parity, "prebuild_commands", return_value=[[sys.executable, "-c", script]] * 2), \
                 mock.patch.object(parity, "sccache_stats", return_value=None), \
                 mock.patch.object(parity, "PREBUILD_LIMIT", {"main": 0.5}), \
