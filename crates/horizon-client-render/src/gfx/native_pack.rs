@@ -791,6 +791,11 @@ file = \"material.wgsl\"
         use horizon_shader_api::{MANIFEST, Pack, check};
         // OpenGL, which `test_gpu::instance` leaves out on Windows: WGL instances made on many
         // test threads at once deadlocked NVIDIA's driver (#5238). The lock keeps this one alone.
+        // CI's `WGPU_BACKEND=dx12` keeps GPU tests off Mesa's software drivers (ci.yml); honour it.
+        if wgpu::Backends::from_env().is_some_and(|b| !b.contains(wgpu::Backends::GL)) {
+            eprintln!("skipped: WGPU_BACKEND leaves out OpenGL");
+            return;
+        }
         let _gpu = crate::gfx::test_gpu::lock();
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = wgpu::Backends::GL;
@@ -840,7 +845,11 @@ file = \"material.wgsl\"
             let Err(refused) = built else {
                 panic!("{file}: the pack should be refused");
             };
-            eprintln!("{file}: refused: {refused}");
+            let refused = refused.to_string();
+            assert!(
+                refused.contains("textureLoad"),
+                "{file}: refused for another reason: {refused}"
+            );
         }
     }
 
