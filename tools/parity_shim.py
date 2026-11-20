@@ -51,6 +51,7 @@ CACHE = Path(os.environ.get("PARITY_SHIM_CACHE", ".local/parity-runner/oracle-ca
 # each file's path, device, inode and dates here. Machine-local: it must never be cached, copied or restored with
 # CACHE, since a restored entry whose stat data happened to match would be trusted without rereading the files.
 RUNTIME_MEMO = CACHE.parent / "runtime-memo"
+MACHINE_ID = "/etc/machine-id"  # systemd's, on Linux; none on macOS
 PATH_OPTIONS = {"-cp", "-classpath", "--class-path", "-sourcepath", "--source-path", "-p", "--module-path"}
 # Variables left out of the key: they change between runs of the same call, and no oracle reads them (tools/parity.py's
 # bookkeeping, a CI job's ids and the commits and token its parity workflows pass (parity.yml, parity-main.yml,
@@ -380,7 +381,7 @@ def runtime_digest(program):
 
     Hashing lib/modules (about 130 MB) per call would cost more than many calls save, so the hashes and the probe are
     memoised in RUNTIME_MEMO under each file's identity on this machine, taken before them and checked again after:
-    a file that changed meanwhile leaves nothing memoised."""
+    a file that changed meanwhile makes the call unkeyed."""
     launcher = os.path.realpath(program)
     folder = os.path.dirname(launcher)
     home = os.path.dirname(folder)
@@ -425,9 +426,12 @@ def runtime_digest(program):
         if result.returncode:
             raise Unkeyed(f"-version exited {result.returncode}")
         version = digest([result.stdout.hex(), result.stderr.hex()])
-        # Memoised only when every file held still from the first stat to this one: the hashes and the probe may
-        # otherwise have read another file than the one the entry is named after. This call uses them either way.
-        if marker and [identity(path) for path in files] == before:
+        # Keyed only when every file held still from the first stat to this one: the hashes and the probe may
+        # otherwise have read another file than the one Java will run with. A link switched away and back between
+        # the two can't be seen from outside.
+        if [identity(path) for path in files] != before:
+            raise Unkeyed("a runtime file changed while it was hashed")
+        if marker:
             try:
                 RUNTIME_MEMO.mkdir(parents=True, exist_ok=True)
                 temporary = memo.with_suffix(f".{os.getpid()}.tmp")
@@ -441,13 +445,15 @@ def runtime_digest(program):
 def machine():
     """This machine, as far as it can be told cheaply: its systemd machine id (Linux; macOS has none), its host name,
     the home folder's device and inode, and the device of the folder RUNTIME_MEMO is in. A second guard: a memo entry
-    made elsewhere is ignored even if RUNTIME_MEMO was copied here by mistake. None when it can't be read, and then
-    the memo is not used."""
+    made elsewhere is ignored even if RUNTIME_MEMO was copied here by mistake. None when any of it can't be read (a
+    machine id that is there but unreadable included; only a missing one is empty), and then the memo is not used."""
     try:
-        with open("/etc/machine-id") as stream:
-            machine_id = stream.read().strip()
-    except OSError:
+        with open(MACHINE_ID, "rb") as stream:
+            machine_id = stream.read().decode().strip()
+    except FileNotFoundError:
         machine_id = ""
+    except (OSError, ValueError):
+        return None
     try:
         home, parent = os.stat(os.path.expanduser("~")), os.stat(RUNTIME_MEMO.parent)
     except OSError:

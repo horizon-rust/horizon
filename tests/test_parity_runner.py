@@ -754,7 +754,7 @@ class OracleReuseTests(unittest.TestCase):
         (other / "lib" / "server" / "libjvm.so").write_text("vM")
         self.assertNotEqual(shim.runtime_digest(str(other / "bin" / "java")), first)
 
-    def test_a_jdk_file_changed_while_it_is_hashed_or_probed_is_not_memoised(self):
+    def test_a_jdk_file_changed_while_it_is_hashed_or_probed_is_not_keyed(self):
         shim, memo = self.in_process()
         vm = self.bin.parent / "lib" / "server" / "libjvm.so"
         hash_file, run = shim.bytes_digest, shim.subprocess.run
@@ -770,14 +770,40 @@ class OracleReuseTests(unittest.TestCase):
             vm.write_text("VM")
             return result
 
-        with mock.patch.object(shim, "bytes_digest", hashed_then_changed):
+        with mock.patch.object(shim, "bytes_digest", hashed_then_changed), self.assertRaises(shim.Unkeyed):
             shim.runtime_digest(str(self.bin / "java"))
         self.assertEqual(list(memo.glob("*.json")), [])
-        with mock.patch.object(shim.subprocess, "run", probed_then_changed):
+        with mock.patch.object(shim.subprocess, "run", probed_then_changed), self.assertRaises(shim.Unkeyed):
             shim.runtime_digest(str(self.bin / "java"))
         self.assertEqual(list(memo.glob("*.json")), [])
         shim.runtime_digest(str(self.bin / "java"))  # nothing changes meanwhile
         self.assertEqual(len(list(memo.glob("*.json"))), 1)
+
+    def test_a_call_whose_runtime_changes_while_it_is_probed_runs_unrecorded(self):
+        root = self.bin.parent
+        vm, java = root / "lib" / "server" / "libjvm.so", self.bin / "java"
+        probe = "if sys.argv[1:] == ['-version']:"
+        java.write_text(java.read_text().replace(probe, f"{probe} open({str(vm)!r}, 'a').write('x')\n{probe}"))
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 2)
+        self.assertEqual(self.reasons(), ["passthrough-runtime"] * 2)
+        self.assertEqual(list((root / "cache").glob("*.json")) + list((root / "runtime-memo").glob("*")), [])
+
+    def test_a_machine_id_that_is_there_but_unreadable_leaves_the_memo_unused(self):
+        shim, memo = self.in_process()
+        machine_id = self.bin.parent / "machine-id"
+        machine_id.write_bytes(bytes([0xFF, 0xFE]))  # not text
+        with mock.patch.object(shim, "MACHINE_ID", str(machine_id)):
+            self.assertIsNone(shim.machine())
+            first = shim.runtime_digest(str(self.bin / "java"))
+            self.assertEqual(list(memo.glob("*.json")), [])
+            machine_id.unlink()
+            machine_id.mkdir()  # can't be read as a file
+            self.assertIsNone(shim.machine())
+            machine_id.rmdir()  # missing, as on macOS: empty, and the memo is used
+            self.assertIsNotNone(shim.machine())
+            self.assertEqual(shim.runtime_digest(str(self.bin / "java")), first)
+            self.assertEqual(len(list(memo.glob("*.json"))), 1)
 
     def test_another_machines_memo_entry_is_ignored(self):
         shim, memo = self.in_process()
