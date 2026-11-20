@@ -185,7 +185,14 @@ class HostedParityTests(unittest.TestCase):
             self.assertEqual([key for key in step.get("with", {}) if "cache" in key], [], uses or step.get("name"))
         self.assertEqual(self.workflow["jobs"]["run"]["env"]["HORIZON_NO_SCCACHE"], "1")
         uploads = [step["with"]["path"] for step in steps if "upload-artifact" in step.get("uses", "")]
-        self.assertEqual(uploads, [".local/parity-runner/logs/"])
+        self.assertEqual(uploads, ["${{ runner.temp }}/parity-hosted-logs/"])
+
+    def test_the_data_is_fetched_before_the_tested_commit_is_checked_out(self):
+        # Before the checkout the workspace is empty: no code of the tested commit can run beside the secrets.
+        names = [step.get("name") or step.get("uses") for step in self.workflow["jobs"]["run"]["steps"]]
+        checkout = next(index for index, name in enumerate(names) if name.startswith("actions/checkout@"))
+        self.assertLess(names.index("Fetch the vanilla data"), checkout)
+        self.assertEqual(set(self.workflow[True]), {"workflow_dispatch"})
 
     def test_no_required_check_waits_for_it(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):

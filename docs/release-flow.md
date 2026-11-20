@@ -180,9 +180,6 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   a broken or flaky harness holds only what landed after the last green run, never the whole Nightly (before
   2026-11-03, any later failure held every Nightly until a run passed again: 30 h without one). `release.yml`
   also starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
-- After the harnesses, it uploads the dependency lists of the harnesses its own checkout passed: repository paths and
-  probe names, `tools/parity_plan.py --export-dependencies`. The artifact is `parity-dependencies`, kept 14 days.
-  Hosted parity selects with them. Those steps never fail the run.
 - A harness that keeps failing on main while its issue is open goes on `known_failing` in
   `tools/parity_hosts.json` ([parity-workflow.md](parity-workflow.md)): it still runs and reports, but no longer
   fails parity-main, so main's last green commit moves on and later merges are checked and bisected on their own.
