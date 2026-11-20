@@ -3,6 +3,7 @@ import copy
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -216,6 +217,32 @@ def polytone_gate_bypasses(game, nightly_build):
     return problems
 
 
+FRESH_CARGO_HOME = 'echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"'
+CARGO_CALL = re.compile(r"\bcargo (build|run|test)\b|vanilla-data\.sh")
+
+
+def machine_cache_users(workflow):
+    """The jobs that set up a runner's tools (tools/ci/runner-env.sh) but may read machine-shared caches: without
+    HORIZON_NO_SCCACHE: '1', an empty RUSTC_WRAPPER, a fresh cargo home before their first cargo call, or its removal."""
+    users = []
+    for name, job in workflow["jobs"].items():
+        steps = job.get("steps", [])
+        runs = [step.get("run", "") for step in steps]
+        if not any("runner-env.sh" in run for run in runs):
+            continue
+        env = job.get("env", {})
+        sccache_off = all({**env, **step.get("env", {})}.get("HORIZON_NO_SCCACHE") == "1"
+                          for step, run in zip(steps, runs) if "runner-env.sh" in run)
+        wrapper_off = env.get("RUSTC_WRAPPER") == "" and env.get("RUSTC_WORKSPACE_WRAPPER") == ""
+        fresh = [i for i, run in enumerate(runs) if FRESH_CARGO_HOME in run]
+        first_cargo = next((i for i, run in enumerate(runs) if CARGO_CALL.search(run)), len(runs))
+        removed = any(str(step.get("if", "")).startswith("always()") and 'rm -rf "$RUNNER_TEMP/cargo-home"' in run
+                      for step, run in zip(steps, runs))
+        if not (sccache_off and wrapper_off and fresh and fresh[0] < first_cargo and removed):
+            users.append(name)
+    return users
+
+
 class UntrustedBuildTests(unittest.TestCase):
     """A nightly can hold pull requests nobody reviewed: nothing its build leaves may reach a release (game-build.yml)."""
 
@@ -275,9 +302,30 @@ class UntrustedBuildTests(unittest.TestCase):
                 {"step": polytone["steps"][-1], "job": polytone}.get(where, mutated_build["jobs"].get(where)).update(change)
                 self.assertNotEqual(polytone_gate_bypasses(mutated_game, mutated_build), [])
 
-    def test_a_trusted_build_never_reads_the_shared_sccache(self):
-        calls = self.game.count("bash tools/ci/runner-env.sh")
-        self.assertEqual(self.game.count("HORIZON_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}"), calls)
+    def test_mac_jobs_read_no_machine_shared_cache(self):
+        # Every job that sets up the runner's tools, whatever `trusted` says; a job added later is held to it too.
+        game = yaml.safe_load(self.game)
+        callers = {name for name, job in game["jobs"].items()
+                   if any("runner-env.sh" in step.get("run", "") for step in job.get("steps", []))}
+        self.assertLessEqual({"exporters", "build"}, callers)
+        self.assertEqual(machine_cache_users(game), [])
+        breaks = (
+            lambda job: [step["env"].update(HORIZON_NO_SCCACHE="${{ inputs.trusted && '1' || '' }}")
+                         for step in job["steps"] if "runner-env.sh" in step.get("run", "")],
+            lambda job: job["env"].pop("RUSTC_WRAPPER"),
+            lambda job: job["steps"].remove(next(step for step in job["steps"] if FRESH_CARGO_HOME in step.get("run", ""))),
+            lambda job: job["steps"].remove(next(step for step in job["steps"] if "cargo-home" in step.get("run", "")
+                                                 and FRESH_CARGO_HOME not in step["run"])),
+        )
+        for name in ("exporters", "build"):
+            for number, change in enumerate(breaks):
+                with self.subTest(job=name, change=number):
+                    mutated = copy.deepcopy(game)
+                    change(mutated["jobs"][name])
+                    self.assertEqual(machine_cache_users(mutated), [name])
+        mutated = copy.deepcopy(game)
+        mutated["jobs"]["new-mac"] = {"runs-on": ["self-hosted", "macOS"], "steps": [{"run": "bash tools/ci/runner-env.sh"}]}
+        self.assertEqual(machine_cache_users(mutated), ["new-mac"])
         env = (Path(__file__).resolve().parents[1] / "tools/ci/runner-env.sh").read_text()
         self.assertEqual(env.count('-z "${HORIZON_NO_SCCACHE:-}"'), 2)
 

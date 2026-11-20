@@ -847,8 +847,8 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
   release either: `game-build.yml`'s `trusted` input is true only for `release.yml`. An untrusted build runs its
   macOS jobs on the Mac mini's nightly runner (`horizon-nightly`, its own so a nightly never waits behind pull
   requests' parity queue; same machine and trust as the `horizon-game` runner), never the release runner
-  (`MAC_RUNNER`), and its Rust cache has its own key and is never saved. A trusted build doesn't use the machine's
-  shared sccache, which pull requests' jobs write (`HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`).
+  (`MAC_RUNNER`), and its Rust cache has its own key and is never saved. Its Mac jobs, trusted or not, don't read
+  machine-shared caches: no sccache (`HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`) and a fresh cargo home per run.
 - **Players.** Every launcher and `horizon-server update` install the `nightly` pre-release
   ([Nightly only](#nightly-only)). It is never GitHub's latest: the last `vX.Y.Z` stays that, for launchers,
   servers and `install.sh` from before the switch.
@@ -885,8 +885,8 @@ Known limit, not solved: an off-main dry run runs the candidate's build scripts 
 state outside the checkout. The control is who may push `dry-run/*`: the same people who can already dispatch the
 workflow from their own branch, which runs that branch's workflow on the same runner. So the option adds no new
 capability; it only removes the need to edit the workflow. As an untrusted build (`trusted: false`) it never uses the
-release runner and never saves the GitHub Actions Rust cache, but on the Mac it can read and write the machine's
-local compiler cache (sccache, `tools/ci/runner-env.sh`), which only trusted builds skip.
+release runner and never saves the GitHub Actions Rust cache, and on the Mac it uses neither the machine's
+local compiler cache (sccache, `HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`) nor its cargo home.
 
 ## Nightly audit
 
