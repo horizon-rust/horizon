@@ -193,6 +193,9 @@ class HostedParityTests(unittest.TestCase):
         checkout = next(index for index, name in enumerate(names) if name.startswith("actions/checkout@"))
         self.assertLess(names.index("Fetch the vanilla data"), checkout)
         self.assertEqual(set(self.workflow[True]), {"workflow_dispatch"})
+        # The default branch's copy of the fetch script, or none: never the tested commit's.
+        script = self.workflow["jobs"]["run"]["steps"][names.index("The fetch script, from the default branch")]["run"]
+        self.assertEqual(re.findall(r"ref=\S+", script), ['ref=$TRUSTED_REF"'])
 
     def test_no_required_check_waits_for_it(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):

@@ -129,18 +129,16 @@ gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>               
   - Those two secrets reach one step, which runs `tools/ci/fetch-vanilla-data.sh`. The script writes them to a
     private folder, removes that folder before it ends, and prints only sizes, counts and timings.
   - That step runs before the tested commit is checked out, with the default branch's copy of the script: the
-    secrets never meet the tested commit's code. Until the pull request adding the script merges, the default branch
-    has none, and the tested commit's copy serves, only when it is the dispatched ref's own head; that fallback ends
-    with the merge. The workflow file itself comes from the dispatched ref, so who may dispatch (write access) is
-    still the guard against a branch that edits it.
+    secrets never meet the tested commit's code. Without that copy the shard stops. The workflow file itself comes
+    from the dispatched ref, so who may dispatch (write access) is still the guard against a branch that edits it.
   - Only a commit on a branch of this repository runs, resolved once to a full SHA that every job uses.
 - **What never leaves the runner.** The data, what is prepared from it, `target/` and `.local/` are never put on a
   sticky disk, in a cache (no `actions/cache`, no sccache) or in an artifact: a fork's pull request can mount this
   repository's disks and caches. Everything is built cold and thrown away with the runner.
 - **What is public.** The job logs and the uploaded logs hold what `parity.yml`'s public runs already show: compared
   values, log tails and harness names. That is the only exception to "sizes, counts and timings only", which the
-  fetch step keeps. The upload holds the first run's log of each harness that passed only on its retry, and the last
-  log of each that failed, kept 3 days. `tests/test_ci_runners.py` pins all of this.
+  fetch step keeps. The upload holds the first run's log of each retried harness, the last log of each that failed,
+  and how each retry ended (from its saved record), kept 3 days. `tests/test_ci_runners.py` pins all of this.
 - **Plan, shards, result.** A `plan` job, with no secret and no data, selects with `tools/parity.py` and splits the
   selection with `tools/parity_plan.py` into shards by the probe each harness builds (world, client, game, other), so
   a runner pays only that group's cold build.
@@ -150,8 +148,9 @@ gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>               
     compared with it, as in `parity.yml`.
   - Each shard runs on a `run` runner with Xvfb and Mesa's software Vulkan (lavapipe), as playhorizon has. The oracle
     cache is created before the harnesses start, since shims that create it at once can fail.
-  - `hosted parity (advisory)` states the result, lists the harnesses that passed only on their retry, and lists what
-    was not run.
+  - `hosted parity (advisory)` states the result and lists what was not run. It lists a harness as passed on its
+    retry only when its saved record says so; a first log without one (a shard stopped mid-retry) is listed as a
+    retry not finished.
 - **Not run on hosted runners.** These are listed with their reason, never counted as passed:
   - the harnesses the `hosted` entry of `tools/parity_hosts.json` excludes: sounds, other languages, sources, older
     servers' worlds, the network;

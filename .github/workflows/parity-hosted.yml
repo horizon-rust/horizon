@@ -141,7 +141,6 @@ jobs:
       PARITY_HOSTS: ''
       # A harness retried after a first failure keeps that run's log (tools/parity.py): uploaded below.
       PARITY_KEEP_FIRST_LOGS: "1"
-      HEAD_SHA: ${{ needs.plan.outputs.head }}
     steps:
       - name: Folders for the data, outside the checkout
         run: |
@@ -151,28 +150,17 @@ jobs:
             echo "PARITY_SHARED=$RUNNER_TEMP/vanilla/parity-shared"
           } >> "$GITHUB_ENV"
       # The data is fetched before the tested commit is checked out or any of its code runs, by the default branch's
-      # copy of the script: the secrets never meet the tested code. Until the pull request adding the script merges,
-      # the default branch has none; then, and only for the dispatched ref's own head, the tested commit's copy
-      # serves. Any other failure to get the default branch's copy stops the job.
+      # copy of the script: the secrets never meet the tested code. Without that copy the job stops.
       - name: The fetch script, from the default branch
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          folder="$RUNNER_TEMP/trusted"
-          mkdir -p "$folder"
-          path="repos/$GITHUB_REPOSITORY/contents/tools/ci/fetch-vanilla-data.sh"
-          if gh api -H "Accept: application/vnd.github.raw" "$path?ref=$TRUSTED_REF" > "$folder/fetch.sh" 2> "$folder/error"; then
-            echo "The fetch script: $TRUSTED_REF's"
-          elif grep -q "HTTP 404" "$folder/error" && [ "$HEAD_SHA" = "$GITHUB_SHA" ]; then
-            gh api -H "Accept: application/vnd.github.raw" "$path?ref=$HEAD_SHA" > "$folder/fetch.sh"
-            echo "::warning::$TRUSTED_REF has no tools/ci/fetch-vanilla-data.sh yet: the tested commit's copy fetches the data"
-          else
-            cat "$folder/error"
-            echo "::error::no fetch script from $TRUSTED_REF, and the tested commit is not the dispatched ref's head"
-            exit 1
-          fi
+          mkdir -p "$RUNNER_TEMP/trusted"
+          path="repos/$GITHUB_REPOSITORY/contents/tools/ci/fetch-vanilla-data.sh?ref=$TRUSTED_REF"
+          gh api -H "Accept: application/vnd.github.raw" "$path" > "$RUNNER_TEMP/trusted/fetch.sh" ||
+            { echo "::error::no tools/ci/fetch-vanilla-data.sh on $TRUSTED_REF"; exit 1; }
       # The only step with the secrets. The script writes them to a private folder and removes it, key and passphrase
       # with it, before it ends; it prints sizes, counts and timings only.
       - name: Fetch the vanilla data
@@ -241,11 +229,14 @@ jobs:
           read -ra names <<< "$HARNESSES"
           python3 tools/parity.py --timeout 2400 "${names[@]}"
       # The first run's log of each retried harness, and the last log of each that did not pass (compared values, log
-      # tails and names, as parity.yml's), kept 3 days. Nothing else of .local/ or the data leaves the runner.
+      # tails and names, as parity.yml's), kept 3 days. Nothing else of .local/ or the data leaves the runner, but
+      # retries-<shard>.json: how each retry ended, from its saved record. A first log is moved aside before its retry
+      # starts, so a shard stopped mid-retry leaves one with no outcome: never read as passed.
       - name: The logs to keep
         if: always()
         env:
           HARNESSES: ${{ matrix.harnesses }}
+          SHARD: ${{ matrix.shard }}
         run: |
           python3 - <<'EOF'
           import json, os, shutil
@@ -256,13 +247,17 @@ jobs:
               records = json.loads(Path(".local/parity-runner/state.json").read_text())["harnesses"]
           except (OSError, ValueError, KeyError):
               records = {}
-          for name in os.environ["HARNESSES"].split():
+          names = os.environ["HARNESSES"].split()
+          for name in names:
               chosen = [logs / f"{name}.first-run.log"]
               if records.get(name, {}).get("status") != "pass":
                   chosen.append(logs / f"{name}.log")
               for log in chosen:
                   if log.exists():
                       shutil.copy(log, kept)
+          ended = {name: records[name]["status"] for name in names if records.get(name, {}).get("retried")}
+          if ended:
+              (kept / f"retries-{os.environ['SHARD']}.json").write_text(json.dumps(ended))
           EOF
       - name: Upload the logs to keep
         if: always()
@@ -310,12 +305,18 @@ jobs:
           if os.environ["LOGS"] == "failure":
               print("The shards' logs could not be downloaded: which harnesses passed only on retry is unknown here")
           logs = Path(os.environ["RUNNER_TEMP"]) / "logs"
-          files = {path.name for path in logs.iterdir()} if logs.is_dir() else set()
-          retried = sorted(name.removesuffix(".first-run.log") for name in files if name.endswith(".first-run.log"))
-          again = [name for name in retried if f"{name}.log" in files]
-          if retried:
-              print("passed on retry: " + (", ".join(name for name in retried if name not in again) or "none"))
-              print("failed on retry too: " + (", ".join(again) or "none"))
+          files = sorted(logs.iterdir()) if logs.is_dir() else []
+          ended = {}
+          for path in files:
+              if path.name.startswith("retries-") and path.suffix == ".json":
+                  ended.update(json.loads(path.read_text()))
+          first = [path.name.removesuffix(".first-run.log") for path in files if path.name.endswith(".first-run.log")]
+          if ended or first:
+              print("passed on retry: " + (", ".join(sorted(n for n, s in ended.items() if s == "pass")) or "none"))
+              print("failed on retry too: " + (", ".join(sorted(n for n, s in ended.items() if s != "pass")) or "none"))
+              unfinished = sorted(name for name in first if name not in ended)
+              if unfinished:
+                  print("retry not finished (outcome unknown): " + ", ".join(unfinished))
           left = json.loads(os.environ["LEFT_OUT"] or "{}")
           if left:
               print(f"\nNot run here ({len(left)}), so not passed here:\n")
