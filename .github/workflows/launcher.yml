@@ -103,13 +103,22 @@ jobs:
       head: ${{ steps.decide.outputs.head }}
       version: ${{ steps.decide.outputs.version }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
+      main: ${{ steps.mode.outputs.main }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: mode
-        # Off main every run is a dry run (a launcher branch's push only builds).
-        run: echo "dry_run=${{ github.ref != 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}" >> "$GITHUB_OUTPUT"
+        # Off main every run is a dry run (a launcher branch's push only builds), and main=false: the build signs and
+        # takes main's runner only on main. Compared in the shell, case-sensitively: an expression's == ignores case,
+        # and refs/heads/Main is another branch.
+        shell: bash
+        env:
+          DISPATCH_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          main=false; [[ "$GITHUB_REF" == refs/heads/main ]] && main=true
+          dry_run=true; [[ $main == true && "$DISPATCH_DRY_RUN" != true ]] && dry_run=false
+          { echo "main=$main"; echo "dry_run=$dry_run"; } >> "$GITHUB_OUTPUT"
       - id: decide
         shell: bash
         env:
@@ -177,7 +186,7 @@ jobs:
             setup_asset: horizon-launcher-setup-arm64.exe
             # The C runtime linked in, so the standalone ARM64 launcher needs no redistributable.
             rustflags: -C target-feature=+crt-static
-    runs-on: ${{ matrix.mac && (github.ref == 'refs/heads/main' && (vars.MAC_RUNNER || 'ludovics-mac-mini') || 'macos-15') || matrix.os }}
+    runs-on: ${{ matrix.mac && (needs.decide.outputs.main == 'true' && (vars.MAC_RUNNER || 'ludovics-mac-mini') || 'macos-15') || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each.
     timeout-minutes: ${{ matrix.mac && 60 || 40 }}
     env:
@@ -215,7 +224,7 @@ jobs:
         with:
           workspaces: launcher
           shared-key: launcher-${{ matrix.name }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ needs.decide.outputs.main == 'true' }}
       - name: Linux libraries GPUI links to
         if: runner.os == 'Linux'
         run: |
@@ -346,13 +355,13 @@ jobs:
           fi
           rm -rf "$HORIZON_LAUNCHER_HOME"
       - name: The signing keychain, unlocked
-        if: github.ref == 'refs/heads/main' && runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
+        if: needs.decide.outputs.main == 'true' && runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
         env:
           MACOS_SIGN_IDENTITY: ${{ vars.MACOS_SIGN_IDENTITY }}
         run: ../packaging/macos/keychain.sh unlock
       - name: Package
         env:
-          MACOS_SIGN_IDENTITY: ${{ github.ref == 'refs/heads/main' && vars.MACOS_SIGN_IDENTITY || '' }}
+          MACOS_SIGN_IDENTITY: ${{ needs.decide.outputs.main == 'true' && vars.MACOS_SIGN_IDENTITY || '' }}
         run: |
           rm -rf dist out && mkdir -p out
           if [[ "$RUNNER_OS" == "macOS" ]]; then
@@ -391,7 +400,7 @@ jobs:
           path: launcher/out/*
           retention-days: 3
       - name: The signing keychain, locked again
-        if: always() && github.ref == 'refs/heads/main' && runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
+        if: always() && needs.decide.outputs.main == 'true' && runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
         run: ../packaging/macos/keychain.sh lock
 
   sign:

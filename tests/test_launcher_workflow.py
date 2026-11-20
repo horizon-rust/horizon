@@ -3,8 +3,12 @@
 launcher.yml is evaluated, not grepped: every `${{ }}` expression and `if:` of every job, matrix entry and step is
 computed for a few events and refs, the way GitHub would, and what a run off main can reach is checked.
 """
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +27,8 @@ SIGNING_SECRETS = {"RELEASE_SIGNING_KEY", "RELEASE_SIGNING_KEY_NEXT"}
 TOKEN = re.compile(r"\s*('(?:[^']|'')*'|-?\d+(?:\.\d+)?|==|!=|&&|\|\||!|\(|\)|,|[A-Za-z_][A-Za-z0-9_-]*"
                    r"(?:\.[A-Za-z_][A-Za-z0-9_-]*)*)")
 TEMPLATE = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+# On Windows the bash on PATH is Git's; a bare "bash" there would be WSL's (tests/test_pr_ready.py).
+BASH = shutil.which("bash")
 PUBLISH = re.compile(r"\bgh release (create|upload|edit)\b")
 
 
@@ -197,14 +203,21 @@ def run(event, ref, inputs=None, variables=VARS):
     base = {"github": github, "inputs": inputs or {}, "vars": variables, "secrets": secrets}
     reached = []
 
-    # decide: its dry-run answer comes from the mode step's own expression.
+    # decide: its main and dry-run answers come from the mode step itself, run in bash.
     decide = workflow["jobs"]["decide"]
     mode = next(step for step in decide["steps"] if step.get("id") == "mode")
     found = Expressions({**base, "steps": {}})
-    dry_run = re.search(r"dry_run=(\w+)", found.template(mode["run"])).group(1)
+    env = {key: found.text(found.template(value)) for key, value in mode.get("env", {}).items()}
+    with tempfile.TemporaryDirectory() as folder:
+        output = Path(folder) / "output"
+        output.touch()
+        subprocess.run([BASH, "-e", "-c", found.template(mode["run"])], check=True,
+                       env={**os.environ, **env, "GITHUB_REF": ref, "GITHUB_OUTPUT": str(output)})
+        answers = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    dry_run = answers["dry_run"]
     # A dry run always builds (the decide script's own rule); for main's real release, assume one is due.
     outputs = {"release": "true", "tag": "launcher@0.2.99", "head": "c0ffee", "version": "0.2.99",
-               "dry_run": dry_run}
+               "dry_run": dry_run, "main": answers["main"]}
     needs = {"decide": {"outputs": outputs, "result": "success"}}
 
     for name, job in workflow["jobs"].items():
@@ -252,9 +265,13 @@ def saves_cache(step):
     return False
 
 
+@unittest.skipUnless(BASH, "the mode step runs in bash")
 class BranchBuilds(unittest.TestCase):
     OFF_MAIN = [
         ("push", "refs/heads/launcher", None),
+        # Another branch, which an expression's case-insensitive == would take for main.
+        ("push", "refs/heads/Main", None),
+        ("workflow_dispatch", "refs/heads/MAIN", {"dry_run": True, "force": False}),
         ("push", "refs/heads/launcher-anything", None),
         ("workflow_dispatch", "refs/heads/some-branch", {"dry_run": False, "force": True}),
         ("workflow_dispatch", "refs/heads/some-branch", {"dry_run": True, "force": False}),
