@@ -732,17 +732,80 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.oracle(), 1)
         self.assertEqual(self.reasons(), ["no-record", "hit"])
 
-    def test_two_jdk_homes_with_the_same_content_give_the_same_runtime(self):
+    def in_process(self):
+        """runtime_digest called here, with the cache and the memo in this test's folder."""
         from tools import parity_shim
+        root = self.bin.parent
+        patches = [mock.patch.object(parity_shim, "CACHE", root / "cache"),
+                   mock.patch.object(parity_shim, "RUNTIME_MEMO", root / "runtime-memo")]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return parity_shim, root / "runtime-memo"
+
+    def test_two_jdk_homes_with_the_same_content_give_the_same_runtime(self):
+        shim, _ = self.in_process()
         home, other = self.bin.parent, self.bin.parent / "elsewhere"
         for name in ("bin/java", "release", "lib/modules", "lib/server/libjvm.so"):
             (other / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(home / name, other / name)  # new inodes and mtimes
-        with mock.patch.object(parity_shim, "CACHE", home / "cache"):
-            first = parity_shim.runtime_digest(str(self.bin / "java"))
-            self.assertEqual(parity_shim.runtime_digest(str(other / "bin" / "java")), first)
-            (other / "lib" / "server" / "libjvm.so").write_text("vM")
-            self.assertNotEqual(parity_shim.runtime_digest(str(other / "bin" / "java")), first)
+        first = shim.runtime_digest(str(self.bin / "java"))
+        self.assertEqual(shim.runtime_digest(str(other / "bin" / "java")), first)
+        (other / "lib" / "server" / "libjvm.so").write_text("vM")
+        self.assertNotEqual(shim.runtime_digest(str(other / "bin" / "java")), first)
+
+    def test_a_jdk_file_changed_while_it_is_hashed_or_probed_is_not_memoised(self):
+        shim, memo = self.in_process()
+        vm = self.bin.parent / "lib" / "server" / "libjvm.so"
+        hash_file, run = shim.bytes_digest, shim.subprocess.run
+
+        def hashed_then_changed(path):
+            result = hash_file(path)
+            if os.path.realpath(path) == os.path.realpath(vm):
+                vm.write_text("vM")  # the link's target replaced between the stats
+            return result
+
+        def probed_then_changed(*arguments, **options):
+            result = run(*arguments, **options)
+            vm.write_text("VM")
+            return result
+
+        with mock.patch.object(shim, "bytes_digest", hashed_then_changed):
+            shim.runtime_digest(str(self.bin / "java"))
+        self.assertEqual(list(memo.glob("*.json")), [])
+        with mock.patch.object(shim.subprocess, "run", probed_then_changed):
+            shim.runtime_digest(str(self.bin / "java"))
+        self.assertEqual(list(memo.glob("*.json")), [])
+        shim.runtime_digest(str(self.bin / "java"))  # nothing changes meanwhile
+        self.assertEqual(len(list(memo.glob("*.json"))), 1)
+
+    def test_another_machines_memo_entry_is_ignored(self):
+        shim, memo = self.in_process()
+        first = shim.runtime_digest(str(self.bin / "java"))
+        [entry] = memo.glob("*.json")
+        stored = json.loads(entry.read_text())
+        # Restored from elsewhere with matching stat data, and wrong content: never trusted.
+        entry.write_text(json.dumps(dict(stored, machine="elsewhere", content=["wrong"] * 5)))
+        self.assertEqual(shim.runtime_digest(str(self.bin / "java")), first)
+        self.assertEqual(json.loads(entry.read_text()), stored)
+
+    def test_the_memo_is_beside_the_cache_not_in_it(self):
+        self.oracle()
+        root = self.bin.parent
+        self.assertEqual(len(list((root / "runtime-memo").glob("*.json"))), 1)
+        self.assertEqual([path.name for path in (root / "cache").iterdir() if "runtime" in path.name], [])
+
+    def test_javacs_ct_sym_is_part_of_the_key_present_or_not(self):
+        ct_sym = self.bin.parent / "lib" / "ct.sym"
+        self.assertEqual(self.oracle(), 1)
+        ct_sym.write_text("release 21")
+        self.assertEqual(self.oracle(), 2)
+        ct_sym.write_text("release 22")
+        self.assertEqual(self.oracle(), 3)
+        ct_sym.unlink()
+        # Absent again: the first record's key, whose output the runs since have rewritten.
+        self.assertEqual(self.oracle(), 4)
+        self.assertEqual(self.reasons(), ["no-record", "java-runtime", "java-runtime", "output-stamp"])
 
     def test_a_launcher_outside_a_whole_jdk_is_never_reused(self):
         home = self.bin.parent

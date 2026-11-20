@@ -47,6 +47,10 @@ except ImportError:
     import file_lock  # run as a script (the java and javac links): its own folder is on sys.path
 
 CACHE = Path(os.environ.get("PARITY_SHIM_CACHE", ".local/parity-runner/oracle-cache"))
+# What runtime_digest learnt about the JDK files on this machine: their hashes and `-version` text, named after
+# each file's path, device, inode and dates here. Machine-local: it must never be cached, copied or restored with
+# CACHE, since a restored entry whose stat data happened to match would be trusted without rereading the files.
+RUNTIME_MEMO = CACHE.parent / "runtime-memo"
 PATH_OPTIONS = {"-cp", "-classpath", "--class-path", "-sourcepath", "--source-path", "-p", "--module-path"}
 # Variables left out of the key: they change between runs of the same call, and no oracle reads them (tools/parity.py's
 # bookkeeping, a CI job's ids and the commits and token its parity workflows pass (parity.yml, parity-main.yml,
@@ -366,15 +370,17 @@ class Unkeyed(Exception):
 
 def runtime_digest(program):
     """The Java runtime behind `program`, by content only, so that the same JDK unpacked on another runner gives the
-    same key: the bytes of its launcher, its `release` file, its class library (lib/modules) and the JVM's native
-    library, and the `-version` text these give. A JDK updated or replaced in place changes the key even when it
-    prints the same version. Hashing lib/modules (about 130 MB) per call would cost more than many calls save, so the
-    hashes and the probe are memoised per machine under each file's identity (see `identity`), never across one that
-    changed. Only a launcher at <home>/bin/ of a JDK
-    home holding all three as regular files can be keyed: not a stub that picks a JDK itself (/usr/bin/java beside a
-    /usr/lib/modules folder). A launcher inside a JDK-shaped folder that hands the call to another JDK (a wrapper
-    script or binary put there) can't be told apart from outside, and is not supported. Raises Unkeyed, or OSError
-    for a file that vanished meanwhile."""
+    same key: the bytes of its launcher, its `release` file, its class library (lib/modules), the JVM's native library
+    and javac's lib/ct.sym (what `--release N` compiles against; "absent" when there is none), and the `-version` text
+    these give. A JDK updated or replaced in place changes the key even when it prints the same version. Only a
+    launcher at <home>/bin/ of a JDK home holding the first four as regular files can be keyed: not a stub that picks
+    a JDK itself (/usr/bin/java beside a /usr/lib/modules folder). A launcher inside a JDK-shaped folder that hands the
+    call to another JDK (a wrapper script or binary put there) can't be told apart from outside, and is not supported.
+    Raises Unkeyed, or OSError for a file that vanished meanwhile.
+
+    Hashing lib/modules (about 130 MB) per call would cost more than many calls save, so the hashes and the probe are
+    memoised in RUNTIME_MEMO under each file's identity on this machine, taken before them and checked again after:
+    a file that changed meanwhile leaves nothing memoised."""
     launcher = os.path.realpath(program)
     folder = os.path.dirname(launcher)
     home = os.path.dirname(folder)
@@ -383,22 +389,35 @@ def runtime_digest(program):
                if os.path.isfile(os.path.join(home, *library.split("/")))), None)
     if os.path.basename(folder) != "bin" or not (os.path.isfile(release) and os.path.isfile(modules)) or vm is None:
         raise Unkeyed("the launcher is not in a JDK's bin folder")
-
-    files = [launcher, release, modules, vm]
+    files = [launcher, release, modules, vm, os.path.join(home, "lib", "ct.sym")]
 
     def identity(path):
         """Which file it is on this machine (its real path, device and inode) and its last change (size, mtime,
         ctime): only the memo's guard, never the key. A link retargeted to a file of the same size and mtime, or a
-        rewrite that puts both back, changes it, so the file is hashed again."""
+        rewrite that puts both back, changes it."""
         real = os.path.realpath(path)
-        stat = os.stat(real)
+        try:
+            stat = os.stat(real)
+        except (FileNotFoundError, NotADirectoryError):
+            return [real, "absent"]
         return [real, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
-    memo = CACHE / "runtimes" / f"{digest([identity(path) for path in files])}.json"
+    def content(path):
+        try:
+            return bytes_digest(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return "absent"
+
+    before = [identity(path) for path in files]
+    marker = machine()
+    memo = RUNTIME_MEMO / f"{digest(before)}.json"
     try:
-        content, version = json.loads(memo.read_text())
-    except (OSError, ValueError, TypeError):
-        content = [bytes_digest(path) for path in files]
+        entry = json.loads(memo.read_text()) if marker else None
+        if entry["machine"] != marker:
+            raise ValueError("another machine's entry")
+        hashes, version = entry["content"], entry["version"]
+    except (OSError, ValueError, TypeError, KeyError):
+        hashes = [content(path) for path in files]
         try:
             result = subprocess.run([program, "-version"], stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
         except (OSError, subprocess.SubprocessError) as error:
@@ -406,14 +425,34 @@ def runtime_digest(program):
         if result.returncode:
             raise Unkeyed(f"-version exited {result.returncode}")
         version = digest([result.stdout.hex(), result.stderr.hex()])
-        try:
-            memo.parent.mkdir(parents=True, exist_ok=True)
-            temporary = memo.with_suffix(f".{os.getpid()}.tmp")
-            temporary.write_text(json.dumps([content, version]))
-            temporary.replace(memo)
-        except OSError:
-            pass  # hashed and probed again next time
-    return digest([os.path.relpath(vm, home), content, version])
+        # Memoised only when every file held still from the first stat to this one: the hashes and the probe may
+        # otherwise have read another file than the one the entry is named after. This call uses them either way.
+        if marker and [identity(path) for path in files] == before:
+            try:
+                RUNTIME_MEMO.mkdir(parents=True, exist_ok=True)
+                temporary = memo.with_suffix(f".{os.getpid()}.tmp")
+                temporary.write_text(json.dumps({"machine": marker, "content": hashes, "version": version}))
+                temporary.replace(memo)
+            except OSError:
+                pass  # hashed and probed again next time
+    return digest([os.path.relpath(vm, home), hashes, version])
+
+
+def machine():
+    """This machine, as far as it can be told cheaply: its systemd machine id (Linux; macOS has none), its host name,
+    the home folder's device and inode, and the device of the folder RUNTIME_MEMO is in. A second guard: a memo entry
+    made elsewhere is ignored even if RUNTIME_MEMO was copied here by mistake. None when it can't be read, and then
+    the memo is not used."""
+    try:
+        with open("/etc/machine-id") as stream:
+            machine_id = stream.read().strip()
+    except OSError:
+        machine_id = ""
+    try:
+        home, parent = os.stat(os.path.expanduser("~")), os.stat(RUNTIME_MEMO.parent)
+    except OSError:
+        return None
+    return digest([machine_id, os.uname().nodename, home.st_dev, home.st_ino, parent.st_dev])
 
 
 def unrecorded(index, variables, runtime):
