@@ -11,9 +11,13 @@
 //!
 //! [`Boundary`] holds what the source says of those: each call's signature hash, the owned types
 //! it reaches with their [shapes](crate::shape) (hidden ones too), and a fingerprint of the core's
-//! source inputs with the owned types its control payloads reach. [`apply`] adds every change to
-//! an existing call or to the core to a surface diff, as breaking. A call that is new is never a
-//! change here.
+//! source inputs with the owned types its control payloads and prepared hooks reach. A shape
+//! leaves out type names, which the `Wire` derive hashes, so the source can miss a change:
+//! [`Compiled`] holds the hashes the game itself compares, as a build compiled them
+//! (`crates/horizon-mod-api/examples/wire_layouts.rs`). [`apply`] adds every change to an
+//! existing call or to the core to a surface diff, as breaking, by what the source shows and,
+//! where the source shows nothing, by the compiled hash. A call that is new is never a change
+//! here.
 use crate::Surface;
 use crate::diff::{Change, ChangeKind, Class, Diff, Verdict};
 use serde::{Deserialize, Serialize};
@@ -69,6 +73,38 @@ impl Boundary {
             return Err(format!("boundary schema {}, not {SCHEMA}", boundary.schema));
         }
         Ok(boundary)
+    }
+}
+
+/// The schema of a compiled layouts document; another number is refused.
+pub const COMPILED_SCHEMA: u32 = 1;
+
+/// What one build compiled: the core layout (`mod_api::wire::LAYOUT`) and every call's
+/// (`mod_api::call_layouts`), as 16 hex digits.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Compiled {
+    pub schema: u32,
+    pub core: String,
+    pub calls: Vec<CompiledCall>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledCall {
+    pub key: String,
+    pub layout: String,
+    pub export: bool,
+}
+
+impl Compiled {
+    pub fn read(bytes: &[u8]) -> Result<Self, String> {
+        let compiled: Compiled = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        if compiled.schema != COMPILED_SCHEMA {
+            return Err(format!(
+                "compiled layouts schema {}, not {COMPILED_SCHEMA}",
+                compiled.schema
+            ));
+        }
+        Ok(compiled)
     }
 }
 
@@ -131,13 +167,16 @@ fn reachers(by: &BTreeSet<String>) -> String {
 
 /// Adds to `diff` the changes of the boundary from `old` to `new`, all breaking: a changed core,
 /// an existing call gone or changed, and a layout change of an owned type an existing call or the
-/// core reaches. `old_surface` and `new_surface` are the surfaces `diff` compared.
+/// core reaches. With `compiled`, the two builds' compiled hashes: a change to one that nothing
+/// the source shows explains is added too, under the call's id or `core:wire`. `old_surface` and
+/// `new_surface` are the surfaces `diff` compared.
 pub fn apply(
     diff: &mut Diff,
     old_surface: &Surface,
     new_surface: &Surface,
     old: &Boundary,
     new: &Boundary,
+    compiled: Option<(&Compiled, &Compiled)>,
 ) {
     let surfaces = [new_surface, old_surface];
     let mut lines: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -147,10 +186,11 @@ pub fn apply(
             old.core, new.core
         ));
     }
-    // Owned types whose layout changed: their layouts, and what reaches them.
-    type Layouts = BTreeMap<String, (Option<String>, Option<String>, BTreeSet<String>)>;
+    // Owned types whose layout changed: their layouts, and what reaches them (a call's key, or
+    // the core as `None`).
+    type Layouts = BTreeMap<String, (Option<String>, Option<String>, BTreeSet<Option<String>>)>;
     let mut layouts = Layouts::new();
-    let mut compare = |before: &[Owned], after: &[Owned], by: String| {
+    let mut compare = |before: &[Owned], after: &[Owned], by: Option<&str>| {
         for was in before {
             if let Some(now) = after.iter().find(|o| o.path == was.path)
                 && now.shape != was.shape
@@ -159,7 +199,7 @@ pub fn apply(
                     .entry(was.path.clone())
                     .or_insert((was.shape.clone(), now.shape.clone(), BTreeSet::new()))
                     .2
-                    .insert(by.clone());
+                    .insert(by.map(str::to_owned));
             }
         }
     };
@@ -181,10 +221,12 @@ pub fn apply(
             )
         })
     };
-    compare(&old.core_owned, &new.core_owned, "the wire core".into());
+    compare(&old.core_owned, &new.core_owned, None);
     if let Some(line) = changed_set("the wire core", &old.core_owned, &new.core_owned) {
         lines.entry("core:wire".into()).or_default().push(line);
     }
+    // The calls whose change the source shows, for the compiled comparison.
+    let mut explained: BTreeSet<String> = BTreeSet::new();
     let after: BTreeMap<&str, &Call> = new.calls.iter().map(|c| (c.key.as_str(), c)).collect();
     for call in &old.calls {
         let mut said = Vec::new();
@@ -206,19 +248,30 @@ pub fn apply(
                 }
                 let key = format!("call `{}`", call.key);
                 said.extend(changed_set(&key, &call.owned, &now.owned));
-                compare(&call.owned, &now.owned, format!("`{}`", call.key));
+                compare(&call.owned, &now.owned, Some(&call.key));
             }
         }
         if !said.is_empty() {
+            explained.insert(call.key.clone());
             lines
                 .entry(call_id(&call.key, surfaces))
                 .or_default()
                 .extend(said);
         }
     }
+    let mut core_explained = lines.contains_key("core:wire");
     for (path, (was, now, by)) in layouts {
         let id = type_id(&path, surfaces);
-        let reached = format!("reached by {}, so {REFUSED}", reachers(&by));
+        core_explained |= by.contains(&None);
+        explained.extend(by.iter().flatten().cloned());
+        let named: BTreeSet<String> = by
+            .iter()
+            .map(|by| {
+                by.as_ref()
+                    .map_or_else(|| "the wire core".to_owned(), |key| format!("`{key}`"))
+            })
+            .collect();
+        let reached = format!("reached by {}, so {REFUSED}", reachers(&named));
         // The surface's own line for the same change says it affects wasm mods only.
         let mut raised = false;
         if let Some(change) = diff.changes.iter_mut().find(|c| c.id == id) {
@@ -242,6 +295,37 @@ pub fn apply(
                 shape(&was),
                 shape(&now)
             ));
+        }
+    }
+    if let Some((was, now)) = compiled {
+        const UNSEEN: &str = "with no change the source shows (a crossing type's name, which the `Wire` derive hashes and a shape leaves out, for example)";
+        if was.core != now.core && !core_explained {
+            lines.entry("core:wire".into()).or_default().push(format!(
+                "the compiled core layout changed (`{}` → `{}`) {UNSEEN}: {REFUSED}",
+                was.core, now.core
+            ));
+        }
+        let after: BTreeMap<&str, &CompiledCall> =
+            now.calls.iter().map(|c| (c.key.as_str(), c)).collect();
+        for call in &was.calls {
+            if explained.contains(&call.key) {
+                continue;
+            }
+            let line = match after.get(call.key.as_str()) {
+                None => format!(
+                    "call `{}` is gone from the compiled table: {REFUSED}",
+                    call.key
+                ),
+                Some(n) if n.layout != call.layout || n.export != call.export => format!(
+                    "call `{}`: its compiled layout changed (`{}` → `{}`) {UNSEEN}: {REFUSED}",
+                    call.key, call.layout, n.layout
+                ),
+                Some(_) => continue,
+            };
+            lines
+                .entry(call_id(&call.key, surfaces))
+                .or_default()
+                .push(line);
         }
     }
     for (id, said) in lines {

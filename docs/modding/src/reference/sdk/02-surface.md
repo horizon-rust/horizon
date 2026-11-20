@@ -67,12 +67,17 @@ same report for two published builds.
 
 When the `verify (mod points)` check runs on a pull request, its summary carries this report, comparing the merge
 base with the head; `--calls` adds the calls and core each build's wasm mods are checked by (`horizon-stage surface
-ROOT OUT --calls CALLS` writes them). The head's `horizon-stage` exports both trees, so a change to the generator
-itself (its file roots or prepared ids, how it hashes a call) shows in neither. It reports, and fails the check only
-when:
+ROOT OUT --calls CALLS` writes them). `--layouts` adds what both builds compiled: the core layout and every call's
+hash, exactly as the game compares them (`crates/horizon-mod-api/examples/wire_layouts.rs` prints them). A change
+there that the source shows nothing of, a crossing type's name for one (the `Wire` derive hashes it, a shape leaves it
+out) or a change to the generator itself, is reported under the call's id or `core:wire`. The base's compiled layouts
+come from a store that main's runs fill, one file per commit, or are built by checking the base out in place. A
+source change the compiled hashes do not see still counts: a newtype that crosses `via` the type it wraps changes the
+shape and not the layout, and needs a note. It reports, and fails the check only when:
 
 - the head's tree cannot be exported;
-- with the gate on, no comparison can run: the base cannot be found or fetched, or the head's tool cannot read it;
+- with the gate on, no comparison can run: the base cannot be found or fetched, the head's tool cannot read it, or
+  either build's compiled layouts cannot be built;
 - a change note cannot be read, or names an item that did not change;
 - a breaking change has no change note: every breaking record the report lists, members included (a removed field is
   its own line), is named by a note the pull request adds. Conditional and additive changes need none. The gate is
