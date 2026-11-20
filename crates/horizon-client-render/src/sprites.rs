@@ -931,8 +931,8 @@ impl Sprites {
 /// Refuses a sprite's frames before their square layers are made. A frame of any shape becomes a
 /// `side` x `side` layer, so a 32768x1 image of a few hundred bytes would otherwise ask for 4 GiB.
 /// A side may be at most [`MAX_ATLAS_SIZE`](crate::hud::MAX_ATLAS_SIZE), and all `count` squares
-/// together at most a full atlas, the ceiling [`crate::hud::png_frame_buffer`] puts on the image.
-fn check_frames(side: u32, count: u32) -> std::result::Result<(), String> {
+/// together at most a full atlas, the ceiling [`crate::hud::read_png`] puts on the image.
+pub(crate) fn check_frames(side: u32, count: u32) -> std::result::Result<(), String> {
     let atlas = u128::from(crate::hud::MAX_ATLAS_SIZE);
     let texels = u128::from(count) * u128::from(side) * u128::from(side);
     if u128::from(side) > atlas || texels > atlas * atlas {
@@ -950,11 +950,7 @@ fn read_rgba(source: &ResourceSource, path: &str) -> Result<(u32, u32, Vec<u8>)>
     decode_rgba(&source.read(path)?)
 }
 pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.ignore_checksums(true);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info()?;
-    let mut bytes = crate::hud::png_frame_buffer(&reader)?;
+    let (mut reader, mut bytes) = crate::hud::read_png(bytes)?;
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
     let mut pixels = Vec::with_capacity(info.width as usize * info.height as usize * 4);
@@ -1877,13 +1873,13 @@ mod tests {
 mod png_size_tests {
     use crate::hud::{claimed_size_png, grey_png};
 
-    /// A block texture whose header claims 60000x60000 pixels is refused from its header, as an
-    /// undecodable one is, before memory for its pixels is reserved.
+    /// A block texture whose header claims more pixels than a full atlas is refused from its
+    /// header, as an undecodable one is, before memory for its pixels is reserved.
     #[test]
     fn a_sprite_claiming_a_huge_size_is_refused() {
-        let error = super::decode_rgba(&claimed_size_png(60_000, 60_000)).unwrap_err();
+        let error = super::decode_rgba(&claimed_size_png(16_385, 16_384)).unwrap_err();
         assert!(
-            error.to_string().contains("60000x60000 PNG is larger"),
+            error.to_string().contains("16385x16384 PNG is larger"),
             "{error}"
         );
     }
@@ -1931,6 +1927,18 @@ mod png_size_tests {
         let decoded = decode_sprite(&grey_png(16, 64), Some(r#"{"animation":{}}"#)).unwrap();
         assert_eq!((decoded.side, decoded.frames.len()), (16, 4));
         assert_eq!(decoded.frames[3], [128, 128, 128, 255].repeat(256));
+    }
+
+    /// A strip of 16x16 frames a little over 32768 pixels tall (about 2 MiB) loads in the Java
+    /// game: its sheet is longer than any texture side, its frames are small.
+    #[test]
+    fn a_strip_longer_than_any_texture_side_loads() {
+        let height = crate::atlas_sources::MAX_SPRITE_SIDE as u32 + 16;
+        let decoded = decode_sprite(&grey_png(16, height), Some(r#"{"animation":{}}"#)).unwrap();
+        assert_eq!(
+            (decoded.side, decoded.frames.len()),
+            (16, height as usize / 16)
+        );
     }
 
     /// The largest frame the check lets through is 1 GiB, too heavy to decode in CI: its edges

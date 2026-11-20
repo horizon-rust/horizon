@@ -290,11 +290,7 @@ pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
 
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
-    decoder.ignore_checksums(true);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info()?;
-    let mut bytes = png_frame_buffer(&reader)?;
+    let (mut reader, mut bytes) = read_png(data)?;
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
     let mut rgba = Vec::with_capacity(info.width as usize * info.height as usize * 4);
@@ -351,26 +347,34 @@ pub fn png_bytes_size(data: &[u8]) -> Option<(u32, u32)> {
     let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
     Some((field(16), field(20)))
 }
-/// The zeroed buffer `reader.next_frame` fills, or an error when the PNG's header claims a size
-/// no texture could use. The PNG reader trusts the header and leaves this buffer to its caller,
-/// so a pack file of a few dozen bytes could otherwise ask for gigabytes and end the game. A side
-/// may be at most [`MAX_SPRITE_SIDE`](crate::atlas_sources::MAX_SPRITE_SIDE), the largest any
-/// GPU takes, and the texels at most a full [`MAX_ATLAS_SIZE`] atlas (1 GiB of RGBA).
-pub(crate) fn png_frame_buffer<R: std::io::BufRead + std::io::Seek>(
-    reader: &png::Reader<R>,
-) -> std::result::Result<Vec<u8>, String> {
-    let (width, height) = reader.info().size();
+/// A pack PNG's reader, set to give 8-bit samples, and the zeroed buffer its `next_frame` fills;
+/// an error when the header claims more pixels than any texture it could fill. The PNG reader
+/// trusts the header and leaves this buffer to its caller, so a pack file of a few dozen bytes
+/// could otherwise ask for gigabytes and end the game. The header is checked before `read_info`,
+/// whose own row-size arithmetic trusts it too. Only the pixel count is bounded, by a full
+/// [`MAX_ATLAS_SIZE`] atlas (1 GiB of RGBA): a sheet may be far longer than any texture side
+/// (an animation strip of small frames), so sides are checked on what is cut from it.
+pub(crate) fn read_png<B: AsRef<[u8]>>(
+    bytes: B,
+) -> std::result::Result<(png::Reader<std::io::Cursor<B>>, Vec<u8>), String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    // As stb_image, which never checks chunk CRCs: packs ship PNGs with wrong ones.
+    decoder.ignore_checksums(true);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let (width, height) = decoder
+        .read_header_info()
+        .map_err(|e| e.to_string())?
+        .size();
     check_png_size(width, height)?;
+    let reader = decoder.read_info().map_err(|e| e.to_string())?;
     let size = reader
         .output_buffer_size()
         .ok_or_else(|| format!("a {width}x{height} PNG exceeds the decoder's limits"))?;
-    Ok(vec![0; size])
+    Ok((reader, vec![0; size]))
 }
 fn check_png_size(width: u32, height: u32) -> std::result::Result<(), String> {
-    let side = u64::from(width.max(height));
-    let texels = u64::from(width) * u64::from(height);
     let atlas = u64::from(MAX_ATLAS_SIZE);
-    if side > crate::atlas_sources::MAX_SPRITE_SIDE as u64 || texels > atlas * atlas {
+    if u64::from(width) * u64::from(height) > atlas * atlas {
         return Err(format!(
             "a {width}x{height} PNG is larger than any texture it could fill"
         ));
@@ -451,7 +455,7 @@ type PackedImage = (String, u32, u32, Vec<u8>);
 /// for the world's sprite arrays.
 fn strip_frame(pixels: &[u8], stride: u32, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
     let side = w.max(h);
-    let mut out = Vec::with_capacity((side * side * 4) as usize);
+    let mut out = Vec::with_capacity(side as usize * side as usize * 4);
     for row in 0..side {
         let source_row = y + row * h / side;
         for column in 0..side {
@@ -477,8 +481,15 @@ fn first_frame(
         meta.frame_size(w as i32, h as i32)
     });
     match (u32::try_from(fw), u32::try_from(fh)) {
+        // A frame whose square no atlas holds keeps the whole image, as frame metadata that
+        // doesn't fit does, rather than ask for gigabytes.
         (Ok(fw), Ok(fh))
-            if fw > 0 && fh > 0 && w % fw == 0 && h % fh == 0 && (fw, fh) != (w, h) =>
+            if fw > 0
+                && fh > 0
+                && w % fw == 0
+                && h % fh == 0
+                && (fw, fh) != (w, h)
+                && crate::sprites::check_frames(fw.max(fh), 1).is_ok() =>
         {
             let side = fw.max(fh);
             (side, side, strip_frame(&pixels, w, 0, 0, fw, fh))
@@ -3388,39 +3399,49 @@ mod tests {
         assert!(decode_bytes(webp).is_err());
     }
 
-    /// A pack PNG of a few dozen bytes whose header claims 60000x60000 pixels would make the
-    /// decoder reserve 14 GB; it is refused from its header, with nothing reserved.
+    /// A pack PNG of a few dozen bytes whose header claims one row more than a full atlas would
+    /// make the decoder reserve 1 GiB; it is refused from its header, with nothing reserved.
     #[test]
     fn decode_bytes_refuses_a_png_claiming_a_huge_size() {
-        let error = decode_bytes(&claimed_size_png(60_000, 60_000)).unwrap_err();
+        let error = decode_bytes(&claimed_size_png(16_385, 16_384)).unwrap_err();
         assert!(
-            error.to_string().contains("60000x60000 PNG is larger"),
+            error.to_string().contains("16385x16384 PNG is larger"),
             "{error}"
         );
     }
 
     #[test]
-    fn png_sizes_are_bounded_by_the_largest_texture() {
-        let side = crate::atlas_sources::MAX_SPRITE_SIDE as u32;
-        assert_eq!(check_png_size(side, 1), Ok(()));
+    fn png_sizes_are_bounded_by_a_full_atlas() {
+        let texels = MAX_ATLAS_SIZE * MAX_ATLAS_SIZE;
         assert_eq!(check_png_size(MAX_ATLAS_SIZE, MAX_ATLAS_SIZE), Ok(()));
-        assert_eq!(
-            check_png_size(side, MAX_ATLAS_SIZE * MAX_ATLAS_SIZE / side),
-            Ok(())
-        );
-        assert!(check_png_size(side + 1, 1).is_err());
-        assert!(check_png_size(1, side + 1).is_err());
+        assert_eq!(check_png_size(16, texels / 16), Ok(()));
+        assert_eq!(check_png_size(texels, 1), Ok(()));
         assert!(check_png_size(MAX_ATLAS_SIZE + 1, MAX_ATLAS_SIZE).is_err());
+        assert!(check_png_size(texels + 1, 1).is_err());
         assert!(check_png_size(u32::MAX, u32::MAX).is_err());
     }
 
+    /// A strip of 16x16 frames longer than any texture side holds about 2 MiB and loads.
     #[test]
-    fn decode_bytes_reads_a_png_at_the_side_limit() {
-        let side = crate::atlas_sources::MAX_SPRITE_SIDE as u32;
-        let (width, height, rgba) = decode_bytes(&grey_png(side, 1)).unwrap();
-        assert_eq!((width, height), (side, 1));
-        assert_eq!(rgba.len(), side as usize * 4);
+    fn decode_bytes_reads_a_strip_longer_than_any_texture_side() {
+        let height = crate::atlas_sources::MAX_SPRITE_SIDE as u32 + 16;
+        let (width, read_height, rgba) = decode_bytes(&grey_png(16, height)).unwrap();
+        assert_eq!((width, read_height), (16, height));
+        assert_eq!(rgba.len(), 16 * height as usize * 4);
         assert_eq!(rgba[..4], [128, 128, 128, 255]);
+    }
+
+    /// A HUD sprite's first frame whose square no atlas holds keeps the whole image, as frame
+    /// metadata that doesn't fit does; an ordinary strip gives its first square frame.
+    #[test]
+    fn a_first_frame_too_large_to_square_keeps_the_image() {
+        let wide = AnimationMetadata::from_json(r#"{"width":16385,"height":1}"#).unwrap();
+        let image = (16_385, 2, vec![7; 16_385 * 2 * 4]);
+        let (w, h, pixels) = first_frame(image, Some(&wide));
+        assert_eq!((w, h, pixels.len()), (16_385, 2, 16_385 * 2 * 4));
+        let strip = AnimationMetadata::from_json("{}").unwrap();
+        let (w, h, pixels) = first_frame((16, 32, vec![7; 16 * 32 * 4]), Some(&strip));
+        assert_eq!((w, h, pixels.len()), (16, 16, 16 * 16 * 4));
     }
 
     #[test]

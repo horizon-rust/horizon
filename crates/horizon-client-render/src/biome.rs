@@ -215,16 +215,20 @@ fn server_colormap(root: &ResourceSource, name: &str) -> Result<Vec<u32>> {
     }
 }
 fn decode_colormap(bytes: Vec<u8>) -> Result<Vec<u32>> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.ignore_checksums(true);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info()?;
-    let mut bytes = crate::hud::png_frame_buffer(&reader)?;
+    let (mut reader, mut bytes) = crate::hud::read_png(bytes)?;
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
     Ok(bytes[..info.buffer_size()]
         .chunks_exact(channels)
-        .map(|p| u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]))
+        .map(|p| {
+            // A greyscale map's one sample is its red, green and blue, as `decode_bytes` reads it.
+            let [r, g, b] = if channels < 3 {
+                [p[0]; 3]
+            } else {
+                [p[0], p[1], p[2]]
+            };
+            u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
+        })
         .collect())
 }
 /// `GrassColor.get`/`FoliageColor.get`: temperature and downfall index a 256x256 map.
@@ -1332,16 +1336,37 @@ mod exhaustion_tests {
 
 #[cfg(test)]
 mod colormap_size_tests {
-    /// A pack colormap whose header claims 60000x60000 pixels is an error, as an undecodable one
-    /// is, before memory for its pixels is reserved.
+    /// A pack colormap whose header claims more pixels than a full atlas is an error, as an
+    /// undecodable one is, before memory for its pixels is reserved.
     #[test]
     fn a_colormap_claiming_a_huge_size_is_refused() {
-        let png = crate::hud::claimed_size_png(60_000, 60_000);
+        let png = crate::hud::claimed_size_png(16_385, 16_384);
         let error = super::decode_colormap(png).unwrap_err();
         assert!(
-            error.to_string().contains("60000x60000 PNG is larger"),
+            error.to_string().contains("16385x16384 PNG is larger"),
             "{error}"
         );
+    }
+
+    /// A greyscale map (with or without alpha) decodes to one or two samples a pixel; each
+    /// pixel's grey is its red, green and blue.
+    #[test]
+    fn a_greyscale_colormap_decodes() {
+        for (color, samples) in [
+            (png::ColorType::Grayscale, vec![0x80]),
+            (png::ColorType::GrayscaleAlpha, vec![0x80, 0xFF]),
+        ] {
+            let mut encoded = Vec::new();
+            let mut encoder = png::Encoder::new(&mut encoded, 256, 256);
+            encoder.set_color(color);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&samples.repeat(256 * 256)).unwrap();
+            writer.finish().unwrap();
+            let map = super::decode_colormap(encoded).unwrap();
+            assert_eq!(map.len(), 256 * 256);
+            assert!(map.iter().all(|&c| c == 0x0080_8080), "{color:?}");
+        }
     }
 
     #[test]

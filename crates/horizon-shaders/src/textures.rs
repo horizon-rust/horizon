@@ -211,23 +211,24 @@ fn could_hold(width: u32, height: u32, bits: u64, file: usize) -> bool {
     pixel_bytes <= 1032 * file as u128
 }
 
-/// A PNG as 8-bit RGBA, rows top first.
-pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
+/// A decoder for `bytes` with its header read, or `None` when the header claims more pixels than
+/// the file could hold ([`could_hold`]). Checked before `read_info`, whose own row-size
+/// arithmetic trusts the header too.
+fn checked_decoder(bytes: &[u8]) -> Option<png::Decoder<std::io::Cursor<&[u8]>>> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     // Packs ship PNGs with wrong chunk checksums (a server's obfuscated pack);
     // the game's other pack textures decode them, as stb_image does.
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    let info = reader.info();
-    if !could_hold(
-        info.width,
-        info.height,
-        info.color_type.samples() as u64 * info.bit_depth as u64,
-        bytes.len(),
-    ) {
-        return None;
-    }
+    let info = decoder.read_header_info().ok()?;
+    let bits = info.color_type.samples() as u64 * info.bit_depth as u64;
+    let (width, height) = (info.width, info.height);
+    could_hold(width, height, bits, bytes.len()).then_some(decoder)
+}
+
+/// A PNG as 8-bit RGBA, rows top first.
+pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
+    let mut reader = checked_decoder(bytes)?.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     let pixels = &buf[..info.buffer_size()];
@@ -465,15 +466,17 @@ mod tests {
         encoded
     }
 
-    /// A pack texture of a few dozen bytes whose header claims 60000x60000 pixels is no PNG,
+    /// A pack texture of a few dozen bytes whose header claims 4096x4096 pixels is no PNG,
     /// and is refused from its header before memory for its pixels is reserved.
     #[test]
     fn a_png_claiming_more_pixels_than_its_file_holds_is_refused() {
         let mut crafted = grey_png(1, 1);
         let ihdr = crafted.windows(4).position(|w| w == b"IHDR").unwrap();
-        crafted[ihdr + 4..ihdr + 8].copy_from_slice(&60_000u32.to_be_bytes());
-        crafted[ihdr + 8..ihdr + 12].copy_from_slice(&60_000u32.to_be_bytes());
-        assert!(!could_hold(60_000, 60_000, 32, crafted.len()));
+        crafted[ihdr + 4..ihdr + 8].copy_from_slice(&4096u32.to_be_bytes());
+        crafted[ihdr + 8..ihdr + 12].copy_from_slice(&4096u32.to_be_bytes());
+        // Refused from the header, before `read_info` or any pixel buffer.
+        assert!(checked_decoder(&crafted).is_none());
+        assert!(checked_decoder(&grey_png(1, 1)).is_some());
         assert!(decode_png(&crafted).is_none());
     }
 

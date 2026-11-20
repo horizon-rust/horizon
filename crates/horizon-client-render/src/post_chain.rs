@@ -1120,12 +1120,7 @@ impl PostEffects {
 
     /// A post effect image's PNG `bytes` as its frame and RGBA pixels.
     fn decode_image(bytes: Vec<u8>) -> Result<(png::OutputInfo, Vec<u8>), String> {
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-        // As the other resource-pack images: stb_image never checks chunk CRCs.
-        decoder.ignore_checksums(true);
-        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
-        let mut data = crate::hud::png_frame_buffer(&reader)?;
+        let (mut reader, mut data) = crate::hud::read_png(bytes)?;
         let info = reader.next_frame(&mut data).map_err(|e| e.to_string())?;
         let rgba: Vec<u8> = match info.color_type {
             png::ColorType::Rgba => data[..info.buffer_size()].to_vec(),
@@ -2597,13 +2592,13 @@ mod tests {
 
 #[cfg(test)]
 mod effect_image_size_tests {
-    /// A post effect image whose header claims 60000x60000 pixels fails the chain as an
-    /// undecodable one does, before memory for its pixels is reserved.
+    /// A post effect image whose header claims more pixels than a full atlas fails the chain as
+    /// an undecodable one does, before memory for its pixels is reserved.
     #[test]
     fn an_effect_image_claiming_a_huge_size_is_refused() {
-        let png = crate::hud::claimed_size_png(60_000, 60_000);
+        let png = crate::hud::claimed_size_png(16_385, 16_384);
         let error = super::PostEffects::decode_image(png).unwrap_err();
-        assert!(error.contains("60000x60000 PNG is larger"), "{error}");
+        assert!(error.contains("16385x16384 PNG is larger"), "{error}");
     }
 
     #[test]
