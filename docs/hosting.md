@@ -392,12 +392,32 @@ Horizon clients can get their far terrain (Video Settings → LOD Distance) from
 `horizon-lod-distance` under `[properties]` to how far, in chunks (1024 at most), and the server samples the
 tiles each player's client asks for out to there. It is off (0) by default: far tiles show the world's terrain
 far past the view distance, which helps players find the seed. A player's own LOD Distance applies when it is
-shorter. Each player may have 8 tiles waiting and ask for 64 a second on average, and one background thread
-samples them for everyone in turn, behind the ticks, so far terrain never slows the server down; a tile past the
-distance or over a player's limits is refused, and a client that keeps breaking the limits is disconnected.
+shorter. Each player may have 8 tiles waiting and ask for 64 a second on average, and background threads
+sample them for everyone in turn at the lowest priority, so the ticks come first. They still share the
+machine's cores, memory and caches with the ticks, and can slow them some where the cores are few: a laptop
+serving 8 players far apart measured 28 to 33 ms a tick with far terrain, 26 to 29 ms without. There is one
+thread up to 8 cores, then one for each 8 cores, 4 at most, the ones
+past the first sampling only once a tile has waited longer than a client can wait and keep up (62 ms);
+`horizon-lod-threads` under `[properties]` sets how many (0, the default, sizes them from the machine; 16 at
+most). A tile past the distance or over a player's limits is refused, and a client that keeps breaking the
+limits is disconnected.
 A tile is the same for every player in its level, so the server keeps the tiles it sampled in memory (up to
 32 MiB, about 4,000 tiles; the least recently asked for go first) and answers the next player who asks for one
-with it: players looking at the same land cost one sample. Vanilla clients never hear of it.
+with it: players looking at the same land cost one sample. Tiles up to 16 blocks a column (within about 128
+chunks of a player; 4 blocks and about 16 chunks with Reduced far detail) are made from the world's saved chunks
+where it has them, so what players built shows, and from the generator only where a chunk was never saved; a
+tile of saved chunks alone costs no generation at all. Coarser tiles are the generator's. A chunk saved again
+drops the tiles made from it, so a build shows in far terrain once its chunk is saved: a changed chunk that stays
+loaded is saved about 10 seconds after its last save (vanilla's eager chunk saving), so far terrain lags the world
+by about that much; it reads saves, not the live chunks the ticks are changing. The first time far terrain reads
+a saved chunk for a tile coarser than a block a column, it also writes the chunk's far summary in
+`data/horizon_far_summaries/` of the level's folder (vanilla never reads it): the chunk's columns as the tiles of
+2, 4, 8 and 16 blocks a column draw them, so the next read is one small record instead of a whole chunk to
+decode. A summary is written again when its chunk was saved since, and ignored when the game's version or the
+world's block states (its mods) changed. Summaries take about 4.3 MB on disk per 1,000 chunks, half of what the
+chunks themselves take (about 9 MB); deleting the folder only makes them be written again, and frees the space
+older summaries kept (a world that had them from an earlier Horizon keeps their files' size until then).
+Vanilla clients never hear of it.
 
 `horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
 `reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and
