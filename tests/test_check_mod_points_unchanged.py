@@ -485,6 +485,14 @@ class SnapshotStoreTests(unittest.TestCase):
             self.assertEqual(gate.find_snapshot(self.store, key),
                              (None, None, f"miss: stored under another key ({differs})"))
 
+    def remarked(self, folder, digest=True, **fields):
+        """Rewrite the marker with `fields` changed, its digest recomputed or (digest=False) left as it was."""
+        marker = json.loads((folder / gate.MARKER).read_text())
+        marker.update(fields)
+        if digest:
+            marker["digest"] = gate.marker_digest(marker["key"], marker["root"], marker["files"])
+        (folder / gate.MARKER).write_text(json.dumps(marker))
+
     def test_an_incomplete_or_corrupt_snapshot_is_a_miss_not_an_error(self):
         damages = {
             "truncated file": lambda folder: (folder / "out/points.json").write_text("[{"),
@@ -492,10 +500,11 @@ class SnapshotStoreTests(unittest.TestCase):
             "removed file": lambda folder: (folder / "out/api.rs").unlink(),
             "no marker": lambda folder: (folder / gate.MARKER).unlink(),
             "garbled marker": lambda folder: (folder / gate.MARKER).write_text("{\"key\": "),
-            "marker of another commit": lambda folder: (folder / gate.MARKER).write_text(
-                json.dumps({"key": dict(self.key, commit="beef"), "root": "/r", "files": {}})),
-            "marker without files": lambda folder: (folder / gate.MARKER).write_text(
-                json.dumps({"key": self.key, "root": "/r"})),
+            "damaged root": lambda folder: self.remarked(folder, digest=False, root="/work/mail"),
+            "damaged key": lambda folder: self.remarked(folder, digest=False, key=dict(self.key, rustc="x")),
+            "marker of another commit": lambda folder: self.remarked(folder, key=dict(self.key, commit="beef")),
+            "marker without digest": lambda folder: (folder / gate.MARKER).write_text(
+                json.dumps({"key": self.key, "root": "/work/main", "files": gate.file_hashes(folder / "out")})),
         }
         for name, damage in damages.items():
             with self.subTest(name):
@@ -531,23 +540,65 @@ class SnapshotStoreTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertFalse(self.store.exists())
 
-    def test_a_hit_builds_only_the_working_tree(self):
-        head = gate.git("rev-parse", "HEAD")
-        self.stored(gate.snapshot_key(head, self.RUSTC))
+    def test_a_failed_store_leaves_no_partial_copy(self):
+        out = self.made("main-out", "/work/main")
+        with mock.patch.object(gate, "file_hashes", mock.Mock(side_effect=OSError("No space left on device"))):
+            with self.assertRaises(OSError):
+                gate.store_snapshot(self.store, out, self.key, "/work/main")
+        self.assertEqual(list(self.store.iterdir()), [])
+
+    def check(self, base_points):
+        """main() comparing a working tree of [tick] with the base `self.key` names, the stored snapshot (if any)
+        holding [tick] as well: (status, the sides built, the output). Git and the generator are stand-ins; a built
+        base writes `base_points`."""
         sides = []
 
         def snapshot(root, out, target_dir, side):
             sides.append(side)
             out.mkdir()
-            (out / "points.json").write_text(json.dumps([point("tick")]))
+            points = base_points if side == "base" else [point("tick")]
+            (out / "points.json").write_text(json.dumps(points))
             (out / "api.rs").write_text(f"// generated from {root}/crates/horizon-client/src/game.rs\n")
             return 1.0, 2.0
 
-        with mock.patch.object(gate, "snapshot", snapshot), mock.patch.object(gate, "toolchain", lambda: self.RUSTC), \
+        def git(*args, cwd=gate.ROOT):
+            if args[0] == "rev-parse":
+                return self.key["commit"]
+            self.assertEqual(args[:2], ("worktree", "add"))
+            Path(args[-2]).mkdir(parents=True)
+            return ""
+
+        # No real git: `git ls-files` lists nothing and the worktree removal does nothing.
+        listed = gate.subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(gate, "snapshot", snapshot), mock.patch.object(gate, "git", git), \
+                mock.patch.object(gate, "toolchain", lambda root: self.RUSTC), \
+                mock.patch.object(gate.subprocess, "run", return_value=listed), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             status = gate.main(["--base", "HEAD", "--snapshots", str(self.store), "--target-dir", str(self.tmp)])
-        self.assertEqual((status, sides), (0, ["working tree"]), out.getvalue())
-        self.assertIn("Mod points base snapshot: hit; base 0 s (stored)", out.getvalue())
+        return status, sides, out.getvalue()
+
+    def test_a_hit_builds_only_the_working_tree(self):
+        self.key = gate.snapshot_key("c0ffee", self.RUSTC)
+        self.stored()
+        status, sides, out = self.check(base_points=[point("tick"), point("gone")])
+        self.assertEqual((status, sides), (0, ["working tree"]), out)
+        self.assertIn("Mod points base snapshot: hit; base 0 s (stored)", out)
+
+    def test_a_miss_builds_the_base_and_compares_with_it(self):
+        # The built base has a point the working tree lost: only a comparison with the built base fails.
+        self.key = gate.snapshot_key("c0ffee", self.RUSTC)
+        for name, prepare, route in (
+                ("nothing stored", lambda: None, "miss: none stored"),
+                ("corrupt root", lambda: self.remarked(self.stored(), digest=False, root="/work/mail"),
+                 "miss: incomplete (the marker does not match its digest)")):
+            with self.subTest(name):
+                shutil.rmtree(self.store, ignore_errors=True)
+                shutil.rmtree(self.tmp / "main-out", ignore_errors=True)
+                prepare()
+                status, sides, out = self.check(base_points=[point("tick"), point("gone")])
+                self.assertEqual((status, sides), (1, ["base", "working tree"]), out)
+                self.assertIn(f"Mod points base snapshot: {route}; base 3 s (compile 1 s, generator 2 s)", out)
+                self.assertIn("Points removed and failing (1):", out)
 
 
 if __name__ == "__main__":
