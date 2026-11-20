@@ -168,7 +168,16 @@ impl PendingScreenshot {
             screenshot_destination(root, &hdr_name)?;
         }
         self.rgba()?;
-        std::fs::create_dir_all(path.parent().expect("destination has a parent"))?;
+        let parent = path.parent().expect("destination has a parent");
+        // A mod's capture creates at most one new folder, so a hook that renames every
+        // capture into a fresh nested path makes no more folders than captures.
+        if self.no_replace
+            && !parent.is_dir()
+            && !parent.parent().is_some_and(|grand| grand.is_dir())
+        {
+            return Err("a mod's screenshot may create at most one new folder".into());
+        }
+        std::fs::create_dir_all(parent)?;
         self.path = path;
         self.save_with_details()
     }
@@ -183,7 +192,11 @@ fn write_png(image: &mod_api::ScreenshotImage, path: &Path) -> Result<()> {
     );
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
-    encoder.write_header()?.write_image_data(&image.rgba)?;
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&image.rgba)?;
+    // As the HDR copy's: dropping the writer would end the file and flush it but swallow
+    // either's error, and a mod's capture would then publish a PNG that isn't whole.
+    writer.finish()?;
     Ok(())
 }
 
@@ -217,7 +230,12 @@ fn publish_new(path: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<(
         }
         Err(e) => Err(e.into()),
     });
-    let _ = std::fs::remove_file(&temp);
+    if let Err(e) = std::fs::remove_file(&temp) {
+        log::warn!(
+            "Horizon renderer: couldn't remove the temporary screenshot {}: {e}",
+            temp.display()
+        );
+    }
     published
 }
 
@@ -483,6 +501,18 @@ mod tests {
         let info = reader.next_frame(&mut bytes).unwrap();
         assert_eq!(&bytes[..info.buffer_size()], &[12, 34, 56, 255]);
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 4);
+    }
+
+    #[test]
+    fn a_mods_capture_creates_at_most_one_new_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let mut pending = frame(root.path().join("unused.png"), false);
+        pending.no_replace = true;
+        assert!(pending.save_in(root.path(), "a/b/shot.png").is_err());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        pending.save_in(root.path(), "a/shot.png").unwrap();
+        pending.save_in(root.path(), "a/b/shot.png").unwrap();
+        assert!(root.path().join("a/b/shot.png").is_file());
     }
 
     #[test]

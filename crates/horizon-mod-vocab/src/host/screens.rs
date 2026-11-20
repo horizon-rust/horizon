@@ -144,10 +144,13 @@ pub trait ScreensClientHost {
     /// files are written, or the hook cancels them, after the next frame. Unlike F2's,
     /// its files never replace one: each is written to a temporary file and published
     /// only under a name no file has (a name the hook picked that exists keeps the
-    /// existing file and reports failure), and a failed write leaves no partial file.
-    /// One screenshot runs at a time, and all mods together may write 4 GiB of
-    /// screenshots per game session, each counted at its uncompressed size (4 bytes a
-    /// pixel, 6 more for an HDR copy): about 500 at 1920 by 1080. Refused with nothing
+    /// existing file and reports failure), a failed write leaves no partial file, and
+    /// a name the hook picked may create at most one new folder (a deeper one reports
+    /// failure). One screenshot runs at a time, and all mods together may write 4 GiB
+    /// of screenshots per game session, each counted at its uncompressed size after the
+    /// hook (4 bytes a pixel, 6 more for an HDR copy) and at least 1 MiB: about 500 at
+    /// 1920 by 1080, and never more than 4096. A capture that would pass the budget is
+    /// not written and reports failure. Refused with nothing
     /// queued, by name, as [`ScreenshotError`] lists: one still in progress, the
     /// session's budget used up, no screenshots folder, or no window here. Native and
     /// wasm alike.

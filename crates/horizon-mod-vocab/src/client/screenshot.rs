@@ -41,7 +41,8 @@ pub enum ScreenshotError {
     /// hook running, a screenshot still being written, or a screenshot sequence.
     Busy,
     /// Mod-started screenshots have used this game session's budget, shared by all
-    /// mods: 4 GiB, each counted at its uncompressed size. F2 is not limited.
+    /// mods: 4 GiB, each counted at its uncompressed size and at least 1 MiB. F2 is
+    /// not limited.
     BudgetExhausted,
     /// The player's `screenshots` folder could not be created.
     Folder,

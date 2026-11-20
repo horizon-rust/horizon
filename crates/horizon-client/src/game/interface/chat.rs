@@ -322,7 +322,8 @@ pub struct UiState {
     /// Uncompressed bytes of the mod captures written this session (`request_screenshot`'s budget).
     pub mod_screenshot_bytes: u64,
     /// The `screenshot` hook is running: a mod's request from inside it is `Busy`.
-    pub screenshot_hook: bool,
+    /// Shared with the guard that clears it, so a listener's panic can't leave it set.
+    pub screenshot_hook: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The options screens.
     pub options: horizon_client::options_ui::OptionsUi,
     /// The prepared resources before resource packs are layered on.
@@ -2313,14 +2314,14 @@ impl Game<'_> {
             .into_owned();
         let mut message = None;
         let mut cancel = false;
-        self.ui.screenshot_hook = true;
+        let hook = super::native_screenshot_request::HookRunning::start(&self.ui.screenshot_hook);
         self.native_screenshot(
             pending.image_mut(),
             &mut file_name,
             &mut message,
             &mut cancel,
         );
-        self.ui.screenshot_hook = false;
+        drop(hook);
         let by_mod = self
             .ui
             .mod_screenshot
@@ -2332,8 +2333,25 @@ impl Game<'_> {
             return None;
         }
         if by_mod {
+            // Charged before the writer starts, at no less than the minimum, so a hook that
+            // shrinks the image can't make captures free.
+            let charge =
+                super::native_screenshot_request::mod_screenshot_charge(pending.raw_bytes());
+            if !super::native_screenshot_request::within_budget(
+                self.ui.mod_screenshot_bytes,
+                charge,
+            ) {
+                self.ui.screenshot_messages.remove(at);
+                self.post_screenshot_chat(Text::translate(
+                    "screenshot.failure",
+                    &[Text::literal(
+                        "mod screenshots have used this session's budget",
+                    )],
+                ));
+                return None;
+            }
             pending.no_replace = true;
-            self.ui.mod_screenshot_bytes += pending.raw_bytes();
+            self.ui.mod_screenshot_bytes += charge;
         }
         let root = horizon_client::logging::player_dir().join("screenshots");
         self.ui

@@ -60,7 +60,8 @@ the PNG is written to the player's `screenshots` folder under vanilla's file nam
 A mod-started screenshot never replaces a file. Each PNG is written to a temporary file in the same
 folder and then published under its final name only if no file has that name: a name the hook picked
 that already exists keeps the existing file, the new one is deleted, and the chat line reports the
-failure. A failed write leaves no partial file.
+failure. A failed write leaves no partial file. A name the hook picked may create at most one new
+folder: a deeper path reports the failure and writes nothing.
 
 It returns `Err(ScreenshotError)` and queues nothing:
 
@@ -72,6 +73,7 @@ It returns `Err(ScreenshotError)` and queues nothing:
 | `Unavailable` | no window renders here: a server's thread or a client without a renderer |
 
 One screenshot runs at a time, so a mod cannot queue a burst. The session budget counts each written
-capture at its uncompressed size (4 bytes a pixel, 6 for an HDR copy), an upper bound on the PNGs: about
-500 screenshots at 1920 by 1080, or 120 at 3840 by 2160. It is reset when the game restarts. F2 itself
-is never limited.
+capture at its uncompressed size after the hook (4 bytes a pixel, 6 for an HDR copy), an upper bound on
+the PNGs, and at least 1 MiB: about 500 screenshots at 1920 by 1080, 120 at 3840 by 2160, and never more
+than 4096. A capture that would pass the budget once the hook has run is not written, and the chat line
+reports the failure. The budget is reset when the game restarts. F2 itself is never limited.
