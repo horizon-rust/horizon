@@ -100,7 +100,7 @@ class ParityRunnerTests(unittest.TestCase):
                  (900.0, "   Compiling horizon-world v0.1.0 (/w)\n"),
                  (1000.0, "    Finished `release` profile [optimized] target(s) in 16m 40s\n")]
         self.assertEqual(parity.describe_cargo_build(command, lines, 0.0, 1001.0),
-                         "release -p horizon-world --features f 3 targets: 1001s, 2 crates compiled, "
+                         "release -p horizon-world --features f --bins 2 targets: 1001s, 2 crates compiled, "
                          "2s waiting for the package cache lock, 688s waiting for the build directory lock")
         # Still waiting when the run ended (it failed or was stopped).
         self.assertEqual(parity.describe_cargo_build(["cargo", "build", "--locked", "--example", "a"],

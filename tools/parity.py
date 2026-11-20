@@ -771,9 +771,7 @@ def describe_cargo_build(command, lines, started, ended):
         elif argument in ("--example", "--bin"):
             next(arguments, None)
             targets += 1
-        elif argument in ("--examples", "--bins"):
-            targets += 1
-        elif argument != "--locked":
+        elif argument != "--locked":  # --bins and --examples stay as written: how many they build isn't known here
             selection.append(argument)
     compiled = sum(1 for _, line in lines if line.lstrip().startswith("Compiling "))
     waits, waiting = {}, None
@@ -786,7 +784,7 @@ def describe_cargo_build(command, lines, started, ended):
             waiting = (at, lock.group(1))
     if waiting:
         waits[waiting[1]] = waits.get(waiting[1], 0) + ended - waiting[0]
-    built = " ".join([profile, *selection, f"{targets} target{'s' * (targets != 1)}"])
+    built = " ".join([profile, *selection, *([f"{targets} target{'s' * (targets != 1)}"] if targets else [])])
     text = f"{built}: {ended - started:.0f}s, {compiled} crate{'s' * (compiled != 1)} compiled"
     for lock, seconds in waits.items():
         text += f", {seconds:.0f}s waiting for the {lock} lock"
