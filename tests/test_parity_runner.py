@@ -509,6 +509,21 @@ class ShimDecisionSummaryTests(unittest.TestCase):
         self.assertIn("Java calls: 1 (hit 1)", printed)
         self.assertIn("2 unreadable lines skipped", printed)
 
+    def test_a_decision_file_that_cannot_be_made_leaves_the_run_without_a_summary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            # A folder where the file should be.
+            with mock.patch.object(parity, "DECISIONS", Path(temp)), mock.patch("builtins.print") as said:
+                self.assertIsNone(parity.fresh_decisions())
+            self.assertIn("no oracle reuse summary", said.call_args.args[0])
+            notes = Path(temp) / "decisions.jsonl"
+            notes.write_text("an earlier run's\n")
+            with mock.patch.object(parity, "DECISIONS", notes):
+                self.assertEqual(parity.fresh_decisions(), notes)
+            self.assertEqual(notes.read_text(), "")
+        with mock.patch("builtins.print") as said:
+            parity.report_decisions(None)
+        said.assert_not_called()
+
     def test_no_notes_no_summary(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch("builtins.print") as said:
             parity.report_decisions(Path(temp) / "missing")
@@ -527,10 +542,10 @@ class OracleReuseTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.bin, self.shim = root / "bin", root / "shim"
         self.bin.mkdir(); self.shim.mkdir()
-        # A fake oracle in a fake JDK (its release file beside bin/): copies its input to its output and counts its
-        # runs. It fails on the input "fail".
+        # A fake oracle in a fake JDK (bin/java, release, lib/modules, the VM library): copies its input to its
+        # output and counts its runs. It fails on the input "fail", and kills itself on "kill".
         self.release = root / "release"
-        self.release.write_text('JAVA_VERSION="1"\n')
+        self.jdk(root)
         self.fake_java("1")
         (self.shim / "java").symlink_to(Path(parity.__file__).with_name("parity_shim.py"))
         self.input, self.output = root / "work" / "in.txt", root / "work" / "out.txt"
@@ -553,6 +568,14 @@ class OracleReuseTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    @staticmethod
+    def jdk(home):
+        """The files beside bin/ that make `home` a JDK the shim can fingerprint."""
+        (home / "lib" / "server").mkdir(parents=True)
+        (home / "release").write_text('JAVA_VERSION="1"\n')
+        (home / "lib" / "modules").write_text("modules")
+        (home / "lib" / "server" / "libjvm.so").write_text("vm")
+
     def fake_java(self, version):
         fake = self.bin / "java"
         fake.write_text(f"#!{sys.executable}\nimport sys, pathlib\n"
@@ -561,6 +584,7 @@ class OracleReuseTests(unittest.TestCase):
                         "runs.write_text(str(int(runs.read_text() or 0) + 1) if runs.exists() else '1')\n"
                         "text = pathlib.Path(sys.argv[1]).read_text()\n"
                         "if text == 'fail': sys.exit(2)\n"
+                        "if text == 'kill': import os, signal; os.kill(os.getpid(), signal.SIGKILL)\n"
                         "pathlib.Path(sys.argv[2]).write_text(text)\n"
                         "print('done')\n")
         fake.chmod(0o755)
@@ -639,6 +663,13 @@ class OracleReuseTests(unittest.TestCase):
         self.oracle(PARITY_SHIM_RUN="two")
         self.assertNotEqual(self.last()["call"], first)
 
+    def test_a_java_killed_by_a_signal_gives_the_same_status_keyed_or_not(self):
+        # 256 - 9, as the shim's run of a recorded call has always given; the new passthroughs keep it.
+        self.input.write_text("kill")
+        self.assertEqual(self.call(check=False).returncode, 247)
+        self.assertEqual(self.call(check=False, JAVA_TOOL_OPTIONS="-Dx=1").returncode, 247)
+        self.assertEqual(self.reasons(), ["passthrough-failed", "passthrough-jvm-options"])
+
     def test_jvm_options_from_the_environment_are_never_reused(self):
         for variable in UNKEYED_VARIABLES:
             with self.subTest(variable=variable):
@@ -656,11 +687,40 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.oracle(), 2)
         self.assertEqual(self.oracle(), 2)
         self.assertEqual(self.reasons(), ["no-record", "java-runtime", "hit"])
-        # A launcher with no JDK files beside it (a stub that picks a JDK itself) can't be keyed.
-        self.release.unlink()
+        # The VM library replaced: the same launcher, release file and class library.
+        (self.bin.parent / "lib" / "server" / "libjvm.so").write_text("another vm")
         self.assertEqual(self.oracle(), 3)
+        self.assertEqual(self.reasons(), ["java-runtime"])
+
+    def test_a_launcher_outside_a_whole_jdk_is_never_reused(self):
+        home = self.bin.parent
+        modules = home / "lib" / "modules"
+        # /usr/bin/java beside a /usr/lib/modules folder: not a JDK's class library.
+        modules.unlink()
+        modules.mkdir()
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 2)
+        modules.rmdir()
+        modules.write_text("modules")
+        (home / "lib" / "server" / "libjvm.so").unlink()  # no VM library
+        self.assertEqual(self.oracle(), 3)
+        (home / "lib" / "server" / "libjvm.so").write_text("vm")
+        self.release.unlink()
         self.assertEqual(self.oracle(), 4)
-        self.assertEqual(self.reasons(), ["passthrough-runtime"] * 2)
+        self.assertEqual(self.reasons(), ["passthrough-runtime"] * 4)
+        # A launcher whose folder is not bin/ (a stub, a selector) neither, JDK files beside it or not.
+        self.release.write_text('JAVA_VERSION="1"\n')
+        stub = home / "stub"
+        stub.mkdir()
+        (stub / "java").symlink_to(self.bin / "java")
+        self.assertEqual(self.oracle(), 5)  # through the link: the real launcher is in bin/
+        (stub / "java").unlink()
+        (stub / "java").write_bytes((self.bin / "java").read_bytes())
+        (stub / "java").chmod(0o755)
+        self.env["PARITY_SHIM_REAL_PATH"] = str(stub)
+        self.assertEqual(self.oracle(), 6)
+        self.assertEqual(self.oracle(), 7)
+        self.assertEqual(self.reasons(), ["no-record", "passthrough-runtime", "passthrough-runtime"])
 
     def test_the_key_holds_the_path_java_searches_not_the_harness_one(self):
         self.assertEqual(self.oracle(), 1)
@@ -702,6 +762,39 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.oracle(HORIZON_DATAPACKS=str(packs)), 2)
         self.assertEqual(self.reasons(), ["no-record", "hit", "environment"])
 
+    def test_a_datapack_link_retargeted_to_an_equal_looking_pack_changes_the_key(self):
+        root = self.input.parent.parent
+        packs, first, second = root / "datapacks", root / "a" / "pack", root / "b" / "pack"
+        for folder, content in ((first, "1"), (second, "2")):
+            folder.mkdir(parents=True)
+            (folder / "pack.mcmeta").write_text(content)
+            os.utime(folder / "pack.mcmeta", ns=(10**18, 10**18))  # the same size and mtime in both
+        packs.mkdir()
+        (packs / "linked").symlink_to(first, target_is_directory=True)
+        self.assertEqual(self.oracle(HORIZON_DATAPACKS=str(packs)), 1)
+        (packs / "linked").unlink()
+        (packs / "linked").symlink_to(second, target_is_directory=True)
+        self.assertEqual(self.oracle(HORIZON_DATAPACKS=str(packs)), 2)
+        # The same bytes as before, size and mtime kept: hashed again, not taken from a memo.
+        (second / "pack.mcmeta").write_text("3")
+        os.utime(second / "pack.mcmeta", ns=(10**18, 10**18))
+        self.assertEqual(self.oracle(HORIZON_DATAPACKS=str(packs)), 3)
+        self.assertEqual(self.reasons(), ["no-record", "environment", "environment"])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads any folder")
+    def test_an_unreadable_datapack_folder_is_passed_through_without_a_traceback(self):
+        root = self.input.parent.parent
+        packs = root / "datapacks"
+        (packs / "locked").mkdir(parents=True)
+        (packs / "locked").chmod(0)
+        try:
+            result = self.call(HORIZON_DATAPACKS=str(packs))
+        finally:
+            (packs / "locked").chmod(0o755)
+        self.assertEqual(result.stdout, "done\n")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.reasons(), ["passthrough-unreadable"])
+
     def test_notes_that_cannot_be_written_change_nothing(self):
         # A folder where the file should be: every open fails.
         self.env["PARITY_SHIM_DECISIONS"] = str(self.input.parent)
@@ -711,6 +804,16 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.runs(), 2)
         self.input.write_text("fail")
         self.assertEqual(self.call(check=False).returncode, 2)  # Java's own status
+
+    def test_an_unwritable_call_index_changes_nothing(self):
+        # A file where the calls/ folder should be: the index, only for saying why a later call missed, can't be made.
+        cache = Path(self.env["PARITY_SHIM_CACHE"])
+        cache.mkdir()
+        (cache / "calls").write_text("")
+        result = self.call()
+        self.assertEqual((result.returncode, result.stdout), (0, "done\n"))
+        self.assertEqual(self.oracle(), 1)  # recorded all the same, and replayed
+        self.assertEqual(self.reasons(), ["no-record", "hit"])
 
     def test_parallel_shims_append_whole_lines(self):
         child = ("import os, sys\nsys.path.insert(0, sys.argv[1])\nimport parity_shim\n"
@@ -740,7 +843,7 @@ class OracleReuseTests(unittest.TestCase):
     def wrapper(self, folder, put_the_shim_back=False):
         """A `java` that runs the first other `java` on PATH, as JDK selectors and build wrappers do. It stops
         itself after a few rounds, so a shim that loops fails this test instead of filling the machine."""
-        folder.mkdir()
+        folder.mkdir(parents=True)
         path = f"os.environ['PATH'] = {str(self.shim)!r} + os.pathsep + os.environ['PATH']\n" if put_the_shim_back else ""
         (folder / "java").write_text(
             f"#!{self.python}\nimport os, sys, shutil\nfrom pathlib import Path\n"
@@ -754,8 +857,10 @@ class OracleReuseTests(unittest.TestCase):
         (folder / "java").chmod(0o755)
 
     def test_a_wrapper_that_looks_java_up_on_path_reaches_the_real_one(self):
-        wrapper = self.bin.parent / "wrapper"
+        # A wrapper in a JDK's bin/ of its own, so that the shim keys it.
+        wrapper = self.bin.parent / "wrapper-jdk" / "bin"
         self.wrapper(wrapper)
+        self.jdk(wrapper.parent)
         self.env["PATH"] = f"{self.shim}:{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
         self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}"
         self.assertEqual(self.oracle(), 1)

@@ -1693,12 +1693,26 @@ def report_retries(results, flaky):
             summary.write("### Harnesses that failed once, then ran again\n" + "".join(f"- {line}\n" for line in lines))
 
 
+def fresh_decisions():
+    """An empty DECISIONS for this run's notes, or None (with a warning) if it can't be made: a summary is never worth
+    failing a run for, and a summary of an earlier run's notes would mislead."""
+    try:
+        DECISIONS.write_text("")
+        return DECISIONS
+    except OSError as error:
+        print(f"warning: no oracle reuse summary this run ({DECISIONS} can't be written: {type(error).__name__})",
+              flush=True)
+        return None
+
+
 def report_decisions(path):
     """Sum up what tools/parity_shim.py did with this run's Java calls, here and in the CI job's summary: calls per
     reason, Java seconds run and replayed, and the harnesses that ran the most Java seconds they might have replayed.
     Only reasons, counts, seconds and harness names: nothing from the calls themselves. Harnesses run on other machines,
     and fresh retries (no shim), are not counted. The notes are diagnostics: a line the shim could not write whole is
     skipped and counted, and nothing here fails the run."""
+    if path is None:
+        return
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -1912,8 +1926,7 @@ def main():
         local = LocalExecutor(jobs, int(memory_available() * 0.75), args.timeout,
                               REMOTE_LOCAL_PEAK if remotes and args.jobs is None else None)
         local.solo = solo_harnesses(config)
-        DECISIONS.write_text("")
-        local.decisions = DECISIONS
+        local.decisions = fresh_decisions()
         if os.name == "nt":
             packages = target_packages()
             local.builds = {name: executables(built, packages) for name, built in built_by.items()}
@@ -1930,7 +1943,7 @@ def main():
     finished_run(failed)
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed in {elapsed / 60:.1f} min.")
     report_retries(results, known_flaky(config))
-    report_decisions(DECISIONS)
+    report_decisions(local.decisions if local else None)
     known = known_failing(config)
     blocking, again, passed = split_known_failing(results, known)
     report_known_failing(again, passed, known)

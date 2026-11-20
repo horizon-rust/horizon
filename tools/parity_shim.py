@@ -59,9 +59,12 @@ IGNORED = {"PWD", "OLDPWD", "SHLVL", "_", "TERM", "TERM_SESSION_ID", "COLUMNS", 
 # Variables naming a file or folder an oracle reads: what is in it is part of the key, as the name stays when it
 # changes. HORIZON_ORDER's file is written from Horizon's own ticket order (tools/test_decorated_region_parity.py).
 CONTENT_VARIABLES = {"HORIZON_ORDER", "HORIZON_DATAPACKS"}
-# Variables the JVM itself reads, which can name agents, argument files and class paths whose bytes the key doesn't
-# hold. While one is set, a call goes straight to Java: a dependency that can't be established is never reused.
-UNKEYED = ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH")
+# Variables the JVM and javac themselves read, which can name agents, argument files (@file) and class paths whose
+# bytes the key doesn't hold. While one is set, a call to either goes straight to the real program: a dependency that
+# can't be established is never reused. One list for both, as each may start the other's runtime.
+UNKEYED = ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JDK_JAVAC_OPTIONS", "CLASSPATH")
+# The JVM's native library, one of these under the JDK home on Linux, macOS or Windows.
+VM_LIBRARIES = ("lib/server/libjvm.so", "lib/server/libjvm.dylib", "bin/server/jvm.dll")
 
 
 # How deep the shim may run inside itself before it stops: it never needs to, since the real program
@@ -299,15 +302,22 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def content_digest(path, hashes):
-    """What a file holds, or every file under a folder, through symlinked folders too (a datapack folder may link
-    packs in): the target's content is what the oracle reads. A folder reached twice (a link cycle) is named once."""
+def bytes_digest(path):
+    """The file's bytes, hashed now: no size-and-mtime memo, which a rewrite keeping both would fool."""
+    with open(path, "rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def content_digest(path):
+    """What a file holds, or every file under a folder, through linked folders too (a datapack folder may link packs
+    in): the target's content is what the oracle reads, and each link's resolved target is part of it. A folder
+    reached twice (a link cycle) is named once. Raises OSError for what can't be read."""
     path = os.path.abspath(path)
     if os.path.isfile(path):
-        return hashes.file(path)
+        return bytes_digest(path)
     if not os.path.isdir(path):
         return "missing"
-    entries, seen = [], set()
+    entries, seen = [["", "at", os.path.realpath(path)]], set()
 
     def walk(folder, relative):
         real = os.path.realpath(folder)
@@ -315,12 +325,16 @@ def content_digest(path, hashes):
             entries.append([relative, "seen", real])
             return
         seen.add(real)
-        for entry in sorted(os.scandir(folder), key=lambda entry: entry.name):
+        with os.scandir(folder) as found:
+            listed = sorted(found, key=lambda entry: entry.name)
+        for entry in listed:
             name = f"{relative}/{entry.name}"
             if entry.is_dir():
+                if entry.is_symlink():
+                    entries.append([name, "link", os.path.realpath(entry.path)])
                 walk(entry.path, name)
             elif entry.is_file():
-                entries.append([name, hashes.file(entry.path)])
+                entries.append([name, bytes_digest(entry.path)])
             else:
                 entries.append([name, "other"])  # a broken link, a socket
 
@@ -328,13 +342,14 @@ def content_digest(path, hashes):
     return digest(entries)
 
 
-def environment_digests(environment, hashes):
-    """{name: digest of its value} for every variable in the key. Only digests are kept, never values."""
+def environment_digests(environment):
+    """{name: digest of its value} for every variable in the key. Only digests are kept, never values. Raises OSError
+    when what a CONTENT_VARIABLES variable names can't be read."""
     kept = {}
     for name, value in environment.items():
         if name in IGNORED or name.startswith(IGNORED_PREFIXES):
             continue
-        content = content_digest(value, hashes) if name in CONTENT_VARIABLES else ""
+        content = content_digest(value) if name in CONTENT_VARIABLES else ""
         kept[name] = hashlib.sha256(os.fsencode(value) + b"\0" + content.encode()).hexdigest()[:16]
     return kept
 
@@ -343,25 +358,27 @@ class Unkeyed(Exception):
     """Something the call depends on can't be established: it goes straight to the real program."""
 
 
-def runtime_digest(program, hashes):
-    """The Java runtime behind `program`: its launcher's real path and stamp, the JDK's `release` file and the stamp
-    of its class library (lib/modules), and the `-version` text these give. A JDK updated or replaced in place changes
-    the key even when it prints the same version. A launcher with neither file beside it (a stub that picks a JDK
-    itself) can't be keyed."""
+def runtime_digest(program):
+    """The Java runtime behind `program`: its launcher's real path and stamp, the JDK's `release` file, the stamps of
+    its class library (lib/modules) and of the JVM's native library, and the `-version` text these give. A JDK updated
+    or replaced in place changes the key even when it prints the same version. Only a launcher at <home>/bin/ of a JDK
+    home holding all three as regular files can be keyed: not a stub that picks a JDK itself (/usr/bin/java beside a
+    /usr/lib/modules folder). Raises Unkeyed, or OSError for a file that vanished meanwhile."""
     launcher = os.path.realpath(program)
-    home = os.path.dirname(os.path.dirname(launcher))
+    folder = os.path.dirname(launcher)
+    home = os.path.dirname(folder)
     release, modules = os.path.join(home, "release"), os.path.join(home, "lib", "modules")
+    vm = next((os.path.join(home, *library.split("/")) for library in VM_LIBRARIES
+               if os.path.isfile(os.path.join(home, *library.split("/")))), None)
+    if os.path.basename(folder) != "bin" or not (os.path.isfile(release) and os.path.isfile(modules)) or vm is None:
+        raise Unkeyed("the launcher is not in a JDK's bin folder")
 
     def stamp(path):
-        try:
-            stat = os.stat(path)
-        except OSError:
-            return None
+        stat = os.stat(path)
         return [stat.st_size, stat.st_mtime_ns]
 
-    if stamp(release) is None and stamp(modules) is None:
-        raise Unkeyed("no JDK release file or lib/modules beside the launcher")
-    fingerprint = [launcher, stamp(launcher), hashes.file(release) if os.path.isfile(release) else None, stamp(modules)]
+    fingerprint = [launcher, stamp(launcher), bytes_digest(release), stamp(modules), os.path.relpath(vm, home),
+                   stamp(vm)]
     cached = CACHE / "versions" / digest(fingerprint)
     try:
         version = cached.read_text()
@@ -433,6 +450,15 @@ def main():
         decide(name, reason)
         os.execv(program, [program, *arguments])
 
+    def relay(reason):
+        """Run the real program unrecorded, as a call that misses its record runs: through run_and_tee, so its exit
+        status reaches the caller as it did before these calls became passthroughs (a signal's death as 256 minus the
+        signal's number, not the signal itself). The older passthroughs above keep execv, as before."""
+        started = time.monotonic()
+        status, _ = run_and_tee([program, *arguments])
+        decide(name, reason, time.monotonic() - started)
+        return status
+
     enter()
     # The key holds the PATH that Java and what it starts search: the real one enter() set. The harness's adds only
     # the shim's folder in front of it.
@@ -442,7 +468,7 @@ def main():
     if "-version" in arguments or "--version" in arguments:
         passthrough("passthrough-version")
     if any(environment.get(variable) for variable in UNKEYED):
-        passthrough("passthrough-jvm-options")
+        return relay("passthrough-jvm-options")
     try:
         hashes = Hashes()
     except Uncached as reason:
@@ -452,13 +478,17 @@ def main():
     stdin = stdin_identity(hashes)
     if stdin is None:
         passthrough("passthrough-pipe")
+    # What can't be fingerprinted is never reused, and never a traceback (its paths would reach the harness's log).
     try:
-        runtime = runtime_digest(program, hashes)
-    except Unkeyed:
-        passthrough("passthrough-runtime")
+        runtime = runtime_digest(program)
+    except (Unkeyed, OSError):
+        return relay("passthrough-runtime")
+    try:
+        variables = environment_digests(environment)
+    except OSError:
+        return relay("passthrough-unreadable")
     paths = named_paths(arguments)
     command = {"program": os.path.realpath(program), "arguments": arguments, "cwd": os.getcwd(), "stdin": stdin}
-    variables = environment_digests(environment, hashes)
     key = digest({"command": command, "environment": variables, "runtime": runtime})
     record = CACHE / f"{key}.json"
     # The last key this command line ran under, to say why a call found no record.
@@ -492,10 +522,13 @@ def main():
     temporary.write_text(json.dumps({"command": command, "environment": variables, "runtime": runtime,
                                      "inputs": inputs, "outputs": outputs, "seconds": round(seconds, 3)}))
     temporary.replace(record)
-    index.parent.mkdir(exist_ok=True)
-    temporary = index.with_suffix(f".{os.getpid()}.tmp")
-    temporary.write_text(json.dumps({"key": key, "environment": variables, "runtime": runtime}))
-    temporary.replace(index)
+    try:  # only for saying why a later call missed: never worth failing this one
+        index.parent.mkdir(exist_ok=True)
+        temporary = index.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(json.dumps({"key": key, "environment": variables, "runtime": runtime}))
+        temporary.replace(index)
+    except OSError:
+        pass
     note_outputs(outputs)
     decide(name, reason, seconds, key, **details)
     return 0
