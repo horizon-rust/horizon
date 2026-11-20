@@ -790,12 +790,6 @@ fn native_base(tag: &str) -> Option<String> {
     })
 }
 
-/// A build's commit, for the details under its name: `4baa571` of `nightly-2026-10-29-4baa571`.
-fn version_commit(tag: &str) -> Option<&str> {
-    horizon_launcher::nightly::date_of(tag)?;
-    tag.get(17..).filter(|c| !c.is_empty())
-}
-
 impl Launcher {
     /// The right column: the title, what the instance plays, its name and group, its icon, and
     /// the foot.
@@ -1159,17 +1153,23 @@ impl Launcher {
                     cx.notify();
                 }))
         };
+        // While Versions holds an older build, this row plays that one, so it is titled by it,
+        // never "Latest".
+        let (title, details) = match &held {
+            Some(held) => (
+                trf("{version} (picked on Versions)", &[("version", held)]),
+                tr("Press Use on the newest on Versions to follow new ones").to_string(),
+            ),
+            None => (
+                tr("Latest").to_string(),
+                tr("Moves to each new one").to_string(),
+            ),
+        };
         let mut rows = vec![row(
             "horizon-version-latest".into(),
             pin.is_none(),
-            tr("Latest").into(),
-            match &held {
-                Some(held) => trf(
-                    "Playing {version}, picked on Versions",
-                    &[("version", held)],
-                ),
-                None => tr("Moves to each new one").into(),
-            },
+            title,
+            details,
             None,
         )];
         for tag in &builds {
@@ -1177,7 +1177,9 @@ impl Launcher {
                 format!("horizon-version-{tag}"),
                 pin.as_ref() == Some(tag),
                 name(tag),
-                version_commit(tag).unwrap_or_default().to_string(),
+                horizon_launcher::nightly::commit_of(tag)
+                    .unwrap_or_default()
+                    .to_string(),
                 Some(tag.clone()),
             ));
         }

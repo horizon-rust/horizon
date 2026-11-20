@@ -65,11 +65,11 @@ impl Launcher {
     /// update came out the same day, [`horizon_launcher::nightly::same_day_time`]), for any screen
     /// that names it; the tag itself otherwise.
     pub(crate) fn version_name(&self, tag: &str) -> String {
-        match horizon_launcher::nightly::date_of(tag) {
-            Some(date) => {
-                let time = horizon_launcher::nightly::same_day_time(tag).unwrap_or_default();
-                trf("{date} update", &[("date", &published(date, &time))])
-            }
+        match horizon_launcher::nightly::published(tag) {
+            Some((date, time)) => trf(
+                "{date} update",
+                &[("date", &published(&date, &time.unwrap_or_default()))],
+            ),
             None => tag.to_owned(),
         }
     }
