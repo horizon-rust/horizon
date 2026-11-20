@@ -401,6 +401,8 @@ fn unknown_mod_resolver_does_not_allocate_cache_slots() {
         assert_eq!(tints.get(Resolver::Mod(index), 1, 0, 1), 0xFF_FFFF);
         assert_eq!(
             tints
+                .storage
+                .get()
                 .layers
                 .iter()
                 .flatten()

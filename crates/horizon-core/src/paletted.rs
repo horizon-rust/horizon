@@ -152,6 +152,13 @@ thread_local! {
     /// cleared again before it returns.
     static DENSE_IDS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
+/// Release thread-local palette building scratch retained by worker threads.
+pub fn release_scratch() {
+    DENSE_IDS.with_borrow_mut(|ids| {
+        *ids = Vec::new();
+    });
+}
+
 /// The distinct `values` in first-occurrence order and each value's index in
 /// them. A run of one value (most of a section) is matched once, a scan finds
 /// up to 16 distinct values faster than any lookup, and past that a table
@@ -305,6 +312,20 @@ impl PalettedContainer {
     /// `get` of the entries `start..start + out.len()`, the palette matched once.
     #[inline]
     pub fn get_run(&self, start: usize, out: &mut [u32]) {
+        match &self.palette {
+            Palette::Single(value) => {
+                out.fill(*value);
+                return;
+            }
+            Palette::List(list) if self.bits == 4 && out.len() == 16 && (start & 15) == 0 => {
+                let word = self.words[start >> 4];
+                for (k, cell) in out.iter_mut().enumerate() {
+                    *cell = list[((word >> (k * 4)) & 15) as usize];
+                }
+                return;
+            }
+            _ => {}
+        }
         if out.len() == 2 && !matches!(self.palette, Palette::Single(_)) {
             let bits = usize::from(self.bits);
             let per = 64 / bits;
@@ -492,6 +513,13 @@ impl PalettedContainer {
         assert_eq!(out.len(), self.strategy.entries());
         match &self.palette {
             Palette::Single(value) => out.fill(*value),
+            Palette::List(list) if self.bits == 4 => {
+                for (row, &word) in out.as_chunks_mut::<16>().0.iter_mut().zip(&self.words) {
+                    for (x, cell) in row.iter_mut().enumerate() {
+                        *cell = list[((word >> (x * 4)) & 15) as usize];
+                    }
+                }
+            }
             Palette::List(list) => {
                 let bits = usize::from(self.bits);
                 let per = 64 / bits;
