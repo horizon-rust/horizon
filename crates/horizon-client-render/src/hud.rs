@@ -1618,7 +1618,7 @@ impl HudAtlas {
             let b = u32::from(bordered.contains(name));
             // The logical size of the sprite, before the border's texels leave
             // the packed region: its own size when no default names it.
-            let (gw, gh) = gui_sizes.get(name).copied().unwrap_or((w, h));
+            let (gw, gh) = gui_sizes.get(name).copied().unwrap_or((*w, *h));
             let (px, py, w, h) = (px + b, py + b, w - 2 * b, h - 2 * b);
             sprites.insert(
                 name.clone(),

@@ -4,7 +4,6 @@
 //! (issue #19022's Faithful 32x/64x inventory sprites).
 use super::*;
 use horizon_assets::resource_source::Resource;
-use std::collections::BTreeMap;
 
 /// A 16x16 default replaced by a 32x32 pack texture: the sprite's logical size
 /// stays the default's, and the atlas holds the pack's own pixels.
