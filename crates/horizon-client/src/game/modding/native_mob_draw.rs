@@ -35,6 +35,7 @@ impl MobRenderHooks {
     pub(in crate::game) fn current() -> Self {
         FRAME.with_borrow(|frame| frame.hooks)
     }
+    #[allow(dead_code)]
     pub(in crate::game) fn any(self) -> bool {
         self.living_pre || self.living_post || self.player_pre || self.player_post
     }
@@ -168,6 +169,7 @@ pub(super) fn mob_pose(at: DVec3, body_yaw: f32) -> Mat4 {
 impl Game<'_> {
     /// Whether any of the four render hooks have listeners this frame (asked once, when the frame's
     /// entity pass began): with none, nothing is posed or built for the hooks per entity.
+    #[allow(dead_code)]
     pub(super) fn mob_render_listened(&self) -> bool {
         MobRenderHooks::current().any()
     }

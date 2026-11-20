@@ -178,6 +178,7 @@ impl Game<'_> {
         Some(t)
     }
     /// The other players' models and names: the players a server sends.
+    #[allow(dead_code)]
     fn other_players(&self) -> Vec<(&Mob, String)> {
         let mut out = Vec::new();
         let indices = first_mob_indices(&self.mobs);
@@ -224,9 +225,12 @@ impl Game<'_> {
         self.name_tags_with_hooks(camera, alpha, !mod_api::__private::mods().is_empty())
     }
     fn name_tags_with_hooks(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
-        self.collect_name_tags(camera, alpha, hooks, None)
+        self.collect_name_tags(camera, alpha, hooks)
     }
-    fn collect_name_tags(
+    fn collect_name_tags(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
+        self.collect_name_tags_culled(camera, alpha, hooks, None)
+    }
+    fn collect_name_tags_culled(
         &self,
         camera: glam::DVec3,
         alpha: f64,
@@ -633,7 +637,7 @@ impl Game<'_> {
                 unicode: false,
             },
         );
-        for tag in self.collect_name_tags(
+        for tag in self.collect_name_tags_culled(
             camera,
             alpha,
             !mod_api::__private::mods().is_empty(),
@@ -863,6 +867,7 @@ fn name_tag_in_view(
         && frustum.is_none_or(|view| view.intersects(min, max))
 }
 
+#[allow(dead_code)]
 fn first_mob_indices(mobs: &[Mob]) -> std::collections::HashMap<u32, usize> {
     let mut indices = std::collections::HashMap::with_capacity(mobs.len());
     for (index, mob) in mobs.iter().enumerate() {
@@ -921,6 +926,7 @@ fn collect_vehicle_ids(
 /// Built whether or not native mods are loaded. It was briefly built only with
 /// them, as a fast path, and without them both tags were drawn on top of each
 /// other on every server that names its players this way.
+#[allow(dead_code)]
 fn named_by_player_list(players: &[(&Mob, String)]) -> std::collections::HashSet<u32> {
     players.iter().map(|(player, _)| player.id).collect()
 }

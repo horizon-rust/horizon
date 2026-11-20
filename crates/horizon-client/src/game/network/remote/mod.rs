@@ -9874,6 +9874,7 @@ impl Game<'_> {
     /// Status for `horizon-ctl status`.
     /// The other players' entities in the level and their names (their
     /// profiles', which outlive the player list's entries).
+    #[allow(dead_code)]
     pub(super) fn remote_player_names(&self) -> Vec<(u32, String)> {
         self.remote
             .as_ref()
