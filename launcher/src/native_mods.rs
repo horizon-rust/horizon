@@ -2522,6 +2522,7 @@ pub fn build(
     build_then(
         base,
         || Ok(folder.to_owned()),
+        folder == installed_incoming(),
         instance,
         profile,
         asked,
@@ -2562,11 +2563,13 @@ fn build_turn(progress: &impl Fn(Step)) -> Result<std::sync::MutexGuard<'static,
 /// build lease), so the window need not wait for the cleanup. Returns what `deliver` returned,
 /// once the cleanup has ended. `stage` gives the folder of mods to build; it runs once this build
 /// has its turn and its lease, so what it writes (the shared [`installed_mods`] folder) is not
-/// replaced by a build it waited for.
+/// replaced by a build it waited for. `installed` says whether those are the instance's
+/// installed mods ([`installed_mods`]), whose old-format files the log warns of.
 #[allow(clippy::too_many_arguments)]
 pub fn build_then<R>(
     base: &str,
     stage: impl FnOnce() -> Result<PathBuf, String>,
+    installed: bool,
     instance: &Instance,
     profile: Option<Profile>,
     asked: Asked,
@@ -2588,13 +2591,13 @@ pub fn build_then<R>(
     }
     let said = |error: &Failed| error.said(caller);
     let attempt = |cache: Result<&crate::native_cache::Cache, &str>| {
+        // After `logged` empties the log: the player reads it to learn why a mod is missing.
+        if installed {
+            warn_legacy(&instance.home);
+        }
         let lease = cache.map_err(|error| Failed::Other(error.into()))?;
         let folder = stage()?;
         let folder = folder.as_path();
-        // After `logged` empties the log: the player reads it to learn why a mod is missing.
-        if folder == installed_incoming() {
-            warn_legacy(&instance.home);
-        }
         let profile = select_build_profile(instance.native_profile, profile, || {
             planning::classify(folder, Some(base), lease)
                 .map_err(|error| Failed::Other(error.said(caller)))
@@ -4523,6 +4526,7 @@ mod tests {
         let result = build_then(
             "v0.0.0-not-installed",
             || Ok(dir("waits")),
+            false,
             &instances::selected(),
             None,
             Asked {
@@ -4571,6 +4575,7 @@ mod tests {
         let result = build_then(
             "v0.0.0-not-installed",
             || -> Result<PathBuf, String> { panic!("staged without consent") },
+            false,
             &instances::selected(),
             None,
             Asked {
@@ -4650,6 +4655,7 @@ mod tests {
                 steps.borrow_mut().push("staged".to_string());
                 Ok(folder.clone())
             },
+            false,
             &instance,
             None,
             Asked {
@@ -4674,6 +4680,53 @@ mod tests {
         // It went on to build the captured base, which isn't installed here: the build names it.
         let error = String::from(result.unwrap_err());
         assert!(error.contains(base), "{error}");
+    }
+
+    /// #18669: the command line's build of the installed mods whose lease can't be taken (not
+    /// busy) still warns of the old-format mods it leaves out, before the lease failure.
+    #[test]
+    fn a_failed_lease_still_warns_of_old_format_installed_mods() {
+        let _guard = scratch_state();
+        let original = backend::Settings::load();
+        backend::Settings::load().allow_native_mods().unwrap();
+        let home = dir("legacy-lease-home");
+        fs::create_dir_all(home.join(INSTALLED)).unwrap();
+        write_legacy_hmod(&home.join(INSTALLED).join("fps_counter.hmod"));
+        let instance = Instance {
+            home: home.clone(),
+            ..instances::selected()
+        };
+        // A folder where the lease file should be: the lease fails, not as busy.
+        struct Folder(PathBuf);
+        impl Drop for Folder {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let lock = Folder(backend::build_dir().join("native/.build.lock"));
+        let _ = fs::remove_file(&lock.0);
+        fs::create_dir_all(&lock.0).unwrap();
+        let result = build(
+            "v0.0.0-not-installed",
+            &installed_incoming(),
+            &instance,
+            None,
+            Asked {
+                caller: Caller::CommandLine,
+                back_up: false,
+            },
+            |_| {},
+            |_| false,
+        );
+        drop(lock);
+        original.save().unwrap();
+        let log = fs::read_to_string(log_path()).unwrap();
+        let error = String::from(result.unwrap_err());
+        assert_ne!(error, cache_error(crate::native_cache::Error::Busy));
+        let warned = log.find("fps_counter.hmod").expect(&log);
+        let failed = log.find("The build failed:").expect(&log);
+        assert!(warned < failed, "{log}");
+        let _ = fs::remove_dir_all(home);
     }
 
     /// #18669: a build that panics still gives the window a result, with the panic in the log;

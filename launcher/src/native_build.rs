@@ -165,6 +165,7 @@ impl Launcher {
                     native_mods::build_then(
                         &base,
                         || native_mods_to_build(&instance.home),
+                        true,
                         &instance,
                         None,
                         native_mods::Asked {
