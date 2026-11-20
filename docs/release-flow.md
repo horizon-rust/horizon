@@ -73,6 +73,13 @@ alone, with a warning. The check is still reported on the head.
 
 Failed harnesses' logs are uploaded as the `parity-logs` artifact.
 
+**Hosted parity.** A maintainer can also run harnesses on Blacksmith's runners, away from the Mac mini:
+`gh workflow run parity-hosted.yml --ref <branch> -f harnesses="..."`, or `-f base=<commit>` for what the branch's
+changes reach. The data comes encrypted from the maintainers' private `horizon-rust/vanilla-data`. The only thing
+that leaves the runner is the harness logs: the first-attempt and failure logs, holding compared values, log tails and
+names, as this job's public logs already do ([ci-runners.md](ci-runners.md#hosted-parity)). Its result is advisory;
+this job is still the check.
+
 **Platform-specific harnesses.** A harness listed under `linux_only` in `tools/parity_hosts.json` gives
 different results on macOS for a reason that is not a Horizon bug (the reason is printed). `parity.py` skips it on
 other platforms unless it is named on the command line. Today it holds only `save_roundtrip` (it needs `vscreen`):
@@ -161,13 +168,24 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
 - `tools/parity_main.py base` gives the newest commit main contains whose parity-main passed (else the last
   merge's parent), and the run is `tools/parity.py --changed <that commit>`: the union of the harnesses every merge
   since then can affect, once, with every earlier pass reused.
-- On a failure, `tools/parity_main.py bisect` checks out the batch's first-parent merges by halves and runs only
-  the failing harnesses, names the first merge they fail on in the run's summary and comments on its pull request
-  (`🤖 Agent: parity-main found that this merge breaks ...`). Fix it with a pull request as usual; the next
-  run checks from the last green commit again. The search has 90 minutes (`--budget`): after that it says between
-  which merges each harness broke, and the next run goes on from there (`.local/parity-runner/bisect.json`, kept
-  while the base is the same), without commenting again on a merge it already named. Before 2026-11-11 a search
-  over many merges ran into the job's 240 minutes and said nothing.
+- On a failure, `tools/parity_main.py verdict` decides the run, as before: the failed harnesses (known failing
+  ones aside) run again at HEAD on the same build, and the run passes only when they all pass then (a flake, counted
+  as a pass). It reads only the list this run's `tools/parity.py` recorded (`PARITY_RUN_ID`, the run id and attempt):
+  a batch that stopped before recording one fails the run instead of judging an earlier run's list. The step has
+  50 minutes, so a hung rerun ends red. The search for the merge that broke a harness is no longer part of the run:
+  it held the only gate runner for up to an hour. Run it by hand on a machine whose
+  `.local/parity-runner/last-run.json` holds the failed harnesses (`python3 tools/parity.py <them>` on the run's
+  commit writes it; the verdict report lists them): `python3 tools/parity_main.py bisect <base> [--comment]` reruns
+  them at HEAD as the gate did, then checks out the batch's first-parent merges by halves, names the first merge they
+  fail on and, with `--comment`, comments on its pull request. It has 90 minutes (`--budget`), then says between
+  which merges each harness broke; a later search from the same base goes on from there
+  (`.local/parity-runner/bisect.json`).
+- The verdict report, `verdict-<run id>-<attempt>.json` (the run's `parity-main-verdict` artifact, uploaded best
+  effort), holds the head, the base, the run id and attempt, the exit code, each failed harness's tries (the batch's,
+  its retry if `tools/parity.py` gave one, the rerun at HEAD) and `repeat_flakers`: harnesses not on `known_flaky`
+  that passed only when run again in 3 or more of the last 10 runs (kept in
+  `.local/parity-runner/verdict-history.json` on the runner). The run's summary names each; they don't fail it: put
+  one on `known_flaky` with its issue, or fix it. Neither the report nor the history can change the verdict.
 - Nightlies build only on a commit both `checks` and `parity-main` passed on (`tools/release_train.py`,
   `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. They take the
   newest such commit even when a later batch failed: that failure is in merges the green commit doesn't contain, so
@@ -219,6 +237,10 @@ The mod SDK of a Nightly is built inside `nightly build`, for the exact main com
    All four legs must pass: Linux client and server, Windows GNU client and macOS ARM64 client. Each builds two
    native starter mods against the SDK alone, starts their installed executable, and checks Windows export capacity.
    A live run can reuse an existing SDK only after its complete inventory and signed index are authenticated.
+   Each leg logs its runner's cores and memory. On a dry run only (`dry_run`, which sets `HORIZON_SDK_TIMINGS`), it
+   also uploads `sdk-timings-<leg>` (3 days), the `cargo rustc --timings` report of its SDK build, apart from the
+   SDK's own artifact: cargo fails a build that can't write the report, so a published SDK's build never makes one. The surface export reuses the `horizon-stage` that
+   staging built (`target/prebuilt/tools`).
 2. After the game build (including its smoke test), `sdk-publish.yml` gathers identical build data and surfaces,
    builds the generated API source, writes `sdk.json`, and checks every slice's commit, host, side, compiler,
    checksums and exact carried registry patches. Publication requires successful `checks` and `parity-main` push
@@ -235,7 +257,8 @@ The mod SDK of a Nightly is built inside `nightly build`, for the exact main com
 
 `prebuilt-game.yml` is the same SDK build/publication route by hand. It defaults to a full dry run; branch runs are
 always dry. Dry runs rebuild all four legs, use a throwaway signing key, and publish no SDK tag or release. Nightly
-dry runs consume that run's validated index without requiring a published SDK.
+dry runs consume that run's validated index without requiring a published SDK, and run beside a real Nightly in a
+concurrency group of their own ([When it releases](#when-it-releases)).
 
 ```sh
 gh workflow run prebuilt-game.yml --ref main                         # full dry run
@@ -293,7 +316,7 @@ There is no daily run: `daily.yml` and the workflows it called (`ignored-tests.y
 | `ci.yml` (`Windows ARM64 game and launcher`) | Manual dispatch with `-f arm64=true` only | The launcher's library tests and the `#[ignore]`d `rust_toolchain::tests::managed_arm64_toolchain_builds_the_game` |
 | `ci.yml` (`Windows x64 game and launcher tests`) | Manual dispatch with `-f windows=true` only, a [try run](ci-runners.md#try-runs) | On Windows x64: the launcher's tests; the game's release build, uploaded for 3 days |
 | `launcher.yml` (`build`) | See the workflow's `on:` (pushes to `main`, `launcher` and `launcher-*` within its path filter, a schedule, manual dispatch) and its `decide` job: it builds when a launcher release is due, and on every dry run (every run off main, and a dispatch with `dry_run`, the default), which publishes nothing | The launcher's tests on Linux, macOS (two builds, one for x86-64) and Windows (x64, ARM64) |
-| `game-build.yml`, from `nightly-build.yml` | Each Nightly build | On Windows x64: `horizon-client-render`'s `particles::polytone::tests::` |
+| `game-build.yml`, from `nightly-build.yml` | Each Nightly build | On Windows x64, in release, in its own job (`polytone windows`) beside the Windows build, which `sign` and `publish` wait for as for the builds: `horizon-client-render`'s `particles::polytone::tests::` |
 | `perf-wasm.yml` | Pull requests and pushes to main that change `crates/horizon-perf/`, `crates/horizon-perf-format/`, `crates/horizon-bench/`, `xtask/`, `Cargo.lock`, `Cargo.toml` or the workflow itself; manual dispatch | On Linux: `horizon-perf`'s `wasm` test |
 | `mod-registry.yml` | Pull requests and pushes to main that change `crates/horizon-mod-package/`, `crates/horizon-mod-registry/` or the workflow itself | On Linux: `horizon-mod-registry`'s tests |
 | `telemetry-server.yml` | Pull requests and pushes to main that change `crates/horizon-telemetry/`, `crates/horizon-telemetry-server/` or the workflow itself | On Linux: `horizon-telemetry-server`'s tests |
@@ -340,9 +363,14 @@ commits) since the commit the published Nightly was built on:
 - A pull request labelled `skip-release` (work players don't see) doesn't count and isn't listed in the notes.
 - An open issue labelled `release-blocker` holds every Nightly, forced ones too (`held by release-blocker #N`);
   `nightly build` checks again right before publishing.
-- One Nightly build at a time: while one runs or waits, the train starts none. At most 12 builds a UTC day (the
-  reviewers' `/nightly` builds count): past that the train waits for the next day, except for `release-now` and
-  `force=true`.
+- One Nightly build at a time: while one runs or waits, dry runs included, the train starts none. Real builds share
+  the concurrency group `nightly-build`, which never cancels a running build. A dry run (`dry_run`, or any dispatch
+  off main) gets a group of its own, `nightly-build-dry-<run id>`: it never holds up a real cut (the rerun of its
+  `sdk-publish` jobs queues in the shared group) nor replaces it or another dry run as the waiting run, so a dry run
+  can start while a cut waits. The run's name says `(dry run)` or `(real)` and the `base` it was given, and
+  `(off main)` for a dry run's base off main. At most 12
+  builds a UTC day (the reviewers' `/nightly` builds count): past that the train waits for the next day, except for
+  `release-now` and `force=true`.
 - A scheduled run takes main's newest commit where `checks` and `parity-main` passed (a later failed
   parity-main batch doesn't change it); after a run of either, the commit it passed on, once both passed there.
 
@@ -830,6 +858,35 @@ gh workflow run "nightly build"                  # now; skips when the pick is t
 gh workflow run "nightly build" -f force=true    # build and publish anyway
 gh workflow run "nightly build" -f dry_run=true  # build and sign with a throwaway key, publish nothing
 ```
+
+A dry run can build a commit that is not on main yet, so a fix is tried before it merges. Push the commit to a
+branch under `dry-run/` (the one prefix reserved for this; pushing there is someone with push rights saying "this
+commit may be dry-run built"), dispatch from main with the full SHA, and delete the branch afterwards:
+
+```sh
+git push origin <sha>:refs/heads/dry-run/<name>
+gh workflow run "nightly build" --ref main -f dry_run=true -f off_main=true -f base=<full sha>
+git push origin --delete dry-run/<name>          # once the run is over
+```
+
+`pick` takes such a base only in a dry run with `off_main` set, and only when a `dry-run/*` branch, fetched fresh,
+holds it. Any other branch doesn't count (some hold outside code nobody reviewed: fork snapshots, Dependabot's
+bumps), nor does a pull request's `refs/pull/*` head: GitHub hands out a fork's commits by SHA here too, so having
+the commit proves nothing. `off_main` with a base on main stops too, so the run's name (`(off main)`) and summary
+never say it wrongly. Such a run gets no repository secrets (the signing keys reach `sign` jobs on a real run only),
+and nothing publishes. Every dry run's own `nightly/dry-run-<run id>-<attempt>` branch is deleted when it ends,
+failed or cancelled too (`dry-run-cleanup`, by that exact name).
+
+What it proves: the candidate's build, smoke test and SDK indexing. It still runs main's `nightly-build.yml`, the
+reusable workflows and `nightly.py pick`, so a fix to those can't be proven this way.
+
+Known limit, not solved: an off-main dry run runs the candidate's build scripts on the Mac mini's
+`ludovics-mac-mini-nightly` runner, the same persistent runner later real Nightlies use, and nothing isolates runner
+state outside the checkout. The control is who may push `dry-run/*`: the same people who can already dispatch the
+workflow from their own branch, which runs that branch's workflow on the same runner. So the option adds no new
+capability; it only removes the need to edit the workflow. As an untrusted build (`trusted: false`) it never uses the
+release runner and never saves the GitHub Actions Rust cache, but on the Mac it can read and write the machine's
+local compiler cache (sccache, `tools/ci/runner-env.sh`), which only trusted builds skip.
 
 ## Nightly audit
 

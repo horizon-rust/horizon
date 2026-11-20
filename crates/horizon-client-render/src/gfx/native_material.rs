@@ -13,7 +13,7 @@ use horizon_shader_api::{check::CheckedStage, stages::GROUP};
 use super::displace::{Displacement, MAX_SECTIONS};
 use super::external::{DisplacementPrepare, Near, OpaqueCopy, TerrainLayers};
 use super::native_post::kept::StageReads;
-use super::native_post::trace::{TerrainTrace, Traced};
+use super::native_post::trace::{TerrainTrace, TraceShape, Traced};
 use super::native_post::{NativeFrame, NativePost, present_constants};
 use super::wgsl_prefix::{TERRAIN, prefixed, section};
 
@@ -663,17 +663,21 @@ impl NativeMaterial {
         {
             return Err(format!("{}: {why}", stage.file));
         }
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let built = build(
             &stage.source,
             kept.as_ref().map_or(&frame.layout, |k| &k.layout),
         );
-        if let Some(e) = pollster::block_on(scope.pop()) {
+        let internal = pollster::block_on(internal.pop());
+        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
             return Err(format!("{}: {e}", stage.file));
         }
         let pipelines = built?;
         let scene = stage.scene_source.as_deref().and_then(|source| {
-            let terrain = (shape, (stage.traces_entities(), stage.traces_looks()));
+            let traced = TraceShape::of(shape, stage.traces_entities(), None);
+            let reads = (stage.traces_looks(), stage.traces_lights());
+            let terrain = (&terrain_entries()[..], &traced, reads);
             let own = kept.as_ref().map_or(&[][..], |k| &k.entries);
             TerrainTrace::new(device, frame, terrain, own, |group| build(source, group))
         });
@@ -928,6 +932,7 @@ impl NativeMaterial {
         });
         // A driver that refuses them costs the pack 4x MSAA, not its load.
         let msaa_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let msaa_internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let msaa = (shape.msaa && displaced.is_none()).then(|| {
             let solid = solid_with("horizon_material_fs_msaa", super::msaa::SAMPLES);
             let flat = paged
@@ -935,7 +940,8 @@ impl NativeMaterial {
                 .map(|layout| flat_with(layout, "horizon_material_fs_msaa", super::msaa::SAMPLES));
             (solid, flat)
         });
-        let msaa = match pollster::block_on(msaa_scope.pop()) {
+        let msaa_internal = pollster::block_on(msaa_internal.pop());
+        let msaa = match msaa_internal.or(pollster::block_on(msaa_scope.pop())) {
             Some(e) => {
                 log::warn!(
                     "{}: no 4x MSAA pipelines, it draws single-sampled ({e})",

@@ -18,6 +18,7 @@ pub(crate) mod datapack_registry;
 pub(crate) mod datapack_registry_set;
 pub(crate) mod datapack_snapshot;
 pub(crate) mod density_function;
+pub(crate) mod diagnostics;
 pub(crate) mod dimension;
 pub(crate) mod dimension_transition;
 pub(crate) mod explosion_settings;
@@ -49,6 +50,9 @@ pub mod snapshots;
 pub(crate) mod startup_progress;
 pub(crate) mod structure_template;
 pub(crate) mod structure_type;
+// hidden: a module of game-side types; mods use their re-exports
+#[doc(hidden)]
+pub mod survival;
 pub(crate) mod tags;
 pub(crate) mod ticket_controller;
 pub(crate) mod types;
