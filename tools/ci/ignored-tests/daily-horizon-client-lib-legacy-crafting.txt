@@ -5,7 +5,6 @@ horizon-client-lib legacy_build::tests::a_shaped_template_has_no_place_in_a_smal
 horizon-client-lib legacy_build::tests::a_staged_rocket_makes_what_the_game_would lib daily resources
 horizon-client-lib legacy_build::tests::colour_recipes_of_one_thing_share_a_row_entry lib daily resources
 horizon-client-lib legacy_build::tests::every_builder_has_a_template_from_the_real_recipes lib daily resources
-horizon-client-lib legacy_build::tests::staging_never_uses_more_than_the_inventory_holds lib daily resources
 horizon-client-lib legacy_craft::tests::every_banner_colour_is_on_a_crafting_table_tab_and_not_in_the_inventory lib daily resources
 horizon-client-lib legacy_craft::tests::every_known_recipe_that_fits_is_in_exactly_one_tab lib daily resources
 horizon-client-lib legacy_craft::tests::grouped_tiers_put_every_pickaxe_in_one_column_in_creative_order lib daily resources

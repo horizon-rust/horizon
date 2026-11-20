@@ -501,6 +501,9 @@ impl Game<'_> {
     /// the server's recipes arrived, or a new session began.
     pub(super) fn forget_book(&mut self) {
         self.recipe_ui.book = None;
+        // What was kept by the old book's entry indices (the crafting screen's tabs) is stale,
+        // even when the new book has as many entries.
+        self.recipe_ui.client_version += 1;
         self.recipe_ui.custom = mod_screen::ModRecipeUi::default();
         self.recipe_tables.books = None;
         self.invalidate_mod_book_placement_catalogues();
@@ -859,9 +862,15 @@ impl Game<'_> {
             self.recipe_ui.ghost.clear();
         }
         let (bx, by) = self.book_button_pos(book_type, ox, &batch);
+        // The open book's panel lies over the switch in a small window: a click on it is the
+        // book's.
+        let on_book = self
+            .recipe_book_rect(&batch)
+            .is_some_and(|[x, y, w, h]| inside(cursor, x, y, w, h));
         if let Some([x, y, w, h]) = self.legacy_switch_rect(book_type, bx, by)
             && inside(cursor, x, y, w, h)
             && !right
+            && !on_book
         {
             self.legacy_choose(true);
             self.audio
@@ -1017,7 +1026,12 @@ impl Game<'_> {
         let Some(book_type) = self.active_book() else {
             return false;
         };
-        if !self.book_open(book_type) || self.spectator() || self.recipe_search_focused() {
+        // Under the controller crafting screen the book isn't shown: it places nothing.
+        if !self.book_open(book_type)
+            || self.spectator()
+            || self.recipe_search_focused()
+            || self.legacy_showing()
+        {
             return false;
         }
         let Some(display) = self.recipe_ui.last_clicked else {

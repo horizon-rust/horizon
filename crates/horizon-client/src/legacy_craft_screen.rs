@@ -217,6 +217,20 @@ pub fn fit(text: &str, room: i32, width: &dyn Fn(&str) -> i32) -> String {
     String::new()
 }
 
+/// The end of `text` that fits `room` pixels: what a field shows of a query longer than it, the
+/// characters typed last.
+pub fn tail<'a>(text: &'a str, room: i32, width: &dyn Fn(&str) -> i32) -> &'a str {
+    let mut shown = text;
+    while width(shown) > room {
+        let mut chars = shown.chars();
+        if chars.next().is_none() {
+            return "";
+        }
+        shown = chars.as_str();
+    }
+    shown
+}
+
 /// The full layout fits.
 pub fn full_fits(width: i32, height: i32) -> bool {
     width >= PANEL_W + 4 && height >= TAB_RISE + PANEL_H + HINT_ROOM
@@ -521,8 +535,10 @@ fn title_or_search(out: &mut Out, view: &View, cx: i32, y: i32, width: &dyn Fn(&
             if query.is_empty() {
                 out.text(&view.search_hint, x + 4, y, 0xFF80_8080_u32 as i32);
             } else {
+                // The characters typed last, inside the field.
+                let shown = tail(query, W - 8, width);
                 out.push(Call::Text {
-                    runs: vec![Run::plain(query.clone())],
+                    runs: vec![Run::plain(shown.to_owned())],
                     x: x + 4,
                     y,
                     color: 0xFFE0_E0E0_u32 as i32,
@@ -757,7 +773,16 @@ fn full(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     // Drawn last: the column stands over the title's corner and the lower half's frame.
     let mut areas = vec![(Area::Inventory, [x + 122, low, 168, low_h])];
     if !view.row.is_empty() {
-        row(&mut out, view, row_x, row_y, shown_row, first, false);
+        // The column's popup would stand over the search field: on Search, its arrows.
+        row(
+            &mut out,
+            view,
+            row_x,
+            row_y,
+            shown_row,
+            first,
+            view.search.is_some(),
+        );
         let visible = (view.row.len() - first).min(shown_row) as i32;
         areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
         areas.push((Area::Grid, [x + 6, low, 112, low_h]));
@@ -1101,6 +1126,38 @@ mod tests {
         assert_eq!(fit("Bamboo Pressure Plate", 60, &width), "Bamboo...");
         assert!(width(&fit("Bamboo Pressure Plate", 60, &width)) <= 60);
         assert_eq!(fit("Anything", 10, &width), "");
+    }
+
+    #[test]
+    fn the_variant_controls_stay_clear_of_the_search_field() {
+        let overlap = |a: [i32; 4], b: [i32; 4]| {
+            a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3]
+        };
+        for selected in 0..8 {
+            let mut v = view(427, 240);
+            v.search = Some(("plank".into(), false));
+            v.selected = selected;
+            let out = layout(&v, &width);
+            let field = out
+                .hits
+                .iter()
+                .find(|(_, h)| *h == Hit::Search)
+                .expect("the search field")
+                .0;
+            assert!(out.hits.iter().any(|(_, h)| *h == Hit::VariantUp));
+            for (rect, hit) in &out.hits {
+                if matches!(hit, Hit::VariantUp | Hit::VariantDown) {
+                    assert!(!overlap(*rect, field), "{hit:?} at {rect:?} over {field:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_query_shows_its_last_characters_inside_the_field() {
+        assert_eq!(tail("oak", 60, &width), "oak");
+        assert_eq!(tail("abcdefghijklmnop", 60, &width), "ghijklmnop");
+        assert_eq!(tail("abc", 0, &width), "");
     }
 
     #[test]

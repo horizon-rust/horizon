@@ -340,11 +340,15 @@ mod tests {
             .find(|t| t.id == "minecraft:building_blocks")
             .unwrap();
         let position = |item: &str| {
-            building.groups.iter().position(|c| {
-                c.entries
-                    .iter()
-                    .any(|&e| &*book.entries[e].result.item == item)
-            })
+            building
+                .groups
+                .iter()
+                .position(|c| {
+                    c.entries
+                        .iter()
+                        .any(|&e| &*book.entries[e].result.item == item)
+                })
+                .unwrap_or_else(|| panic!("{item} isn't in Building Blocks"))
         };
         assert!(position("minecraft:stone_bricks") < position("minecraft:bricks"));
         // A group is one collection: every wooden stairs recipe in one place.
@@ -434,7 +438,12 @@ mod tests {
             .collect();
         assert_eq!(columns.len(), 1, "pickaxes split: {columns:?}");
         let column = &columns[0];
-        let at = |item: &str| column.iter().position(|i| i == item);
+        let at = |item: &str| {
+            column
+                .iter()
+                .position(|i| i == item)
+                .unwrap_or_else(|| panic!("{item} isn't in the pickaxes' column"))
+        };
         assert!(at("minecraft:wooden_pickaxe") < at("minecraft:stone_pickaxe"));
         assert!(at("minecraft:stone_pickaxe") < at("minecraft:iron_pickaxe"));
         assert!(at("minecraft:iron_pickaxe") < at("minecraft:diamond_pickaxe"));

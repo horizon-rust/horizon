@@ -5134,14 +5134,18 @@ def legacy_builder_cancel(game, check):
         return
     cancelled = 0
     for wait in (0, 0.02, 0.05, 0.08, 0.12, 0.2):
-        game.pad('north')
+        # The press without pad()'s settle: the wait alone sets when B lands.
+        game.ctl('pad', 'north', 'tap')
         time.sleep(wait)
         if legacy(game)['building']:
             game.pad('east')
             cancelled += 1
         legacy_build_ended(game)
         have = counts(game)
-        made = have.get('minecraft:firework_rocket', 0) // 3
+        rockets = have.get('minecraft:firework_rocket', 0)
+        made = rockets // 3
+        # A craft makes three: any other count is a duplicated or lost rocket.
+        check(rockets % 3 == 0, f'B after {wait}s left {rockets} rockets, not whole crafts')
         check(not game.ctl('menu').get('carried'), f"B after {wait}s left {game.ctl('menu').get('carried')} in hand")
         check(not grid(game), f'B after {wait}s left {grid(game)} in the grid')
         check(have.get('minecraft:paper', 0) + made == 64 and have.get('minecraft:gunpowder', 0) + made == 64,
@@ -5270,7 +5274,8 @@ def legacy_builder_shift(game, check):
         check(not grid(game), f'Shift left {grid(game)} in the grid')
         cancelled = 0
         for wait in (0, 0.02, 0.05, 0.1):
-            game.pad('north')
+            # The press without pad()'s settle: the wait alone sets when B lands.
+            game.ctl('pad', 'north', 'tap')
             time.sleep(wait)
             if legacy(game)['building']:
                 game.pad('east')
@@ -5280,7 +5285,9 @@ def legacy_builder_shift(game, check):
             check(not grid(game), f'B after {wait}s with Shift left {grid(game)} in the grid')
         check(cancelled > 0, 'no B landed while a run went: nothing was tested')
         have = counts(game)
-        made = have.get('minecraft:firework_rocket', 0) // 3
+        rockets = have.get('minecraft:firework_rocket', 0)
+        made = rockets // 3
+        check(rockets % 3 == 0, f'Shift and B left {rockets} rockets, not whole crafts')
         check(have.get('minecraft:paper', 0) + made == 16 and have.get('minecraft:gunpowder', 0) + made == 16,
               f'Shift and B lost something: {have}')
     finally:

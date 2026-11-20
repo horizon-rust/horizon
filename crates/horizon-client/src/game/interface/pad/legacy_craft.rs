@@ -557,17 +557,19 @@ impl Game<'_> {
 
     /// A step along a crafting row, or through the selected recipe's variants.
     fn legacy_recipe_step(&mut self, button: Button) -> bool {
-        let Some((len, variants, shown)) = self
-            .legacy_current()
-            .map(|(row, sel, var)| (row.len(), row.get(sel).map_or(0, |c| c.entries.len()), var))
-        else {
+        // From the recipe shown: a row that shrank (the craftable filter) shows a saved place
+        // past its end as its last recipe.
+        let Some((len, sel, variants, shown)) = self.legacy_current().map(|(row, sel, var)| {
+            let variants = row.get(sel).map_or(0, |c| c.entries.len());
+            (row.len(), sel, variants, var)
+        }) else {
             return false;
         };
         let id = self.legacy_tab_id();
         let place = self.pad.legacy.places.entry(id).or_default();
         match button {
-            Button::DPadLeft if len > 0 => *place = ((place.0 + len - 1) % len, None),
-            Button::DPadRight if len > 0 => *place = ((place.0 + 1) % len, None),
+            Button::DPadLeft if len > 0 => *place = ((sel + len - 1) % len, None),
+            Button::DPadRight if len > 0 => *place = ((sel + 1) % len, None),
             Button::DPadUp if variants > 1 => place.1 = Some((shown + variants - 1) % variants),
             Button::DPadDown if variants > 1 => place.1 = Some((shown + 1) % variants),
             _ => return false,
@@ -705,6 +707,27 @@ impl Game<'_> {
     fn legacy_selected_entry(&mut self) -> Option<usize> {
         let (row, sel, var) = self.legacy_current()?;
         row.get(sel)?.entries.get(var).copied()
+    }
+
+    /// This press is another A on the running craft's recipe, where A crafts the selected
+    /// recipe: it asks for one more craft, as LT + A does over the book
+    /// (`direct_craft_takes_press`), so it doesn't end the craft first.
+    pub(in crate::game) fn legacy_takes_craft_press(&mut self, button: Button) -> bool {
+        if button != Button::South
+            || self.direct_craft_recipe().is_none()
+            || !self.legacy_showing()
+            || self.prompt_open()
+            || self.pad.menu.osk.is_some()
+            || self.legacy_busy()
+            || self.pad.legacy.focus == Area::Inventory
+            || self.legacy_builder().is_some()
+        {
+            return false;
+        }
+        let selected = self
+            .legacy_selected_entry()
+            .and_then(|entry| self.recipe_stable_key(entry));
+        selected.is_some_and(|key| self.direct_craft_recipe() == Some(&key))
     }
 
     /// A: one craft (held, it goes on); Y: every craft the ingredients allow.

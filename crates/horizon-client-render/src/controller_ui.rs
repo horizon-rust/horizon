@@ -255,12 +255,9 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         ),
                         option(
                             Opt::PadLegacyCrafting,
-                            "Opens crafting in the console layout: tabs, a recipe row and the grid. X opens it; Swap Hands moves to the radial menu.",
+                            "horizon.options.legacy_crafting.about",
                         ),
-                        option(
-                            Opt::PadLegacyTiers,
-                            "Console crafting shows the tiers of a tool or armour piece in one column: wooden to netherite.",
-                        ),
+                        option(Opt::PadLegacyTiers, "horizon.options.legacy_tiers.about"),
                         option(
                             Opt::PadCraftOnServers,
                             "Lets LT + A craft on servers other than your own worlds. Some servers count it as a macro.",

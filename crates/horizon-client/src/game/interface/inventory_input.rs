@@ -280,14 +280,9 @@ impl Game<'_> {
         let Some((ty, slots)) = self.inv_drag.clone() else {
             return;
         };
-        let Some(r) = self.renderer.as_ref() else {
-            return;
-        };
-        let batch = HudBatch::new(
-            [r.config.width, r.config.height],
-            self.settings.gui_scale_inputs(),
-        );
-        if let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1)
+        // The slot the press would take: under the controller crafting screen, only its visible
+        // inventory.
+        if let Some(slot) = self.inventory_target().0
             && slot != 200
             && slot < Creative::DISPLAY
             && !slots.contains(&slot)

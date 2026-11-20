@@ -362,6 +362,11 @@ impl Game<'_> {
             })
     }
 
+    /// The running craft's recipe.
+    pub(super) fn direct_craft_recipe(&self) -> Option<&RecipeKey> {
+        self.pad.menu.craft.as_ref().map(|craft| &craft.recipe)
+    }
+
     /// LT + A on a recipe: whether it started a craft, or asked the running one for another.
     /// Refused with an item carried, on a book other than crafting, when the recipe can't be made,
     /// where it isn't allowed, or while another recipe's craft is still finishing (one request at

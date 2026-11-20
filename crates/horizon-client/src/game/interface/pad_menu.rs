@@ -794,9 +794,10 @@ impl Game<'_> {
         {
             trigger.pressed_a = true;
         }
-        // Any press ends a running craft but another LT + A on its recipe, which asks for one
-        // more further down: quick taps while one is in flight each make a craft.
-        if !self.direct_craft_takes_press(button) {
+        // Any press ends a running craft but another LT + A on its recipe (or A on it on the
+        // controller crafting screen), which asks for one more further down: quick taps while
+        // one is in flight each make a craft.
+        if !self.direct_craft_takes_press(button) && !self.legacy_takes_craft_press(button) {
             self.direct_craft_stop();
         }
         // A prompt over the screen answers first; no press reaches both.
@@ -923,6 +924,9 @@ impl Game<'_> {
         let on_recipe = book_control && self.recipe_under_pointer().is_some();
         match button {
             Button::West | Button::North if book_control && !on_recipe => {}
+            // The left stick over a crafting grid with Console Crafting on: the controller crafting
+            // screen, instead of throwing the stack, even over the open book.
+            Button::LeftStick if self.legacy_switch_here() => self.legacy_choose(true),
             Button::Select | Button::LeftStick if book_control => {}
             Button::East | Button::Start => return self.pad_back(),
             Button::South if self.pad_focusing() => {
@@ -977,9 +981,6 @@ impl Game<'_> {
                     self.keys.remove(&KeyCode::ShiftLeft);
                 }
             }
-            // The left stick over a crafting grid with Console Crafting on: the controller crafting
-            // screen, instead of throwing the stack.
-            Button::LeftStick if self.legacy_switch_here() => self.legacy_choose(true),
             // View / left stick in an inventory: throw one / the stack from
             // the slot under focus (Q / Ctrl+Q).
             Button::Select | Button::LeftStick
@@ -1500,7 +1501,8 @@ impl Game<'_> {
         }
         self.pad.menu.open_polls = self.pad.menu.open_polls.saturating_add(1);
         self.direct_craft_poll();
-        if self.legacy_frame() {
+        // A prompt over the crafting screen takes the ordinary frame, as it takes the presses.
+        if !self.prompt_open() && self.legacy_frame() {
             self.pad_show_os_pointer(!self.pad.in_use);
             return;
         }

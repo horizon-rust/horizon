@@ -1026,7 +1026,8 @@ impl PadSettings {
     }
     /// Console Crafting on or off. On, the crafting button takes X where X still does only Swap
     /// Hands, and Swap Hands moves to the radial menu's first page, in its first empty slot;
-    /// with no empty slot there, X stays Swap Hands and the crafting button stays unbound. Off,
+    /// with no empty slot there, or no button opening the radial menu, X stays Swap Hands and the
+    /// crafting button stays unbound. Off,
     /// X goes back to Swap Hands if the crafting button holds it. Swap Hands stays on the dial.
     pub fn set_legacy_crafting(&mut self, on: bool) {
         use crate::radial::{RadialAction, Slot};
@@ -1041,7 +1042,10 @@ impl PadSettings {
             }
             return;
         }
-        if self.binding(CRAFTING).is_some() || self.actions_of(x) != ["key.swapOffhand"] {
+        if self.binding(CRAFTING).is_some()
+            || self.actions_of(x) != ["key.swapOffhand"]
+            || self.binding(RADIAL).is_none()
+        {
             return;
         }
         let swap = Slot::Action(RadialAction::SwapOffhand);
@@ -1978,6 +1982,16 @@ mod tests {
         assert_eq!(s.binding(CRAFTING), None);
         assert_eq!(s.binding("key.swapOffhand"), Some(Button::West));
         assert!(s.radial.page(0).slots().contains(&&swap));
+    }
+
+    #[test]
+    fn console_crafting_keeps_x_on_swap_hands_when_nothing_opens_the_dial() {
+        let mut s = PadSettings::default();
+        s.bind(RADIAL, None);
+        s.set_legacy_crafting(true);
+        assert!(s.legacy_crafting);
+        assert_eq!(s.binding(CRAFTING), None);
+        assert_eq!(s.binding("key.swapOffhand"), Some(Button::West));
     }
 
     #[test]

@@ -723,21 +723,24 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "daily"]
     fn staging_never_uses_more_than_the_inventory_holds() {
-        let recipes = recipes();
-        let all = templates(&recipes);
-        let copy = all
-            .iter()
-            .find(|t| t.kind == Kind::Banners && t.cells.len() == 2)
-            .unwrap();
-        // One banner can't fill both cells of a banner copy.
-        let inventory = stacks(&[("minecraft:white_banner", 1)]);
-        let staged = stage(ctx(), copy, &inventory);
-        assert!(available(&staged, &inventory));
-        assert!(staged.iter().flatten().count() < 2);
-        let twice = vec![Some(ItemStack::new("minecraft:white_banner", 1)); 2];
-        assert!(!available(&twice, &inventory));
+        // Two required cells that take the same item.
+        let paper = Ingredient::of(vec!["minecraft:paper".into()]);
+        let two = Template {
+            recipe: "test:two_papers".into(),
+            kind: Kind::Copying,
+            icon: ItemStack::new("minecraft:paper", 1),
+            cells: shapeless(vec![required(&paper), required(&paper)]),
+            shaped: false,
+            family: "test:two_papers".into(),
+        };
+        let one = stage(ctx(), &two, &stacks(&[("minecraft:paper", 1)]));
+        assert_eq!(one.iter().flatten().count(), 1);
+        let both = stage(ctx(), &two, &stacks(&[("minecraft:paper", 2)]));
+        assert_eq!(both.iter().flatten().count(), 2);
+        // Two of a stack of one aren't held.
+        let twice = vec![Some(ItemStack::new("minecraft:paper", 1)); 2];
+        assert!(!available(&twice, &stacks(&[("minecraft:paper", 1)])));
     }
 
     #[test]
