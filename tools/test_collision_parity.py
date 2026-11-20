@@ -27,6 +27,12 @@ def counts(output):
     return result
 
 
+def oracle_command(classpath, mode, folder):
+    # Set, the property lets `generate` exit 0 without inputs.txt; here it wins over JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS.
+    return ["java", "-Xmx1G", "-Dhorizon.prepare.reuse=false", "-cp", classpath, "dev.horizonlab.parity.VanillaCollisionOracle",
+            mode, str(folder)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", action="store_true")
@@ -53,7 +59,7 @@ def main():
     dependency_path = os.pathsep.join(map(str, libraries))
     test_rust_parity.run(["javac", "--release", "25", "-proc:none", "-cp", os.pathsep.join([str(jars["server"]), dependency_path]), "-d", str(classes), str(oracle)])
     def java(side, mode, folder):
-        result = subprocess.run(["java", "-Xmx1G", "-cp", os.pathsep.join([str(classes), str(jars[side]), dependency_path]), "dev.horizonlab.parity.VanillaCollisionOracle", mode, str(folder)], cwd=lab.ROOT, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(oracle_command(os.pathsep.join([str(classes), str(jars[side]), dependency_path]), mode, folder), cwd=lab.ROOT, capture_output=True, text=True, timeout=300)
         (directory / f"{side}-{mode}.log").write_text(result.stdout + result.stderr, encoding="utf-8")
         result.check_returncode()
         return result.stdout
