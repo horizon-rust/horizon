@@ -377,18 +377,18 @@ class InstallRustTests(unittest.TestCase):
         result = self.install("libudev-dev", "mold")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("rustup toolchain install stable", result.stdout)
-        self.assertIn("apt-get install -y --no-install-recommends libudev-dev mold", result.stdout)
+        install = "apt-get install -y --no-install-recommends -o Dpkg::Use-Pty=false libudev-dev mold"
+        self.assertIn(install, result.stdout)
         self.assertIn("::group::apt-get (exit 0)", result.stdout)
         # The bound runs as root, so it can stop apt-get and the dpkg it starts, not only sudo.
         self.assertIn("sudo timeout -k 30 300 apt-get update", result.stdout)
-        self.assertIn("sudo timeout -k 30 300 apt-get install -y --no-install-recommends libudev-dev mold",
-                      result.stdout)
+        self.assertIn(f"sudo timeout -k 30 300 {install}", result.stdout)
 
     def test_a_rustup_failure_still_reaps_apt_and_shows_it(self):
         result = self.install("libudev-dev", FAKE_RUSTUP="3", FAKE_APT_SLEEP="1")
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertIn("::group::apt-get (exit 0)", result.stdout)
-        self.assertIn("apt-get install -y --no-install-recommends libudev-dev", result.stdout)
+        self.assertIn("apt-get install -y --no-install-recommends -o Dpkg::Use-Pty=false libudev-dev", result.stdout)
 
     def test_an_apt_failure_fails_the_step(self):
         result = self.install("libudev-dev", FAKE_APT="5")
