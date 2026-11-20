@@ -286,7 +286,7 @@ mod tests {
             play.stats.add("mined", "minecraft:stone", 2);
             play.stats.take_dirty();
             play.stats.events.clear();
-            game.lan.as_mut().unwrap().play.insert(13, play);
+            game.lan.as_mut().unwrap().play.insert(13, Box::new(play));
             let b = game.player(13).unwrap();
             let read: serde_json::Value =
                 serde_json::from_str(&game.player_statistics(b).unwrap()).unwrap();

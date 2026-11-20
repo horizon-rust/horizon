@@ -3080,7 +3080,7 @@ mod explicit_source_tests {
             game.build_registries();
             for mode in 0..5 {
                 let nested = mode == 4;
-                game.combat = Default::default();
+                *game.combat = Default::default();
                 game.mobs.clear();
                 game.orbs.clear();
                 game.dropped.clear();

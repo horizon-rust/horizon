@@ -2669,6 +2669,7 @@ impl Game<'_> {
 
     /// Lightweight [`Self::with_level`] omitting per-player AABB/entity box
     /// allocations for block ticks/daylight detectors that never query entities.
+    #[allow(dead_code)]
     fn with_level_light<R>(
         &mut self,
         f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,

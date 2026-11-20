@@ -1926,7 +1926,7 @@ mod tests {
             let mut attackers = Vec::new();
             let mut health = Vec::new();
             for absorption in [0.0, 8.0] {
-                game.combat = Default::default();
+                *game.combat = Default::default();
                 let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
                 player.entity_id = 20;
                 player

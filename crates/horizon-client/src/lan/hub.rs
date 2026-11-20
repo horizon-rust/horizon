@@ -744,6 +744,8 @@ enum Body {
 #[derive(Default)]
 struct Columns<'w> {
     chunks: Vec<&'w Chunk>,
+    #[allow(dead_code)]
+    uses: Vec<usize>,
     index: crate::fast_hash::FxHashMap<(i32, i32), usize>,
 }
 
@@ -3342,6 +3344,85 @@ impl Hub {
         }
     }
 
+    #[allow(dead_code, clippy::too_many_arguments)]
+    fn player_state(
+        &self,
+        id: i32,
+        uuid: u128,
+        position: [f64; 3],
+        rot: (f32, f32, f32),
+        on_ground: bool,
+        flags: (bool, bool, bool),
+        body: BodyFlags,
+        living_flags: i8,
+        bed: Option<[i32; 3]>,
+        skin: u8,
+        main_hand: i32,
+        health: f32,
+        equipment: Vec<(u8, Option<horizon_protocol::item::Stack>)>,
+        attributes: Vec<play::AttributeSnapshot>,
+        effect_meta: Vec<(u8, i32, Value)>,
+    ) -> EntityState {
+        let (sneaking, sprinting, sleeping) = flags;
+        let shared = shared_flags(sneaking, sprinting, &body);
+        let pose = if sleeping {
+            2
+        } else if body.swimming || body.crawling {
+            3
+        } else if body.gliding {
+            1
+        } else if body.spin_attack {
+            4
+        } else if sneaking || body.crouching {
+            5
+        } else {
+            0
+        };
+        let mut meta = Vec::new();
+        if shared != 0 {
+            meta.push((0, serializer::BYTE, Value::Byte(shared)));
+        }
+        if pose != 0 {
+            meta.push((6, serializer::POSE, Value::Id(pose)));
+        }
+        meta.push((8, serializer::BYTE, Value::Byte(living_flags)));
+        if let Some(bed) = bed.filter(|_| sleeping) {
+            meta.push((14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(Some(bed))));
+        }
+        if (health - 1.0).abs() > f32::EPSILON && health != 20.0 {
+            meta.push((9, serializer::FLOAT, Value::Float(health)));
+        }
+        if skin != 0 {
+            meta.push((16, serializer::BYTE, Value::Byte(skin as i8)));
+        }
+        let arm = if main_hand == 1 { 1 } else { 0 };
+        if arm != 1 {
+            meta.push((15, serializer::HUMANOID_ARM, Value::Id(arm)));
+        }
+        meta.extend(effect_meta);
+        EntityState {
+            id,
+            uuid,
+            kind: "minecraft:player".into(),
+            position,
+            yaw: rot.0,
+            pitch: rot.1,
+            head_yaw: rot.2,
+            on_ground,
+            meta,
+            forced_meta: [0; 4],
+            defaults: vec![
+                (10, serializer::PARTICLES, Value::Particles(Vec::new())),
+                (11, serializer::BOOLEAN, Value::Bool(false)),
+                (15, serializer::HUMANOID_ARM, Value::Id(1)),
+                (16, serializer::BYTE, Value::Byte(0)),
+            ],
+            equipment,
+            attributes,
+            ..EntityState::default()
+        }
+    }
+
     fn fill_player_state(&self, state: &mut EntityState, g: &Guest, modified_particles: bool) {
         let body = guest_body(g);
         let shared = shared_flags(g.sneaking, g.sprinting, &body);
@@ -3435,7 +3516,7 @@ impl Hub {
     }
 
     /// Convert only equipment whose full typed source changed, including body and saddle.
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn guest_equipment(&mut self, i: usize) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
         self.refresh_guest_equipment(i);
         self.guests[i].equipment_cache.equipment()

@@ -842,8 +842,8 @@ impl Game<'_> {
                 self.lan_acting_entity?,
             ));
         }
-        if let Some(host) = self.lan.as_ref() {
-            if let Some(guest) = host
+        if let Some(host) = self.lan.as_ref()
+            && let Some(guest) = host
                 .hub
                 .guests
                 .uuid_index(uuid)
@@ -861,9 +861,8 @@ impl Game<'_> {
                             && !self.lan_guest_swaps.contains(&guest.conn)
                     })
                 })
-            {
-                return Some((PlayerRead::Guest(guest), guest.entity_id as u32));
-            }
+        {
+            return Some((PlayerRead::Guest(guest), guest.entity_id as u32));
         }
         if self.lan_acting_uuid.is_none()
             && self.serving.is_some()

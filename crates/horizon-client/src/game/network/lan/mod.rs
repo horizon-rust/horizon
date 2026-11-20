@@ -824,26 +824,12 @@ pub(super) fn mob_meta_sync(
                 meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
             }
             defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
-            let default = horizon_client::mobs::MannequinDescription::default_component();
-            match &e.description {
-                horizon_client::mobs::MannequinDescription::Default => {}
-                horizon_client::mobs::MannequinDescription::Hidden => {
-                    meta.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(None)));
-                }
-                horizon_client::mobs::MannequinDescription::Custom(tag) if tag != default => {
-                    meta.push((
-                        19,
-                        serializer::OPTIONAL_COMPONENT,
-                        Value::OptText(Some(tag.clone())),
-                    ));
-                }
-                horizon_client::mobs::MannequinDescription::Custom(_) => {}
+            let default = horizon_client::mobs::MannequinDescription::Default.component();
+            let shown = e.description.component();
+            if shown != default {
+                meta.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(shown)));
             }
-            defaults.push((
-                19,
-                serializer::OPTIONAL_COMPONENT,
-                Value::OptText(Some(default.clone())),
-            ));
+            defaults.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(default)));
         }
         // Creaking.CAN_MOVE, IS_ACTIVE and IS_TEARING_DOWN.
         "minecraft:creaking" => {

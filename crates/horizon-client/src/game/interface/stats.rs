@@ -439,7 +439,7 @@ mod tests {
             for guest in &host.hub.guests {
                 let mut play = super::super::lan_actions::GuestPlay::default();
                 play.stats.custom("time_since_rest", 200_000);
-                host.play.insert(guest.conn, play);
+                host.play.insert(guest.conn, Box::new(play));
             }
             game.world.random = horizon_core::random::LevelRandom::for_level(
                 horizon_core::random::LegacyRandom::new(12345),

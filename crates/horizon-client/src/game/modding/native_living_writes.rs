@@ -742,7 +742,7 @@ mod tests {
             assert_eq!(game.waypoint_icon(Target::Mob(13)), Icon::default());
             assert!(game.living_set_waypoint_color(zombie, None));
             let icon = game.waypoint_icon(Target::Mob(12));
-            assert_eq!((icon.style.as_str(), icon.color), ("example:flag", None));
+            assert_eq!((&*icon.style, icon.color), ("example:flag", None));
         });
     }
 
