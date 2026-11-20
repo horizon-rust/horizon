@@ -676,56 +676,121 @@ class PrebuiltGameSecretsTests(unittest.TestCase):
 
 class PrebuiltGameBaseTests(unittest.TestCase):
     """prebuilt-game.yml's commit gets the Nightly's base rule (nightly.py base): on main, or in a dry run with
-    `off_main` only, a commit a dry-run/* branch holds. Runs the source step's own script in a clone that has every
-    commit, as a fork's commit is there for anyone who asks GitHub for its SHA."""
+    `off_main` only, a commit a dry-run/* branch holds. Runs the source job's own `rule` and `source` steps, in order
+    and each in its working directory, against sibling folders as the workflow's two checkouts leave them: `trusted`
+    (a clone of origin with this commit's tools) and `candidate` (a clone that has every commit, as a fork's commit is
+    there for anyone who asks GitHub for its SHA), checked out at the dispatched commit."""
 
-    def source(self, clone: Path, commit: str, publish: bool, off_main: bool):
-        tools = clone / ".trusted" / "tools"
-        if not tools.exists():  # what the workflow's second checkout puts there: this commit's tools
-            (tools / "ci").mkdir(parents=True)
-            for name in ("ci/nightly.py", "ci/nightly_set.py", "release_train.py"):
-                shutil.copy(WORKFLOWS.parents[1] / "tools" / name, tools / name)
-        git = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
-        subprocess.run(["git", "checkout", "-q", "--detach", commit], cwd=clone, env={**os.environ, **git}, check=True)
-        step = next(s for s in yaml.safe_load((WORKFLOWS / "prebuilt-game.yml").read_text())["jobs"]["source"]["steps"]
-                    if s.get("id") == "source")
-        output = clone.parent / "output"
+    def workspace(self, folder: Path) -> tuple[Path, dict[str, str]]:
+        clone, shas = repository(folder)
+        git = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t", **self.GIT}
+
+        def run(*args, cwd=folder, input=""):  # bytes in: on Windows a text pipe would end each line with CR
+            return subprocess.run(["git", *args], cwd=cwd, env=git, check=True, capture_output=True,
+                                  input=input.encode()).stdout.decode().strip()
+
+        # A pull request whose tree carries a judge of its own that accepts anything, and `trusted` and `.trusted`
+        # symlinks to its tools, in case a checkout or the judge went looking there.
+        origin = str(folder / "origin")
+        judge = run("--git-dir", origin, "hash-object", "-w", "--stdin",
+                    input="print('the candidate judged itself')\n")
+        link = run("--git-dir", origin, "hash-object", "-w", "--stdin", input="tools")
+        ci = run("--git-dir", origin, "mktree", input=f"100644 blob {judge}\tnightly.py\n")
+        tools = run("--git-dir", origin, "mktree", input=f"040000 tree {ci}\tci\n")
+        tree = run("--git-dir", origin, "mktree", input=f"120000 blob {link}\t.trusted\n040000 tree {tools}\ttools\n"
+                                                        f"120000 blob {link}\ttrusted\n")
+        shas["symlinks"] = run("--git-dir", origin, "commit-tree", tree, "-p", shas["main"], "-m", "symlinks")
+        run("--git-dir", origin, "update-ref", "refs/pull/2/head", shas["symlinks"])
+        run("fetch", "-q", "origin", "+refs/pull/2/head:refs/pull-2", cwd=clone)
+        clone.rename(folder / "candidate")
+        # `authorize` is the candidate's own script on a real run (a commit on main by then): a stand-in that passes.
+        (folder / "candidate" / "tools").mkdir()
+        (folder / "candidate" / "tools" / "prebuilt_game.py").write_text("import sys\nsys.exit(sys.argv[1:2] != "
+                                                                         "['authorize'])\n")
+        trusted = folder / "trusted"
+        run("clone", "-q", origin, str(trusted))
+        (trusted / "tools" / "ci").mkdir(parents=True)
+        for name in ("ci/nightly.py", "ci/nightly_set.py", "release_train.py"):
+            shutil.copy(WORKFLOWS.parents[1] / "tools" / name, trusted / "tools" / name)
+        return folder, shas
+
+    GIT = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+
+    def job(self, folder: Path, commit: str, publish: bool, off_main: bool, head: str | None = None):
+        """The two steps' exit, everything they printed and what they wrote to GITHUB_OUTPUT; the candidate is checked
+        out at `head` (the commit by default) as the workflow's checkout leaves it."""
+        subprocess.run(["git", "checkout", "-q", "--detach", head or commit], cwd=folder / "candidate",
+                       env={**os.environ, **self.GIT}, check=True, capture_output=True)
+        steps = yaml.safe_load((WORKFLOWS / "prebuilt-game.yml").read_text())["jobs"]["source"]["steps"]
+        output = folder / "output"
         output.write_text("")
-        env = {**os.environ, **git, "COMMIT": commit, "PUBLISH": "true" if publish else "false",
-               "OFF_MAIN": "true" if off_main else "false", "GITHUB_OUTPUT": str(output),
-               "GITHUB_REPOSITORY": "horizon-rust/horizon", "GH_TOKEN": ""}
-        # By its PATH entry: on Windows a bare "bash" can start WSL's, which drops the environment.
-        done = subprocess.run([shutil.which("bash"), "-c", step["run"]], cwd=clone, env=env, capture_output=True,
-                              text=True)
-        return done.returncode, done.stdout + done.stderr, [line for line in output.read_text().splitlines() if line]
+        values = {"COMMIT": commit, "PUBLISH": "true" if publish else "false", "OFF_MAIN": "true" if off_main else
+                  "false", "GH_TOKEN": "", "RELEASES_PAUSED": ""}
+        text = ""
+        for step in (s for s in steps if "run" in s):
+            env = {**os.environ, **self.GIT, "GITHUB_OUTPUT": str(output), "GITHUB_REPOSITORY": "horizon-rust/horizon",
+                   **{key: values[key] for key in step["env"]}}
+            # By its PATH entry: on Windows a bare "bash" can start WSL's, which drops the environment.
+            done = subprocess.run([shutil.which("bash"), "-c", step["run"]], cwd=folder / step["working-directory"],
+                                  env=env, capture_output=True, text=True)
+            text += done.stdout + done.stderr
+            if done.returncode:
+                break
+        return done.returncode, text, [line for line in output.read_text().splitlines() if line]
 
-    def test_the_source_step_takes_main_or_a_dry_run_branch_marked_off_main(self):
-        with tempfile.TemporaryDirectory() as folder:
-            clone, shas = repository(Path(folder))
+    def test_the_source_job_takes_main_or_a_dry_run_branch_marked_off_main(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder, shas = self.workspace(Path(temp))
             for name, off_main in (("main", False), ("branch", True)):
                 with self.subTest(name=name):
-                    code, text, outputs = self.source(clone, shas[name], publish=False, off_main=off_main)
+                    code, text, outputs = self.job(folder, shas[name], publish=False, off_main=off_main)
                     self.assertEqual(code, 0, text)
                     # A dry run hands on publish=false, whatever the commit.
                     self.assertEqual(outputs, [f"commit={shas[name]}", "publish=false"])
+            # A real run on main: the only case that hands on publish=true.
+            code, text, outputs = self.job(folder, shas["main"], publish=True, off_main=False)
+            self.assertEqual(code, 0, text)
+            self.assertEqual(outputs, [f"commit={shas['main']}", "publish=true"])
 
-    def test_the_source_step_refuses_everything_else_before_it_writes_an_output(self):
-        with tempfile.TemporaryDirectory() as folder:
-            clone, shas = repository(Path(folder))
-            refused = [("branch", False, False, "is not on main"), ("main", False, True, "off_main is set")]
+    def test_the_source_job_refuses_everything_else_before_it_writes_an_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder, shas = self.workspace(Path(temp))
+            main = shas["main"]
+            refused = [(shas["branch"], False, False, None, "is not on main"),
+                       (main, False, True, None, "off_main is set")]
             # A pull request's head, a fork snapshot, Dependabot's, the Nightly's own and the merge queue's branches,
-            # and another branch of this repository: in the clone, but no dry-run/* branch holds them.
-            refused += [(name, False, True, r"no dry-run/\* branch") for name in
+            # and another branch of this repository: in the candidate's clone, but no dry-run/* branch holds them.
+            refused += [(shas[name], False, True, None, r"no dry-run/\* branch") for name in
                         ("pull", "union", "dependabot", "nightly", "queue", "fix")]
             # A real run: the commit must be on main, `off_main` or not, before `authorize` is reached.
-            refused += [("branch", True, False, "is not on main"), ("branch", True, True, "is not on main"),
-                        ("main", True, True, "off_main is set")]
-            for name, publish, off_main, why in refused:
-                with self.subTest(name=name, publish=publish, off_main=off_main):
-                    code, text, outputs = self.source(clone, shas[name], publish=publish, off_main=off_main)
+            refused += [(shas["branch"], True, False, None, "is not on main"),
+                        (shas["branch"], True, True, None, "is not on main"), (main, True, True, None, "off_main is set")]
+            # An empty `commit` dispatched from another branch is that branch's commit (`inputs.commit || github.sha`).
+            refused += [(shas["fix"], False, False, None, "is not on main")]
+            # Not a full lowercase SHA, though each names a commit the candidate has.
+            refused += [(commit, False, False, head, None) for commit, head in [
+                ("main", main), ("refs/pull/1/head", shas["pull"]), (main[:12], main), (main.upper(), main),
+                (f" {main}", main), (f"{main}\n", main), ("", main)]]
+            # The candidate checked out at another commit than the one judged: the rule passes (it says which branch
+            # holds the commit), and the candidate's own HEAD check refuses.
+            refused += [(shas["branch"], False, True, main, "branch `dry-run/release-path` holds it")]
+            for commit, publish, off_main, head, why in refused:
+                with self.subTest(commit=commit, publish=publish, off_main=off_main, head=head):
+                    code, text, outputs = self.job(folder, commit, publish=publish, off_main=off_main, head=head)
                     self.assertNotEqual(code, 0)
-                    self.assertRegex(text, why)
+                    if why:
+                        self.assertRegex(text, why)
                     self.assertEqual(outputs, [])
+
+    def test_a_candidate_that_brings_its_own_judge_and_symlinks_is_judged_by_mains(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder, shas = self.workspace(Path(temp))
+            code, text, outputs = self.job(folder, shas["symlinks"], publish=False, off_main=True)
+            self.assertNotEqual(code, 0)
+            self.assertRegex(text, r"no dry-run/\* branch")
+            self.assertNotIn("the candidate judged itself", text)
+            self.assertEqual(outputs, [])
 
     def test_the_rule_runs_from_this_workflows_commit_and_the_run_name_says_off_main(self):
         text = (WORKFLOWS / "prebuilt-game.yml").read_text()
@@ -734,22 +799,27 @@ class PrebuiltGameBaseTests(unittest.TestCase):
                          "prebuilt game${{ inputs.off_main && ' (off main)' || '' }}")
         off_main = workflow[True]["workflow_dispatch"]["inputs"]["off_main"]
         self.assertEqual((off_main["type"], off_main["default"]), ("boolean", False))
-        steps = workflow["jobs"]["source"]["steps"]
-        trusted = next(s for s in steps if s.get("with", {}).get("path") == ".trusted")
-        self.assertEqual(trusted["with"]["ref"], "${{ github.sha }}")
-        self.assertEqual(trusted["with"]["sparse-checkout"], "tools")
-        source = next(s for s in steps if s.get("id") == "source")
-        self.assertLess(steps.index(trusted), steps.index(source))
-        self.assertEqual(source["env"]["OFF_MAIN"], "${{ inputs.off_main }}")
-        self.assertIn('python3 .trusted/tools/ci/nightly.py base "$COMMIT"', source["run"])
-        # The real run's own refusals stay, after the rule.
-        self.assertLess(source["run"].index("nightly.py base"), source["run"].index("prebuilt_game.py authorize"))
+        # Four steps: the judge's checkout first, then the candidate's in a sibling folder, the rule run in the
+        # judge's folder, and the candidate's own checks in the candidate's.
+        trusted, candidate, rule, source = workflow["jobs"]["source"]["steps"]
+        self.assertEqual((trusted["with"]["path"], trusted["with"]["ref"], trusted["with"]["sparse-checkout"]),
+                         ("trusted", "${{ github.sha }}", "tools"))
+        self.assertEqual((candidate["with"]["path"], candidate["with"]["ref"]),
+                         ("candidate", "${{ inputs.commit || github.sha }}"))
+        self.assertEqual((rule["id"], rule["working-directory"], source["id"], source["working-directory"]),
+                         ("rule", "trusted", "source", "candidate"))
+        self.assertIn('python3 -E -s tools/ci/nightly.py base "$COMMIT"', rule["run"])
+        self.assertEqual(rule["env"]["OFF_MAIN"], "${{ inputs.off_main }}")
+        for key in ("COMMIT", "PUBLISH"):
+            self.assertEqual(rule["env"][key], source["env"][key])
 
 
 class PrebuiltGameCacheTests(unittest.TestCase):
     """Nothing on the prebuilt route saves a cache: a dry run's commit need not be on main, and its build scripts run
     in jobs whose cache scope is main's when it is dispatched from main. Only these actions, on GitHub's own
-    runners (no sticky disks, no machine-wide compiler cache), with no cache input; no compiler cache wrapper."""
+    runners (no sticky disks, no machine-wide compiler cache), with no cache input; no compiler cache wrapper.
+    This reads the workflow files only: a script a step calls (tools/prebuilt_game.py, cargo build scripts) could
+    still reach a cache by itself, and nothing here sees that."""
 
     ROUTE = ("prebuilt-game.yml", "prebuilt-game-build.yml", "sdk-publish.yml")
     ACTIONS = {"actions/checkout", "actions/setup-python", "actions/upload-artifact", "actions/download-artifact",
