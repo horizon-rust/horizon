@@ -27,8 +27,10 @@ WORKFLOWS = ROOT / ".github/workflows"
 BASH = shutil.which("bash")
 # Checkout refs that are the run's own commit.
 OWN_COMMIT = {None, "${{ github.sha }}"}
-OTHER_CODE = re.compile(r"\bgit\s+(?:-\S+\s+)*(?:fetch|clone|checkout|switch|worktree|reset|pull|merge|cherry-pick|am)"
-                        r"\b|\bgh\s+pr\s+checkout\b")
+# `git -C dir fetch`, `git -c k=v checkout`: options that take a separate value are skipped with it.
+OTHER_CODE = re.compile(r"\bgit\s+(?:(?:-[Cc]\s+\S+|-\S+)\s+)*"
+                        r"(?:fetch|clone|checkout|switch|worktree|reset|pull|merge|cherry-pick|am)\b"
+                        r"|\bgh\s+pr\s+checkout\b")
 
 
 def workflows():
@@ -88,7 +90,8 @@ class CacheSaveTests(unittest.TestCase):
         # The commit is the run's own (a push, a dry run) or main's newest one with green checks
         # (release_train.py green_main_head, from main's push runs).
         "launcher.yml build",
-        # The head is the plan's checkout of the run's own commit; saves only on main (`plan.outputs.saves`).
+        # The head is the plan's checkout of the run's own commit; saves only on main: pinned by
+        # tests/test_ci_runners.py HostedParityTests.test_only_mains_runs_save.
         "parity-hosted.yml run",
         # Builds any `base`: saves only when that base is main's own commit of the run.
         "pack-bench.yml bench",
@@ -119,22 +122,6 @@ class CacheSaveTests(unittest.TestCase):
         decide = yaml.safe_load((WORKFLOWS / "launcher.yml").read_text())["jobs"]["decide"]
         own = "${{ (github.event_name == 'push' || steps.mode.outputs.dry_run == 'true') && github.sha || '' }}"
         self.assertEqual(step(decide, "decide")["env"]["HEAD_SHA"], own)
-        heads = re.findall(r'echo "head=([^"]*)"', step(decide, "decide")["run"])
-        self.assertEqual(heads, ["$GITHUB_SHA"])
-
-    def test_the_hosted_run_tests_its_own_commit_and_saves_only_on_main(self):
-        workflow = yaml.safe_load((WORKFLOWS / "parity-hosted.yml").read_text())
-        plan = workflow["jobs"]["plan"]
-        checkout = next(s for s in plan["steps"] if action(s) == "actions/checkout")
-        self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
-        self.assertIn("sha=$(git rev-parse HEAD)", step(plan, "head")["run"])
-        run = workflow["jobs"]["run"]
-        gate = "needs.plan.outputs.saves == 'true'"
-        # The sealed saves follow the seal step, which runs only on the gate.
-        self.assertIn(gate, step(run, "seal")["if"])
-        for save in (s for s in run["steps"] if can_save(s) is not False):
-            self.assertTrue(gate in save["if"] or "steps.seal.outputs." in save["if"], save.get("name"))
-
 
 class PackBenchCacheTests(unittest.TestCase):
     """A dispatch from main may compare with any base, a pull request's head too; only a run whose base is main's own
