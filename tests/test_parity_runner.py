@@ -1043,34 +1043,42 @@ class OracleReuseTests(unittest.TestCase):
             self.assertEqual(hashes.file(parity_shim.__file__), expected)
             self.assertEqual(path.read_bytes(), garbage)
 
-    def test_a_damaged_hash_database_is_removed_before_the_shims_start(self):
+    def test_a_damaged_hash_database_is_removed_before_the_shims_start_only_by_a_run_owning_the_cache(self):
         import sqlite3
         from tools import parity_shim
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity_shim, "CACHE", Path(temp) / "cache"):
             cache = parity_shim.CACHE
             path = cache / "hashes.sqlite"
-            parity.check_oracle_hashes(cache)  # none yet: nothing to do
+            parity.check_oracle_hashes(cache, repair=True)  # none yet: nothing to do
             self.assertFalse(path.exists())
             hashes = parity_shim.Hashes()
             hashes.db.execute("insert into hashes values ('marker', 0, 0, 'x')")
             hashes.db.commit()
             hashes.close()
             # A sound one is kept.
-            parity.check_oracle_hashes(cache)
+            parity.check_oracle_hashes(cache, repair=True)
             db = sqlite3.connect(path)
             self.assertEqual(db.execute("select sha from hashes where path = 'marker'").fetchone(), ("x",))
             # One locked by another process, or not checked in time, is left as it is.
             db.execute("begin exclusive")
-            parity.check_oracle_hashes(cache)
+            parity.check_oracle_hashes(cache, repair=True)
             db.execute("rollback")
             db.close()
-            parity.check_oracle_hashes(cache, seconds=-1)
+            parity.check_oracle_hashes(cache, repair=True, seconds=-1)
             self.assertTrue(path.exists())
-            # One that is no database: removed with its WAL files, and the first shim makes it again.
+            # One that is no database: without repair (another parity run in the checkout may have it open) only
+            # named, every file kept; with repair removed with its WAL files, and the first shim makes it again.
             path.write_bytes(b"not a database" * 512)
             (cache / "hashes.sqlite-wal").write_bytes(b"x")
             (cache / "hashes.sqlite-shm").write_bytes(b"x")
-            parity.check_oracle_hashes(cache)
+            with mock.patch("builtins.print") as said:
+                parity.check_oracle_hashes(cache)
+            self.assertIn("is damaged: left as it is", said.call_args.args[0])
+            # (SQLite itself may drop an invalid -wal on closing its connection, only when no other has it open.)
+            self.assertEqual(path.read_bytes(), b"not a database" * 512)
+            for name in ("hashes.sqlite-wal", "hashes.sqlite-shm"):
+                (cache / name).write_bytes(b"x")
+            parity.check_oracle_hashes(cache, repair=True)
             self.assertEqual(sorted(p.name for p in cache.iterdir() if p.name.startswith("hashes.sqlite")), [])
             hashes = parity_shim.Hashes()
             self.assertTrue(parity_shim.in_wal_mode(path))
@@ -1085,7 +1093,14 @@ class OracleReuseTests(unittest.TestCase):
             data[4096 * 3:4096 * 3 + 512] = b"\xff" * 512
             path.write_bytes(bytes(data))
             parity.check_oracle_hashes(cache)
+            self.assertTrue(path.exists())
+            parity.check_oracle_hashes(cache, repair=True)
             self.assertFalse(path.exists())
+        # Repair only when the caller says so: tools/parity.py's run takes it from PARITY_REPAIR_ORACLE_HASHES=1, which
+        # only parity-hosted.yml sets (tests/test_ci_runners.py).
+        self.assertIn('check_oracle_hashes(STATE_DIR / "oracle-cache", '
+                      'os.environ.get("PARITY_REPAIR_ORACLE_HASHES") == "1")',
+                      Path(parity.__file__).read_text(encoding="utf-8"))
 
     def test_a_damaged_hash_database_never_fails_the_call(self):
         cache = Path(self.env["PARITY_SHIM_CACHE"])

@@ -509,6 +509,14 @@ class HostedParityTests(unittest.TestCase):
                 header = (cache / "hashes.sqlite").read_bytes()[:15]
                 self.assertTrue(header.startswith(b"not a database" if damaged else b"SQLite format 3"), header)
 
+    def test_only_the_hosted_run_may_remove_a_damaged_hash_database(self):
+        # Its fresh runner has one parity run, which owns the oracle cache; elsewhere another run in the checkout may
+        # have the database open, so tools/parity.py only names a damaged one.
+        self.assertEqual(self.workflow["jobs"]["run"]["env"]["PARITY_REPAIR_ORACLE_HASHES"], "1")
+        for name in sorted(WORKFLOWS.glob("*.yml")):
+            if name.name != "parity-hosted.yml":
+                self.assertNotIn("PARITY_REPAIR_ORACLE_HASHES", name.read_text(encoding="utf-8"), name.name)
+
     def test_no_required_check_waits_for_it(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):
             if path.name != "parity-hosted.yml":

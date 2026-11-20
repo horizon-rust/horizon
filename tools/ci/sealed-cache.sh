@@ -128,8 +128,11 @@ case "$mode" in
     skipped=0
     for folder in "$@"; do
       # A folder given as a symbolic link would be archived under the name it leads to, and restored without the
-      # name given: refused before it is resolved, and counted with the links left out.
-      if [ -L "${folder%/}" ]; then
+      # name given: refused before it is resolved, and counted with the links left out. Every trailing slash goes
+      # first, as one left makes -L follow the link.
+      given=$folder
+      while [[ "$given" == ?*/ ]]; do given=${given%/}; done
+      if [ -L "$given" ]; then
         echo "::warning::a $label folder to seal is a symbolic link: left out"
         skipped=$((skipped + 1))
         continue

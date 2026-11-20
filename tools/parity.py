@@ -644,12 +644,15 @@ def run_environment(reuse_oracles=False):
     return environment
 
 
-def check_oracle_hashes(cache, seconds=5):
+def check_oracle_hashes(cache, repair=False, seconds=5):
     """The oracle shims' hash database (tools/parity_shim.py), checked once before any shim of this run starts.
     Shims never remove or make it again, since another may have it open; one that fails only hashes files itself. A
     database SQLite's quick_check finds damaged, or that is no database at all (a cache entry cut short), is removed
-    here with its -wal and -shm files, and the first shim makes it again. quick_check reads every page: about 30 ms
-    for 60 MiB (2026-11-20). One that runs past `seconds` or meets a lock leaves the database as it is."""
+    with its -wal and -shm files only with `repair`, when this run owns the cache alone (PARITY_REPAIR_ORACLE_HASHES=1:
+    parity-hosted.yml, a fresh runner with one parity run); the first shim then makes it again. Otherwise another
+    parity run in this checkout may have it open (an idle connection doesn't stop quick_check), so it is only named,
+    and the shims hash files themselves. quick_check reads every page: about 30 ms for 60 MiB (2026-11-20). One that
+    runs past `seconds` or meets a lock leaves the database as it is."""
     path = cache / "hashes.sqlite"
     if not path.exists():
         return
@@ -668,10 +671,14 @@ def check_oracle_hashes(cache, seconds=5):
         damaged = True
     except sqlite3.DatabaseError:
         damaged = True
-    if damaged:
+    if damaged and repair:
         for name in (path.name, f"{path.name}-wal", f"{path.name}-shm"):
             path.with_name(name).unlink(missing_ok=True)
         print("The oracle shims' hash database was damaged: removed, the first shim makes it again.", flush=True)
+    elif damaged:
+        print(f"The oracle shims' hash database {path} is damaged: left as it is (another parity run may have it "
+              "open), and the shims hash files themselves. Remove it with its -wal and -shm files while no parity run "
+              "is running.", flush=True)
 
 
 def default_build_jobs():
@@ -1957,7 +1964,7 @@ def main():
         print(f"Running {len(selected)} harnesses, {jobs} at a time here{where}...", flush=True)
         reuse_oracles = not (args.fresh or args.all)
         if reuse_oracles and os.name != "nt":
-            check_oracle_hashes(STATE_DIR / "oracle-cache")
+            check_oracle_hashes(STATE_DIR / "oracle-cache", os.environ.get("PARITY_REPAIR_ORACLE_HASHES") == "1")
         local = LocalExecutor(jobs, int(memory_available() * 0.75), args.timeout,
                               REMOTE_LOCAL_PEAK if remotes and args.jobs is None else None)
         local.solo = solo_harnesses(config)

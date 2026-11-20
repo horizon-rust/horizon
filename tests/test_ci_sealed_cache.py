@@ -244,7 +244,7 @@ class SealedCacheTests(unittest.TestCase):
         (real / "inside.txt").write_bytes(b"x")
         linked = self.workspace / ".local/linked"
         linked.symlink_to(real, target_is_directory=True)
-        for given in (linked, f"{linked}/"):
+        for given in (linked, f"{linked}/", f"{linked}//", f"{linked}///"):
             with self.subTest(given=str(given)):
                 result = self.run_script("seal", "oracle", KEY, self.archive, given, self.folder)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

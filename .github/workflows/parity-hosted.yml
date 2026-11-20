@@ -219,6 +219,9 @@ jobs:
       PARITY_HOSTS: ''
       # A harness retried after a first failure keeps that run's log (tools/parity.py): uploaded below.
       PARITY_KEEP_FIRST_LOGS: "1"
+      # This fresh runner has one parity run, which owns the oracle cache alone: tools/parity.py may remove a damaged
+      # hash database before the shims start (elsewhere another run in the checkout may have it open).
+      PARITY_REPAIR_ORACLE_HASHES: "1"
       DATASET: 26.3-linux-x64
     steps:
       - name: Folders for the data, outside the checkout
@@ -517,8 +520,9 @@ jobs:
         run: bash tools/ci/vanilla-data.sh
       # The oracles' shims (tools/parity_shim.py) share one hash database. On a cold cache the first ones all create
       # it and switch it to WAL at once, and a shim can fail there ("database is locked"), failing its harness's first
-      # run. Created here first, alone. A damaged one (an entry cut short) is left here: tools/parity.py removes it before
-      # the first shim starts (check_oracle_hashes), and a shim that meets one hashes files itself.
+      # run. Created here first, alone. A damaged one (an entry cut short) is left here: tools/parity.py removes it
+      # before the first shim starts (check_oracle_hashes, PARITY_REPAIR_ORACLE_HASHES), and a shim that meets one
+      # hashes files itself.
       - name: The oracle cache, created before the harnesses start
         env:
           PARITY_SHIM_CACHE: ${{ github.workspace }}/.local/parity-runner/oracle-cache
