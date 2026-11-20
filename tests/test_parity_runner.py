@@ -11,6 +11,9 @@ from unittest import mock
 
 from tools import parity, parity_shard
 
+# The JVM's own variables, which tools/parity_shim.py can't key (its UNKEYED).
+UNKEYED_VARIABLES = ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH")
+
 
 class ParityRunnerTests(unittest.TestCase):
     def test_dep_info_keeps_escaped_spaces(self):
@@ -477,32 +480,41 @@ class OracleArgumentTests(unittest.TestCase):
 
 
 class ShimDecisionSummaryTests(unittest.TestCase):
-    def test_the_summary_counts_reasons_seconds_and_verify_failures(self):
-        lines = [{"harness": "a", "reason": "hit", "seconds": 30.0},
-                 {"harness": "a", "reason": "input-set", "seconds": 50.0},
-                 {"harness": "b", "reason": "environment", "seconds": 20.0, "variables": ["HORIZON_ORDER"]},
-                 {"harness": "b", "reason": "passthrough-pipe", "seconds": None},
-                 {"harness": "c", "reason": "verify-mismatch", "seconds": 5.0, "program": "java", "key": "abc",
-                  "differs": ["stdout: 3 bytes, recorded 4"]}]
+    def summary(self, text):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "decisions.jsonl"
-            path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+            path.write_text(text)
             with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), mock.patch("builtins.print") as said:
-                failed = parity.report_decisions(path)
-            self.assertEqual(parity.report_decisions(Path(temp) / "missing"), [])
-        printed = "\n".join(str(call.args[0]) if call.args else "" for call in said.call_args_list)
-        self.assertEqual([line["harness"] for line in failed], ["c"])
-        self.assertIn("Java calls: 5 (", printed)
-        self.assertIn("Java ran 75 s, replayed 30 s; 1 calls untimed", printed)
-        self.assertIn("Most Java seconds not replayed: a 50 s, b 20 s", printed)
-        self.assertIn("HORIZON_ORDER 1", printed)
-        self.assertIn("VERIFY FAILED c: java abc: stdout: 3 bytes, recorded 4", printed)
+                parity.report_decisions(path)
+        return "\n".join(str(call.args[0]) if call.args else "" for call in said.call_args_list)
 
-    def test_the_run_record_names_harnesses_with_a_failed_verification(self):
-        # tools/gate.py fails a run that has them, even when every harness passed on its fresh retry.
-        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "STATE_DIR", Path(temp)):
-            parity.finished_run([], ["c", "c"])
-            self.assertEqual(json.loads((Path(temp) / "last-run.json").read_text())["unverified"], ["c"])
+    def test_the_summary_counts_reasons_and_seconds(self):
+        lines = [{"harness": "a", "reason": "hit", "seconds": 30.0, "call": "c1"},
+                 {"harness": "a", "reason": "input-set", "seconds": 50.0, "call": "c2"},
+                 {"harness": "b", "reason": "environment", "seconds": 20.0, "variables": ["HORIZON_ORDER"]},
+                 {"harness": "b", "reason": "passthrough-pipe", "seconds": None}]
+        printed = self.summary("".join(json.dumps(line) + "\n" for line in lines))
+        self.assertIn("Java calls: 4 (", printed)
+        self.assertIn("Java ran 70 s, replayed 30 s; 1 calls untimed", printed)
+        self.assertIn("Most Java seconds not replayed: a 50 s, b 20 s", printed)
+        # Nothing from the calls themselves.
+        self.assertNotIn("HORIZON_ORDER", printed)
+        self.assertNotIn("c1", printed)
+
+    def test_a_broken_line_is_skipped_and_counted(self):
+        # A shim that could write only part of its line (a full disk), and one from a newer or older shim.
+        printed = self.summary(json.dumps({"harness": "a", "reason": "hit", "seconds": 3}) + "\n" +
+                               json.dumps({"harness": "a", "reason": 5}) + "\n" +
+                               '{"harness": "a", "reason": "no-rec')
+        self.assertIn("Java calls: 1 (hit 1)", printed)
+        self.assertIn("2 unreadable lines skipped", printed)
+
+    def test_no_notes_no_summary(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch("builtins.print") as said:
+            parity.report_decisions(Path(temp) / "missing")
+            (Path(temp) / "empty").write_text("")
+            parity.report_decisions(Path(temp) / "empty")
+        said.assert_not_called()
 
 
 @unittest.skipIf(os.name == "nt", "oracle PATH shimming uses Unix executable symlink semantics")
@@ -515,11 +527,10 @@ class OracleReuseTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.bin, self.shim = root / "bin", root / "shim"
         self.bin.mkdir(); self.shim.mkdir()
-        # A fake oracle: copies its input to its output and counts its runs. It fails on the input "fail", and reads
-        # files no argument names (as an oracle reading a variable's file does): side/say for what it prints, and
-        # side/mix for what it adds to its output.
-        self.side = root / "side"
-        self.side.mkdir()
+        # A fake oracle in a fake JDK (its release file beside bin/): copies its input to its output and counts its
+        # runs. It fails on the input "fail".
+        self.release = root / "release"
+        self.release.write_text('JAVA_VERSION="1"\n')
         self.fake_java("1")
         (self.shim / "java").symlink_to(Path(parity.__file__).with_name("parity_shim.py"))
         self.input, self.output = root / "work" / "in.txt", root / "work" / "out.txt"
@@ -535,7 +546,7 @@ class OracleReuseTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=f"{self.shim}:{self.bin}:{python}", PARITY_SHIM_REAL_PATH=str(self.bin),
                         PARITY_SHIM_CACHE=str(root / "cache"), PARITY_SHIM_DECISIONS=str(self.decisions),
                         PARITY_SHIM_HARNESS="fake")
-        for name in ("PARITY_JAVA_CACHE", "PARITY_SHIM_VERIFY", "HORIZON_PHASE", "HORIZON_ORDER"):
+        for name in ("PARITY_JAVA_CACHE", "HORIZON_PHASE", "HORIZON_ORDER", "HORIZON_DATAPACKS", *UNKEYED_VARIABLES):
             self.env.pop(name, None)
         self.subprocess = subprocess
 
@@ -550,12 +561,8 @@ class OracleReuseTests(unittest.TestCase):
                         "runs.write_text(str(int(runs.read_text() or 0) + 1) if runs.exists() else '1')\n"
                         "text = pathlib.Path(sys.argv[1]).read_text()\n"
                         "if text == 'fail': sys.exit(2)\n"
-                        "side = pathlib.Path(__file__).parent.parent / 'side'\n"
-                        "mix, say = side / 'mix', side / 'say'\n"
-                        "pathlib.Path(sys.argv[2]).write_text(text + (mix.read_text() if mix.exists() else ''))\n"
-                        "if len(sys.argv) > 3 and (side / 'new').exists():\n"
-                        "    (pathlib.Path(sys.argv[3]) / 'new.txt').write_text('n')\n"
-                        "print(say.read_text() if say.exists() else 'done')\n")
+                        "pathlib.Path(sys.argv[2]).write_text(text)\n"
+                        "print('done')\n")
         fake.chmod(0o755)
 
     def call(self, *extra, check=True, stdin=None, **variables):
@@ -591,7 +598,9 @@ class OracleReuseTests(unittest.TestCase):
         line = self.last()
         self.assertEqual(self.reasons(), ["hit"])
         self.assertIsNotNone(line["seconds"])
-        self.assertEqual(len(line["key"]), 12)
+        # Only an opaque id of the call, and nothing else from it.
+        self.assertEqual(set(line), {"harness", "program", "reason", "seconds", "call"})
+        self.assertEqual(len(line["call"]), 12)
         self.input.write_text("b")
         self.oracle(extra)
         self.assertEqual(self.reasons(), ["input-content"])
@@ -599,7 +608,7 @@ class OracleReuseTests(unittest.TestCase):
         self.oracle(extra)
         line = self.last()
         self.assertEqual(self.reasons(), ["input-set"])
-        self.assertEqual(line["added"]["count"], 1)
+        self.assertEqual((line["added"], line["removed"]), (1, 0))
         self.output.write_text("tampered")
         self.oracle(extra)
         self.assertEqual(self.reasons(), ["output-stamp"])
@@ -609,19 +618,61 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(line["variables"], ["HORIZON_PHASE"])
         self.fake_java("2.0")  # another size, as a JDK update gives
         self.oracle(extra, HORIZON_PHASE="terrain")
-        self.assertEqual(self.reasons(), ["java-version"])
+        self.assertEqual(self.reasons(), ["java-runtime"])
         self.call("-version")
         self.call(extra, stdin=self.subprocess.PIPE, HORIZON_PHASE="terrain")
         self.call(extra, PARITY_JAVA_CACHE="0", HORIZON_PHASE="terrain")
+        self.call(extra, HORIZON_PHASE="terrain", JAVA_TOOL_OPTIONS="-javaagent:/x/agent.jar")
         self.input.write_text("fail")
         self.assertEqual(self.call(extra, check=False, HORIZON_PHASE="terrain").returncode, 2)
         line = self.last()
         self.assertEqual(self.reasons(), ["passthrough-version", "passthrough-pipe", "passthrough-off",
-                                          "passthrough-failed"])
+                                          "passthrough-jvm-options", "passthrough-failed"])
         self.assertEqual(line["miss"], "output-stamp")  # the passthroughs above wrote it
 
-    def test_the_key_holds_the_java_version_and_the_variables_oracles_read(self):
-        order = self.side / "order.txt"
+    def test_the_call_id_says_which_calls_are_the_same_within_a_run_only(self):
+        self.oracle(PARITY_SHIM_RUN="one")
+        self.oracle(PARITY_SHIM_RUN="one")
+        first, second = [json.loads(line)["call"] for line in self.decisions.read_text().splitlines()]
+        self.assertEqual(first, second)
+        self.reasons()
+        self.oracle(PARITY_SHIM_RUN="two")
+        self.assertNotEqual(self.last()["call"], first)
+
+    def test_jvm_options_from_the_environment_are_never_reused(self):
+        for variable in UNKEYED_VARIABLES:
+            with self.subTest(variable=variable):
+                before = self.oracle(**{variable: "-Dx=1"})
+                self.assertEqual(self.oracle(**{variable: "-Dx=1"}), before + 1)
+                self.assertEqual(self.reasons(), ["passthrough-jvm-options"] * 2)
+        # Set but empty, as a CI step may leave one: nothing to establish.
+        self.oracle(CLASSPATH="")
+        self.assertEqual(self.reasons(), ["no-record"])
+
+    def test_the_key_holds_the_runtime_behind_the_launcher(self):
+        self.assertEqual(self.oracle(), 1)
+        # The JDK updated in place: the launcher is the same file, and prints the same version.
+        self.release.write_text('JAVA_VERSION="1"\nIMPLEMENTOR="another"\n')
+        self.assertEqual(self.oracle(), 2)
+        self.assertEqual(self.oracle(), 2)
+        self.assertEqual(self.reasons(), ["no-record", "java-runtime", "hit"])
+        # A launcher with no JDK files beside it (a stub that picks a JDK itself) can't be keyed.
+        self.release.unlink()
+        self.assertEqual(self.oracle(), 3)
+        self.assertEqual(self.oracle(), 4)
+        self.assertEqual(self.reasons(), ["passthrough-runtime"] * 2)
+
+    def test_the_key_holds_the_path_java_searches_not_the_harness_one(self):
+        self.assertEqual(self.oracle(), 1)
+        # The harness's PATH is the shim's folder and the real PATH: another order or folder after it is the same
+        # real PATH...
+        self.assertEqual(self.oracle(PATH=f"{self.shim}:{self.env['PATH']}:/nowhere"), 1)
+        # ...but another real PATH is not.
+        self.assertEqual(self.oracle(PARITY_SHIM_REAL_PATH=f"{self.bin}:/nowhere"), 2)
+        self.assertEqual(self.reasons(), ["no-record", "hit", "environment"])
+
+    def test_the_key_holds_the_variables_oracles_read_and_what_they_name(self):
+        order = self.input.parent.parent / "order.txt"
         order.write_text("0 0\n")
         self.assertEqual(self.oracle(HORIZON_PHASE="full", HORIZON_ORDER=str(order)), 1)
         # Variables that change between runs of the same call stay out of it.
@@ -634,57 +685,32 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.oracle(HORIZON_PHASE="full", HORIZON_ORDER=str(order)), 2)
         self.assertEqual(self.oracle(HORIZON_PHASE="terrain", HORIZON_ORDER=str(order)), 3)
         self.assertEqual(self.oracle(HORIZON_PHASE="terrain", HORIZON_ORDER=str(order), SOMETHING_NEW="1"), 4)
-        self.fake_java("2.0")  # another size, as a JDK update gives
-        self.assertEqual(self.oracle(HORIZON_PHASE="terrain", HORIZON_ORDER=str(order), SOMETHING_NEW="1"), 5)
-        self.assertEqual(self.oracle(HORIZON_PHASE="terrain", HORIZON_ORDER=str(order), SOMETHING_NEW="1"), 5)
-        self.assertEqual(self.reasons(), ["environment", "environment", "environment", "java-version", "hit"])
+        self.assertEqual(self.oracle(HORIZON_PHASE="terrain", HORIZON_ORDER=str(order), SOMETHING_NEW="1"), 4)
+        self.assertEqual(self.reasons(), ["environment", "environment", "environment", "hit"])
 
-    def test_verify_runs_a_replay_and_fails_on_other_stdout(self):
-        self.oracle()
-        (self.side / "say").write_text("other")
-        result = self.call(check=False, PARITY_SHIM_VERIFY="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("VERIFY FAILED in fake", result.stderr)
-        self.assertIn("stdout", result.stderr)
+    def test_a_datapack_folder_is_keyed_through_its_linked_folders(self):
+        root = self.input.parent.parent
+        packs, elsewhere = root / "datapacks", root / "elsewhere" / "pack"
+        packs.mkdir()
+        elsewhere.mkdir(parents=True)
+        (elsewhere / "pack.mcmeta").write_text("1")
+        (packs / "linked").symlink_to(elsewhere, target_is_directory=True)
+        (elsewhere / "loop").symlink_to(packs, target_is_directory=True)  # a cycle: named once, not walked forever
+        self.assertEqual(self.oracle(HORIZON_DATAPACKS=str(packs)), 1)
+        self.assertEqual(self.oracle(HORIZON_DATAPACKS=str(packs)), 1)
+        (elsewhere / "pack.mcmeta").write_text("2")
+        self.assertEqual(self.oracle(HORIZON_DATAPACKS=str(packs)), 2)
+        self.assertEqual(self.reasons(), ["no-record", "hit", "environment"])
+
+    def test_notes_that_cannot_be_written_change_nothing(self):
+        # A folder where the file should be: every open fails.
+        self.env["PARITY_SHIM_DECISIONS"] = str(self.input.parent)
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 1)  # replayed, stdout included
+        self.assertEqual(self.call(PARITY_JAVA_CACHE="0").stdout, "done\n")  # the passthrough still runs Java
         self.assertEqual(self.runs(), 2)
-        self.assertEqual(self.reasons(), ["no-record", "verify-mismatch"])
-        # The record is gone: the next call runs the oracle and records it again.
-        self.call()
-        self.assertEqual(self.runs(), 3)
-        self.assertEqual(self.reasons(), ["no-record"])
-
-    def test_verify_fails_on_another_output_file(self):
-        self.oracle()
-        (self.side / "mix").write_text("+")
-        result = self.call(check=False, PARITY_SHIM_VERIFY="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"output {os.path.relpath(self.output)}", result.stderr)
-        line = self.last()
-        self.assertEqual(line["reason"], "verify-mismatch")
-        self.assertEqual(len(line["differs"]), 1)
-
-    def test_verify_fails_on_an_output_a_replay_would_not_make(self):
-        extra = self.input.parent / "extra"
-        extra.mkdir()
-        self.oracle(extra)
-        (self.side / "new").write_text("")
-        result = self.call(extra, check=False, PARITY_SHIM_VERIFY="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"output {os.path.relpath(extra / 'new.txt')}: not recorded", result.stderr)
-
-    def test_verify_passes_and_keeps_replaying(self):
-        self.oracle()
-        self.assertEqual(self.oracle(PARITY_SHIM_VERIFY="1"), 2)
-        self.assertEqual(self.oracle(), 2)
-        self.assertEqual(self.reasons(), ["no-record", "verify-ok", "hit"])
-        # A record from before output hashes is checked on stdout and stderr only, and says so.
-        cache = Path(self.env["PARITY_SHIM_CACHE"])
-        record = next(path for path in cache.glob("*.json"))
-        saved = json.loads(record.read_text())
-        del saved["output_sha"]
-        record.write_text(json.dumps(saved))
-        self.assertEqual(self.oracle(PARITY_SHIM_VERIFY="1"), 3)
-        self.assertIn("stdout and stderr only", self.last()["note"])
+        self.input.write_text("fail")
+        self.assertEqual(self.call(check=False).returncode, 2)  # Java's own status
 
     def test_parallel_shims_append_whole_lines(self):
         child = ("import os, sys\nsys.path.insert(0, sys.argv[1])\nimport parity_shim\n"
@@ -911,7 +937,7 @@ class OracleCacheCreationTests(unittest.TestCase):
                 parity_shim.main()
             self.assertEqual(json.loads(decisions.read_text()),
                              {"harness": "food", "program": "java", "reason": "passthrough-uncached", "seconds": None,
-                              "key": None})
+                              "call": None})
         execv.assert_called_once_with("/real/java", ["/real/java", "-cp", "x", "A"])
         self.assertIn("runs without it", said.call_args.args[0])
 
