@@ -1,9 +1,9 @@
 //! Far terrain from a server (`horizon:lod`): a Horizon client playing on
 //! another machine's world has neither the seed nor the generator its far
 //! terrain samples, so the server samples the tiles for it, up to the distance
-//! its owner allows (`horizon-lod-distance`). Only a dedicated server can offer
-//! it for now: an open-to-LAN world has no setting for that distance yet, so
-//! its `LanConfig::lod_distance` stays 0.
+//! its owner allows (`horizon-lod-distance`). A world opened to LAN offers it
+//! too when its host turned on the Extras switch for it ([`lan_distance`]):
+//! out to the host's own LOD Distance.
 //!
 //! The server offers it with an [`Offer`] payload in the configuration phase,
 //! to Horizon clients only (a vanilla client never hears of it). The client
@@ -11,9 +11,10 @@
 //! `lod::Lod` samples them) and the server answers each with the tile's
 //! columns, or a refusal. The offer carries the server's limits, which the
 //! client keeps to: requests in flight and tiles a second. The server checks
-//! them again, with the tile's distance from the player, and samples on one
-//! background thread for every player in turn (`server`), so far terrain
-//! never takes more than that thread's time from the ticks.
+//! them again, with the tile's distance from the player, and samples on
+//! background threads for every player in turn (`server`: one, up to 4 on a
+//! big machine, at the lowest priority), so far terrain never takes time
+//! from the ticks.
 //!
 //! It is off unless the owner sets the key: far tiles show the generator's
 //! terrain far beyond view distance, which helps crack a world's seed.
@@ -29,13 +30,19 @@ mod cache;
 mod client;
 mod server;
 pub use client::{Inbox, RemoteSource};
-pub use server::{Delivery, Job, Service, Verdict};
+pub use server::{Delivery, Job, Service, Verdict, auto_threads};
 
 /// The custom payload channel, both ways.
 pub const CHANNEL: &str = "horizon:lod";
 /// The server.properties key (Horizon's own): the farthest a player's far
 /// terrain may reach, in chunks; 0 turns serving it off.
 pub const PROPERTY: &str = "horizon-lod-distance";
+/// The server.properties key (Horizon's own) for how many threads sample
+/// far tiles: 0, the default, sizes them from the machine
+/// ([`server::auto_threads`]).
+pub const THREADS_PROPERTY: &str = "horizon-lod-threads";
+/// The most threads [`THREADS_PROPERTY`] may ask for.
+pub const MAX_THREADS: u32 = 16;
 /// [`PROPERTY`] when the file doesn't set it: off.
 pub const DEFAULT_DISTANCE: u32 = 0;
 /// The protocol's version, first in an [`Offer`]: a client serves itself
@@ -73,6 +80,34 @@ pub fn distance_property(value: Option<&str>) -> u32 {
         .unwrap_or(DEFAULT_DISTANCE)
         .min(MAX_DISTANCE)
 }
+
+/// [`PROPERTY`]'s value in server.properties (`get` reads a key).
+pub fn distance_in<'a>(get: impl Fn(&str) -> Option<&'a str>) -> u32 {
+    distance_property(get(PROPERTY))
+}
+
+/// [`THREADS_PROPERTY`]'s value in server.properties: 0 (auto) when absent
+/// or unreadable, at most [`MAX_THREADS`].
+pub fn threads_in<'a>(get: impl Fn(&str) -> Option<&'a str>) -> u32 {
+    get(THREADS_PROPERTY)
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+        .min(MAX_THREADS)
+}
+
+/// How far a world opened to LAN serves far terrain to its Horizon guests:
+/// none unless the host turned it on (`Extras::lan_far_terrain`), then as far
+/// as the host's own LOD Distance, or [`LAN_DISTANCE`] when the host draws
+/// none; at most [`MAX_DISTANCE`].
+pub fn lan_distance(on: bool, host_distance: u32) -> u32 {
+    match (on, host_distance) {
+        (false, _) => 0,
+        (true, 0) => LAN_DISTANCE,
+        (true, d) => d.min(MAX_DISTANCE),
+    }
+}
+/// [`lan_distance`] for a host whose own LOD Distance is off.
+pub const LAN_DISTANCE: u32 = 128;
 
 /// What the server serves, as it tells a Horizon client while it configures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,6 +443,14 @@ impl Bucket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lan_world_serves_only_when_its_host_turned_it_on() {
+        assert_eq!(lan_distance(false, 256), 0);
+        assert_eq!(lan_distance(true, 256), 256);
+        assert_eq!(lan_distance(true, 0), 128);
+        assert_eq!(lan_distance(true, 5000), 1024);
+    }
 
     fn tile() -> Vec<Column> {
         (0..SIDE * SIDE)

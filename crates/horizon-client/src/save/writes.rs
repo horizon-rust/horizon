@@ -19,6 +19,10 @@ pub(super) struct Outstanding {
     done: Condvar,
     /// What the folder's writes make stale: the portal blocks a search read from saved chunks.
     portals: saved_portals::SavedPortals,
+    /// And far terrain made from saved chunks (`far_lod`).
+    pub(super) far: super::far_changes::FarChanges,
+    /// Far summaries of the chunks far terrain read (`far_summaries`).
+    pub(super) summaries: OnceLock<Arc<super::far_summaries::FarSummaries>>,
 }
 
 impl SaveDir {
@@ -56,6 +60,9 @@ impl SaveDir {
             self.outstanding
                 .portals
                 .written(folder, batch.iter().map(|(key, _, _)| *key));
+            if folder == Folder::Region {
+                self.far_saved(batch.iter().map(|(key, _, _)| *key));
+            }
             *self
                 .outstanding
                 .count
