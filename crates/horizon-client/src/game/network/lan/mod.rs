@@ -1636,9 +1636,7 @@ impl Game<'_> {
         };
         let write = |dir: &str, json: &serde_json::Value| {
             let path = super::stats::player_json(&self.world_root, dir, uuid);
-            let text = serde_json::to_string_pretty(json).map_err(|e| e.to_string())?;
-            horizon_client::save::write_durable(&path, text.as_bytes())
-                .map_err(|e| format!("{} is not saved: {e}", path.display()))
+            super::stats::write_player_json(&path, json)
         };
         write(
             "advancements",
@@ -2454,9 +2452,12 @@ impl Game<'_> {
     /// sees the support (arismoko/horizon#4510). `tick_lan` then syncs the level; a paused
     /// tick that never calls this still drains inside `tick_lan`.
     pub(in crate::game) fn tick_lan_packets(&mut self) {
+        self.answer_status_pings();
         if self.level_pass.packets_drained {
             return;
         }
+        // The mods hear the handshakes the connection threads wait on before the tick's joins.
+        self.answer_handshakes();
         let Some(mut host) = self.lan.take() else {
             return;
         };

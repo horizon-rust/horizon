@@ -21,6 +21,8 @@ mini's) is kept small by [`tools/ci/git-slim.sh`](../tools/ci/git-slim.sh) befor
 Blacksmith's runners (outside GitHub's 20-job pool) took over from GitHub's on 2026-11-17 for jobs that hold no
 secret and neither publish nor release: `checks`' `verify` ([below](#verify-on-blacksmith)), `perf-wasm`,
 `cargo-horizon-mod`'s `plan`, `needs-info`, and the bots whenever `SELF_HOSTED_CI=off` sends them away from ours.
+One exception holds secrets there: [hosted parity](#hosted-parity), started by hand, whose fetch step reads the
+maintainers' vanilla data.
 
 ## What stays on GitHub, and why
 
@@ -30,6 +32,8 @@ secret and neither publish nor release: `checks`' `verify` ([below](#verify-on-b
   writes the set of pull requests the Nightly holds), `native hook stamp` (it pushes a branch). playhorizon is a
   partner's server that the partner can reach, and a checks runner keeps what a fork's job left behind: neither may
   decide or sign what players download. `tests/test_ci_runners.py` pins it.
+  Not on GitHub's own runners, as the one exception: [hosted parity](#hosted-parity)'s fetch step, on Blacksmith's,
+  holds the vanilla data's two secrets. It decides, signs and publishes nothing, and its token only reads.
 - **Release builds**: Linux on `ubuntu-22.04` (players' binaries must link against its older glibc; our Linux
   machines have newer ones), Windows on `windows-latest` (no Windows machine). macOS builds already run on the Mac
   mini.
@@ -43,15 +47,25 @@ per part, side by side, each on a size that fits it:
 
 | Job | Runner | Merge queue |
 | --- | --- | --- |
+| `verify (which parts run)` (`verify-scope`): `tools/ci/rust_changes.py`'s answers for the launcher and Rust parts, so a change that doesn't reach a part never starts its runner | 2 vCPU | yes |
 | `verify (tree and Python tests)` (`verify-tree`) | 8 vCPU: the Python tests run one module per process (`tools/ci/unittest_parallel.py`) | yes |
-| `verify (format and lint)` (`verify-lint`) | 16 vCPU | no |
-| `verify (server build lint)` (`verify-server`) | 16 vCPU | no |
-| `verify (launcher)` (`verify-launcher`), when `tools/ci/rust_changes.py --launcher` says the change reaches it | 16 vCPU | no |
-| `verify (Rust tests)` (`verify-test`) | 16 vCPU | yes |
-| `verify (mod points)` (`verify-mod-points`): the comparison runs on pull requests only; elsewhere it builds the generator to warm its disk | 16 vCPU | yes |
+| `verify (format and lint)` (`verify-lint`), when `verify-scope` finds a Rust change (always on main's pushes) | 16 vCPU: clippy keeps them busy | no |
+| `verify (server build lint)` (`verify-server`), when `verify-scope` finds a Rust change | 4 vCPU: its clippy keeps about two cores busy | no |
+| `verify (launcher)` (`verify-launcher`), when `verify-scope` (`rust_changes.py --launcher`) says the change reaches it | 8 vCPU | no |
+| `verify (Rust tests)` (`verify-test`), when `verify-scope` finds a Rust change | 16 vCPU: a cold build folder compiles the workspace | yes |
+| `verify (mod points)` (`verify-mod-points`), when `verify-scope` says the change can reach the points: the comparison runs on pull requests only; elsewhere it builds the generator to warm its disk | 8 vCPU: the generator and the comparison use one core; only its compiles use more | yes |
 
 Only `verify`, which waits for them all, is a required check; `tests/test_ci_runners.py` pins that the parts share one
-`runs-on` choice. `SELF_HOSTED_CI=all` sends them all to our checks runners.
+`runs-on` choice. `SELF_HOSTED_CI=all` sends them all to our checks runners. `verify` passes a skipped part only where
+its own `if` left it out: `verify-scope`'s answer for it exactly `false`, or the merge queue for the lint, server build
+and launcher parts. A failed or cancelled `verify-scope` fails `verify`. Each part ends with a `load probe:` line
+(`tools/ci/load_probe.sh`: cores, load, CPU and memory use, seconds) for choosing runner sizes; its `peak` is the job's
+cgroup peak, file cache included, so it reads higher than the memory the processes held.
+
+The sizes came from those lines and the step times of 39 pull requests' runs on 2026-11-20. A size halved halves a
+minute's price (Blacksmith bills by vCPU, 2 vCPU and 8 GB at a time; 4 vCPU has 16 GB, 8 vCPU 32 GB), and only the
+compiles in a part slow down on fewer cores. The sticky disks' keys don't name the size, so a resized part keeps its
+build folder.
 
 Each Rust job keeps its Cargo build folder between runs on a Blacksmith sticky disk, as the VPS keeps its own
 (`tools/ci/build_folder.sh`): one disk per job, so jobs that ran side by side don't replace each other's build. A
@@ -66,6 +80,9 @@ branch than main ("... is not the default branch"), the merge queue's excepted: 
 fork's copy of the workflow cannot write this repository's disks. Forks' pull requests mount main's disks as well:
 until 2026-11-17 they had a set of their own that nothing could save, so each built the whole workspace (7-10 minutes
 per Rust part, against ~2 for a branch here).
+Because no pull request can save a disk, `verify (mod points)` keeps there what pull requests trust: each saved run's
+mod points snapshot of its commit (`mod-points-snapshots`, the newest 30), which a pull request whose `HEAD^1` is stored
+compares with instead of building the base (`tools/check_mod_points_unchanged.py --snapshots`).
 
 ## Try runs
 
@@ -102,6 +119,103 @@ git push origin --delete try/<name>                           # when done
   queue's commit, which a try run cannot give.
 - The run uses the branch's own copy of `ci.yml`: a branch from before 2026-11-19 has no inputs and always starts the
   ARM64 and JFR jobs. Rebase it on main first.
+
+## Hosted parity
+
+`.github/workflows/parity-hosted.yml` runs vanilla harnesses on Blacksmith's 16-vCPU runners, outside the Mac mini.
+For now a maintainer starts it by hand (`workflow_dispatch` only). It is advisory: no required check waits for it,
+and its jobs are named `hosted parity …` so nobody mistakes them for the Mac's `parity / parity`. The job to read is
+`hosted parity (advisory)`: it fails when a shard failed, when the plan failed, and when the run had no access to
+the data ("hosted parity did not run: no access to the data"). It passes only when every shard passed, or when the
+plan had nothing to run.
+
+```sh
+gh workflow run parity-hosted.yml --ref <branch> -f harnesses="food light spawn_loot"   # these, by name
+gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>                       # what the branch's changes reach
+```
+
+- **The game's data.** Horizon's code never downloads the game. The data comes from `horizon-rust/vanilla-data`, a
+  private repository of the maintainers' own Minecraft files.
+  - It holds them encrypted (AES-256, zstd) in datasets made with `lab.py prepare`. Today there is one,
+    `26.3-linux-x64`: the jars and libraries, without sources, sounds or other languages.
+  - A read-only deploy key (`VANILLA_DATA_DEPLOY_KEY`) clones it, and `VANILLA_DATA_PASSPHRASE` decrypts it.
+  - Those two secrets reach the step that runs `tools/ci/fetch-vanilla-data.sh`, and the passphrase also reaches
+    the steps that run `tools/ci/sealed-cache.sh` (below). The scripts write them to a private folder, remove that
+    folder before they end, and print only sizes, counts and timings.
+  - Fetching and unsealing run before the tested commit is checked out, sealing after the harnesses on main only.
+    Each of those steps takes its script from the GitHub API at the default branch's commit (resolved through
+    `heads/<branch>` by the plan job, which restores nothing) into a new private folder, checks that it is not empty
+    and that its git blob id is the one the API names for that path (asked for separately), and runs it under
+    `/usr/bin/bash` with `env -i`, `PATH=/usr/bin:/bin`, an empty `HOME`, no `BASH_ENV`/`ENV`, and the secrets on
+    standard input. Nothing a secret step executes or reads as code comes from the workspace, `.git` or a restored
+    path. Without the fetch script, or with one that fails the check, the shard stops; without `sealed-cache.sh` it
+    starts cold and saves nothing. The workflow file itself comes from the dispatched ref, so who may dispatch
+    (write access) is still the guard against a branch that edits it.
+  - What this does not stop: a restore extracts with absolute paths, so a hostile entry can write any file the
+    runner user owns, among them the code of a later action step (the cache action, node). Code run that way
+    shares the secret steps' user and could watch them. Branch-scoped cache entries (GitHub's rule, and
+    Blacksmith's default, which the owner confirms in its dashboard) are what keeps such an entry from a run of
+    main.
+  - Only a commit on a branch of this repository runs, resolved once to a full SHA that every job uses.
+- **Caches.** A fork's pull request can restore this repository's cache entries, and a branch's copy of the workflow
+  can name any key. So only a run of main writes them, and what is made from the data goes into one only sealed.
+  Every other run restores and saves nothing. No sticky disk, no sccache.
+  - The plan job's `saves` is true only for a push, schedule or dispatch whose ref is exactly `refs/heads/main`, is
+    the default branch and is protected, compared in shell (expressions compare strings without case). It is a job
+    output, not a variable: the oracle shim keys every variable the harnesses see, so a variable that differs
+    between main's saving run and a reading run would make every reading run miss.
+  - The dataset's encrypted chunks, as they are. The fetch script takes them only when they are plain files that
+    match the MANIFEST it reads from `horizon-rust/vanilla-data` each run, and downloads the dataset otherwise.
+  - Sealed by `tools/ci/sealed-cache.sh`: the build folders (`.local/parity-target`, `target/`, one entry per probe
+    group, keyed by the toolchain and `Cargo.lock`), the prepared resources, and the oracle results with the
+    parity state. Sealing is tar, zstd, the dataset's own encryption (AES-256-CBC, PBKDF2), then HMAC-SHA256 with
+    a second key derived from the passphrase, over the entry's kind, its full cache key and the ciphertext.
+    Sealing takes folders and regular files only: symbolic links stay out (each run makes its own again: the
+    prepared resources' links to the data, the shim's `java` and `javac`), a folder given as one included.
+    Unsealing checks the tag and that the key has the prefix the run asked for, decrypts, then lists the archive. It
+    refuses absolute or `..` names, a name twice, any symbolic link, a hard link other than to a regular file
+    listed before it by exact name (Cargo's binaries), and special files, then extracts into a new empty folder
+    with `--keep-old-files`, renamed into place only when whole. An entry that fails is discarded with a warning,
+    and the run goes on cold. The build is sealed too because a build script could copy data into it, and so that
+    the binaries the harnesses run are authenticated.
+  - Incremental builds are on (`CARGO_INCREMENTAL=1`) and `tools/ci/source_mtimes.py` gives unchanged sources their
+    old dates, so a change rebuilds only what it touches. A damaged date file, oracle record or hash database is a
+    miss, never a red job. A shim that meets a failing hash database hashes files itself and never removes it (another
+    may have it open). Here, `tools/parity.py` removes a damaged one, found by `PRAGMA quick_check`, before any
+    shim starts (`PARITY_REPAIR_ORACLE_HASHES=1`: the runner's one parity run owns the cache); elsewhere it only
+    names it. An oracle record holds the length and SHA-256 of its output streams, which are written
+    before it under temporary names: a stream cut short or of another write is a miss, never replayed. The oracle
+    shim's runtime memo (`.local/parity-runner/runtime-memo`, guarded by one machine's file stat data) is never
+    sealed or restored.
+- **What never leaves the runner** unsealed: the data, what is prepared from it, and `.local/` but the build. None
+  of it goes into an artifact.
+- **What is public.** The job logs and the uploaded logs hold what `parity.yml`'s public runs already show: compared
+  values, log tails and harness names. That is the only exception to "sizes, counts and timings only", which the
+  fetch step keeps. The upload holds the first run's log of each retried harness, the last log of each that failed,
+  and how each retry ended (from its saved record), kept 3 days. `tests/test_ci_runners.py` pins all of this.
+- **Plan, shards, result.** A `plan` job, with no secret and no data, selects with `tools/parity.py` and splits the
+  selection with `tools/parity_plan.py` into shards by the probe each harness builds (world, client, game, other), so
+  a runner pays only that group's cold build.
+  - There are no hosted dependency lists yet, so with `base` every harness counts as reached, and the full set is
+    planned. The lists will come from a hosted full run on main.
+  - `base` matters only when the head conflicts with main: otherwise the head is tested merged into main's tip and
+    compared with it, as in `parity.yml`.
+  - Each shard runs on a `run` runner with Xvfb and Mesa's software Vulkan (lavapipe), as playhorizon has. The oracle
+    cache is created before the harnesses start, since shims that create it at once can fail.
+  - `hosted parity (advisory)` states the result and lists what was not run. It lists a harness as passed on its
+    retry only when its saved record says so; a first log without one (a shard stopped mid-retry) is listed as a
+    retry not finished.
+- **Not run on hosted runners.** These are listed with their reason, never counted as passed:
+  - the harnesses the `hosted` entry of `tools/parity_hosts.json` excludes: sounds, other languages, sources, older
+    servers' worlds, the network;
+  - `known_failing` and `named_only` ones.
+- **Cost, measured 2026-11-19 (cold).**
+  - About a minute of setup and data per runner.
+  - Cold probe builds: world 40 s; client 530 s (two profiles); the game 480 s.
+  - Then 3-10 s of runner time per harness, 8 at a time, most of it in the vanilla oracle.
+  - From main's caches, the builds take seconds, or what a change touches. The cached state serves the probes'
+    prebuild and the oracle results' reuse, not the selection: the plan job holds no secret, and its dependency
+    lists are still to come from a hosted full run on main.
 
 ## Which jobs, and when
 
