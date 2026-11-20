@@ -105,6 +105,8 @@ pub struct ChunkEncoder {
     coder: Arc<SectionCoder>,
     /// Block entity type id per state (-1 for none).
     entity_types: Vec<i32>,
+    /// Vanilla chest types, separate from other containers stored as `BlockEntity::Chest`.
+    chest_types: [i32; 3],
     /// A native state's declared type, sent only for a matching instance.
     mod_entities: Vec<Option<Arc<str>>>,
     /// The mods' update tags (`native_block_entity_update_tag`).
@@ -964,6 +966,12 @@ impl ChunkEncoder {
                 biome_bits: ceil_log2(biome_registry.len()),
             }),
             entity_types,
+            chest_types: [
+                "minecraft:chest",
+                "minecraft:trapped_chest",
+                "minecraft:ender_chest",
+            ]
+            .map(|name| types.and_then(|ids| ids.id(name)).unwrap_or(-1)),
             mod_entities,
             mod_update_tag: None,
             trial_active: Vec::new(),
@@ -1118,6 +1126,15 @@ impl ChunkEncoder {
             _ => entity_tag(entity, self.trial_active.contains(&state)),
         }
     }
+
+    /// The empty vanilla chest snapshot for a terrain reveal. Chunk records elide
+    /// the empty tag, but a standalone block-entity packet requires a compound.
+    pub(super) fn chest_snapshot_tag(&self, state: u32, entity: &BlockEntity) -> Option<Tag> {
+        (matches!(entity, BlockEntity::Chest(_))
+            && self.chest_types.contains(&self.entity_type(state)?))
+        .then(|| Tag::Compound(Compound::new()))
+    }
+
     /// The tag of a block change at `pos`: [`Self::update_tag`] with a mod's
     /// queued one-shot fields taken and put over it. It takes them, so build it
     /// once, with viewers, and send it to them all; a chunk or a single player's
@@ -1326,6 +1343,7 @@ impl ChunkEncoder {
         Self {
             coder: self.coder.clone(),
             entity_types: self.entity_types.clone(),
+            chest_types: self.chest_types,
             mod_entities: self.mod_entities.clone(),
             mod_update_tag: self.mod_update_tag,
             trial_active: self.trial_active.clone(),

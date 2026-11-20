@@ -118,9 +118,11 @@ fn setup() -> (Hub, [Receiver<Out>; 3], World) {
     }
     first_chunk.set(CHEST[0], CHEST[1], CHEST[2], 2);
     first_chunk.set(MACHINE[0], MACHINE[1], MACHINE[2], 3);
+    let mut items = vec![None; 27];
+    items[0] = Some(ItemStack::new("minecraft:diamond", 1));
     world
         .block_entities
-        .insert(tuple(CHEST), BlockEntity::Chest(vec![None; 27]));
+        .insert(tuple(CHEST), BlockEntity::Chest(items));
     let machine = ModBlockEntity::new(
         "test:machine".into(),
         ModBlockEntityFields {
@@ -165,6 +167,23 @@ fn update_state(packet: &C, pos: [i32; 3]) -> Option<i32> {
         }
         _ => None,
     }
+}
+
+fn assert_chest_reveal(packets: &[C]) {
+    let index = packets
+        .iter()
+        .position(|p| matches!(p, C::BlockEntityData(tag) if tag.pos == CHEST))
+        .expect("chest snapshot");
+    let C::BlockEntityData(snapshot) = &packets[index] else {
+        unreachable!()
+    };
+    assert_eq!(snapshot.kind, 1);
+    assert_eq!(snapshot.tag, Tag::Compound(Compound::new()));
+    assert!(
+        packets[..index]
+            .iter()
+            .any(|p| update_state(p, CHEST) == Some(2))
+    );
 }
 
 fn initial(packets: &[C]) -> Option<&play::LevelChunkWithLight> {
@@ -233,16 +252,12 @@ fn terrain_views_filter_shared_batches_deltas_metadata_and_corrections() {
         .unwrap();
     hub.broadcast_block_changes(&mut world);
     for receiver in &rx[..2] {
-        assert_eq!(
-            drain(receiver).iter().find_map(|p| update_state(p, CHEST)),
-            Some(2)
-        );
+        assert_chest_reveal(&drain(receiver));
     }
-    assert!(
-        drain(&rx[2])
-            .iter()
-            .all(|p| update_state(p, CHEST).is_none())
-    );
+    assert!(drain(&rx[2]).iter().all(|p| {
+        update_state(p, CHEST).is_none()
+            && !matches!(p, C::BlockEntityData(tag) if tag.pos == CHEST)
+    }));
 
     let BlockEntity::Mod(machine) = &world.block_entities[&tuple(MACHINE)] else {
         panic!("machine")
@@ -516,6 +531,38 @@ fn validated_break_reveal_is_bounded_and_sticks_to_the_actor() {
         );
         assert_eq!(packets.iter().find_map(|p| update_state(p, CHEST)), Some(1));
     }
+}
+
+#[test]
+fn retained_chest_reveal_sends_state_then_the_empty_snapshot_again_on_resend() {
+    let (mut hub, rx, mut world) = setup();
+    wait_for_chunks(&mut hub, &mut world, &rx.iter().collect::<Vec<_>>());
+
+    // The successful break is two blocks from the chest. Its immediate face stays covered.
+    hub.reveal_terrain_after_break(1, &mut world, [17, 64, 1]);
+    assert_chest_reveal(&drain(&rx[0]));
+    assert!(drain(&rx[1]).is_empty() && drain(&rx[2]).is_empty());
+
+    hub.terrain_residency_changed([(1, 0)]);
+    let resent = wait_for_chunks(&mut hub, &mut world, &[&rx[0], &rx[1]]);
+    for packets in &resent {
+        let chunk = initial(packets).unwrap();
+        assert_eq!(section_state(chunk, CHEST), 1);
+        assert!(chunk.chunk.block_entities.is_empty());
+    }
+    let chunk = resent[0]
+        .iter()
+        .position(|p| matches!(p, C::LevelChunkWithLight(c) if (c.x, c.z) == (0, 0)))
+        .unwrap();
+    assert_chest_reveal(&resent[0][chunk + 1..]);
+    assert!(resent[1].iter().all(|p| {
+        update_state(p, CHEST).is_none()
+            && !matches!(p, C::BlockEntityData(tag) if tag.pos == CHEST)
+    }));
+    let BlockEntity::Chest(items) = &world.block_entities[&tuple(CHEST)] else {
+        panic!("authoritative chest");
+    };
+    assert_eq!(items[0], Some(ItemStack::new("minecraft:diamond", 1)));
 }
 
 #[test]

@@ -376,7 +376,11 @@ impl Hub {
         let tag = world
             .block_entities
             .get(&pos)
-            .and_then(|entity| self.encoder.update_tag(pos, state, entity))
+            .and_then(|entity| {
+                self.encoder
+                    .update_tag(pos, state, entity)
+                    .or_else(|| self.encoder.chest_snapshot_tag(state, entity))
+            })
             .or_else(|| {
                 crate::lan::chunks::pot_tag(world.chunks.get(&terrain_view::column(pos))?, pos)
             });

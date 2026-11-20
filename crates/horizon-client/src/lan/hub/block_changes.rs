@@ -330,13 +330,11 @@ impl Hub {
             let metadata_positions = if has_views { &candidates } else { &positions };
             for &pos @ (x, y, z) in metadata_positions {
                 let state = world.block(x, y, z).0;
-                if !self
-                    .encoder
-                    .entity_matches(state, world.block_entities.get(&pos))
-                {
+                let entity = world.block_entities.get(&pos);
+                if !self.encoder.entity_matches(state, entity) {
                     continue;
                 }
-                let entitled = if has_views {
+                let mut entitled = if has_views {
                     Cow::Owned(
                         holders
                             .iter()
@@ -361,15 +359,24 @@ impl Hub {
                     continue;
                 }
                 // A decorated pot is no block entity: its tag is the chunk's saved one.
-                let state = world.block(x, y, z).0;
-                let tag = match world.block_entities.get(&(x, y, z)) {
-                    Some(entity) => self.encoder.change_tag((x, y, z), state, entity),
+                let tag = match entity {
+                    Some(entity) => self.encoder.change_tag(pos, state, entity),
                     None => world
                         .chunks
                         .get(&(x >> 4, z >> 4))
-                        .and_then(|c| crate::lan::chunks::pot_tag(c, (x, y, z))),
+                        .and_then(|c| crate::lan::chunks::pot_tag(c, pos)),
                 };
-                let Some(tag) = tag else {
+                let Some(tag) = tag.or_else(|| {
+                    let terrain = self.terrain.as_ref().filter(|_| has_views)?;
+                    let tag = self.encoder.chest_snapshot_tag(state, entity?)?;
+                    // A revealed chest needs the snapshot omitted from its projected chunk.
+                    entitled.to_mut().retain(|&(i, _)| {
+                        terrain
+                            .view(self.guests[i].conn, &self.config.dimension)
+                            .is_some_and(|(_, rules)| rules.targets_state(y, state))
+                    });
+                    (!entitled.is_empty()).then_some(tag)
+                }) else {
                     continue;
                 };
                 let Some(kind) = self.encoder.entity_type(state) else {
