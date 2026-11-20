@@ -1465,7 +1465,7 @@ impl MotionWorld<'_, '_, '_> {
             }
         }
         let gravity = living_motion::effective_gravity(self)?;
-        if !(gravity > 0.0) {
+        if gravity <= 0.0 || gravity.is_nan() {
             return Ok(false);
         }
         let drag = living_motion::air_drag(self)?;
@@ -1869,10 +1869,7 @@ impl MotionWorld<'_, '_, '_> {
                 }
             }
         }
-        if self.climbable()? {
-            return Ok(false);
-        }
-        Ok(true)
+        Ok(!self.climbable()?)
     }
     /// `LivingEntity.checkAutoSpinAttack`: the first living entity in the
     /// box swept this tick takes the hit and ends the spin, bouncing the
