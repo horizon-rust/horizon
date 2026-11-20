@@ -6,7 +6,7 @@ impl Game<'_> {
     /// `Hud.onDisconnected`, from `Minecraft.disconnect` and `clearClientLevel`
     /// (a proxy's reconfiguration too), but the chat: joining clears it and a
     /// reconfiguration keeps it (`ChatComponent.storeState`).
-    pub(super) fn hud_disconnected(&mut self) {
+    pub(super) fn hud_disconnected_body(&mut self) {
         self.tab_list.reset();
         self.boss_overlay.reset();
         self.adv.toasts.clear();
@@ -15,7 +15,7 @@ impl Game<'_> {
         self.titles.reset_times();
     }
 
-    pub(in crate::game) fn send(&self, packet: S) {
+    pub(super) fn send_body(&self, packet: S) {
         if self.remote.is_some() {
             // MultiPlayerGameMode's attack, interact, useItem, useItemOn, releaseUsingItem, dropItem and
             // piercingAttack run ensureHasSentCarriedItem before their packet: a slot the number keys
@@ -32,14 +32,14 @@ impl Game<'_> {
     }
     /// `Connection.send` for the game's play packets: a mod may cancel one
     /// (`client_packet_send`), and the server never hears of it. True when queued.
-    pub(in crate::game) fn send_play(&self, packet: S) -> bool {
+    pub(super) fn send_play_body(&self, packet: S) -> bool {
         let queued = self.remote.is_some() && !self.client_packet_send_canceled(&packet);
         if let (true, Some(r)) = (queued, &self.remote) {
             r.session.send(packet);
         }
         queued
     }
-    pub(super) fn send_action(&self, action: i32) {
+    pub(super) fn send_action_body(&self, action: i32) {
         self.send(S::PlayerAction(play::PlayerAction {
             action,
             pos: [0; 3],
@@ -50,17 +50,17 @@ impl Game<'_> {
     /// `LocalPlayer.isShiftKeyDown` (and so `isSecondaryUseActive`): the input as of the player's
     /// last tick (`input.keyPresses`, what the last ServerboundPlayerInputPacket said), not the key
     /// now: a sneak pressed in the frame of a click acts from the next tick, as on the server.
-    pub(super) fn remote_shift_down(&self) -> bool {
+    pub(super) fn remote_shift_down_body(&self) -> bool {
         self.remote
             .as_ref()
             .is_some_and(|r| r.last_input & SHIFT_INPUT != 0)
     }
-    pub(super) fn next_sequence(&mut self) -> i32 {
+    pub(super) fn next_sequence_body(&mut self) -> i32 {
         let r = self.remote.as_mut().expect("remote");
         r.sequence += 1;
         r.sequence
     }
-    pub(super) fn item_name(&self, id: i32) -> Arc<str> {
+    pub(super) fn item_name_body(&self, id: i32) -> Arc<str> {
         let r = self.remote.as_ref().expect("remote");
         Arc::from(
             r.builtin
@@ -70,17 +70,17 @@ impl Game<'_> {
         )
     }
     /// The server's network id of a mob effect (`brewing::EFFECTS` id).
-    pub(in crate::game) fn remote_effect_network_id(&self, effect: &str) -> Option<i32> {
+    pub(super) fn remote_effect_network_id_body(&self, effect: &str) -> Option<i32> {
         let r = self.remote.as_ref()?;
         r.builtin
             .get("minecraft:mob_effect")?
             .id(&format!("minecraft:{effect}"))
     }
     /// A mob effect's network id as the effect (`brewing::EFFECTS` id).
-    pub(in crate::game) fn remote_effect_id(&self, effect: i32) -> Option<&'static str> {
+    pub(super) fn remote_effect_id_body(&self, effect: i32) -> Option<&'static str> {
         self.remote_effect_def(effect).map(|def| def.id)
     }
-    pub(super) fn remote_effect_def(
+    pub(super) fn remote_effect_def_body(
         &self,
         effect: i32,
     ) -> Option<&'static horizon_client::brewing::EffectDef> {
@@ -91,7 +91,7 @@ impl Game<'_> {
     /// ClientPacketListener.handleUpdateMobEffect for the player itself
     /// (`LivingEntity.forceAddEffect`): the effect replaces any of its kind.
     /// Other entities' effects are not shown.
-    pub(super) fn remote_effect(&mut self, p: &play::UpdateMobEffect) {
+    pub(super) fn remote_effect_body(&mut self, p: &play::UpdateMobEffect) {
         if self.remote.as_ref().is_none_or(|r| r.entity_id != p.id) {
             return;
         }
@@ -127,7 +127,7 @@ impl Game<'_> {
             }
         }
     }
-    pub(super) fn item_id(&self, name: &str) -> i32 {
+    pub(super) fn item_id_body(&self, name: &str) -> i32 {
         let r = self.remote.as_ref().expect("remote");
         r.builtin
             .get("minecraft:item")
@@ -136,7 +136,7 @@ impl Game<'_> {
     }
     /// A stack from the server, decoded as the saved and command item NBT
     /// are, so tooltips and models see every field.
-    pub(in crate::game) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
+    pub(super) fn to_stack_body(&self, s: &Option<Stack>) -> Option<ItemStack> {
         let r = self.remote.as_ref()?;
         let stack = s.as_ref()?;
         if !horizon_protocol::item::custom::permitted(stack, r.registries.custom_components)
@@ -154,7 +154,7 @@ impl Game<'_> {
     /// A stack to the server (`SetCreativeModeSlot`): the same component
     /// patch a Horizon server sends its clients, with the registries' ids, so
     /// the server's echo doesn't hand back a bare item.
-    pub(super) fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
+    pub(super) fn to_network_body(&self, s: &Option<ItemStack>) -> Option<Stack> {
         let r = self.remote.as_ref()?;
         // A stack as the server sent it, only its count changed: its own
         // components go back, as a vanilla client keeps them.
@@ -198,7 +198,7 @@ impl Game<'_> {
     }
     /// `HashedStack.create` with the connection's registries (the client's
     /// `decoratedHashOpsGenerator`).
-    pub(super) fn hashed_stack(&self, s: &Option<ItemStack>) -> Option<Hashed> {
+    pub(super) fn hashed_stack_body(&self, s: &Option<ItemStack>) -> Option<Hashed> {
         let r = self.remote.as_ref()?;
         let names = SyncedNames {
             builtin: &r.builtin,

@@ -4,7 +4,7 @@ use super::*;
 
 impl Game<'_> {
     /// The last `ClientboundPlayerAbilities` the server sent, on a client.
-    pub(in crate::game) fn remote_abilities(&self) -> Option<&play::PlayerAbilities> {
+    pub(super) fn remote_abilities_body(&self) -> Option<&play::PlayerAbilities> {
         self.remote.as_ref()?.abilities.as_ref()
     }
 
@@ -15,7 +15,7 @@ impl Game<'_> {
     /// `player.push(entity)`. `before_player`: the mobs that tick before the
     /// player (`ticked_before_player`) and the boats, else the mobs that tick
     /// after it.
-    pub(super) fn remote_pushes(&self, before_player: bool) -> Vec3 {
+    pub(super) fn remote_pushes_body(&self, before_player: bool) -> Vec3 {
         let (Some(p), Some(r)) = (self.player.as_ref(), self.remote.as_ref()) else {
             return Vec3::ZERO;
         };
@@ -112,7 +112,7 @@ impl Game<'_> {
     /// (`TickRateManager.isEntityFrozen`).
     /// `GuardianRenderer.getEntityToLookAt`: a guardian's eye follows its
     /// synched attack target, else the camera.
-    pub(super) fn tick_remote_guardian_eyes(&mut self, running: bool) {
+    pub(super) fn tick_remote_guardian_eyes_body(&mut self, running: bool) {
         use horizon_client::mobs::{Species, Who, guardian};
         if !running {
             return;
@@ -151,7 +151,7 @@ impl Game<'_> {
         self.guardian_look_scratch = looks;
     }
     /// Humanoid held arm poses, once the tick has set equipment and use state.
-    pub(in crate::game) fn tick_remote_arm_poses(&mut self) {
+    pub(super) fn tick_remote_arm_poses_body(&mut self) {
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if !horizon_client::mobs::anim::extracts_humanoid(m) {
@@ -189,7 +189,7 @@ impl Game<'_> {
             }
         }
     }
-    pub(super) fn tick_remote_entities(&mut self, running: bool) {
+    pub(super) fn tick_remote_entities_body(&mut self, running: bool) {
         if running {
             self.tick_text_displays();
             self.tick_remote_ominous_item_spawners();

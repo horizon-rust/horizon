@@ -3,13 +3,13 @@
 use super::*;
 
 impl Game<'_> {
-    pub(in crate::game) fn request_remote_mining_stop(&mut self) {
+    pub(super) fn request_remote_mining_stop_body(&mut self) {
         if let Some(r) = self.remote.as_mut() {
             r.stop_mining = true;
         }
     }
 
-    pub(super) fn remote_handle_input(&mut self) {
+    pub(super) fn remote_handle_input_body(&mut self) {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -47,7 +47,7 @@ impl Game<'_> {
 
     /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
     /// new selected slot before anything the slot acts with.
-    pub(super) fn remote_send_carried(&self) {
+    pub(super) fn remote_send_carried_body(&self) {
         if let Some(r) = &self.remote
             && r.carried.get() != Some(self.selected)
         {
@@ -62,7 +62,7 @@ impl Game<'_> {
     /// `isSweepAttack` for a damaging hit on `target` (`living`: a
     /// `LivingEntity`, which may be hit critically), heard by native mods on
     /// both sides. Only the server sweeps.
-    pub(super) fn remote_sweep_event(&mut self, target: &str, living: bool) {
+    pub(super) fn remote_sweep_event_body(&mut self, target: &str, living: bool) {
         if mod_api::__private::mods().is_empty() {
             return;
         }
@@ -88,7 +88,7 @@ impl Game<'_> {
     /// server id `id` that an attack reaches `Player.attack`'s sweep check on,
     /// and whether it is living. A painting or item frame is not: on this
     /// client `skipAttackInteraction` hurts it and stops the attack there.
-    pub(super) fn remote_attacked_object(&self, id: i32) -> Option<(String, bool)> {
+    pub(super) fn remote_attacked_object_body(&self, id: i32) -> Option<(String, bool)> {
         let id = id as u32;
         if let Some(b) = self.boats.iter().find(|b| b.id == id) {
             return Some((b.entity_type(), false));
@@ -110,7 +110,7 @@ impl Game<'_> {
     /// hit on another player with extra knockback runs the attacker's side of
     /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
     /// stop. Without it the next move outruns the server's player.
-    pub(super) fn remote_player_attack(&mut self, mob: usize) {
+    pub(super) fn remote_player_attack_body(&mut self, mob: usize) {
         // Java dispatches this through the target's RemotePlayer type. The
         // level_players map is profile bookkeeping and can lag the entity;
         // mobs must stay out because their hurtClient returns false.
@@ -169,13 +169,13 @@ impl Game<'_> {
     /// The latency the server's player list gives this player
     /// (`PlayerInfo.getLatency`), none before the server lists it. A new entry reads 0 until the
     /// server's first latency update (every 600 ticks).
-    pub(in crate::game) fn own_latency(&self) -> Option<i32> {
+    pub(super) fn own_latency_body(&self) -> Option<i32> {
         let r = self.remote.as_ref()?;
         r.tab_players.get(&r.profile).map(|me| me.latency)
     }
 
     /// An attribute's value on this client's player, if its map has the attribute.
-    pub(super) fn own_attribute(&mut self, id: &str) -> Option<f64> {
+    pub(super) fn own_attribute_body(&mut self, id: &str) -> Option<f64> {
         let p = self.player.as_mut()?;
         let key = p.attributes.key(id)?;
         p.attributes.lookup(Some(&key))?;
@@ -185,7 +185,7 @@ impl Game<'_> {
     }
 
     /// Keys with a multiplayer meaning; returns true when consumed.
-    pub(in crate::game) fn remote_key(&mut self, key: KeyCode) -> Result<bool> {
+    pub(super) fn remote_key_body(&mut self, key: KeyCode) -> Result<bool> {
         if self.screen != Screen::Playing {
             if (key == KeyCode::KeyE || key == KeyCode::Escape) && self.screen == Screen::Inventory
             {
@@ -263,7 +263,7 @@ impl Game<'_> {
     /// advancements); the pause menu, server containers, mount inventories and
     /// dialogs release on the first tick after closing instead, as vanilla
     /// does.
-    pub(in crate::game) fn release_use_for_keybind_screen(&mut self) {
+    pub(super) fn release_use_for_keybind_screen_body(&mut self) {
         // Only a server's client holds a use to release.
         if self.remote.is_none() {
             return;
@@ -277,7 +277,7 @@ impl Game<'_> {
     /// runs the client half of `Item.releaseUsing` (a Riptide launch moves the
     /// player itself). Vanilla reaches it both when the use key is let go and,
     /// in the same tick, when a keybind opens a screen.
-    pub(super) fn release_remote_use(&mut self) {
+    pub(super) fn release_remote_use_body(&mut self) {
         self.send_action(6);
         // a mod's Stop may skip the item's release, and a mod's own release follows.
         let hand = self.used_hand();
@@ -299,7 +299,7 @@ impl Game<'_> {
     /// ClientPacketListener.sendChat / sendCommand, signed with a chat
     /// session (game/network/remote_chat.rs). The Chat option's Hidden and System
     /// levels keep chat out and Hidden keeps the commands out (ChatAbilities).
-    pub(in crate::game) fn send_signed_chat_input(&mut self, message: &str) {
+    pub(super) fn send_signed_chat_input_body(&mut self, message: &str) {
         let message = message.trim();
         if message.is_empty() || !self.chat_abilities().allows(message) {
             return;
@@ -314,7 +314,7 @@ impl Game<'_> {
         }
     }
     /// ChatScreen.handleChatInput fires the client event for chat, not commands.
-    pub(in crate::game) fn send_chat_from_screen(&mut self, message: &str) {
+    pub(super) fn send_chat_from_screen_body(&mut self, message: &str) {
         if message.starts_with('/') || !mod_api::__private::listened(mod_api::HookId::ClientChat) {
             self.send_signed_chat_input(message);
         } else if let Some(uuid) = self.remote.as_ref().map(|r| r.profile) {
@@ -329,7 +329,7 @@ impl Game<'_> {
     }
     /// MultiPlayerGameMode.dropItem (key.drop): predict the removal, then send
     /// the action; swing only if a nonempty stack was removed.
-    pub(in crate::game) fn remote_drop(&mut self, all: bool) {
+    pub(super) fn remote_drop_body(&mut self, all: bool) {
         // ensureHasSentCarriedItem: the server drops from the slot just chosen.
         self.remote_send_carried();
         let dropped =
@@ -342,7 +342,7 @@ impl Game<'_> {
     /// Minecraft.handleKeybinds, key.swapOffhand: the server swaps the hands
     /// (ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND at BlockPos.ZERO, facing down) and
     /// sends both slots back; nothing is predicted.
-    pub(in crate::game) fn remote_swap_hands(&mut self) {
+    pub(super) fn remote_swap_hands_body(&mut self) {
         self.send_action(7);
         // Equal stacks swap with no slot update to wait for.
         let (main, off) = (self.stack_in(self.selected), self.offhand.as_ref());
@@ -358,7 +358,7 @@ impl Game<'_> {
     /// updates of a hand's slot count as the held stack changing in place,
     /// as this client doesn't predict every use the way vanilla's does
     /// (a thrown snowball's stack shrinks only when the server says so).
-    pub(super) fn remote_hand_slot_set(&mut self, slot: usize, changed: bool) {
+    pub(super) fn remote_hand_slot_set_body(&mut self, slot: usize, changed: bool) {
         let hand = if slot == super::super::shield::OFFHAND_SLOT {
             1
         } else if slot == self.selected {
@@ -375,7 +375,7 @@ impl Game<'_> {
         }
     }
     /// A container click: the server answers with the authoritative slots.
-    pub(in crate::game) fn remote_click(&mut self, right: bool) {
+    pub(super) fn remote_click_body(&mut self, right: bool) {
         let Some(size) = self
             .renderer
             .as_ref()
@@ -404,7 +404,7 @@ impl Game<'_> {
     }
     /// `AbstractContainerMenu.setItem`/`initializeContents`: the state id a
     /// click answers with is the open menu's, not another window's.
-    pub(super) fn remote_menu_state(&mut self, container: i32, state: i32) {
+    pub(super) fn remote_menu_state_body(&mut self, container: i32, state: i32) {
         let open = self.remote_menu().0;
         if let Some(r) = self.remote.as_mut().filter(|_| container == open) {
             r.state_id = state;

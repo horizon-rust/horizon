@@ -840,6 +840,773 @@ mod tick_entities;
 mod use_prediction;
 mod wire;
 
+// The `Game` methods moved into the files above stay here as the mod points they were, by name, module path and
+// signature (docs/layers.md#mod-points-stay-put); each forwards to its body in its file.
+impl Game<'_> {
+    // connection.rs
+    pub(super) fn remote_sound_name(
+        &self,
+        sound: &(i32, Option<(String, Option<f32>)>),
+    ) -> Option<String> {
+        self.remote_sound_name_body(sound)
+    }
+    pub(super) fn remote_sound_entity_state(
+        &mut self,
+        id: i32,
+    ) -> Option<horizon_client::sound_engine::SoundEntityState> {
+        self.remote_sound_entity_state_body(id)
+    }
+    pub(super) fn remote_hurt_sound(&self, source_type: i32) -> &'static str {
+        self.remote_hurt_sound_body(source_type)
+    }
+    pub(super) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
+        self.connect_server_body(address, name)
+    }
+    pub(super) fn connect_server_with_cookies(
+        &mut self,
+        address: &str,
+        name: &str,
+        cookies: Option<horizon_client::net::Cookies>,
+    ) -> Result<()> {
+        self.connect_server_with_cookies_body(address, name, cookies)
+    }
+    pub(super) fn connect_server_with_options(
+        &mut self,
+        address: &str,
+        name: &str,
+        cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
+        realm: bool,
+    ) -> Result<()> {
+        self.connect_server_with_options_body(address, name, cookies, lan, realm)
+    }
+    pub(super) fn connect_remote_session(
+        &mut self,
+        address: &str,
+        name: &str,
+        local: Option<horizon_protocol::connection::Pipe>,
+        cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
+        realm: bool,
+    ) -> Result<()> {
+        self.connect_remote_session_body(address, name, local, cookies, lan, realm)
+    }
+    pub(super) fn init_remote_for_replay(&mut self) -> Result<()> {
+        self.init_remote_for_replay_body()
+    }
+    pub(super) fn leave_server(&mut self, reason: Option<Text>) -> Result<()> {
+        self.leave_server_body(reason)
+    }
+
+    // wire.rs
+    fn hud_disconnected(&mut self) {
+        self.hud_disconnected_body()
+    }
+    pub(super) fn send(&self, packet: S) {
+        self.send_body(packet)
+    }
+    pub(super) fn send_play(&self, packet: S) -> bool {
+        self.send_play_body(packet)
+    }
+    fn send_action(&self, action: i32) {
+        self.send_action_body(action)
+    }
+    fn remote_shift_down(&self) -> bool {
+        self.remote_shift_down_body()
+    }
+    fn next_sequence(&mut self) -> i32 {
+        self.next_sequence_body()
+    }
+    fn item_name(&self, id: i32) -> Arc<str> {
+        self.item_name_body(id)
+    }
+    pub(super) fn remote_effect_network_id(&self, effect: &str) -> Option<i32> {
+        self.remote_effect_network_id_body(effect)
+    }
+    pub(super) fn remote_effect_id(&self, effect: i32) -> Option<&'static str> {
+        self.remote_effect_id_body(effect)
+    }
+    fn remote_effect_def(
+        &self,
+        effect: i32,
+    ) -> Option<&'static horizon_client::brewing::EffectDef> {
+        self.remote_effect_def_body(effect)
+    }
+    fn remote_effect(&mut self, p: &play::UpdateMobEffect) {
+        self.remote_effect_body(p)
+    }
+    fn item_id(&self, name: &str) -> i32 {
+        self.item_id_body(name)
+    }
+    pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
+        self.to_stack_body(s)
+    }
+    fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
+        self.to_network_body(s)
+    }
+    fn hashed_stack(&self, s: &Option<ItemStack>) -> Option<Hashed> {
+        self.hashed_stack_body(s)
+    }
+
+    // chat.rs
+    pub(super) fn add_chat_line(
+        &mut self,
+        content: horizon_client::text::Text,
+        source: horizon_client::chat::ChatSource,
+    ) -> bool {
+        self.add_chat_line_body(content, source)
+    }
+    fn signed_chat_line(
+        &mut self,
+        content: horizon_client::text::Text,
+        source: horizon_client::chat::ChatSource,
+        signature: Option<Signature>,
+        trust: ChatTrust,
+    ) -> bool {
+        self.signed_chat_line_body(content, source, signature, trust)
+    }
+    fn handle_player_chat(&mut self, chat: QueuedChat) {
+        self.handle_player_chat_body(chat)
+    }
+    fn handle_chat_message_error(
+        &mut self,
+        chat_type: &play::ChatTypeBound,
+        signature: Option<&Signature>,
+    ) {
+        self.handle_chat_message_error_body(chat_type, signature)
+    }
+    fn chat_trust(
+        &self,
+        sender: u128,
+        signed: bool,
+        timestamp: i64,
+        content: &str,
+        unsigned: Option<&Tag>,
+        decorated: &horizon_client::text::Text,
+    ) -> ChatTrust {
+        self.chat_trust_body(sender, signed, timestamp, content, unsigned, decorated)
+    }
+    fn handle_delete_chat(&mut self, packed: &(i32, Option<Vec<u8>>)) -> Result<()> {
+        self.handle_delete_chat_body(packed)
+    }
+    fn accept_chat(&mut self, chat: QueuedChat) -> bool {
+        self.accept_chat_body(chat)
+    }
+    fn player_chat_line(&mut self, chat: QueuedChat) -> bool {
+        self.player_chat_line_body(chat)
+    }
+
+    // polling.rs
+    pub(super) fn remote_carts(&self) -> Option<Vec<serde_json::Value>> {
+        self.remote_carts_body()
+    }
+    pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
+        self.auth_body()
+    }
+    pub(super) fn online_server(&self) -> bool {
+        self.online_server_body()
+    }
+    pub(super) fn remote_custom_completions(&self) -> std::collections::BTreeSet<String> {
+        self.remote_custom_completions_body()
+    }
+    pub(super) fn remote_online_names(&self) -> Option<Vec<String>> {
+        self.remote_online_names_body()
+    }
+    pub(super) fn remote_menu_id(&self) -> i32 {
+        self.remote_menu_id_body()
+    }
+    pub(super) fn remote_chat(&self, n: usize) -> Option<Vec<String>> {
+        self.remote_chat_body(n)
+    }
+    pub(super) fn remote_backlog(&self) -> usize {
+        self.remote_backlog_body()
+    }
+    pub(super) fn poll_stationary_client(&mut self) -> Result<()> {
+        self.poll_stationary_client_body()
+    }
+    pub(super) fn poll_remote(&mut self) -> Result<()> {
+        self.poll_remote_body()
+    }
+    fn send_suggestion_request(&mut self) {
+        self.send_suggestion_request_body()
+    }
+    fn handle_command_suggestions(&mut self, data: &[u8]) {
+        self.handle_command_suggestions_body(data)
+    }
+
+    // level_state.rs
+    fn set_registries(&mut self, registries: Arc<Dynamic>) {
+        self.set_registries_body(registries)
+    }
+    pub(in crate::game) fn enter_remote_dimension(
+        &mut self,
+        spawn: &play::SpawnInfo,
+        keep_world: bool,
+        reason: horizon_client::level_loading::Reason,
+    ) {
+        self.enter_remote_dimension_body(spawn, keep_world, reason)
+    }
+    pub(super) fn remote_chunk_in_range(&self, x: i32, z: i32) -> bool {
+        self.remote_chunk_in_range_body(x, z)
+    }
+    fn chunk_inside_remote_range(center: (i32, i32), distance: i32, x: i32, z: i32) -> bool {
+        Self::chunk_inside_remote_range_body(center, distance, x, z)
+    }
+    pub(in crate::game) fn drop_remote_chunks_out_of_range(
+        &mut self,
+        center: (i32, i32),
+        distance: i32,
+    ) -> Vec<(i32, i32)> {
+        self.drop_remote_chunks_out_of_range_body(center, distance)
+    }
+    pub(in crate::game) fn forget_all_remote_columns(&mut self) -> Vec<(i32, i32)> {
+        self.forget_all_remote_columns_body()
+    }
+    pub(in crate::game) fn forget_remote_columns(
+        &mut self,
+        gone: &mut horizon_client::fast_hash::FxHashSet<(i32, i32)>,
+        keep_terrain: bool,
+    ) -> Vec<(i32, i32)> {
+        self.forget_remote_columns_body(gone, keep_terrain)
+    }
+    fn remote_animate(&mut self, id: i32, action: u8) {
+        self.remote_animate_body(id, action)
+    }
+    fn remote_server_data(&mut self, icon: Option<&[u8]>) {
+        self.remote_server_data_body(icon)
+    }
+
+    // blocks.rs
+    pub(super) fn sync_block_entity(
+        &mut self,
+        pos: (i32, i32, i32),
+        previous: Option<BlockStateId>,
+        state: BlockStateId,
+    ) {
+        self.sync_block_entity_body(pos, previous, state)
+    }
+    fn forget_block_entity_attachments(&mut self, (x, y, z): (i32, i32, i32)) {
+        self.forget_block_entity_attachments_body((x, y, z))
+    }
+    fn server_block(&mut self, pos: [i32; 3], state: i32) {
+        self.server_block_body(pos, state)
+    }
+    fn end_predictions(&mut self, sequence: i32) {
+        self.end_predictions_body(sequence)
+    }
+    fn player_position(&self) -> [f64; 3] {
+        self.player_position_body()
+    }
+    fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
+        self.block_meets_player_body(pos, state)
+    }
+    fn snap_player_to(&mut self, at: [f64; 3]) {
+        self.snap_player_to_body(at)
+    }
+    fn set_block(&mut self, pos: [i32; 3], state: i32, predicted: bool) {
+        self.set_block_body(pos, state, predicted)
+    }
+
+    // entities.rs
+    pub(super) fn remote_vehicle_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.remote_vehicle_ids_body()
+    }
+    pub(super) fn remote_seat_passengers(&mut self, vehicle: u32, passengers: &[i32]) {
+        self.remote_seat_passengers_body(vehicle, passengers)
+    }
+    pub(super) fn client_attachment_entity_exists(&self, holder: Holder) -> bool {
+        self.client_attachment_entity_exists_body(holder)
+    }
+    pub(super) fn spawn_entity(
+        &mut self,
+        id: i32,
+        kind: &str,
+        position: [f64; 3],
+        rotation: [f32; 3],
+    ) {
+        self.spawn_entity_body(id, kind, position, rotation)
+    }
+    fn move_entity(
+        &mut self,
+        id: i32,
+        path: Option<Path>,
+        rotation: Option<(f32, f32)>,
+        on_ground: bool,
+        packet: MovePacket,
+    ) {
+        self.move_entity_body(id, path, rotation, on_ground, packet)
+    }
+    pub(super) fn detach_remote_tracking_entity(&mut self, id: i32) {
+        self.detach_remote_tracking_entity_body(id)
+    }
+
+    // menu_slots.rs
+    pub(super) fn inventory_screen_slot(menu: &str, slot: i32) -> Option<usize> {
+        Self::inventory_screen_slot_body(menu, slot)
+    }
+    pub(super) fn menu_slot_index(menu: &str, internal: usize) -> Option<usize> {
+        Self::menu_slot_index_body(menu, internal)
+    }
+    pub(super) fn remote_station_kind(menu: &str) -> Option<super::stations::Kind> {
+        Self::remote_station_kind_body(menu)
+    }
+    fn open_menu_name(&self, container: i32) -> String {
+        self.open_menu_name_body(container)
+    }
+    fn set_menu_slot(&mut self, container: i32, slot: i32, item: Option<ItemStack>) {
+        self.set_menu_slot_body(container, slot, item)
+    }
+
+    // apply_packet.rs
+    pub(in crate::game) fn apply_packet(&mut self, packet: C) -> Result<()> {
+        self.apply_packet_body(packet)
+    }
+
+    // scoreboard.rs
+    fn remote_objective(&mut self, p: play::SetObjective) {
+        self.remote_objective_body(p)
+    }
+    fn remote_team(&mut self, p: play::SetPlayerTeam) {
+        self.remote_team_body(p)
+    }
+
+    // skins.rs
+    pub(super) fn publish_tab_object_skins(&mut self) {
+        self.publish_tab_object_skins_body()
+    }
+    pub(super) fn remote_tab_players(
+        &mut self,
+    ) -> Option<(Vec<horizon_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
+        self.remote_tab_players_body()
+    }
+    pub(super) fn resolve_inline_profiles(
+        &mut self,
+        profiles: &[std::sync::Arc<serde_json::Value>],
+    ) {
+        self.resolve_inline_profiles_body(profiles)
+    }
+    fn poll_own_profile(&mut self) {
+        self.poll_own_profile_body()
+    }
+    fn skin_3d_model(
+        &self,
+        kind: &std::sync::Arc<horizon_client::mobs::MobType>,
+        skin: &str,
+        slim: bool,
+    ) -> Option<std::sync::Arc<horizon_client::mobs::Part>> {
+        self.skin_3d_model_body(kind, skin, slim)
+    }
+    pub(super) fn update_remote_skins(&mut self) {
+        self.update_remote_skins_body()
+    }
+    pub(super) fn store_skin(&mut self, location: String, rgba: Vec<u8>) {
+        self.store_skin_body(location, rgba)
+    }
+    fn again_skin(&mut self, location: &str) -> bool {
+        self.again_skin_body(location)
+    }
+    pub(super) fn drawn_skin(
+        &mut self,
+        uuid: u128,
+        (skin, slim): (String, bool),
+    ) -> (String, bool) {
+        self.drawn_skin_body(uuid, (skin, slim))
+    }
+    pub(super) fn face_skin(&mut self, uuid: u128, skin: &str) -> String {
+        self.face_skin_body(uuid, skin)
+    }
+    pub(super) fn decorate_chat(
+        &self,
+        bound: &play::ChatTypeBound,
+        content: &serde_json::Value,
+        decoration: Decoration,
+    ) -> horizon_client::text::Text {
+        self.decorate_chat_body(bound, content, decoration)
+    }
+
+    // entity_updates.rs
+    fn remote_item_data(&mut self, id: i32, stack: &Option<Stack>) {
+        self.remote_item_data_body(id, stack)
+    }
+    fn remote_motion(&mut self, id: i32, velocity: [f64; 3]) {
+        self.remote_motion_body(id, velocity)
+    }
+    fn apply_remote_health(&mut self) {
+        self.apply_remote_health_body()
+    }
+    fn place_ghast_under(&mut self, id: u32, spot: Vec3) {
+        self.place_ghast_under_body(id, spot)
+    }
+    fn remote_look_at(&mut self, p: &play::PlayerLookAt) {
+        self.remote_look_at_body(p)
+    }
+    fn remote_teleport(&mut self, p: &play::PlayerPosition) -> Result<()> {
+        self.remote_teleport_body(p)
+    }
+
+    // tick.rs
+    fn tick_client_load(&mut self) {
+        self.tick_client_load_body()
+    }
+    pub(super) fn tick_remote(&mut self) -> Result<()> {
+        self.tick_remote_body()
+    }
+    fn tick_remote_player(&mut self, running: bool, hold: bool) -> Result<()> {
+        self.tick_remote_player_body(running, hold)
+    }
+    fn tick_local_player(
+        &mut self,
+        entity_collisions: Vec<horizon_core::geometry::Aabb>,
+        pushed: Vec3,
+        sprint_window: i32,
+    ) -> Result<()> {
+        self.tick_local_player_body(entity_collisions, pushed, sprint_window)
+    }
+
+    // tick_entities.rs
+    pub(super) fn remote_abilities(&self) -> Option<&play::PlayerAbilities> {
+        self.remote_abilities_body()
+    }
+    fn remote_pushes(&self, before_player: bool) -> Vec3 {
+        self.remote_pushes_body(before_player)
+    }
+    fn tick_remote_guardian_eyes(&mut self, running: bool) {
+        self.tick_remote_guardian_eyes_body(running)
+    }
+    pub(in crate::game) fn tick_remote_arm_poses(&mut self) {
+        self.tick_remote_arm_poses_body()
+    }
+    fn tick_remote_entities(&mut self, running: bool) {
+        self.tick_remote_entities_body(running)
+    }
+
+    // player_state.rs
+    pub(super) fn remote_minecart_lerp(
+        &self,
+        id: u32,
+        partial: f32,
+    ) -> Option<([f64; 3], f32, f32)> {
+        self.remote_minecart_lerp_body(id, partial)
+    }
+    fn remote_move_minecart(&mut self, p: play::MoveMinecartAlongTrack) {
+        self.remote_move_minecart_body(p)
+    }
+    fn remote_player_eating(
+        &mut self,
+        item: &str,
+        ticks: u32,
+        at: [f64; 3],
+        eye: f64,
+        pitch: f32,
+        yaw: f32,
+    ) {
+        self.remote_player_eating_body(item, ticks, at, eye, pitch, yaw)
+    }
+    fn remote_send_state(&mut self, input: u8) {
+        self.remote_send_state_body(input)
+    }
+    pub(in crate::game) fn creative_stacks(&self) -> Vec<Option<ItemStack>> {
+        self.creative_stacks_body()
+    }
+    pub(super) fn send_creative_slots(&mut self) {
+        self.send_creative_slots_body()
+    }
+    fn remote_synced(&mut self) {
+        self.remote_synced_body()
+    }
+    pub(in crate::game) fn remote_synced_since(&mut self, before: &[Option<ItemStack>]) {
+        self.remote_synced_since_body(before)
+    }
+
+    // mining.rs
+    pub(super) fn stop_remote_mining(&mut self) -> bool {
+        self.stop_remote_mining_body()
+    }
+    fn remote_mining(&mut self, start: bool) -> bool {
+        self.remote_mining_body(start)
+    }
+    fn veto_mining_prediction(
+        &self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        starting: bool,
+        progress: f32,
+    ) -> bool {
+        self.veto_mining_prediction_body(pos, face, starting, progress)
+    }
+    fn remote_break_restricted(&self, pos: [i32; 3]) -> bool {
+        self.remote_break_restricted_body(pos)
+    }
+    fn remote_use_block(&mut self, hand: Hand) -> bool {
+        self.remote_use_block_body(hand)
+    }
+    pub(in crate::game) fn predict_item_on_block(
+        &mut self,
+        stack: &ItemStack,
+        hit: &super::Hit,
+    ) -> bool {
+        self.predict_item_on_block_body(stack, hit)
+    }
+    fn predict_map_on_banner(&self, stack: &ItemStack, hit: &super::Hit) -> bool {
+        self.predict_map_on_banner_body(stack, hit)
+    }
+    fn remote_bone_meal_succeeds(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
+        self.remote_bone_meal_succeeds_body(hit, stack)
+    }
+    fn predict_use(&mut self, (changes, sounds): &DryUse, seq: i32) {
+        self.predict_use_body((changes, sounds), seq)
+    }
+
+    // use_prediction.rs
+    pub(super) fn is_level_player(&self, id: i32) -> bool {
+        self.is_level_player_body(id)
+    }
+    pub(super) fn block_takes_click(&mut self, hit: &super::Hit, held: Option<&ItemStack>) -> bool {
+        self.block_takes_click_body(hit, held)
+    }
+    pub(super) fn block_swallows_click(
+        &mut self,
+        hit: &super::Hit,
+        held: Option<&ItemStack>,
+    ) -> bool {
+        self.block_swallows_click_body(hit, held)
+    }
+    fn remote_block_reacts(
+        &mut self,
+        hit: &super::Hit,
+        held: Option<&ItemStack>,
+    ) -> (InteractionResult, DryUse) {
+        self.remote_block_reacts_body(hit, held)
+    }
+    pub(super) fn remote_block_template(
+        &mut self,
+        hit: &super::Hit,
+        held: Option<&ItemStack>,
+        without_item: bool,
+    ) -> (InteractionResult, DryUse) {
+        self.remote_block_template_body(hit, held, without_item)
+    }
+    fn predict_place(&mut self, (pos, changes): &DryPlace, seq: i32) {
+        self.predict_place_body((pos, changes), seq)
+    }
+    pub(super) fn predict_blocks(&mut self, changes: &DryChanges, seq: i32) {
+        self.predict_blocks_body(changes, seq)
+    }
+    pub(super) fn remote_can_place(
+        &mut self,
+        hit: &super::Hit,
+        stack: &ItemStack,
+    ) -> Option<DryPlace> {
+        self.remote_can_place_body(hit, stack)
+    }
+    fn remote_use_bucket(
+        &mut self,
+        stack: &ItemStack,
+    ) -> (bool, Option<DryChanges>, Vec<DrySound>) {
+        self.remote_use_bucket_body(stack)
+    }
+    fn use_finds_no_target(&self, held: &ItemStack) -> bool {
+        self.use_finds_no_target_body(held)
+    }
+    fn remote_start_held_use(&mut self, held: &ItemStack) -> bool {
+        self.remote_start_held_use_body(held)
+    }
+    fn remote_use_instrument(&mut self, held: &ItemStack) {
+        self.remote_use_instrument_body(held)
+    }
+    fn held_until_released(&self, stack: &ItemStack) -> bool {
+        self.held_until_released_body(stack)
+    }
+    fn patched_held_use(&self, stack: &ItemStack) -> bool {
+        self.patched_held_use_body(stack)
+    }
+    fn remote_use_hands(&mut self, attempt: mod_api::InteractionAttempt) {
+        self.remote_use_hands_body(attempt)
+    }
+    fn remote_tick_using(&mut self) {
+        self.remote_tick_using_body()
+    }
+    fn remote_complete_using(&mut self) {
+        self.remote_complete_using_body()
+    }
+
+    // input.rs
+    pub(super) fn request_remote_mining_stop(&mut self) {
+        self.request_remote_mining_stop_body()
+    }
+    fn remote_handle_input(&mut self) {
+        self.remote_handle_input_body()
+    }
+    fn remote_send_carried(&self) {
+        self.remote_send_carried_body()
+    }
+    fn remote_sweep_event(&mut self, target: &str, living: bool) {
+        self.remote_sweep_event_body(target, living)
+    }
+    fn remote_attacked_object(&self, id: i32) -> Option<(String, bool)> {
+        self.remote_attacked_object_body(id)
+    }
+    fn remote_player_attack(&mut self, mob: usize) {
+        self.remote_player_attack_body(mob)
+    }
+    pub(in crate::game) fn own_latency(&self) -> Option<i32> {
+        self.own_latency_body()
+    }
+    fn own_attribute(&mut self, id: &str) -> Option<f64> {
+        self.own_attribute_body(id)
+    }
+    pub(super) fn remote_key(&mut self, key: KeyCode) -> Result<bool> {
+        self.remote_key_body(key)
+    }
+    pub(super) fn release_use_for_keybind_screen(&mut self) {
+        self.release_use_for_keybind_screen_body()
+    }
+    fn release_remote_use(&mut self) {
+        self.release_remote_use_body()
+    }
+    pub(super) fn send_signed_chat_input(&mut self, message: &str) {
+        self.send_signed_chat_input_body(message)
+    }
+    pub(super) fn send_chat_from_screen(&mut self, message: &str) {
+        self.send_chat_from_screen_body(message)
+    }
+    pub(super) fn remote_drop(&mut self, all: bool) {
+        self.remote_drop_body(all)
+    }
+    pub(super) fn remote_swap_hands(&mut self) {
+        self.remote_swap_hands_body()
+    }
+    fn remote_hand_slot_set(&mut self, slot: usize, changed: bool) {
+        self.remote_hand_slot_set_body(slot, changed)
+    }
+    pub(super) fn remote_click(&mut self, right: bool) {
+        self.remote_click_body(right)
+    }
+    fn remote_menu_state(&mut self, container: i32, state: i32) {
+        self.remote_menu_state_body(container, state)
+    }
+
+    // menus.rs
+    pub(super) fn remote_menu(&self) -> (i32, String) {
+        self.remote_menu_body()
+    }
+    pub(super) fn remote_menu_ops(&mut self, ops: &[(Option<usize>, i32, Input)]) -> bool {
+        self.remote_menu_ops_body(ops)
+    }
+    pub(super) fn remote_quick_move_unpredicted(&mut self, internal: usize) -> bool {
+        self.remote_quick_move_unpredicted_body(internal)
+    }
+    pub(super) fn remote_quick_move_all(&mut self, slot: usize, moved: &ItemStack) {
+        self.remote_quick_move_all_body(slot, moved)
+    }
+    fn send_clicks(&mut self, container: i32, clicks: Vec<Predicted>) {
+        self.send_clicks_body(container, clicks)
+    }
+    pub(super) fn remote_storage_open(&self) -> bool {
+        self.remote_storage_open_body()
+    }
+    pub(super) fn remote_throw(&mut self, right: bool, input: horizon_client::menu::Input) {
+        self.remote_throw_body(right, input)
+    }
+    pub(super) fn remote_creative_drop(&mut self, right: bool) {
+        self.remote_creative_drop_body(right)
+    }
+    pub(super) fn remote_creative_throw(&mut self, thrown: ItemStack) {
+        self.remote_creative_throw_body(thrown)
+    }
+    pub(super) fn remote_close_container(&mut self) {
+        self.remote_close_container_body()
+    }
+    pub(super) fn remote_button_click(&self, button: i32) -> bool {
+        self.remote_button_click_body(button)
+    }
+    fn remote_reject_container(&mut self, container: i32) {
+        self.remote_reject_container_body(container)
+    }
+    fn remote_close_local(&mut self) {
+        self.remote_close_local_body()
+    }
+    fn remote_open_merchant(
+        &mut self,
+        container: i32,
+        title: String,
+        text: horizon_client::text::Text,
+    ) {
+        self.remote_open_merchant_body(container, title, text)
+    }
+    fn remote_merchant_offers(&mut self, p: play::MerchantOffers) {
+        self.remote_merchant_offers_body(p)
+    }
+    fn remote_open_screen(&mut self, p: play::OpenScreen) {
+        self.remote_open_screen_body(p)
+    }
+    fn remote_open_mount(&mut self, p: play::MountScreenOpen) {
+        self.remote_open_mount_body(p)
+    }
+
+    // screens.rs
+    pub(super) fn remote_menu_type(&self) -> Option<&str> {
+        self.remote_menu_type_body()
+    }
+    pub(super) fn remote_menu_title(&self) -> Option<horizon_client::text::Text> {
+        self.remote_menu_title_body()
+    }
+    pub(super) fn refresh_remote_language(&mut self) {
+        self.refresh_remote_language_body()
+    }
+    pub(super) fn remote_chest_menu(&self) -> Option<(usize, horizon_client::text::Text)> {
+        self.remote_chest_menu_body()
+    }
+    pub(super) fn remote_stop_sleeping(&mut self) {
+        self.remote_stop_sleeping_body()
+    }
+    pub(super) fn remote_respawn(&mut self) {
+        self.remote_respawn_body()
+    }
+    pub(super) fn remote_screen_up(&self) -> bool {
+        self.remote_screen_up_body()
+    }
+    pub(super) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
+        self.remote_overlay_body(batch)
+    }
+    pub(super) fn remote_loading(&self) -> bool {
+        self.remote_loading_body()
+    }
+    fn reconfigure_layout(&self, (w, h): (f32, f32)) -> ((f32, f32), (f32, f32)) {
+        self.reconfigure_layout_body((w, h))
+    }
+    fn draw_reconfiguring(&self, batch: &mut HudBatch, since: u64) {
+        self.draw_reconfiguring_body(batch, since)
+    }
+    fn connect_cancel(&self, (w, h): (f32, f32)) -> Option<(f32, f32)> {
+        self.connect_cancel_body((w, h))
+    }
+    pub(super) fn connect_screen_click(&mut self) -> Result<()> {
+        self.connect_screen_click_body()
+    }
+    pub(super) fn remote_hud(&self, batch: &mut HudBatch) {
+        self.remote_hud_body(batch)
+    }
+    pub(super) fn remote_glowing(&self, id: u32) -> Option<bool> {
+        self.remote_glowing_body(id)
+    }
+    pub(super) fn remote_player_name(&self, id: u32) -> Option<&str> {
+        self.remote_player_name_body(id)
+    }
+    pub(super) fn remote_player_uuid(&self, id: u32) -> Option<u128> {
+        self.remote_player_uuid_body(id)
+    }
+    pub(super) fn remote_player_names(&self) -> Vec<(u32, String)> {
+        self.remote_player_names_body()
+    }
+    fn remote_clock_tick(&mut self) {
+        self.remote_clock_tick_body()
+    }
+    pub(super) fn remote_status(&self) -> Option<serde_json::Value> {
+        self.remote_status_body()
+    }
+}
+
 /// `Entity.lookAt`'s rotation from `from` towards `to`, as (yaw, pitch).
 fn look_at_rotation(from: [f64; 3], to: [f64; 3]) -> (f32, f32) {
     use horizon_core::geometry::trig::atan2;

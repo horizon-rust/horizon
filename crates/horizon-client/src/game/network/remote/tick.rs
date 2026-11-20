@@ -7,7 +7,7 @@ impl Game<'_> {
     /// player's section is shown once its column is lit; when the level is
     /// ready the loading screen closes and the server hears `PlayerLoaded`
     /// (`notifyPlayerLoaded`).
-    pub(super) fn tick_client_load(&mut self) {
+    pub(super) fn tick_client_load_body(&mut self) {
         let Some(player) = self.player.as_ref() else {
             return;
         };
@@ -59,7 +59,7 @@ impl Game<'_> {
     }
 
     /// One client tick while connected (Minecraft.tick with a ClientLevel).
-    pub(in crate::game) fn tick_remote(&mut self) -> Result<()> {
+    pub(super) fn tick_remote_body(&mut self) -> Result<()> {
         self.tick_remote_level()?;
         // Its rockets tick after the player (even waiting for chunks), then ParticleEngine.tick.
         self.tick_own_rockets();
@@ -78,7 +78,7 @@ impl Game<'_> {
         Ok(())
     }
 
-    pub(super) fn tick_remote_player(&mut self, running: bool, hold: bool) -> Result<()> {
+    pub(super) fn tick_remote_player_body(&mut self, running: bool, hold: bool) -> Result<()> {
         // Inventory.tick's ItemStack.inventoryTick: the pop time runs down.
         if !hold {
             for pop in &mut self.hotbar_pop {
@@ -195,7 +195,7 @@ impl Game<'_> {
 
     /// `LocalPlayer.tick`'s `Player.tick` work: input, riding, motion, sleep
     /// and the state the server hears.
-    pub(super) fn tick_local_player(
+    pub(super) fn tick_local_player_body(
         &mut self,
         entity_collisions: Vec<horizon_core::geometry::Aabb>,
         pushed: Vec3,

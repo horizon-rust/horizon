@@ -6,7 +6,7 @@ impl Game<'_> {
     /// A line in the connection's chat, with its styles, click and hover
     /// events (ChatComponent.addMessage). The lines the Chat option hides
     /// are dropped there (its `visibleMessageFilter`).
-    pub(in crate::game) fn add_chat_line(
+    pub(super) fn add_chat_line_body(
         &mut self,
         content: horizon_client::text::Text,
         source: horizon_client::chat::ChatSource,
@@ -15,7 +15,7 @@ impl Game<'_> {
     }
     /// `chat_line` of a player message, keeping its signature for a
     /// deletion (`GuiMessage.signature`).
-    pub(super) fn signed_chat_line(
+    pub(super) fn signed_chat_line_body(
         &mut self,
         content: horizon_client::text::Text,
         source: horizon_client::chat::ChatSource,
@@ -62,7 +62,7 @@ impl Game<'_> {
     /// `ChatListener.handleMessage` for player and disguised chat: held in the
     /// queue while Chat Delay is set, shown at once otherwise. `narration` is
     /// the chat type's narration of it (`decorateNarration`).
-    pub(super) fn handle_player_chat(&mut self, chat: QueuedChat) {
+    pub(super) fn handle_player_chat_body(&mut self, chat: QueuedChat) {
         if self.chat_delay_ms() > 0 {
             if let Some(r) = self.remote.as_mut() {
                 r.chat_queue.push_back(chat);
@@ -78,7 +78,7 @@ impl Game<'_> {
     /// client sends the server. Vanilla also
     /// skips a blocked sender and one restricted to friends (not kept here either) and
     /// narrates the line.
-    pub(super) fn handle_chat_message_error(
+    pub(super) fn handle_chat_message_error_body(
         &mut self,
         chat_type: &play::ChatTypeBound,
         signature: Option<&Signature>,
@@ -111,7 +111,7 @@ impl Game<'_> {
     /// `ChatListener.evaluateTrustLevel`: the player's own message on their
     /// own server is secure. `decorated` is the line shown, `unsigned` the
     /// server's replacement for the signed content.
-    pub(super) fn chat_trust(
+    pub(super) fn chat_trust_body(
         &self,
         sender: u128,
         signed: bool,
@@ -158,7 +158,10 @@ impl Game<'_> {
     /// (`ChatListener.removeFromDelayedMessageQueue`), a shown one is
     /// replaced (`ChatComponent.deleteMessage`). A signature the cache
     /// doesn't hold is an invalid packet.
-    pub(super) fn handle_delete_chat(&mut self, packed: &(i32, Option<Vec<u8>>)) -> Result<()> {
+    pub(super) fn handle_delete_chat_body(
+        &mut self,
+        packed: &(i32, Option<Vec<u8>>),
+    ) -> Result<()> {
         let Some(r) = self.remote.as_mut() else {
             return Ok(());
         };
@@ -181,7 +184,7 @@ impl Game<'_> {
 
     /// A message's `accept`: shown, it is narrated (`narrateChatMessage`) and
     /// starts the Chat Delay wait again.
-    pub(super) fn accept_chat(&mut self, chat: QueuedChat) -> bool {
+    pub(super) fn accept_chat_body(&mut self, chat: QueuedChat) -> bool {
         let signature = chat.signature;
         let shown = self.player_chat_line(chat);
         if let Some(signature) = &signature {
@@ -196,7 +199,7 @@ impl Game<'_> {
     /// `showMessageToPlayer`: the line joins the chat if Only Show Secure
     /// Chat, mods and the Chat option let it through, and the narrator says
     /// it (`sayChatQueued`).
-    pub(super) fn player_chat_line(&mut self, chat: QueuedChat) -> bool {
+    pub(super) fn player_chat_line_body(&mut self, chat: QueuedChat) -> bool {
         let QueuedChat {
             mut line,
             signature,

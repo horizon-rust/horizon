@@ -7,7 +7,7 @@ impl Game<'_> {
     /// again, if one is running (`if (!isDestroying) return;`), and says whether it did. Only the
     /// progress goes: `destroyBlockPos` and `destroyingItem` keep the target, so a dig resumed on
     /// the same block sends no START and the server's clock runs on (arismoko/horizon#4124).
-    pub(in crate::game) fn stop_remote_mining(&mut self) -> bool {
+    pub(super) fn stop_remote_mining_body(&mut self) -> bool {
         let kept = self.remote.as_mut().and_then(|r| {
             if !std::mem::take(&mut r.is_destroying) {
                 return None;
@@ -32,7 +32,7 @@ impl Game<'_> {
     }
 
     /// MultiPlayerGameMode.startDestroyBlock / continueDestroyBlock.
-    pub(super) fn remote_mining(&mut self, start: bool) -> bool {
+    pub(super) fn remote_mining_body(&mut self, start: bool) -> bool {
         let debug_stick = self
             .held()
             .is_some_and(|stack| &*stack.item == "minecraft:debug_stick");
@@ -214,7 +214,7 @@ impl Game<'_> {
         true
     }
 
-    pub(super) fn veto_mining_prediction(
+    pub(super) fn veto_mining_prediction_body(
         &self,
         pos: [i32; 3],
         face: [i32; 3],
@@ -242,7 +242,7 @@ impl Game<'_> {
     /// A predicate this client could not decode (exact components) only
     /// tells that the server gave one, and the server sends the block back
     /// if it does not match.
-    pub(super) fn remote_break_restricted(&self, pos: [i32; 3]) -> bool {
+    pub(super) fn remote_break_restricted_body(&self, pos: [i32; 3]) -> bool {
         use horizon_protocol::item::{WirePatch, component::CAN_BREAK};
         if self
             .held()
@@ -262,7 +262,7 @@ impl Game<'_> {
     /// `Minecraft.startUseItem`'s block turn for `hand`: a use that swung drops
     /// the hand (`LocalPlayer.itemUsed`) when it spent the held item or the
     /// player has infinite materials.
-    pub(super) fn remote_use_block(&mut self, hand: Hand) -> bool {
+    pub(super) fn remote_use_block_body(&mut self, hand: Hand) -> bool {
         let before = self.with_hand(hand, |g| g.held().map(|s| s.count));
         let swings = self.swings_started;
         let done = self.remote_use_item_on(hand);
@@ -285,7 +285,7 @@ impl Game<'_> {
     /// firework rocket wherever it may be used, and the server launches it.
     /// Whether the item's use succeeded, which ends the click.
     /// The caller has selected Item.useOn after cooldown and adventure gates.
-    pub(in crate::game) fn predict_item_on_block(
+    pub(super) fn predict_item_on_block_body(
         &mut self,
         stack: &ItemStack,
         hit: &super::super::Hit,
@@ -356,14 +356,18 @@ impl Game<'_> {
     /// whatever its data says (the server toggles the marker, or fails
     /// quietly), so this hand swings and the click ends. The caller applies
     /// ItemStack.useOn's adventure predicate before selecting this phase.
-    pub(super) fn predict_map_on_banner(&self, stack: &ItemStack, hit: &super::super::Hit) -> bool {
+    pub(super) fn predict_map_on_banner_body(
+        &self,
+        stack: &ItemStack,
+        hit: &super::super::Hit,
+    ) -> bool {
         super::super::maps::map_id(stack).is_some()
             && self.named_block_in_tag("minecraft:banners", &self.block_name(hit.pos))
     }
 
     /// `BoneMealItem.useOn` with the acting hand's `stack` on this client's
     /// level (a copy: nothing grows here): whether it succeeds.
-    pub(super) fn remote_bone_meal_succeeds(
+    pub(super) fn remote_bone_meal_succeeds_body(
         &mut self,
         hit: &super::super::Hit,
         stack: &ItemStack,
@@ -388,7 +392,11 @@ impl Game<'_> {
     /// server refused goes back). Only the blocks a hand opens or flips: a
     /// wooden or copper door, trapdoor or fence gate, a lever or a button;
     /// whatever else the use changes waits for the server.
-    pub(super) fn predict_use(&mut self, (changes, sounds): &DryUse, seq: i32) {
+    pub(super) fn predict_use_body(
+        &mut self,
+        (changes, sounds): (&DryChanges, &Vec<DrySound>),
+        seq: i32,
+    ) {
         let facts = self.res.facts();
         let predicted = |state: BlockStateId| hand_operated(&facts.get(state).name);
         if changes.is_empty()

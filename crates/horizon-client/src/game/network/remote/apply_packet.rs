@@ -3,7 +3,7 @@
 use super::*;
 
 impl Game<'_> {
-    pub(in crate::game) fn apply_packet(&mut self, packet: C) -> Result<()> {
+    pub(super) fn apply_packet_body(&mut self, packet: C) -> Result<()> {
         self.observe_client_packet(&packet);
         match packet {
             // ClientCommonPacketListenerImpl.handlePing runs on the game

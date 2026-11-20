@@ -4,20 +4,20 @@ use super::*;
 
 impl Game<'_> {
     /// `Entity.isVehicle` on a client: the entities a tracked entity rides.
-    pub(in crate::game) fn remote_vehicle_ids(&self) -> impl Iterator<Item = u32> + '_ {
+    pub(super) fn remote_vehicle_ids_body(&self) -> impl Iterator<Item = u32> + '_ {
         self.remote
             .iter()
             .flat_map(|r| r.entities.values().filter_map(|t| t.vehicle))
     }
     /// The `SetPassengers` bookkeeping of the tracked entities.
-    pub(in crate::game) fn remote_seat_passengers(&mut self, vehicle: u32, passengers: &[i32]) {
+    pub(super) fn remote_seat_passengers_body(&mut self, vehicle: u32, passengers: &[i32]) {
         if let Some(r) = self.remote.as_mut() {
             seat_passengers(&mut r.entities, vehicle, passengers);
         }
     }
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
     /// both at its head yaw (LivingEntity).
-    pub(in crate::game) fn client_attachment_entity_exists(&self, holder: Holder) -> bool {
+    pub(super) fn client_attachment_entity_exists_body(&self, holder: Holder) -> bool {
         self.remote.as_ref().is_some_and(|remote| match holder {
             Holder::Entity(id) => remote.entities.contains_key(&(id as i32)),
             Holder::Player(uuid) => {
@@ -27,7 +27,7 @@ impl Game<'_> {
         })
     }
 
-    pub(in crate::game) fn spawn_entity(
+    pub(super) fn spawn_entity_body(
         &mut self,
         id: i32,
         kind: &str,
@@ -85,7 +85,7 @@ impl Game<'_> {
     /// rotation alone), turned to `rotation` if it has one. `packet` says
     /// whether a living entity more than 64 blocks away is put there at once
     /// (its `snaps`).
-    pub(super) fn move_entity(
+    pub(super) fn move_entity_body(
         &mut self,
         id: i32,
         path: Option<Path>,
@@ -330,7 +330,7 @@ impl Game<'_> {
         self.move_remote_text_display(id, position, rotation);
         self.turn_remote_projectile(id, rotation);
     }
-    pub(in crate::game) fn detach_remote_tracking_entity(&mut self, id: i32) {
+    pub(super) fn detach_remote_tracking_entity_body(&mut self, id: i32) {
         let mobs = &self.mobs;
         let index = &mut self.mob_index;
         self.particles

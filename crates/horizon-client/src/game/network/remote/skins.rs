@@ -6,7 +6,7 @@ impl Game<'_> {
     /// The player list's view of the connection: the listed players (with
     /// their downloaded skins once ready), online mode, and which players
     /// are in the level with an upside-down name.
-    pub(in crate::game) fn publish_tab_object_skins(&mut self) {
+    pub(super) fn publish_tab_object_skins_body(&mut self) {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -44,7 +44,7 @@ impl Game<'_> {
             self.gui.atlas.object_skins_revision,
         ));
     }
-    pub(in crate::game) fn remote_tab_players(
+    pub(super) fn remote_tab_players_body(
         &mut self,
     ) -> Option<(Vec<horizon_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
         self.update_remote_skins();
@@ -77,7 +77,7 @@ impl Game<'_> {
 
     /// Resolve inline `object:player` profiles through the same skin cache as
     /// player heads on items. The next frame uses the uploaded atlas texture.
-    pub(in crate::game) fn resolve_inline_profiles(
+    pub(super) fn resolve_inline_profiles_body(
         &mut self,
         profiles: &[std::sync::Arc<serde_json::Value>],
     ) {
@@ -116,7 +116,7 @@ impl Game<'_> {
             }
         }
     }
-    pub(super) fn poll_own_profile(&mut self) {
+    pub(super) fn poll_own_profile_body(&mut self) {
         let auth = self.auth();
         let Some(r) = self.remote.as_mut() else {
             return;
@@ -152,7 +152,7 @@ impl Game<'_> {
     /// texel, built once per (skin, slim) from the decoded image the skin
     /// downloader still holds (`horizon_client::mobs::skin_layers`). `None`
     /// while the option is off or the image is not in memory yet.
-    pub(super) fn skin_3d_model(
+    pub(super) fn skin_3d_model_body(
         &self,
         kind: &std::sync::Arc<horizon_client::mobs::MobType>,
         skin: &str,
@@ -182,7 +182,7 @@ impl Game<'_> {
         Some(model)
     }
 
-    pub(in crate::game) fn update_remote_skins(&mut self) {
+    pub(super) fn update_remote_skins_body(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
@@ -397,7 +397,7 @@ impl Game<'_> {
     }
     /// Puts a downloaded skin in an atlas skin slot (`SkinSlots::place`),
     /// unless every slot holds a skin drawn in the last frame.
-    pub(in crate::game) fn store_skin(&mut self, location: String, rgba: Vec<u8>) {
+    pub(super) fn store_skin_body(&mut self, location: String, rgba: Vec<u8>) {
         // 3D skin layers reads the pixels back when it builds the slabs.
         self.skin_downloads
             .borrow_mut()
@@ -434,7 +434,7 @@ impl Game<'_> {
     /// Whether a downloaded skin or cape is in the atlas to draw, marking it
     /// drawn; if not (new, or its slot taken), its image is queued for upload
     /// again and it is drawn from the next frame.
-    pub(super) fn again_skin(&mut self, location: &str) -> bool {
+    pub(super) fn again_skin_body(&mut self, location: &str) -> bool {
         let mut downloads = self.skin_downloads.borrow_mut();
         // A slot without its sprite (the atlas was rebuilt, or the upload
         // never happened) counts as missing, so the skin is stored again.
@@ -449,7 +449,7 @@ impl Game<'_> {
     /// A player's skin and model as drawn: the downloaded skin once it is in
     /// the atlas, until then the profile's default (`DefaultPlayerSkin.get`),
     /// as `PlayerInfo.getSkin` gives before the texture has loaded.
-    pub(in crate::game) fn drawn_skin(
+    pub(super) fn drawn_skin_body(
         &mut self,
         uuid: u128,
         (skin, slim): (String, bool),
@@ -462,13 +462,13 @@ impl Game<'_> {
         (skin, slim)
     }
     /// `drawn_skin` for a face in the player list or spectator menu.
-    pub(in crate::game) fn face_skin(&mut self, uuid: u128, skin: &str) -> String {
+    pub(super) fn face_skin_body(&mut self, uuid: u128, skin: &str) -> String {
         self.drawn_skin(uuid, (skin.to_owned(), false)).0
     }
     /// ChatType.Bound.decorate (`Decoration::Chat`) and `decorateNarration`
     /// (`Decoration::Narration`): the chat type's decoration from the
     /// server's registry, applied to `content`.
-    pub(in crate::game) fn decorate_chat(
+    pub(super) fn decorate_chat_body(
         &self,
         bound: &play::ChatTypeBound,
         content: &serde_json::Value,

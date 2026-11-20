@@ -1,11 +1,13 @@
 //! Sounds by wire id, connecting to a server, a replay's session and leaving.
 
 use super::*;
+// The point generator reads a signature's types through named imports only, not the glob.
+use horizon_client::text::Text;
 
 impl Game<'_> {
     /// A `Holder<SoundEvent>` off the wire: an inline event's location, or
     /// the name of a registered one.
-    pub(in crate::game) fn remote_sound_name(
+    pub(super) fn remote_sound_name_body(
         &self,
         sound: &(i32, Option<(String, Option<f32>)>),
     ) -> Option<String> {
@@ -19,7 +21,7 @@ impl Game<'_> {
             }),
         }
     }
-    pub(in crate::game) fn remote_sound_entity_state(
+    pub(super) fn remote_sound_entity_state_body(
         &mut self,
         id: i32,
     ) -> Option<horizon_client::sound_engine::SoundEntityState> {
@@ -66,19 +68,19 @@ impl Game<'_> {
     /// `ClientboundDamageEventPacket` (`LivingEntity.handleDamageEvent`):
     /// `Player.getHurtSound` is the damage type's effects, with the codec's
     /// `hurt` default when the type is unknown.
-    pub(in crate::game) fn remote_hurt_sound(&self, source_type: i32) -> &'static str {
+    pub(super) fn remote_hurt_sound_body(&self, source_type: i32) -> &'static str {
         match self.remote.as_ref() {
             Some(r) => hurt_sound_for(&r.registries, &self.health_resources.damage, source_type),
             None => horizon_client::health::hurt_sound("hurt"),
         }
     }
     /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
-    pub(in crate::game) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
+    pub(super) fn connect_server_body(&mut self, address: &str, name: &str) -> Result<()> {
         self.connect_server_with_cookies(address, name, None)
     }
     /// `connect_server` carrying a transfer's stored server cookies
     /// (`TransferState`); None on an ordinary join.
-    pub(in crate::game) fn connect_server_with_cookies(
+    pub(super) fn connect_server_with_cookies_body(
         &mut self,
         address: &str,
         name: &str,
@@ -87,7 +89,7 @@ impl Game<'_> {
         self.connect_server_with_options(address, name, cookies, false, false)
     }
     /// `ConnectScreen.startConnecting`: keep LAN discovery's server kind through loading.
-    pub(in crate::game) fn connect_server_with_options(
+    pub(super) fn connect_server_with_options_body(
         &mut self,
         address: &str,
         name: &str,
@@ -131,7 +133,7 @@ impl Game<'_> {
         }
         Ok(())
     }
-    pub(in crate::game) fn connect_remote_session(
+    pub(super) fn connect_remote_session_body(
         &mut self,
         address: &str,
         name: &str,
@@ -461,7 +463,7 @@ impl Game<'_> {
         Ok(())
     }
     /// Prepare a client session and remote state to receive packets from a studio replay.
-    pub(in crate::game) fn init_remote_for_replay(&mut self) -> Result<()> {
+    pub(super) fn init_remote_for_replay_body(&mut self) -> Result<()> {
         self.realm_session = false;
         self.reset_tutorial();
         self.perf.world_opening();
@@ -703,7 +705,7 @@ impl Game<'_> {
 
     /// Disconnect and return to the multiplayer screen (DisconnectedScreen), whose Back
     /// leads to the title after a single player world.
-    pub(in crate::game) fn leave_server(&mut self, reason: Option<Text>) -> Result<()> {
+    pub(super) fn leave_server_body(&mut self, reason: Option<Text>) -> Result<()> {
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
         }

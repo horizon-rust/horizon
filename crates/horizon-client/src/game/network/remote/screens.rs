@@ -4,16 +4,16 @@ use super::*;
 
 impl Game<'_> {
     /// The type of the menu a server opened (`MenuType`'s id).
-    pub(in crate::game) fn remote_menu_type(&self) -> Option<&str> {
+    pub(super) fn remote_menu_type_body(&self) -> Option<&str> {
         Some(self.remote.as_ref()?.menu.as_ref()?.1.as_str())
     }
     /// The title the server gave the menu it opened.
-    pub(in crate::game) fn remote_menu_title(&self) -> Option<horizon_client::text::Text> {
+    pub(super) fn remote_menu_title_body(&self) -> Option<horizon_client::text::Text> {
         self.remote.as_ref()?.menu_title.clone()
     }
     /// A language change reaches the server-sent components too: their titles
     /// are resolved when the packet arrives, with the session's language.
-    pub(in crate::game) fn refresh_remote_language(&mut self) {
+    pub(super) fn refresh_remote_language_body(&mut self) {
         if let Some(lang) = horizon_client::lang::current()
             && let Some(r) = self.remote.as_mut()
         {
@@ -21,7 +21,7 @@ impl Game<'_> {
         }
     }
     /// A server's chest-like menu (`MenuType.GENERIC_9xN`): its rows and title.
-    pub(in crate::game) fn remote_chest_menu(&self) -> Option<(usize, horizon_client::text::Text)> {
+    pub(super) fn remote_chest_menu_body(&self) -> Option<(usize, horizon_client::text::Text)> {
         let r = self.remote.as_ref()?;
         let rows = r
             .menu
@@ -38,7 +38,7 @@ impl Game<'_> {
         ))
     }
     /// ServerboundPlayerCommandPacket STOP_SLEEPING.
-    pub(in crate::game) fn remote_stop_sleeping(&mut self) {
+    pub(super) fn remote_stop_sleeping_body(&mut self) {
         let id = self.remote.as_ref().map_or(0, |r| r.entity_id);
         self.send(S::PlayerCommand(play::PlayerCommand {
             id,
@@ -46,13 +46,13 @@ impl Game<'_> {
             data: 0,
         }));
     }
-    pub(in crate::game) fn remote_respawn(&mut self) {
+    pub(super) fn remote_respawn_body(&mut self) {
         self.send(S::ClientCommand(play::ClientCommand { action: 0 }));
     }
 
     /// A connection's screen is over the world: connecting, reconfiguring, or
     /// the level loading screen, a portal's included (`remote_overlay`).
-    pub(in crate::game) fn remote_screen_up(&self) -> bool {
+    pub(super) fn remote_screen_up_body(&self) -> bool {
         !self.replay.playing()
             && self
                 .remote
@@ -60,7 +60,7 @@ impl Game<'_> {
                 .is_some_and(|r| self.player.is_none() || r.level_load.is_active())
     }
     /// Connecting / loading screens; true when it covered the frame.
-    pub(in crate::game) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
+    pub(super) fn remote_overlay_body(&mut self, batch: &mut HudBatch) -> bool {
         if !self.remote_screen_up() {
             return false;
         }
@@ -146,7 +146,7 @@ impl Game<'_> {
     }
     /// Connected or connecting with no player yet: `ConnectScreen`, then
     /// `LevelLoadingScreen`, over the panorama with its blur.
-    pub(in crate::game) fn remote_loading(&self) -> bool {
+    pub(super) fn remote_loading_body(&self) -> bool {
         if self.replay.playing() {
             return false;
         }
@@ -163,7 +163,7 @@ impl Game<'_> {
     /// `ServerReconfigScreen`: a vertical layout of cells padded by 10, the
     /// title (9 high) over Disconnect (150 x 20), centred. The title's and the
     /// button's top left corners.
-    pub(super) fn reconfigure_layout(&self, (w, h): (f32, f32)) -> ((f32, f32), (f32, f32)) {
+    pub(super) fn reconfigure_layout_body(&self, (w, h): (f32, f32)) -> ((f32, f32), (f32, f32)) {
         let title = horizon_client::text::Text::translate("connect.reconfiguring", &[]);
         let title_w = self.gui.atlas.font.width_text(&title).ceil() as i32;
         let width = (title_w + 20).max(170);
@@ -177,7 +177,7 @@ impl Game<'_> {
     }
     /// `ServerReconfigScreen` over the panorama; Disconnect wakes up after
     /// `DISCONNECT_TIME` (600 ticks).
-    pub(super) fn draw_reconfiguring(&self, batch: &mut HudBatch, since: u64) {
+    pub(super) fn draw_reconfiguring_body(&self, batch: &mut HudBatch, since: u64) {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         horizon_client::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
@@ -192,7 +192,7 @@ impl Game<'_> {
     }
     /// `ConnectScreen`'s Cancel: a server's (single player's server isn't
     /// joined through `ConnectScreen`), until the login is done.
-    pub(super) fn connect_cancel(&self, (w, h): (f32, f32)) -> Option<(f32, f32)> {
+    pub(super) fn connect_cancel_body(&self, (w, h): (f32, f32)) -> Option<(f32, f32)> {
         let r = self.remote.as_ref()?;
         (self.player.is_none() && !r.joined && self.integrated.is_none())
             .then(|| horizon_client::level_loading::connect_cancel(w, h))
@@ -200,7 +200,7 @@ impl Game<'_> {
     /// A click on `ConnectScreen`: Cancel aborts the connection
     /// (`connect.aborted`) and goes back. Escape does nothing there
     /// (`shouldCloseOnEsc` is false).
-    pub(in crate::game) fn connect_screen_click(&mut self) -> Result<()> {
+    pub(super) fn connect_screen_click_body(&mut self) -> Result<()> {
         // ServerReconfigScreen's Disconnect, once it is active.
         if let Some(since) = self.remote.as_ref().and_then(|r| r.reconfiguring) {
             let (_, (x, y)) = self.reconfigure_layout(self.gui_size());
@@ -222,7 +222,7 @@ impl Game<'_> {
         Ok(())
     }
     /// The server's death message; chat uses the shared ChatComponent.
-    pub(in crate::game) fn remote_hud(&self, batch: &mut HudBatch) {
+    pub(super) fn remote_hud_body(&self, batch: &mut HudBatch) {
         let Some(r) = &self.remote else { return };
         let atlas = &self.gui.atlas;
         let w = batch.width;
@@ -242,16 +242,16 @@ impl Game<'_> {
         }
     }
     /// Shared flag 6 of an entity on a server's client (`None` without a server).
-    pub(in crate::game) fn remote_glowing(&self, id: u32) -> Option<bool> {
+    pub(super) fn remote_glowing_body(&self, id: u32) -> Option<bool> {
         let r = self.remote.as_ref()?;
         Some(r.glowing.contains(&(id as i32)))
     }
     /// The profile name of another player the server sent, by entity id.
-    pub(in crate::game) fn remote_player_name(&self, id: u32) -> Option<&str> {
+    pub(super) fn remote_player_name_body(&self, id: u32) -> Option<&str> {
         let r = self.remote.as_ref()?;
         r.level_player_name(id as i32, &r.player_uuid(id)?)
     }
-    pub(in crate::game) fn remote_player_uuid(&self, id: u32) -> Option<u128> {
+    pub(super) fn remote_player_uuid_body(&self, id: u32) -> Option<u128> {
         let remote = self.remote.as_ref()?;
         if self.player_model.as_ref().is_some_and(|m| m.id == id) {
             Some(remote.profile)
@@ -262,7 +262,7 @@ impl Game<'_> {
     /// Status for `horizon-ctl status`.
     /// The other players' entities in the level and their names (their
     /// profiles', which outlive the player list's entries).
-    pub(in crate::game) fn remote_player_names(&self) -> Vec<(u32, String)> {
+    pub(super) fn remote_player_names_body(&self) -> Vec<(u32, String)> {
         let Some(r) = self.remote.as_ref() else {
             return Vec::new();
         };
@@ -275,7 +275,7 @@ impl Game<'_> {
     /// `ClientClockManager.tick`: the clock moves on by the game time that
     /// passed since its last tick, at its rate. A game time the server sets
     /// forward (its sync every second) moves the clock with it.
-    pub(super) fn remote_clock_tick(&mut self) {
+    pub(super) fn remote_clock_tick_body(&mut self) {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -286,7 +286,7 @@ impl Game<'_> {
         }
         self.world.day_time = r.clock_time(r.default_clock);
     }
-    pub(in crate::game) fn remote_status(&self) -> Option<serde_json::Value> {
+    pub(super) fn remote_status_body(&self) -> Option<serde_json::Value> {
         let r = self.remote.as_ref()?;
         Some(serde_json::json!({
             "address": horizon_client::net::shown_address(&r.session.address),

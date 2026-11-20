@@ -5,7 +5,7 @@ use super::*;
 impl Game<'_> {
     /// `AbstractMinecartRenderer.newExtractState`: sample the same weighted
     /// steps at the frame's partial tick, including corners within one tick.
-    pub(in crate::game) fn remote_minecart_lerp(
+    pub(super) fn remote_minecart_lerp_body(
         &self,
         id: u32,
         partial: f32,
@@ -20,7 +20,7 @@ impl Game<'_> {
 
     /// `ClientPacketListener.handleMinecartAlongTrack`: the steps join the ones
     /// the minecart has queued, if it runs `NewMinecartBehavior`.
-    pub(super) fn remote_move_minecart(&mut self, p: play::MoveMinecartAlongTrack) {
+    pub(super) fn remote_move_minecart_body(&mut self, p: play::MoveMinecartAlongTrack) {
         if !self.minecart_improvements() || !self.carts.iter().any(|c| c.id == p.id as u32) {
             return;
         }
@@ -43,7 +43,7 @@ impl Game<'_> {
     /// `Consumable.onConsumeTick` for another player using a consumable: the
     /// crumbs at their mouth every 4 ticks once 21.875% of its use has passed
     /// (`shouldEmitParticlesAndSounds`; the sounds come from the server).
-    pub(super) fn remote_player_eating(
+    pub(super) fn remote_player_eating_body(
         &mut self,
         item: &str,
         ticks: u32,
@@ -85,7 +85,7 @@ impl Game<'_> {
     /// passenger's `sendChanges`), then `LocalPlayer.sendChanges`: the input, and a passenger's look,
     /// vehicle and sprint, or `sendPosition`'s sprint and move. The held slot is not sent here:
     /// `MultiPlayerGameMode.tick` sends it at the start of the next tick (`remote_handle_input`).
-    pub(super) fn remote_send_state(&mut self, input: u8) {
+    pub(super) fn remote_send_state_body(&mut self, input: u8) {
         let Some(p) = self.player.as_ref() else {
             return;
         };
@@ -231,7 +231,7 @@ impl Game<'_> {
             }));
         }
     }
-    pub(in crate::game) fn creative_stacks(&self) -> Vec<Option<ItemStack>> {
+    pub(super) fn creative_stacks_body(&self) -> Vec<Option<ItemStack>> {
         creative_sync_stacks(&self.inventory, &self.offhand, &self.armor)
     }
     /// `CreativeInventoryListener.slotChanged`: `handleCreativeModeItemAdd` for every slot the
@@ -239,7 +239,7 @@ impl Game<'_> {
     /// `broadcastChanges`, so a click's slots go out with the click, right behind a thrown
     /// stack, and not at the end of the tick: a slot update the server sends meanwhile (the
     /// pickup of what a held Q threw) can then never land on a change still unsent and undo it.
-    pub(in crate::game) fn send_creative_slots(&mut self) {
+    pub(super) fn send_creative_slots_body(&mut self) {
         if !self.creative {
             return;
         }
@@ -263,7 +263,7 @@ impl Game<'_> {
         }
     }
     /// Inventory as the server last described it.
-    pub(super) fn remote_synced(&mut self) {
+    pub(super) fn remote_synced_body(&mut self) {
         let stacks = self.creative_stacks();
         if let Some(r) = self.remote.as_mut() {
             r.synced = stacks;
@@ -271,7 +271,7 @@ impl Game<'_> {
     }
     /// The slots a server packet changed since `before` are as the server has them; the
     /// others keep what was last sent, so a creative click made since still goes out.
-    pub(in crate::game) fn remote_synced_since(&mut self, before: &[Option<ItemStack>]) {
+    pub(super) fn remote_synced_since_body(&mut self, before: &[Option<ItemStack>]) {
         let now = self.creative_stacks();
         if let Some(r) = self.remote.as_mut() {
             mark_synced(&mut r.synced, before, now);

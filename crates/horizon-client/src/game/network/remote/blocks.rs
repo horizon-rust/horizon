@@ -1,13 +1,15 @@
 //! Block entities and block updates from the server, and the predictions they end.
 
 use super::*;
+// The point generator reads a signature's types through named imports only, not the glob.
+use horizon_world::registry::BlockStateId;
 
 impl Game<'_> {
     /// Keep the renderable block entities (chests, furnaces) in step with blocks.
     /// `previous`: the block's state before, when it changed. A column sent again has
     /// none, and keeps its block entities' synced attachments: the server does not send
     /// them again (`remote_chunk` drops those of block entities the column lost).
-    pub(in crate::game) fn sync_block_entity(
+    pub(super) fn sync_block_entity_body(
         &mut self,
         pos: (i32, i32, i32),
         previous: Option<BlockStateId>,
@@ -51,7 +53,7 @@ impl Game<'_> {
         }
     }
     /// The server's synced attachments of a block entity that goes with it.
-    pub(super) fn forget_block_entity_attachments(&mut self, (x, y, z): (i32, i32, i32)) {
+    pub(super) fn forget_block_entity_attachments_body(&mut self, (x, y, z): (i32, i32, i32)) {
         if let Some(r) = self.remote.as_mut() {
             r.attachments.remove(&Holder::BlockEntity([x, y, z]));
         }
@@ -59,7 +61,7 @@ impl Game<'_> {
     /// ClientLevel.setServerVerifiedBlockState: a block the client predicted keeps its
     /// predicted state until the server acknowledges the action; the server's state is
     /// remembered for then.
-    pub(super) fn server_block(&mut self, pos: [i32; 3], state: i32) {
+    pub(super) fn server_block_body(&mut self, pos: [i32; 3], state: i32) {
         if let Some(p) = self
             .remote
             .as_mut()
@@ -73,7 +75,7 @@ impl Game<'_> {
     /// BlockStatePredictionHandler.endPredictionsUpTo (ClientboundBlockChangedAckPacket): the
     /// actions up to `sequence` are settled, so the blocks they predicted take the state the
     /// server gave them (a break the server refused comes back).
-    pub(super) fn end_predictions(&mut self, sequence: i32) {
+    pub(super) fn end_predictions_body(&mut self, sequence: i32) {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -102,7 +104,7 @@ impl Game<'_> {
         }
     }
     /// The player's position, for `retainKnownServerState`'s `player.position()`.
-    pub(super) fn player_position(&self) -> [f64; 3] {
+    pub(super) fn player_position_body(&self) -> [f64; 3] {
         let at = self
             .player
             .as_ref()
@@ -112,7 +114,7 @@ impl Game<'_> {
     }
     /// `Entity.isColliding(pos, state)` for the local player: the state's own
     /// collision shape, at the player's pose, against the player's box.
-    pub(super) fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
+    pub(super) fn block_meets_player_body(&self, pos: [i32; 3], state: i32) -> bool {
         let Some(player) = self.player.as_ref() else {
             return false;
         };
@@ -146,7 +148,7 @@ impl Game<'_> {
     /// `Entity.absSnapTo`: the remembered point, clamped to the level's edge.
     /// The velocity is left alone, and the player has no separate previous
     /// position to reset (its box is drawn from `position`).
-    pub(super) fn snap_player_to(&mut self, at: [f64; 3]) {
+    pub(super) fn snap_player_to_body(&mut self, at: [f64; 3]) {
         let Some(player) = self.player.as_mut() else {
             return;
         };
@@ -154,7 +156,7 @@ impl Game<'_> {
         let z = at[2].clamp(-3.0e7, 3.0e7);
         player.position = Vec3::new(x, at[1], z);
     }
-    pub(super) fn set_block(&mut self, pos: [i32; 3], state: i32, predicted: bool) {
+    pub(super) fn set_block_body(&mut self, pos: [i32; 3], state: i32, predicted: bool) {
         // A state we don't have (a server with mods we lack) reads as air, as in its chunks.
         let state = state.max(0) as u32;
         let known = horizon_client::chunk::known_block_state(state);

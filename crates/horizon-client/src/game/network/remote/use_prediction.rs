@@ -4,7 +4,7 @@ use super::*;
 
 impl Game<'_> {
     /// Another player of this level, whose copy passes every click (`Player.interactOn`).
-    pub(in crate::game) fn is_level_player(&self, id: i32) -> bool {
+    pub(super) fn is_level_player_body(&self, id: i32) -> bool {
         self.remote
             .as_ref()
             .is_some_and(|r| r.level_players.contains_key(&id))
@@ -12,7 +12,7 @@ impl Game<'_> {
 
     /// Whether a main-hand right click with `held` would end on the block hit, for the gameplay
     /// guide: what `remote_block_reacts` answers on its dry level.
-    pub(in crate::game) fn block_takes_click(
+    pub(super) fn block_takes_click_body(
         &mut self,
         hit: &super::super::Hit,
         held: Option<&ItemStack>,
@@ -21,7 +21,7 @@ impl Game<'_> {
     }
     /// `InteractionResult.CONSUME` for this click: the block keeps it and does nothing, so the
     /// item in hand never gets it either (an empty flower pot, a pressed button).
-    pub(in crate::game) fn block_swallows_click(
+    pub(super) fn block_swallows_click_body(
         &mut self,
         hit: &super::super::Hit,
         held: Option<&ItemStack>,
@@ -38,7 +38,7 @@ impl Game<'_> {
     /// container, and the blocks it changed. Vanilla's client runs it on its
     /// own level first; this runs it on a copy, and `predict_use` keeps the
     /// changes it predicts.
-    pub(super) fn remote_block_reacts(
+    pub(super) fn remote_block_reacts_body(
         &mut self,
         hit: &super::super::Hit,
         held: Option<&ItemStack>,
@@ -80,7 +80,7 @@ impl Game<'_> {
 
     /// The shared dry-level boundary for a normal block use or the empty
     /// method requested by a canceled `BLOCK` phase's `TryWithEmptyHand`.
-    pub(in crate::game) fn remote_block_template(
+    pub(super) fn remote_block_template_body(
         &mut self,
         hit: &super::super::Hit,
         held: Option<&ItemStack>,
@@ -126,7 +126,11 @@ impl Game<'_> {
     /// than past them (the server would refuse it). Its place sound is the
     /// placer's own (`playSound(player, ...)`: the server sends it to the
     /// others only).
-    pub(super) fn predict_place(&mut self, (pos, changes): &DryPlace, seq: i32) {
+    pub(super) fn predict_place_body(
+        &mut self,
+        (pos, changes): (&horizon_core::position::BlockPos, &DryChanges),
+        seq: i32,
+    ) {
         let ticks = self.ticks;
         if let Some(r) = self.remote.as_mut() {
             // set_block plays the place sound of the block at `placing`.
@@ -138,7 +142,7 @@ impl Game<'_> {
     /// predicted under the use's sequence until the server acknowledges it
     /// (`BlockStatePredictionHandler.retainKnownServerState`): a use the
     /// server refused goes back.
-    pub(in crate::game) fn predict_blocks(&mut self, changes: &DryChanges, seq: i32) {
+    pub(super) fn predict_blocks_body(&mut self, changes: &DryChanges, seq: i32) {
         for &(p, state) in changes {
             let pos = [p.x, p.y, p.z];
             let before = self.world.block(p.x, p.y, p.z);
@@ -162,7 +166,7 @@ impl Game<'_> {
     /// building-blocking entities; random draws, scheduled ticks and events
     /// stay in the preview. `ItemStack.useOn` runs it in adventure mode only
     /// when the used stack's `can_place_on` names the clicked block.
-    pub(in crate::game) fn remote_can_place(
+    pub(super) fn remote_can_place_body(
         &mut self,
         hit: &super::super::Hit,
         stack: &ItemStack,
@@ -203,7 +207,7 @@ impl Game<'_> {
     /// the client's own. A fill into a waterloggable block changes nothing
     /// here: `SimpleWaterloggedBlock.placeLiquid` tests `isClientSide` and
     /// leaves the block update to the server.
-    pub(super) fn remote_use_bucket(
+    pub(super) fn remote_use_bucket_body(
         &mut self,
         stack: &ItemStack,
     ) -> (bool, Option<DryChanges>, Vec<DrySound>) {
@@ -272,7 +276,7 @@ impl Game<'_> {
     /// up through `ClipContext.Fluid.SOURCE_ONLY`, a block to empty a full
     /// one against, `mayUseItemAt`), BottleItem.use (water to fill from) and
     /// BoatItem.use (a block or fluid surface with room for the boat).
-    pub(super) fn use_finds_no_target(&self, held: &ItemStack) -> bool {
+    pub(super) fn use_finds_no_target_body(&self, held: &ItemStack) -> bool {
         let id = &*held.item;
         let facts = |pos: [i32; 3]| {
             self.res
@@ -333,7 +337,7 @@ impl Game<'_> {
     /// sounds, loaded arrows and thrown tridents come from the server.
     /// False when the use FAILs here: a bow or an uncharged crossbow with
     /// nothing to shoot.
-    pub(super) fn remote_start_held_use(&mut self, held: &ItemStack) -> bool {
+    pub(super) fn remote_start_held_use_body(&mut self, held: &ItemStack) -> bool {
         if self.using.is_some() {
             return true;
         }
@@ -386,7 +390,7 @@ impl Game<'_> {
     }
     /// `InstrumentItem.use` on this client: unless the horn is on cooldown,
     /// it is held up, plays its sound at the player and starts its cooldown.
-    pub(super) fn remote_use_instrument(&mut self, held: &ItemStack) {
+    pub(super) fn remote_use_instrument_body(&mut self, held: &ItemStack) {
         let Some(instrument) = self.res.items().instrument(held) else {
             return;
         };
@@ -404,7 +408,7 @@ impl Game<'_> {
     /// crossbows, tridents, spyglasses, shields, eyes of ender, whose
     /// `getUseDuration` 0 never counts down to the end) or the server ends
     /// it (a mod's item): its use only counts ticks here.
-    pub(super) fn held_until_released(&self, stack: &ItemStack) -> bool {
+    pub(super) fn held_until_released_body(&self, stack: &ItemStack) -> bool {
         if self.mod_use(stack) {
             return true;
         }
@@ -425,7 +429,7 @@ impl Game<'_> {
     /// (`Consumable.startConsuming`, `startUsingItem`) that lasts until the
     /// button lets go or the server stops it, as the client's
     /// `LivingEntity.updateUsingItem` never completes one.
-    pub(super) fn patched_held_use(&self, stack: &ItemStack) -> bool {
+    pub(super) fn patched_held_use_body(&self, stack: &ItemStack) -> bool {
         let (ticks, blocks) = horizon_client::item_sync::patched_use(stack);
         ticks.map_or(blocks, |ticks| ticks > 0)
             && self
@@ -437,7 +441,7 @@ impl Game<'_> {
     /// The rest of Minecraft.startUseItem once the main hand's target passed:
     /// the main hand's item, then the off hand's turn (its block, its item).
     /// The server does each packet's part with that packet's hand only.
-    pub(super) fn remote_use_hands(&mut self, attempt: mod_api::InteractionAttempt) {
+    pub(super) fn remote_use_hands_body(&mut self, attempt: mod_api::InteractionAttempt) {
         // Nothing in the crosshair: an empty hand's click is heard, by mods only.
         let miss = mod_api::__private::listened(mod_api::HookId::RightClickEmpty)
             && !self.entity_targeted()
@@ -479,7 +483,7 @@ impl Game<'_> {
     /// use (`held_until_released`), and a consumable's eating animation and
     /// its crumbs until the server's USE_ITEM_COMPLETE. The server sends the
     /// stack, its hunger and the sounds.
-    pub(super) fn remote_tick_using(&mut self) {
+    pub(super) fn remote_tick_using_body(&mut self) {
         let Some((slot, ticks)) = self.using else {
             // A mod's use the game reset (the server stopping the use...).
             self.end_mod_use();
@@ -594,7 +598,7 @@ impl Game<'_> {
     /// ConsumableListeners on both sides): the client's FoodData eats at once,
     /// so a held right click finds `Player.canEat` false instead of starting
     /// another bite before the server's ClientboundSetHealth arrives.
-    pub(super) fn remote_complete_using(&mut self) {
+    pub(super) fn remote_complete_using_body(&mut self) {
         let Some((slot, _)) = self.using.take() else {
             return;
         };

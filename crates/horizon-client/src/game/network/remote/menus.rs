@@ -5,7 +5,7 @@ use super::*;
 impl Game<'_> {
     /// The server's open menu: its window id and menu type (0, "inventory"
     /// when none is open).
-    pub(in crate::game) fn remote_menu(&self) -> (i32, String) {
+    pub(super) fn remote_menu_body(&self) -> (i32, String) {
         match self.remote.as_ref().and_then(|r| r.menu.as_ref().cloned()) {
             Some((id, name)) => (id, name),
             None => (0, "inventory".to_owned()),
@@ -18,7 +18,7 @@ impl Game<'_> {
     /// after it; the server corrects anything it sees differently. A menu the
     /// engine doesn't model sends the clicks unpredicted. False when a click's
     /// slot isn't one of the menu's.
-    pub(in crate::game) fn remote_menu_ops(&mut self, ops: &[(Option<usize>, i32, Input)]) -> bool {
+    pub(super) fn remote_menu_ops_body(&mut self, ops: &[(Option<usize>, i32, Input)]) -> bool {
         // CrafterScreen.slotClicked: a slot toggle goes out before the click.
         if let [(Some(slot), button, input)] = ops {
             self.crafter_slot_clicked(*slot, *button, *input);
@@ -71,7 +71,7 @@ impl Game<'_> {
     /// client's slots stay as they are and every slot it moved comes back from
     /// the server (`broadcastChanges`), the answer the next step waits for.
     /// A prediction the server agrees with gets no answer at all.
-    pub(in crate::game) fn remote_quick_move_unpredicted(&mut self, internal: usize) -> bool {
+    pub(super) fn remote_quick_move_unpredicted_body(&mut self, internal: usize) -> bool {
         let (container, menu) = self.remote_menu();
         let Some(slot) = Self::menu_slot_index(&menu, internal) else {
             return false;
@@ -83,7 +83,7 @@ impl Game<'_> {
     }
     /// A Shift double click on a server (`AbstractContainerScreen.mouseReleased`):
     /// a predicted QUICK_MOVE for every slot the engine moves, each sent.
-    pub(in crate::game) fn remote_quick_move_all(&mut self, slot: usize, moved: &ItemStack) {
+    pub(super) fn remote_quick_move_all_body(&mut self, slot: usize, moved: &ItemStack) {
         let (container, _) = self.remote_menu();
         let mut sent: Vec<Predicted> = Vec::new();
         self.menu_session(|m, env, to_menu| {
@@ -101,7 +101,7 @@ impl Game<'_> {
         });
         self.send_clicks(container, sent);
     }
-    pub(super) fn send_clicks(&mut self, container: i32, clicks: Vec<Predicted>) {
+    pub(super) fn send_clicks_body(&mut self, container: i32, clicks: Vec<Predicted>) {
         // A result the engine claims to have changed is the one the server
         // agrees to (`click_agreed`), so it sends none: keep it. A result the
         // engine doesn't claim (a recipe it doesn't know) the server sends.
@@ -134,7 +134,7 @@ impl Game<'_> {
     }
     /// The server's open menu is the inventory or a chest-like container
     /// (chests, barrels, ender chests: `generic_9xN`; shulker boxes).
-    pub(in crate::game) fn remote_storage_open(&self) -> bool {
+    pub(super) fn remote_storage_open_body(&self) -> bool {
         match self.remote.as_ref().and_then(|r| r.menu.as_ref()) {
             None => true,
             Some((_, name)) => {
@@ -147,11 +147,7 @@ impl Game<'_> {
     /// A click outside a server's window (slot -999): predicted like
     /// `MultiPlayerGameMode.handleContainerInput` (the carried stack after
     /// `doClick`; the server drops the stack and swings the hand).
-    pub(in crate::game) fn remote_throw(
-        &mut self,
-        right: bool,
-        input: horizon_client::menu::Input,
-    ) {
+    pub(super) fn remote_throw_body(&mut self, right: bool, input: horizon_client::menu::Input) {
         use horizon_client::menu::Input;
         let container = self
             .remote
@@ -184,7 +180,7 @@ impl Game<'_> {
     /// a stack picked from the creative screen, so the carried stack (an item tab's right click:
     /// one of it) is dropped through `handleCreativeModeItemDrop`, a SetCreativeModeSlot to slot
     /// -1, and the hand swings as `Player.drop` predicts.
-    pub(in crate::game) fn remote_creative_drop(&mut self, right: bool) {
+    pub(super) fn remote_creative_drop_body(&mut self, right: bool) {
         let one = right && !self.creative_inventory_open();
         let Some(carried) = self.carried.as_mut() else {
             return;
@@ -203,7 +199,7 @@ impl Game<'_> {
     /// `MultiPlayerGameMode.handleCreativeModeItemDrop`: a stack thrown out of the creative
     /// screen goes to the server as a SetCreativeModeSlot to slot -1, which drops it from the
     /// player's hand; the client only swings (`Player.drop` on a client).
-    pub(in crate::game) fn remote_creative_throw(&mut self, thrown: ItemStack) {
+    pub(super) fn remote_creative_throw_body(&mut self, thrown: ItemStack) {
         if !self.creative {
             return;
         }
@@ -214,7 +210,7 @@ impl Game<'_> {
             item,
         }));
     }
-    pub(in crate::game) fn remote_close_container(&mut self) {
+    pub(super) fn remote_close_container_body(&mut self) {
         let id = self
             .remote
             .as_ref()
@@ -227,7 +223,7 @@ impl Game<'_> {
     /// the menu the server opened goes to it (`ContainerButtonClick`), whose
     /// menu decides what it does (`clickMenuButton`). No sound: that is the
     /// screen's. False while no such menu is open.
-    pub(in crate::game) fn remote_button_click(&self, button: i32) -> bool {
+    pub(super) fn remote_button_click_body(&self, button: i32) -> bool {
         let Some(container) = self
             .remote
             .as_ref()
@@ -242,7 +238,7 @@ impl Game<'_> {
         }));
         true
     }
-    pub(super) fn remote_reject_container(&mut self, container: i32) {
+    pub(super) fn remote_reject_container_body(&mut self, container: i32) {
         self.remote_close_local();
         if self.screen == Screen::Inventory {
             self.set_screen(Screen::Playing);
@@ -250,7 +246,7 @@ impl Game<'_> {
         }
         self.send(S::ContainerClose(play::ContainerClose { container }));
     }
-    pub(super) fn remote_close_local(&mut self) {
+    pub(super) fn remote_close_local_body(&mut self) {
         // `Gui.setScreen` clears the focus of the screen it takes down: the
         // container's keyboard focus must not outlive it (a Tab bound to the
         // inventory moves the focus and closes the container in one press).
@@ -280,7 +276,7 @@ impl Game<'_> {
         }
     }
     /// A server's trading window (MerchantScreen over a ClientSideMerchant).
-    pub(super) fn remote_open_merchant(
+    pub(super) fn remote_open_merchant_body(
         &mut self,
         container: i32,
         title: String,
@@ -295,7 +291,7 @@ impl Game<'_> {
         self.open_remote_merchant(session, (!title.is_empty()).then_some(text));
     }
     /// ClientboundMerchantOffersPacket.
-    pub(super) fn remote_merchant_offers(&mut self, p: play::MerchantOffers) {
+    pub(super) fn remote_merchant_offers_body(&mut self, p: play::MerchantOffers) {
         if self.open_menu_name(p.container) != "minecraft:merchant" {
             return;
         }
@@ -337,7 +333,7 @@ impl Game<'_> {
         }
     }
     /// ClientboundOpenScreenPacket for the menus Horizon draws.
-    pub(super) fn remote_open_screen(&mut self, p: play::OpenScreen) {
+    pub(super) fn remote_open_screen_body(&mut self, p: play::OpenScreen) {
         // A new RecipeBookComponent owns fresh ghost slots and an overlay,
         // even when the server replaces a menu without a close packet.
         self.recipe_ui.reset_screen();
@@ -496,7 +492,7 @@ impl Game<'_> {
     }
     /// `ClientPacketListener.handleMountScreenOpen`: a horse's or llama's
     /// inventory; for another entity the window is closed again.
-    pub(super) fn remote_open_mount(&mut self, p: play::MountScreenOpen) {
+    pub(super) fn remote_open_mount_body(&mut self, p: play::MountScreenOpen) {
         let columns = usize::try_from(p.columns).unwrap_or(0).min(5);
         if !self.open_remote_mount_menu(p.entity as u32, columns) {
             self.remote_reject_container(p.container);

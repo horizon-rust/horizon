@@ -4,7 +4,7 @@ use super::*;
 
 impl Game<'_> {
     /// Map a menu slot to Horizon's inventory screen slot ids.
-    pub(in crate::game) fn inventory_screen_slot(menu: &str, slot: i32) -> Option<usize> {
+    pub(super) fn inventory_screen_slot_body(menu: &str, slot: i32) -> Option<usize> {
         let s = usize::try_from(slot).ok()?;
         // A container of `n` slots, then the inventory and the hotbar.
         let slots = |n: usize| -> Option<usize> {
@@ -93,13 +93,13 @@ impl Game<'_> {
         }
     }
     /// Find a game slot in the menu's complete, contiguous slot mapping.
-    pub(in crate::game) fn menu_slot_index(menu: &str, internal: usize) -> Option<usize> {
+    pub(super) fn menu_slot_index_body(menu: &str, internal: usize) -> Option<usize> {
         (0..)
             .map_while(|slot| Self::inventory_screen_slot(menu, slot))
             .position(|slot| slot == internal)
     }
     /// The workstation screen of a menu type a server opens.
-    pub(in crate::game) fn remote_station_kind(menu: &str) -> Option<super::super::stations::Kind> {
+    pub(super) fn remote_station_kind_body(menu: &str) -> Option<super::super::stations::Kind> {
         use super::super::stations::Kind;
         Some(match menu {
             "minecraft:loom" => Kind::Loom,
@@ -113,13 +113,18 @@ impl Game<'_> {
             _ => return None,
         })
     }
-    pub(super) fn open_menu_name(&self, container: i32) -> String {
+    pub(super) fn open_menu_name_body(&self, container: i32) -> String {
         match self.remote.as_ref().and_then(|r| r.menu.as_ref()) {
             Some((id, name)) if *id == container && container != 0 => name.clone(),
             _ => "inventory".into(),
         }
     }
-    pub(super) fn set_menu_slot(&mut self, container: i32, slot: i32, item: Option<ItemStack>) {
+    pub(super) fn set_menu_slot_body(
+        &mut self,
+        container: i32,
+        slot: i32,
+        item: Option<ItemStack>,
+    ) {
         let menu = self.open_menu_name(container);
         if menu == "minecraft:lectern" {
             if slot == 0 {

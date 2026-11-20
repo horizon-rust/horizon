@@ -3,7 +3,7 @@
 use super::*;
 
 impl Game<'_> {
-    pub(super) fn remote_item_data(&mut self, id: i32, stack: &Option<Stack>) {
+    pub(super) fn remote_item_data_body(&mut self, id: i32, stack: &Option<Stack>) {
         let Some(stack) = self.to_stack(stack) else {
             return;
         };
@@ -31,7 +31,7 @@ impl Game<'_> {
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
     /// entities whose own tick moves them on a client: dropped items, experience
     /// orbs, falling blocks and primed TNT.
-    pub(super) fn remote_motion(&mut self, id: i32, velocity: [f64; 3]) {
+    pub(super) fn remote_motion_body(&mut self, id: i32, velocity: [f64; 3]) {
         self.remote_dragon_motion(id, velocity);
         let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
         // `falling` and `tnts` are searched from the back: AddEntity calls this right after
@@ -88,7 +88,7 @@ impl Game<'_> {
             self.end.remote_eye_motion(id as u32, velocity);
         }
     }
-    pub(super) fn apply_remote_health(&mut self) {
+    pub(super) fn apply_remote_health_body(&mut self) {
         let Some((health, food, saturation)) = self.remote.as_ref().map(|r| r.health) else {
             return;
         };
@@ -106,7 +106,7 @@ impl Game<'_> {
     /// this window's copy trails the server's by the stepped interpolation and
     /// would rise into the rider's feet, which lets the rider fall through.
     /// Put the copy under the landing spot.
-    pub(super) fn place_ghast_under(&mut self, id: u32, spot: Vec3) {
+    pub(super) fn place_ghast_under_body(&mut self, id: u32, spot: Vec3) {
         let Some(m) = self
             .mobs
             .iter_mut()
@@ -134,7 +134,7 @@ impl Game<'_> {
     /// `ClientPacketListener.handleLookAt`: `Entity.lookAt` from this
     /// player's feet or eyes, towards the packet's entity (its feet or eyes)
     /// when this client tracks it, else towards the packet's point.
-    pub(super) fn remote_look_at(&mut self, p: &play::PlayerLookAt) {
+    pub(super) fn remote_look_at_body(&mut self, p: &play::PlayerLookAt) {
         // `EntityAnchorArgument.Anchor`: 0 feet, 1 eyes.
         const EYES: i32 = 1;
         let Some(player) = self.player.as_ref() else {
@@ -160,7 +160,7 @@ impl Game<'_> {
         (self.yaw, self.pitch) = look_at_rotation(from, to);
     }
     /// ClientPacketListener.handleMovePlayer.
-    pub(super) fn remote_teleport(&mut self, p: &play::PlayerPosition) -> Result<()> {
+    pub(super) fn remote_teleport_body(&mut self, p: &play::PlayerPosition) -> Result<()> {
         use play::relative as rel;
         let (had_player, current) = self
             .player

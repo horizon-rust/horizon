@@ -3,7 +3,7 @@
 use super::*;
 
 impl Game<'_> {
-    pub(super) fn set_registries(&mut self, registries: Arc<Dynamic>) {
+    pub(super) fn set_registries_body(&mut self, registries: Arc<Dynamic>) {
         let entries: Vec<(&str, serde_json::Value)> = registries
             .registries
             .get("minecraft:enchantment")
@@ -66,7 +66,7 @@ impl Game<'_> {
         self.invalidate_tagged_shader_ids();
     }
     /// Switch to a (possibly new) dimension: a fresh client level.
-    pub(in crate::game) fn enter_remote_dimension(
+    pub(super) fn enter_remote_dimension_body(
         &mut self,
         spawn: &play::SpawnInfo,
         keep_world: bool,
@@ -225,7 +225,7 @@ impl Game<'_> {
     /// `ClientChunkCache.Storage.inRange`: within the storage around the
     /// view centre, `calculateStorageRange` (the server's radius, at least
     /// two, plus three) chunks each way.
-    pub(in crate::game) fn remote_chunk_in_range(&self, x: i32, z: i32) -> bool {
+    pub(super) fn remote_chunk_in_range_body(&self, x: i32, z: i32) -> bool {
         if self.replay.playing() {
             return true;
         }
@@ -233,7 +233,7 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|r| in_storage_range(r.view_distance, r.chunk_center, x, z))
     }
-    pub(super) fn chunk_inside_remote_range(
+    pub(super) fn chunk_inside_remote_range_body(
         center: (i32, i32),
         distance: i32,
         x: i32,
@@ -243,7 +243,7 @@ impl Game<'_> {
     }
     /// The columns a moved or resized storage no longer holds. Returns the
     /// positions it freed (`forget_remote_columns`).
-    pub(in crate::game) fn drop_remote_chunks_out_of_range(
+    pub(super) fn drop_remote_chunks_out_of_range_body(
         &mut self,
         center: (i32, i32),
         distance: i32,
@@ -259,7 +259,7 @@ impl Game<'_> {
     }
     /// Every column goes with the client level. Returns the positions it
     /// freed (`forget_remote_columns`).
-    pub(in crate::game) fn forget_all_remote_columns(&mut self) -> Vec<(i32, i32)> {
+    pub(super) fn forget_all_remote_columns_body(&mut self) -> Vec<(i32, i32)> {
         let mut gone = self.world.chunks.keys().copied().collect();
         self.forget_remote_columns(&mut gone, false)
     }
@@ -269,7 +269,7 @@ impl Game<'_> {
     /// far terrain keeps their last state (`server_terrain`). Returns the
     /// positions it freed, in `gone`'s order: only those still resident,
     /// so a later forget of the same positions frees nothing.
-    pub(in crate::game) fn forget_remote_columns(
+    pub(super) fn forget_remote_columns_body(
         &mut self,
         gone: &mut horizon_client::fast_hash::FxHashSet<(i32, i32)>,
         keep_terrain: bool,
@@ -313,7 +313,7 @@ impl Game<'_> {
     }
     /// `handleAnimate`: a player wakes up, or an entity gets the critical
     /// hit (`CRIT`) or magic critical hit (`ENCHANTED_HIT`) emitter.
-    pub(super) fn remote_animate(&mut self, id: i32, action: u8) {
+    pub(super) fn remote_animate_body(&mut self, id: i32, action: u8) {
         use horizon_client::particles::{ParticleOptions, ParticleType};
         let Some((target, body)) = self.remote_tracking_body(id) else {
             return;
@@ -337,7 +337,7 @@ impl Game<'_> {
     /// `handleServerData`: the server list entry of the server joined keeps
     /// the icon the server sends (`ServerList.saveSingleServer`). Single
     /// player has no entry.
-    pub(super) fn remote_server_data(&mut self, icon: Option<&[u8]>) {
+    pub(super) fn remote_server_data_body(&mut self, icon: Option<&[u8]>) {
         let (Some(r), Some(png)) = (self.remote.as_ref(), icon) else {
             return;
         };

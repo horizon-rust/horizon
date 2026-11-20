@@ -5,7 +5,7 @@ use super::*;
 impl Game<'_> {
     /// The minecarts the server sent, for the control socket's `status`
     /// (their velocity is not tracked here).
-    pub(in crate::game) fn remote_carts(&self) -> Option<Vec<serde_json::Value>> {
+    pub(super) fn remote_carts_body(&self) -> Option<Vec<serde_json::Value>> {
         let r = self.remote.as_ref()?;
         let mut carts: Vec<&Tracked> = r
             .entities
@@ -26,55 +26,53 @@ impl Game<'_> {
     }
 
     /// This player's account: a splitscreen player's own, else the game's (P1's).
-    pub(in crate::game) fn auth(
-        &self,
-    ) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
+    pub(super) fn auth_body(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
         match self.options.split_guest {
             true => self.split_auth.clone(),
             false => horizon_client::auth::current(),
         }
     }
     /// Connected to a server in online mode (its Login): each player needs its own account.
-    pub(in crate::game) fn online_server(&self) -> bool {
+    pub(super) fn online_server_body(&self) -> bool {
         self.remote.as_ref().is_some_and(|r| r.online_mode)
     }
 
     /// `ClientSuggestionProvider.customCompletionSuggestions` of the server
     /// connection (none without one).
-    pub(in crate::game) fn remote_custom_completions(&self) -> std::collections::BTreeSet<String> {
+    pub(super) fn remote_custom_completions_body(&self) -> std::collections::BTreeSet<String> {
         self.remote
             .as_ref()
             .map(|r| r.custom_completions.clone())
             .unwrap_or_default()
     }
     /// The names in the server's player list, sorted.
-    pub(in crate::game) fn remote_online_names(&self) -> Option<Vec<String>> {
+    pub(super) fn remote_online_names_body(&self) -> Option<Vec<String>> {
         let r = self.remote.as_ref()?;
         let mut names: Vec<String> = r.players.values().cloned().collect();
         names.sort();
         Some(names)
     }
     /// The open menu's window id (0: the inventory).
-    pub(in crate::game) fn remote_menu_id(&self) -> i32 {
+    pub(super) fn remote_menu_id_body(&self) -> i32 {
         self.remote
             .as_ref()
             .and_then(|r| r.menu.as_ref())
             .map_or(0, |m| m.0)
     }
     /// The server's last `n` chat lines, newest first.
-    pub(in crate::game) fn remote_chat(&self, n: usize) -> Option<Vec<String>> {
+    pub(super) fn remote_chat_body(&self, n: usize) -> Option<Vec<String>> {
         let r = self.remote.as_ref()?;
         Some(r.chat.iter().rev().take(n).map(|l| l.0.clone()).collect())
     }
 
     /// Received events left for the next frame (`poll_remote`): until they
     /// are handled, the terrain the server sent is not all there.
-    pub(in crate::game) fn remote_backlog(&self) -> usize {
+    pub(super) fn remote_backlog_body(&self) -> usize {
         self.remote.as_ref().map_or(0, |r| r.backlog.len())
     }
     /// A headless command oracle has a real connection but no movement tick.
     /// Acknowledge loaded terrain without predicting or sending movement.
-    pub(in crate::game) fn poll_stationary_client(&mut self) -> Result<()> {
+    pub(super) fn poll_stationary_client_body(&mut self) -> Result<()> {
         self.poll_remote()?;
         let loaded = self.player.as_ref().is_some_and(|p| {
             self.streaming.is_lit(
@@ -97,7 +95,7 @@ impl Game<'_> {
     /// the next chunk packet on wait for the next frame, unless they have
     /// already waited `BACKLOG_LIMIT`. A chunk packet still decoding holds
     /// back what follows it.
-    pub(in crate::game) fn poll_remote(&mut self) -> Result<()> {
+    pub(super) fn poll_remote_body(&mut self) -> Result<()> {
         let polled = self.poll_remote_events();
         // The block events and block changes of a piston clock start and end
         // thousands of moves at once: the collision view and the renderer
@@ -109,7 +107,7 @@ impl Game<'_> {
     }
     /// ClientSuggestionProvider.customSuggestion: the chat's completion
     /// request for an `ask_server` node goes to the server.
-    pub(super) fn send_suggestion_request(&mut self) {
+    pub(super) fn send_suggestion_request_body(&mut self) {
         if self.remote.is_none() {
             return;
         }
@@ -132,7 +130,7 @@ impl Game<'_> {
     }
     /// ClientboundCommandSuggestionsPacket: id, range start and length, then
     /// each suggestion's text and optional tooltip.
-    pub(super) fn handle_command_suggestions(&mut self, data: &[u8]) {
+    pub(super) fn handle_command_suggestions_body(&mut self, data: &[u8]) {
         let lang = self
             .remote
             .as_ref()

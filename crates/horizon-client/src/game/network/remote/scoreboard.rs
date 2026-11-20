@@ -4,7 +4,7 @@ use super::*;
 
 impl Game<'_> {
     /// `handleAddObjective`: add, remove or change an objective.
-    pub(super) fn remote_objective(&mut self, p: play::SetObjective) {
+    pub(super) fn remote_objective_body(&mut self, p: play::SetObjective) {
         use horizon_client::scoreboard::{RenderType, tag_to_json};
         let board = &mut self.score.board;
         match (p.method, p.display) {
@@ -35,7 +35,7 @@ impl Game<'_> {
         }
     }
     /// `handleSetPlayerTeamPacket`.
-    pub(super) fn remote_team(&mut self, p: play::SetPlayerTeam) {
+    pub(super) fn remote_team_body(&mut self, p: play::SetPlayerTeam) {
         use horizon_client::scoreboard::{CollisionRule, Visibility, tag_to_json};
         let board = &mut self.score.board;
         if p.method == 1 {
