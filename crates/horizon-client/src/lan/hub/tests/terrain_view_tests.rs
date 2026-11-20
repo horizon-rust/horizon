@@ -406,11 +406,12 @@ fn saved_far_view_uses_resident_faces_and_preserves_the_save() {
             C::decode(reader.varint().unwrap(), reader.rest()).unwrap()
         })
         .collect();
+    assert!(matches!(&overlays[..], [C::BlockUpdate(state)]
+        if state.pos == [at.0, at.1, at.2] && state.state == 2));
     assert!(
-        matches!(&overlays[..], [C::BlockUpdate(state)]
-        if state.pos == [at.0, at.1, at.2] && state.state == 2)
+        hub.terrain_overlays(2, &world, [(12, 0)].into_iter())
+            .is_empty()
     );
-    assert!(hub.terrain_overlays(2, &world, [(12, 0)].into_iter()).is_empty());
 
     // The current disk body was prepared with an unavailable east face. An all-air resident
     // neighbour is known, so it invalidates that body even without a block-log event.
@@ -476,12 +477,18 @@ fn a_released_selection_frees_its_slot_at_once() {
     // The player holds the overworld already.
     for n in 1..32 {
         let dimension = format!("test:dimension_{n}");
-        hub.set_terrain_view(1, &dimension, "test", Some(1)).unwrap();
+        hub.set_terrain_view(1, &dimension, "test", Some(1))
+            .unwrap();
     }
-    assert!(hub.set_terrain_view(1, "test:one_more", "test", Some(1)).is_err());
+    assert!(
+        hub.set_terrain_view(1, "test:one_more", "test", Some(1))
+            .is_err()
+    );
     // No pass has run in the released dimension, and its slot is free all the same.
-    hub.set_terrain_view(1, "test:dimension_1", "test", None).unwrap();
-    hub.set_terrain_view(1, "test:one_more", "test", Some(1)).unwrap();
+    hub.set_terrain_view(1, "test:dimension_1", "test", None)
+        .unwrap();
+    hub.set_terrain_view(1, "test:one_more", "test", Some(1))
+        .unwrap();
 }
 
 #[test]

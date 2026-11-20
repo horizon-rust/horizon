@@ -347,8 +347,7 @@ impl Hub {
                                     Some(sent) => sent.binary_search(&pos).is_ok(),
                                     None => {
                                         positions.binary_search(&pos).is_ok()
-                                            && !self
-                                                .terrain_protected(conn, &self.config.dimension)
+                                            && !self.terrain_protected(conn, &self.config.dimension)
                                     }
                                 };
                                 sent && self.terrain_state(conn, world, pos, state) == state

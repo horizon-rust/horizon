@@ -317,9 +317,10 @@ impl Faces {
             .iter()
             .map(|face| face.reads.capacity() * std::mem::size_of::<FaceRead>())
             .sum::<usize>()
-            + self.concealed.as_ref().map_or(0, |list| {
-                list.capacity() * std::mem::size_of::<Concealed>()
-            })
+            + self
+                .concealed
+                .as_ref()
+                .map_or(0, |list| list.capacity() * std::mem::size_of::<Concealed>())
     }
 }
 
@@ -345,7 +346,10 @@ impl Selection {
             return state;
         }
         rules.state(pos, state, |p| {
-            previous.get(&p).map(|&s| Some(s)).unwrap_or_else(|| world_state(world, p))
+            previous
+                .get(&p)
+                .map(|&s| Some(s))
+                .unwrap_or_else(|| world_state(world, p))
         })
     }
 }
