@@ -7898,7 +7898,7 @@ impl Game<'_> {
         self.rendered_mobs.set(0);
         let (skinning, hooks) = (
             self.skinning(),
-            super::super::modding::native_mob_draw::MobRenderHooks::current(),
+            crate::game::native_mob_draw::MobRenderHooks::current(),
         );
         // What custom entity model animations read of the frame.
         horizon_client::mobs::cem_anim::set_frame(horizon_client::mobs::cem_anim::Frame {

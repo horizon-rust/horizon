@@ -816,7 +816,7 @@ impl Game<'_> {
             name: &name,
             local: true,
         };
-        let hooks = super::super::modding::native_mob_draw::MobRenderHooks::current();
+        let hooks = crate::game::native_mob_draw::MobRenderHooks::current();
         let pre = if hooks.any_pre() {
             self.mod_render_pre(m, Some(who), alpha as f32, camera, packed, out)
         } else {
