@@ -118,6 +118,10 @@ pub struct ChunkEncoder {
     cache: std::sync::Mutex<FxHashMap<usize, Encoded>>,
     /// Each column's heightmaps, with the sections they were made from.
     heights: std::sync::Mutex<HashMap<(i32, i32), Heights>>,
+    /// Whether to retain encoded wire sections and heightmaps across sends.
+    /// In solo singleplayer there is only one receiver, so keeping wire bytes
+    /// and heightmaps for every sent chunk wastes tens of megabytes of RAM.
+    retain_wire: std::sync::atomic::AtomicBool,
     /// The level's sections among a column's: all of them in the Overworld,
     /// y 0 to 255 in the Nether and the End (`DimensionType` min_y and height).
     sections: std::ops::Range<usize>,
@@ -651,6 +655,7 @@ impl ChunkEncoder {
             tables: None,
             cache: Default::default(),
             heights: Default::default(),
+            retain_wire: std::sync::atomic::AtomicBool::new(true),
             sections: 0..ColumnLayout::VANILLA.sections(),
             column: ColumnLayout::VANILLA,
             sky: true,
@@ -667,12 +672,31 @@ impl ChunkEncoder {
         ChunkBiomeData::from_biomes([chunk.x, chunk.z], &biomes)
     }
 
+    /// Control whether encoded wire sections and heightmaps are retained across sends.
+    /// Dropping retention clears already-stored wire payloads and heightmaps while keeping
+    /// the tiny `non_air` bits intact.
+    pub fn set_retain_wire(&self, retain: bool) {
+        let prev = self
+            .retain_wire
+            .swap(retain, std::sync::atomic::Ordering::Relaxed);
+        if prev && !retain {
+            self.heights.lock().unwrap().clear();
+            let mut cache = self.cache.lock().unwrap();
+            for e in cache.values_mut() {
+                e.wire = None;
+            }
+        }
+    }
+
     /// The client heightmaps (Heightmap.prime over the column), from the
     /// cache while the column's sections are unchanged.
     fn heightmaps(&self, chunk: &Chunk, tables: &crate::save::SaveTables) -> ColumnHeightmaps {
-        let mut heights = self.heights.lock().unwrap();
-        if let Some(maps) = cached_heights(&heights, chunk) {
-            return maps;
+        let retain = self.retain_wire.load(std::sync::atomic::Ordering::Relaxed);
+        if retain {
+            let heights = self.heights.lock().unwrap();
+            if let Some(maps) = cached_heights(&heights, chunk) {
+                return maps;
+            }
         }
         let (min_y, height) = self.level();
         let maps = Arc::new(crate::save::client_heightmaps_in(
@@ -682,7 +706,10 @@ impl ChunkEncoder {
             min_y,
             height,
         ));
-        keep_heights(&mut heights, (chunk.x, chunk.z), &chunk.sections, &maps);
+        if retain {
+            let mut heights = self.heights.lock().unwrap();
+            keep_heights(&mut heights, (chunk.x, chunk.z), &chunk.sections, &maps);
+        }
         maps
     }
 
@@ -783,7 +810,9 @@ impl ChunkEncoder {
             return wire;
         }
         let wire = self.coder.wire(section);
-        self.cached(section, |e| e.wire = Some(wire.clone()));
+        if self.retain_wire.load(std::sync::atomic::Ordering::Relaxed) {
+            self.cached(section, |e| e.wire = Some(wire.clone()));
+        }
         wire
     }
     /// Encode for a level of `shape`: its chunks hold `shape.column()`, of
@@ -972,6 +1001,7 @@ impl ChunkEncoder {
             tables: self.tables.clone(),
             cache: Default::default(),
             heights: Default::default(),
+            retain_wire: std::sync::atomic::AtomicBool::new(false),
             sections: self.sections.clone(),
             column: self.column,
             sky: self.sky,
@@ -1062,7 +1092,17 @@ impl ChunkEncoder {
         })
     }
 
-    /// Cache what a job's threads have finished.
+    /// Drop wire bytes and heightmaps populated by a solo warm-up batch after
+    /// `bodies_with` has consumed them.
+    pub fn clear_batch_wire(&self) {
+        if !self.retain_wire.load(std::sync::atomic::Ordering::Relaxed) {
+            self.heights.lock().unwrap().clear();
+            let mut cache = self.cache.lock().unwrap();
+            for e in cache.values_mut() {
+                e.wire = None;
+            }
+        }
+    }
     fn keep(&self, job: &Warm) {
         {
             let mut heights = self.heights.lock().unwrap();

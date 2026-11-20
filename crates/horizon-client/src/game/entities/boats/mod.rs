@@ -1653,11 +1653,16 @@ impl Game<'_> {
     }
     /// AbstractBoatRenderer.
     pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+        if self.boats.is_empty() {
+            return;
+        }
         let a = alpha as f32;
         let range = super::entity_culling::default_range(
             glam::DVec3::new(WIDTH, HEIGHT, WIDTH),
             self.view_scale(),
         );
+        let mut poses = Poses::pooled();
+        let mut patch_poses = Option::<horizon_client::mobs::anim::PooledPoses>::None;
         for b in &self.boats {
             // LevelExtractor: the camera entity is not drawn from its own eyes.
             if self.hides_as_camera(b.id) {
@@ -1684,12 +1689,37 @@ impl Game<'_> {
             let Some(model) = models.get(&*b.wood) else {
                 continue;
             };
-            let folder = if b.chest { "chest_boat" } else { "boat" };
+            let sprite = match (b.chest, &*b.wood) {
+                (false, "oak") => std::borrow::Cow::Borrowed("entity/boat/oak"),
+                (false, "spruce") => std::borrow::Cow::Borrowed("entity/boat/spruce"),
+                (false, "birch") => std::borrow::Cow::Borrowed("entity/boat/birch"),
+                (false, "jungle") => std::borrow::Cow::Borrowed("entity/boat/jungle"),
+                (false, "acacia") => std::borrow::Cow::Borrowed("entity/boat/acacia"),
+                (false, "dark_oak") => std::borrow::Cow::Borrowed("entity/boat/dark_oak"),
+                (false, "mangrove") => std::borrow::Cow::Borrowed("entity/boat/mangrove"),
+                (false, "cherry") => std::borrow::Cow::Borrowed("entity/boat/cherry"),
+                (false, "pale_oak") => std::borrow::Cow::Borrowed("entity/boat/pale_oak"),
+                (false, "bamboo") => std::borrow::Cow::Borrowed("entity/boat/bamboo"),
+                (true, "oak") => std::borrow::Cow::Borrowed("entity/chest_boat/oak"),
+                (true, "spruce") => std::borrow::Cow::Borrowed("entity/chest_boat/spruce"),
+                (true, "birch") => std::borrow::Cow::Borrowed("entity/chest_boat/birch"),
+                (true, "jungle") => std::borrow::Cow::Borrowed("entity/chest_boat/jungle"),
+                (true, "acacia") => std::borrow::Cow::Borrowed("entity/chest_boat/acacia"),
+                (true, "dark_oak") => std::borrow::Cow::Borrowed("entity/chest_boat/dark_oak"),
+                (true, "mangrove") => std::borrow::Cow::Borrowed("entity/chest_boat/mangrove"),
+                (true, "cherry") => std::borrow::Cow::Borrowed("entity/chest_boat/cherry"),
+                (true, "pale_oak") => std::borrow::Cow::Borrowed("entity/chest_boat/pale_oak"),
+                (true, "bamboo") => std::borrow::Cow::Borrowed("entity/chest_boat/bamboo"),
+                (chest, wood) => {
+                    let folder = if chest { "chest_boat" } else { "boat" };
+                    std::borrow::Cow::Owned(format!("entity/{folder}/{wood}"))
+                }
+            };
             let Some(uv) = self
                 .gui
                 .atlas
                 .sprites
-                .get(&format!("entity/{folder}/{}", b.wood))
+                .get(sprite.as_ref())
                 .map(|r| [r.u0, r.v0, r.u1, r.v1])
             else {
                 continue;
@@ -1722,7 +1752,7 @@ impl Game<'_> {
             }
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_rotation_y(90f32.to_radians());
-            let mut poses = Poses::new(model);
+            poses.reset(model);
             // AbstractBoatModel.animatePaddle
             for (side, name) in [(0usize, "left_paddle"), (1, "right_paddle")] {
                 if !poses.has(name) {
@@ -1766,10 +1796,15 @@ impl Game<'_> {
                     let (u, v) = ((r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0);
                     [u, v, u, v]
                 });
+                let pp = patch_poses.get_or_insert_with(|| {
+                    let mut p = Poses::pooled();
+                    p.reset(patch);
+                    p
+                });
                 horizon_client::mobs::render::draw(
                     patch,
                     base,
-                    &Poses::new(patch),
+                    pp,
                     white,
                     0xFFFF_FFFF,
                     packed,

@@ -2843,10 +2843,14 @@ impl Hub {
                 (i, taken, far, bodies)
             })
             .collect();
+        // In solo singleplayer there is only one receiver, so retaining encoded
+        // wire sections and heightmaps across sends only duplicates chunk RAM.
+        self.encoder.set_retain_wire(self.guests.len() > 1);
         self.encoder.warm(&columns.chunks);
         let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
             ctx.streaming.and_then(|s| s.proto_sections(x, z))
         });
+        self.encoder.clear_batch_wire();
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
         for (i, taken, far, batch) in batches {

@@ -194,13 +194,6 @@ fn baby_or<'a>(
 pub mod villager_client;
 use villager_client::interned;
 
-fn climate(m: &Mob) -> &'static str {
-    match m.extra.variant {
-        1 => "warm",
-        2 => "cold",
-        _ => "temperate",
-    }
-}
 /// `AvatarRenderer` entities: a mannequin draws exactly like a player —
 /// the player model, its resolved skin and the same scale.
 pub fn avatar(m: &Mob) -> bool {
@@ -213,14 +206,21 @@ pub fn layers_shown(m: &Mob) -> bool {
     !(avatar(m) && m.extra.spectator)
 }
 /// The model layer key and texture for the mob's body.
-pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
+pub fn body<'a>(m: &'a Mob) -> (Cow<'static, str>, Cow<'a, str>) {
     use Species as S;
     let baby = m.is_baby();
-    let b = |s: &str| -> Cow<'static, str> {
+    let b = |s: &'static str| -> Cow<'static, str> {
         if baby {
             interned(format_args!("{s}_baby"))
         } else {
-            interned(format_args!("{s}"))
+            Cow::Borrowed(s)
+        }
+    };
+    let b_ref = |s: &'a str| -> Cow<'a, str> {
+        if baby {
+            interned(format_args!("{s}_baby"))
+        } else {
+            Cow::Borrowed(s)
         }
     };
     if avatar(m) {
@@ -231,31 +231,24 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
         );
     }
     match m.species() {
-        S::Llama | S::TraderLlama => {
-            let name = if m.species() == S::Llama {
-                "llama"
-            } else {
-                "trader_llama"
-            };
-            (
-                baby_or(
-                    m,
-                    interned(format_args!("{name}#main")),
-                    interned(format_args!("{name}_baby#main")),
-                ),
-                super::llama::texture(m).into(),
-            )
-        }
+        S::Llama => (
+            baby_or(m, "llama#main", "llama_baby#main"),
+            super::llama::texture(m).into(),
+        ),
+        S::TraderLlama => (
+            baby_or(m, "trader_llama#main", "trader_llama_baby#main"),
+            super::llama::texture(m).into(),
+        ),
         s if super::equine::is_equine(s) => {
-            let name = super::equine::model_name(s);
-            (
-                baby_or(
-                    m,
-                    interned(format_args!("{name}#main")),
-                    interned(format_args!("{name}_baby#main")),
-                ),
-                super::equine::texture(m).into(),
-            )
+            let (adult, child) = match s {
+                S::Horse => ("horse#main", "horse_baby#main"),
+                S::Donkey => ("donkey#main", "donkey_baby#main"),
+                S::Mule => ("mule#main", "mule_baby#main"),
+                S::SkeletonHorse => ("skeleton_horse#main", "skeleton_horse_baby#main"),
+                S::Camel | S::CamelHusk => ("camel#main", "camel_baby#main"),
+                _ => ("zombie_horse#main", "zombie_horse_baby#main"),
+            };
+            (baby_or(m, adult, child), super::equine::texture(m).into())
         }
         S::Wolf => (
             baby_or(m, "wolf#main", "wolf_baby#main"),
@@ -306,45 +299,76 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
         ),
         S::Frog => (
             "frog#main".into(),
-            interned(format_args!("entity/frog/frog_{}", climate(m))),
+            match m.extra.variant {
+                1 => "entity/frog/frog_warm",
+                2 => "entity/frog/frog_cold",
+                _ => "entity/frog/frog_temperate",
+            }
+            .into(),
         ),
         // RabbitRenderer.getTextureLocation: the Toast name tag, else the
         // variant (the killer bunny's id is 99).
         S::Rabbit => {
-            let name = if m.custom_name.as_deref() == Some("Toast") {
-                "toast"
+            let tex = if m.custom_name.as_deref() == Some("Toast") {
+                if baby {
+                    "entity/rabbit/rabbit_toast_baby"
+                } else {
+                    "entity/rabbit/rabbit_toast"
+                }
             } else {
-                match m.extra.variant {
-                    1 => "white",
-                    2 => "black",
-                    3 => "white_splotched",
-                    4 => "gold",
-                    5 => "salt",
-                    99 => "caerbannog",
-                    _ => "brown",
+                match (m.extra.variant, baby) {
+                    (1, true) => "entity/rabbit/rabbit_white_baby",
+                    (1, false) => "entity/rabbit/rabbit_white",
+                    (2, true) => "entity/rabbit/rabbit_black_baby",
+                    (2, false) => "entity/rabbit/rabbit_black",
+                    (3, true) => "entity/rabbit/rabbit_white_splotched_baby",
+                    (3, false) => "entity/rabbit/rabbit_white_splotched",
+                    (4, true) => "entity/rabbit/rabbit_gold_baby",
+                    (4, false) => "entity/rabbit/rabbit_gold",
+                    (5, true) => "entity/rabbit/rabbit_salt_baby",
+                    (5, false) => "entity/rabbit/rabbit_salt",
+                    (99, true) => "entity/rabbit/rabbit_caerbannog_baby",
+                    (99, false) => "entity/rabbit/rabbit_caerbannog",
+                    (_, true) => "entity/rabbit/rabbit_brown_baby",
+                    (_, false) => "entity/rabbit/rabbit_brown",
                 }
             };
-            (
-                baby_or(m, "rabbit#main", "rabbit_baby#main"),
-                b(&interned(format_args!("entity/rabbit/rabbit_{name}"))),
-            )
+            (baby_or(m, "rabbit#main", "rabbit_baby#main"), tex.into())
         }
         // ParrotRenderer.getVariantTexture.
         S::Parrot => {
-            let name = ["red_blue", "blue", "green", "yellow_blue", "grey"]
-                [usize::from(m.extra.variant).min(4)];
+            const PARROTS: [&str; 5] = [
+                "entity/parrot/parrot_red_blue",
+                "entity/parrot/parrot_blue",
+                "entity/parrot/parrot_green",
+                "entity/parrot/parrot_yellow_blue",
+                "entity/parrot/parrot_grey",
+            ];
             (
                 m.kind.model_name().into(),
-                interned(format_args!("entity/parrot/parrot_{name}")),
+                PARROTS[usize::from(m.extra.variant).min(4)].into(),
             )
         }
         // AxolotlRenderer.getTextureLocation.
         S::Axolotl => {
-            let name =
-                ["lucy", "wild", "gold", "cyan", "blue"][usize::from(m.extra.variant).min(4)];
+            const ADULT: [&str; 5] = [
+                "entity/axolotl/axolotl_lucy",
+                "entity/axolotl/axolotl_wild",
+                "entity/axolotl/axolotl_gold",
+                "entity/axolotl/axolotl_cyan",
+                "entity/axolotl/axolotl_blue",
+            ];
+            const BABY: [&str; 5] = [
+                "entity/axolotl/axolotl_lucy_baby",
+                "entity/axolotl/axolotl_wild_baby",
+                "entity/axolotl/axolotl_gold_baby",
+                "entity/axolotl/axolotl_cyan_baby",
+                "entity/axolotl/axolotl_blue_baby",
+            ];
+            let i = usize::from(m.extra.variant).min(4);
             (
                 baby_or(m, "axolotl#main", "axolotl_baby#main"),
-                b(&interned(format_args!("entity/axolotl/axolotl_{name}"))),
+                if baby { BABY[i] } else { ADULT[i] }.into(),
             )
         }
         // SalmonRenderer.submit: the model of the salmon's size.
@@ -360,37 +384,42 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
         // subclasses.
         S::Goat => (
             baby_or(m, "goat#main", "goat_baby#main"),
-            b(&m.kind.texture),
+            b_ref(&m.kind.texture),
         ),
         S::PolarBear => (
             baby_or(m, "polar_bear#main", "polar_bear_baby#main"),
-            b(&m.kind.texture),
+            b_ref(&m.kind.texture),
         ),
         S::Ocelot => (
             baby_or(m, "ocelot#main", "ocelot_baby#main"),
-            b(&m.kind.texture),
+            b_ref(&m.kind.texture),
         ),
         S::Turtle => (
             baby_or(m, "turtle#main", "turtle_baby#main"),
-            b(&m.kind.texture),
+            b_ref(&m.kind.texture),
         ),
         S::Armadillo => (
             baby_or(m, "armadillo#main", "armadillo_baby#main"),
-            b(&m.kind.texture),
+            b_ref(&m.kind.texture),
         ),
         // FoxRenderer.getTextureLocation: snow variant, sleeping, baby.
         S::Fox => (
             baby_or(m, "fox#main", "fox_baby#main"),
-            interned(format_args!(
-                "entity/fox/fox{}{}{}",
-                if m.extra.variant == 0 { "" } else { "_snow" },
-                if super::fox::flag(m, super::fox::SLEEPING) {
-                    "_sleep"
-                } else {
-                    ""
-                },
-                if baby { "_baby" } else { "" },
-            )),
+            match (
+                m.extra.variant != 0,
+                super::fox::flag(m, super::fox::SLEEPING),
+                baby,
+            ) {
+                (false, false, false) => "entity/fox/fox",
+                (false, false, true) => "entity/fox/fox_baby",
+                (false, true, false) => "entity/fox/fox_sleep",
+                (false, true, true) => "entity/fox/fox_sleep_baby",
+                (true, false, false) => "entity/fox/fox_snow",
+                (true, false, true) => "entity/fox/fox_snow_baby",
+                (true, true, false) => "entity/fox/fox_snow_sleep",
+                (true, true, true) => "entity/fox/fox_snow_sleep_baby",
+            }
+            .into(),
         ),
         S::Pig => {
             let model = if baby {
@@ -400,10 +429,15 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
             } else {
                 "pig#main".into()
             };
-            (
-                model,
-                b(&interned(format_args!("entity/pig/pig_{}", climate(m)))),
-            )
+            let tex = match (m.extra.variant, baby) {
+                (1, true) => "entity/pig/pig_warm_baby",
+                (1, false) => "entity/pig/pig_warm",
+                (2, true) => "entity/pig/pig_cold_baby",
+                (2, false) => "entity/pig/pig_cold",
+                (_, true) => "entity/pig/pig_temperate_baby",
+                (_, false) => "entity/pig/pig_temperate",
+            };
+            (model, tex.into())
         }
         S::Cow => {
             let model = match (m.extra.variant, baby) {
@@ -414,10 +448,15 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
                 (_, true) => "cow_baby#main",
                 _ => "cow#main",
             };
-            (
-                model.into(),
-                b(&interned(format_args!("entity/cow/cow_{}", climate(m)))),
-            )
+            let tex = match (m.extra.variant, baby) {
+                (1, true) => "entity/cow/cow_warm_baby",
+                (1, false) => "entity/cow/cow_warm",
+                (2, true) => "entity/cow/cow_cold_baby",
+                (2, false) => "entity/cow/cow_cold",
+                (_, true) => "entity/cow/cow_temperate_baby",
+                (_, false) => "entity/cow/cow_temperate",
+            };
+            (model.into(), tex.into())
         }
         S::Mooshroom => (
             baby_or(m, "mooshroom#main", "mooshroom_baby#main"),
@@ -435,13 +474,15 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
             } else {
                 "chicken#main"
             };
-            (
-                model.into(),
-                b(&interned(format_args!(
-                    "entity/chicken/chicken_{}",
-                    climate(m)
-                ))),
-            )
+            let tex = match (m.extra.variant, baby) {
+                (1, true) => "entity/chicken/chicken_warm_baby",
+                (1, false) => "entity/chicken/chicken_warm",
+                (2, true) => "entity/chicken/chicken_cold_baby",
+                (2, false) => "entity/chicken/chicken_cold",
+                (_, true) => "entity/chicken/chicken_temperate_baby",
+                (_, false) => "entity/chicken/chicken_temperate",
+            };
+            (model.into(), tex.into())
         }
         S::Sheep => (
             baby_or(m, "sheep#main", "sheep_baby#main"),
@@ -688,12 +729,12 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
         // HorseMarkingLayer, the saddle and the horse armour.
         s if super::equine::is_equine(s) => {
             let name = super::equine::model_name(s);
-            let body = if m.is_baby() {
-                interned(format_args!("{name}_baby#main"))
-            } else {
-                interned(format_args!("{name}#main"))
-            };
             if let Some(tex) = super::equine::markings(m) {
+                let body = if m.is_baby() {
+                    interned(format_args!("{name}_baby#main"))
+                } else {
+                    interned(format_args!("{name}#main"))
+                };
                 push(&mut v, body, tex, white, false);
             }
             if m.extra.saddled() && !m.is_baby() {
@@ -897,50 +938,85 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
             );
         }
         S::Villager | S::ZombieVillager => {
-            let base = if m.species() == S::Villager {
-                "villager"
-            } else {
-                "zombie_villager"
+            const VILLAGER_TYPE_ADULT: [&str; 7] = [
+                "entity/villager/type/desert",
+                "entity/villager/type/jungle",
+                "entity/villager/type/plains",
+                "entity/villager/type/savanna",
+                "entity/villager/type/snow",
+                "entity/villager/type/swamp",
+                "entity/villager/type/taiga",
+            ];
+            const VILLAGER_TYPE_BABY: [&str; 7] = [
+                "entity/villager/baby/desert",
+                "entity/villager/baby/jungle",
+                "entity/villager/baby/plains",
+                "entity/villager/baby/savanna",
+                "entity/villager/baby/snow",
+                "entity/villager/baby/swamp",
+                "entity/villager/baby/taiga",
+            ];
+            const ZOMBIE_TYPE_ADULT: [&str; 7] = [
+                "entity/zombie_villager/type/desert",
+                "entity/zombie_villager/type/jungle",
+                "entity/zombie_villager/type/plains",
+                "entity/zombie_villager/type/savanna",
+                "entity/zombie_villager/type/snow",
+                "entity/zombie_villager/type/swamp",
+                "entity/zombie_villager/type/taiga",
+            ];
+            const ZOMBIE_TYPE_BABY: [&str; 7] = [
+                "entity/zombie_villager/baby/desert",
+                "entity/zombie_villager/baby/jungle",
+                "entity/zombie_villager/baby/plains",
+                "entity/zombie_villager/baby/savanna",
+                "entity/zombie_villager/baby/snow",
+                "entity/zombie_villager/baby/swamp",
+                "entity/zombie_villager/baby/taiga",
+            ];
+            const VILLAGER_LEVELS: [&str; 5] = [
+                "entity/villager/profession_level/stone",
+                "entity/villager/profession_level/iron",
+                "entity/villager/profession_level/gold",
+                "entity/villager/profession_level/emerald",
+                "entity/villager/profession_level/diamond",
+            ];
+            const ZOMBIE_LEVELS: [&str; 5] = [
+                "entity/zombie_villager/profession_level/stone",
+                "entity/zombie_villager/profession_level/iron",
+                "entity/zombie_villager/profession_level/gold",
+                "entity/zombie_villager/profession_level/emerald",
+                "entity/zombie_villager/profession_level/diamond",
+            ];
+            let zombie = m.species() == S::ZombieVillager;
+            let baby = m.is_baby();
+            let model = match (zombie, baby) {
+                (false, false) => "villager#main",
+                (false, true) => "villager_baby#main",
+                (true, false) => "zombie_villager#main",
+                (true, true) => "zombie_villager_baby#main",
             };
-            let model = if m.is_baby() {
-                interned(format_args!("{base}_baby#main"))
-            } else {
-                interned(format_args!("{base}#main"))
-            };
-            let t = VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()];
-            let folder = if m.species() == S::Villager {
-                "entity/villager"
-            } else {
-                "entity/zombie_villager"
-            };
+            let ti = m.extra.variant as usize % VILLAGER_TYPE_ADULT.len();
             // VillagerProfessionLayer: a baby's type texture is in `baby/`.
-            let group = if m.is_baby() { "baby" } else { "type" };
-            push(
-                &mut v,
-                model.clone(),
-                interned(format_args!("{folder}/{group}/{t}")),
-                white,
-                false,
-            );
+            let type_tex = match (zombie, baby) {
+                (false, false) => VILLAGER_TYPE_ADULT[ti],
+                (false, true) => VILLAGER_TYPE_BABY[ti],
+                (true, false) => ZOMBIE_TYPE_ADULT[ti],
+                (true, true) => ZOMBIE_TYPE_BABY[ti],
+            };
+            push(&mut v, model, type_tex, white, false);
             let nitwit = m.extra.profession.index() == Some(11);
-            if !m.is_baby()
-                && let Some(texture) = villager_client::texture(
-                    &m.extra.profession,
-                    folder == "entity/zombie_villager",
-                )
-            {
-                push(&mut v, model.clone(), texture, white, false);
+            if !baby && let Some(texture) = villager_client::texture(&m.extra.profession, zombie) {
+                push(&mut v, model, texture, white, false);
                 if !nitwit {
                     // `LEVEL_LOCATIONS` clamps the level to 1..=5.
-                    let level = ["stone", "iron", "gold", "emerald", "diamond"]
-                        [(m.extra.villager_level.max(1) as usize - 1).min(4)];
-                    push(
-                        &mut v,
-                        model,
-                        interned(format_args!("{folder}/profession_level/{level}")),
-                        white,
-                        false,
-                    );
+                    let li = (m.extra.villager_level.max(1) as usize - 1).min(4);
+                    let level_tex = if zombie {
+                        ZOMBIE_LEVELS[li]
+                    } else {
+                        VILLAGER_LEVELS[li]
+                    };
+                    push(&mut v, model, level_tex, white, false);
                 }
             }
         }
@@ -1612,7 +1688,8 @@ pub fn cape(
         return;
     };
     let s = anim::state(m, alpha);
-    let mut poses = Poses::new(model);
+    let mut poses = Poses::pooled();
+    poses.reset(model);
     anim::setup(m, &s, &mut poses, &data.animations);
     let a = f64::from(alpha);
     let at = [
@@ -1657,7 +1734,8 @@ pub fn ears(
         return;
     };
     let s = anim::state(m, alpha);
-    let mut poses = Poses::new(model);
+    let mut poses = Poses::pooled();
+    poses.reset(model);
     anim::setup(m, &s, &mut poses, &data.animations);
     // LivingEntityRenderer.getOverlayCoords(state, 0.0F).
     draw(
@@ -1921,7 +1999,8 @@ pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
     let (model_key, texture) = body(m);
     let cem_key = cem_key(&model_key);
     let mut names = Vec::new();
-    push(&mut names, cem.layer(cem_key), texture.into_owned());
+    let custom_body = (!cem.is_empty()).then(|| cem.layer(cem_key)).flatten();
+    push(&mut names, custom_body, texture.into_owned());
     let mut all_layers = layers(m, m.age as f32);
     if m.species() == Species::Warden {
         for (model, texture, _) in super::warden::emissive_layers(m, 0.0) {
@@ -1936,8 +2015,9 @@ pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
     }
     let body_keys = [&*model_key, cem_key];
     for (i, layer) in all_layers.iter().enumerate() {
-        let custom = cem
-            .layer(&layer.model)
+        let custom = (!cem.is_empty())
+            .then(|| cem.layer(&layer.model))
+            .flatten()
             .filter(|_| paints_with_jem(&all_layers, i, body_keys));
         push(&mut names, custom, layer.texture.to_string());
     }
@@ -1972,14 +2052,20 @@ fn posed_body(
     m: &Mob,
     alpha: f32,
     data: &MobData,
-) -> (std::sync::Arc<Part>, Poses, Vec<(String, String, [f32; 3])>) {
+) -> (
+    std::sync::Arc<Part>,
+    anim::PooledPoses,
+    Vec<(String, String, [f32; 3])>,
+) {
     let s = anim::state(m, alpha);
     let (model_key, _) = body(m);
     let cem = data
         .cem
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let custom = cem.layer(cem_key(&model_key));
+    let custom = (!cem.is_empty())
+        .then(|| cem.layer(cem_key(&model_key)))
+        .flatten();
     let model = match custom {
         Some(c) => c.model.clone(),
         None => m
@@ -1988,7 +2074,8 @@ fn posed_body(
             .cloned()
             .unwrap_or_else(|| m.kind.model.clone()),
     };
-    let mut poses = Poses::new(&model);
+    let mut poses = Poses::pooled();
+    poses.reset(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
     if let Some(c) = custom
         && let Some(animation) = &c.animation
@@ -2091,7 +2178,7 @@ fn render_visible(
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cem_key = cem_key(&model_key);
-    let custom_body = cem.layer(cem_key);
+    let custom_body = (!cem.is_empty()).then(|| cem.layer(cem_key)).flatten();
     let body_animation = custom_body.and_then(|c| c.animation.as_ref());
     let model = match custom_body {
         Some(custom) => custom.model.clone(),
@@ -2185,7 +2272,7 @@ fn render_visible(
                     // is the only difference from a plain draw.
                     (skin.models.tagged && (eyes_layer(m, layer) || !layer.full_bright)
                         || !layer.full_bright && !translucent_layer(m, layer))
-                        && cem.layer(&layer.model).is_none()
+                        && (cem.is_empty() || cem.layer(&layer.model).is_none())
                         && m.kind
                             .layer(&layer.model)
                             .is_none_or(|part| skin.supports(part))
@@ -2199,16 +2286,17 @@ fn render_visible(
     // The parts a mod's `render_player_pre` or `render_living_pre` hid this frame: the body and the
     // layers over its own model (`getParentModel`) draw without them, the armour and the other
     // layers below with every part.
-    let mut hidden_poses = Poses::pooled();
+    let mut hidden_poses = Option::<anim::PooledPoses>::None;
     let body_poses: &Poses = if hidden.is_empty() {
         &poses
     } else {
-        hidden_poses.copy_from(&poses);
-        if let Err(name) = hide_parts(&mut hidden_poses, &hidden) {
+        let hp = hidden_poses.get_or_insert_with(Poses::pooled);
+        hp.copy_from(&poses);
+        if let Err(name) = hide_parts(hp, &hidden) {
             report_unknown_hidden_part(&m.kind.id, name);
             return;
         }
-        &hidden_poses
+        &*hp
     };
     // The mods' post hooks' snapshot: the body's parts as drawn, for `HumanoidMobRenderer`'s families
     // (`anim::extracts_humanoid`) only.
@@ -2273,11 +2361,11 @@ fn render_visible(
         draw(part, base, &poses, *uv, *color, light, *layer_overlay, out);
     }
     // One Poses refilled for every layer (armour draws up to seven): it keeps
-    // its maps' capacity.
-    let mut layer_poses = Poses::pooled();
+    // its maps' capacity. Only borrow from the pool when this mob actually has layers or swirl.
+    let mut layer_poses = Option::<anim::PooledPoses>::None;
     let body_keys = [&*model_key, cem_key];
     for (i, layer) in all_layers.iter().enumerate() {
-        let custom = cem.layer(&layer.model);
+        let custom = (!cem.is_empty()).then(|| cem.layer(&layer.model)).flatten();
         // `layer.texture` stays the vanilla name (the villager hats below look for its
         // `/type/` folder).
         let texture = cem_texture(
@@ -2311,21 +2399,28 @@ fn render_visible(
         } else {
             true
         };
-        if custom.is_none() && custom_body.is_none() && std::sync::Arc::ptr_eq(&part, &model) {
-            // A layer over the body's own model (a villager's type, profession
-            // and level, a spider's eyes): `setupAnim` gives the body's poses,
-            // without the parts a mod hid on it.
-            layer_poses.copy_from(if type_hat_shown { body_poses } else { &poses });
+        let reuse_body =
+            custom.is_none() && custom_body.is_none() && std::sync::Arc::ptr_eq(&part, &model);
+        let active_poses: &Poses = if reuse_body && type_hat_shown {
+            // A layer over the body's own model with its hat visible (spider eyes,
+            // villager profession/level, collars): reuse body_poses directly with zero copy.
+            body_poses
         } else {
-            layer_poses.reset(&part);
-            anim::setup(m, &s, &mut layer_poses, &data.animations);
-            if let Some(animation) = custom.and_then(|c| c.animation.as_ref()) {
-                animation.run(m, &s, &mut layer_poses);
+            let lp = layer_poses.get_or_insert_with(Poses::pooled);
+            if reuse_body {
+                lp.copy_from(&poses);
+            } else {
+                lp.reset(&part);
+                anim::setup(m, &s, lp, &data.animations);
+                if let Some(animation) = custom.and_then(|c| c.animation.as_ref()) {
+                    animation.run(m, &s, lp);
+                }
             }
-        }
-        if !type_hat_shown {
-            layer_poses.visible("head", false);
-        }
+            if !type_hat_shown {
+                lp.visible("head", false);
+            }
+            &*lp
+        };
         let light = if layer.full_bright {
             FULL_BRIGHT
         } else {
@@ -2344,7 +2439,7 @@ fn render_visible(
             &mut skin,
             &part,
             base,
-            &layer_poses,
+            active_poses,
             uv,
             layer.scroll,
             layer.color,
@@ -2357,7 +2452,7 @@ fn render_visible(
                 &mut skin,
                 &part,
                 base,
-                &layer_poses,
+                active_poses,
                 glow,
                 layer.scroll,
                 layer.color,
@@ -2405,15 +2500,16 @@ fn render_visible(
         && let Some(part) = m.kind.layer(model)
         && let Some([u0, v0, u1, v1]) = atlas(texture)
     {
-        layer_poses.reset(part);
-        anim::setup(m, &s, &mut layer_poses, &data.animations);
+        let lp = layer_poses.get_or_insert_with(Poses::pooled);
+        lp.reset(part);
+        anim::setup(m, &s, lp, &data.animations);
         // `RenderTypes.energySwirl`'s texture offset, as the sprite-local UV.
         let (du, dv) = (x_offset % 1.0, s.age * 0.01 % 1.0);
         let start = out.len();
         draw(
             part,
             base,
-            &layer_poses,
+            lp,
             [du, dv, 1.0 + du, 1.0 + dv],
             crate::breaking::stage_light([u1 - u0, v1 - v0]),
             crate::breaking::stage_light([u0, v0]),
@@ -2517,6 +2613,9 @@ fn attachment_matrix(
     anchors: &[(String, String, [f32; 3])],
     key: &str,
 ) -> Option<glam::Mat4> {
+    if anchors.is_empty() {
+        return None;
+    }
     let p = poses.pose(part);
     let m = parent
         * glam::Mat4::from_translation(glam::Vec3::new(p[0], p[1], p[2]) / 16.0)

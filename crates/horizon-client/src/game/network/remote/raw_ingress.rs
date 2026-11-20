@@ -2,12 +2,13 @@
 use super::*;
 
 impl Remote {
-    pub(super) fn receive_credited_backlog(&mut self, events: &mut VecDeque<Received>) {
+    pub(super) fn receive_credited_backlog(&mut self, events: &mut VecDeque<(Received, Instant)>) {
         // Chunk packets start decoding now; the frame that reaches one in
         // order inserts its column.
+        let now = Instant::now();
         for receipt in self.session.poll() {
             let (event, credit) = receipt.into_parts();
-            events.push_back(match event {
+            let received = match event {
                 Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
                     match self.decoder.submit(self.chunk_format.clone(), p) {
                         None => Received::Chunk(self.chunk_format.clone(), credit),
@@ -15,7 +16,8 @@ impl Remote {
                     }
                 }
                 event => Received::Event(event, credit),
-            });
+            };
+            events.push_back((received, now));
         }
     }
 }
@@ -27,15 +29,12 @@ impl Game<'_> {
         };
         let mut events = std::mem::take(&mut r.backlog);
         r.receive_credited_backlog(&mut events);
-        let overdue = r
-            .backlog_since
-            .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
         let mut chunks = Duration::ZERO;
         // A run of ForgetLevelChunk (thousands when the server's view moves far: a
         // teleport at 32 chunks) is forgotten at once, before whatever follows it.
         let mut forgotten = horizon_client::fast_hash::FxHashSet::default();
         let mut forgotten_credits = Vec::new();
-        while let Some(item) = events.pop_front() {
+        while let Some((item, queued_at)) = events.pop_front() {
             if let Received::Event(Event::Packet(packet), _) = &item
                 && let C::ForgetLevelChunk(p) = &**packet
             {
@@ -49,8 +48,9 @@ impl Game<'_> {
             });
             forgotten_credits.clear();
             let chunk = matches!(item, Received::Chunk(_, _));
+            let overdue = queued_at.elapsed() >= BACKLOG_LIMIT;
             if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
-                events.push_front(item);
+                events.push_front((item, queued_at));
                 break;
             }
             let started = chunk.then(Instant::now);
@@ -65,7 +65,7 @@ impl Game<'_> {
                     let (packet, column) = match next {
                         Next::Ready(decoded) => decoded,
                         Next::Decoding => {
-                            events.push_front(Received::Chunk(format, credit));
+                            events.push_front((Received::Chunk(format, credit), queued_at));
                             break;
                         }
                         Next::Lost => {
@@ -248,7 +248,10 @@ impl Game<'_> {
                 }
                 Event::RawPayload(mut incoming) => {
                     if !self.receive_client_payload(&mut incoming)? {
-                        events.push_front(Received::Event(Event::RawPayload(incoming), _credit));
+                        events.push_front((
+                            Received::Event(Event::RawPayload(incoming), _credit),
+                            queued_at,
+                        ));
                         break;
                     }
                 }
@@ -270,11 +273,6 @@ impl Game<'_> {
             });
         }
         if let Some(r) = self.remote.as_mut() {
-            r.backlog_since = if events.is_empty() {
-                None
-            } else {
-                Some(r.backlog_since.unwrap_or_else(Instant::now))
-            };
             r.backlog = events;
         }
         self.send_suggestion_request();

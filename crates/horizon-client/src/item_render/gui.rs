@@ -196,13 +196,10 @@ pub fn draw(
     // take them instead of submitting, sorting and clipping its quads again.
     let key = DrawnKey::of(state, renderer, sprites, x, y);
     if let Some(key) = &key
-        && let Some(drawn) = renderer
-            .gui_drawn
-            .lock()
-            .ok()
-            .and_then(|d| d.get(key).cloned())
+        && let Ok(drawn) = renderer.gui_drawn.lock()
+        && let Some(drawn) = drawn.get(key)
     {
-        batch.vertices.extend_from_slice(&drawn);
+        batch.vertices.extend_from_slice(drawn);
         return;
     }
     let start = batch.vertices.len();
