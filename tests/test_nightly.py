@@ -512,9 +512,10 @@ class SdkPairTests(unittest.TestCase):
 
 
 def repository(folder: Path) -> tuple[Path, dict[str, str]]:
-    """An origin with main, a person's branch, refs/pull/1/head (a fork's pull request), a Nightly build branch and a
-    merge queue branch, each with a commit of its own; and a clone that has every one of those commits locally, as
-    a fork's commit is there for anyone who asks GitHub for its SHA."""
+    """An origin with main, a dry-run/* branch, ordinary branches (a person's fix, a fork snapshot under union/, a
+    Dependabot bump), refs/pull/1/head (a fork's pull request), a Nightly build branch and a merge queue branch,
+    each with a commit of its own; and a clone that has every one of those commits locally, as a fork's commit is
+    there for anyone who asks GitHub for its SHA."""
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
 
@@ -529,14 +530,16 @@ def repository(folder: Path) -> tuple[Path, dict[str, str]]:
     run("--git-dir", origin, "update-ref", "refs/heads/main", main)
     run("--git-dir", origin, "symbolic-ref", "HEAD", "refs/heads/main")
     shas = {"main": main}
-    for name, ref in [("branch", "refs/heads/fix/release-path"), ("pull", "refs/pull/1/head"),
+    for name, ref in [("branch", "refs/heads/dry-run/release-path"), ("fix", "refs/heads/fix/release-path"),
+                      ("union", "refs/heads/union/x"), ("dependabot", "refs/heads/dependabot/cargo/x"),
+                      ("pull", "refs/pull/1/head"),
                       ("nightly", "refs/heads/nightly/build-2026-11-20-1"),
                       ("queue", "refs/heads/gh-readonly-queue/main/pr-1-abc")]:
         shas[name] = run("--git-dir", origin, "commit-tree", tree, "-p", main, "-m", name)
         run("--git-dir", origin, "update-ref", ref, shas[name])
     clone = folder / "clone"
     run("clone", "-q", origin, str(clone))
-    run("fetch", "-q", "origin", "+refs/pull/1/head:refs/pull-1", cwd=clone)
+    run("fetch", "-q", "origin", "+refs/pull/1/head:refs/pull-1", "+refs/heads/*:refs/remotes/origin/*", cwd=clone)
     return clone, shas
 
 
@@ -555,7 +558,7 @@ class OffMainDryRunTests(unittest.TestCase):
                 mock.patch.object(nightly, "stop", side_effect=stop):
             return nightly.green_base("horizon-rust/horizon", "")
 
-    def test_only_a_dry_run_marked_off_main_builds_a_branch_of_the_repository(self):
+    def test_only_a_dry_run_marked_off_main_builds_a_dry_run_branch(self):
         with tempfile.TemporaryDirectory() as folder:
             clone, shas = repository(Path(folder))
             self.assertEqual(self.base(clone, shas["branch"], dry=True, off_main=True).sha, shas["branch"])
@@ -572,13 +575,16 @@ class OffMainDryRunTests(unittest.TestCase):
                 self.base(clone, shas["main"], dry=True, off_main=True)
             self.assertEqual(self.base(clone, shas["main"], dry=True, off_main=False).sha, shas["main"])
 
-    def test_a_forks_commit_is_refused_though_the_clone_has_it(self):
+    def test_a_commit_no_dry_run_branch_holds_is_refused_though_the_clone_has_it(self):
         with tempfile.TemporaryDirectory() as folder:
             clone, shas = repository(Path(folder))
-            # Each commit is in the clone (refs/pull/1/head was fetched), yet no branch people push holds it: the
-            # pull request's head, the Nightly's own build branch and the merge queue's.
-            for name in ("pull", "nightly", "queue"):
-                with self.subTest(name=name), self.assertRaisesRegex(SystemExit, "no branch of"):
+            # Each commit is in the clone (every branch and refs/pull/1/head were fetched), yet no dry-run/* branch
+            # holds it: ordinary branches, a fork snapshot, Dependabot's, a pull request's head, the Nightly's own
+            # build branch and the merge queue's. The refusal says what to do instead.
+            for name in ("fix", "union", "dependabot", "pull", "nightly", "queue"):
+                with self.subTest(name=name), self.assertRaisesRegex(
+                        SystemExit, r"no dry-run/\* branch .* Push the commit to dry-run/<name>, dispatch the workflow "
+                                    r"from main with base=<full sha> and off_main=true, and delete the branch"):
                     self.base(clone, shas[name], dry=True, off_main=True)
             for name in ("refs/pull-1", "f" * 40, "nonsense"):
                 with self.subTest(name=name), self.assertRaises(SystemExit):
@@ -598,6 +604,8 @@ class OffMainDryRunTests(unittest.TestCase):
         publishing = ("gh release", "nightly.py rotate", "keep-source", "nightly.py prune ", "git/refs")
         steps = 0
         for name, job in jobs.items():
+            if name == "dry-run-cleanup":
+                continue
             for s in job.get("steps", []):
                 if any(word in s.get("run", "") for word in publishing):
                     steps += 1
@@ -615,6 +623,19 @@ class OffMainDryRunTests(unittest.TestCase):
         keys = next(s for s in sdk["sign"]["steps"] if "RELEASE_SIGNING_KEY" in s.get("env", {}))["env"]
         for key in ("RELEASE_SIGNING_KEY", "RELEASE_SIGNING_KEY_NEXT"):
             self.assertIn("inputs.publish &&", keys[key])
+        # A dry run's own branch goes at the end, whatever happened before, by its exact name: never in a real run,
+        # never a pattern, never another run's.
+        cleanup = jobs["dry-run-cleanup"]
+        self.assertEqual(cleanup["if"], "always() && needs.pick.outputs.dry_run == 'true' && "
+                                        "needs.pick.outputs.pushed != ''")
+        self.assertEqual(set(cleanup["needs"]), set(jobs) - {"dry-run-cleanup"})
+        self.assertEqual(cleanup["permissions"], {"contents": "write"})
+        self.assertEqual(pick["outputs"]["pushed"], "${{ steps.pick.outputs.pushed }}")
+        (clean,) = cleanup["steps"]
+        self.assertEqual(clean["env"]["NAME"], "${{ needs.pick.outputs.pushed }}")
+        self.assertIn('[[ "$NAME" =~ ^nightly/dry-run-${GITHUB_RUN_ID}-[0-9]+$ ]] ||', clean["run"])
+        self.assertIn('gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$NAME"', clean["run"])
+        self.assertNotIn("*", clean["run"].replace("[0-9]+", ""))
         # The build legs, which run the commit's code, get no secrets at all.
         for name in ("build", "sdk"):
             self.assertNotIn("secrets", jobs[name])

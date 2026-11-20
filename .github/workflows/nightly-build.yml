@@ -32,8 +32,8 @@ run-name: nightly build${{ (github.event_name == 'workflow_dispatch' && (inputs.
 #   gh workflow run "nightly build"                     # now (skips when the pick is the same commit as last night's)
 #   gh workflow run "nightly build" -f force=true       # build and publish even if unchanged
 #   gh workflow run "nightly build" -f dry_run=true     # build and sign with a throwaway key, publish nothing
-#   gh workflow run "nightly build" -f dry_run=true -f off_main=true -f base=<sha>   # a commit off main (a fix's
-#                                                       # branch of this repository, never a fork's), as a dry run only
+#   gh workflow run "nightly build" -f dry_run=true -f off_main=true -f base=<full sha>   # a commit off main that a
+#                                                       # dry-run/* branch holds, as a dry run only (release-flow.md)
 # Since 2026-11-15 only by hand (release.yml, `/nightly`, or a dispatch): no scheduled build.
 on:
   workflow_dispatch:
@@ -63,7 +63,7 @@ on:
         type: string
         default: ''
       off_main:
-        description: The base is off main (a dry run only, a commit some branch of this repository holds)
+        description: The base is off main (a dry run only, a commit a dry-run/* branch holds)
         type: boolean
         default: false
       urgent:
@@ -98,6 +98,7 @@ jobs:
       nightly: ${{ steps.pick.outputs.nightly }}
       source_tag: ${{ steps.pick.outputs.source_tag }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
+      pushed: ${{ steps.pick.outputs.pushed }}  # a dry run's nightly/dry-run-<run>-<attempt>, set right after the push
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -421,3 +422,26 @@ jobs:
             text="the build failed, nothing was published: $RUN"
           fi
           gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -f body="🤖 Nightly: $text"
+
+  dry-run-cleanup:
+    # A dry run's own nightly/dry-run-<run id>-<attempt> branch goes when the run ends, failed or cancelled too: that
+    # exact name, which `pick` reports right after pushing it, and only if it carries this run's id. Never in a real
+    # run, and never a pattern.
+    needs: [pick, build, sdk, sdk-publish, sdk-index, sign, publish, answer]
+    if: always() && needs.pick.outputs.dry_run == 'true' && needs.pick.outputs.pushed != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.pick.outputs.pushed }}
+        run: |
+          [[ "$NAME" =~ ^nightly/dry-run-${GITHUB_RUN_ID}-[0-9]+$ ]] || { echo "::error::not this run's branch: $NAME"; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$NAME" --silent 2>/dev/null; then
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$NAME"
+            echo "deleted \`$NAME\`" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "\`$NAME\` is already gone"
+          fi
