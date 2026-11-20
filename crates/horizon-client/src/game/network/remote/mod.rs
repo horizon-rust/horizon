@@ -21,6 +21,8 @@ mod use_item;
 mod block_entity_data;
 #[cfg(test)]
 mod block_entity_data_tests;
+#[cfg(test)]
+mod deferred_login_tests;
 use super::raw_backlog::Received;
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::render_tick::{mob_tracking_body, player_tracking_body};
@@ -912,9 +914,6 @@ impl Game<'_> {
         lan: bool,
         realm: bool,
     ) -> Result<()> {
-        if let Some(remote) = self.remote.as_ref().filter(|remote| !remote.joined) {
-            remote.session.cancel_login();
-        }
         super::world_loading::preload_server_loot(
             &self.options.resources,
             &self.res.core.item_data,
@@ -929,6 +928,10 @@ impl Game<'_> {
             return Ok(());
         }
         self.join_world_rest()?;
+        // Deferred entry can be cancelled or fail. Only now can this login replace the old one.
+        if let Some(remote) = self.remote.as_ref().filter(|remote| !remote.joined) {
+            remote.session.cancel_login();
+        }
         self.client_logging_out();
         if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
             log::warn!("Horizon: could not join server: {error}");
