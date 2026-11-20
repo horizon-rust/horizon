@@ -56,6 +56,8 @@ impl MobRenderHooks {
 /// listeners (asked once a frame), and the entities a pre hook canceled.
 #[derive(Default)]
 struct EntityFrame {
+    #[allow(dead_code)]
+    listened: bool,
     hooks: MobRenderHooks,
     canceled: FxHashSet<u32>,
 }
@@ -75,6 +77,7 @@ pub(in crate::game) fn begin_entity_frame() {
         player_post: mod_api::__private::listened(HookId::RenderPlayerPost),
     };
     FRAME.with_borrow_mut(|frame| {
+        frame.listened = hooks.any();
         frame.hooks = hooks;
         frame.canceled.clear();
     });

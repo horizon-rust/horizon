@@ -723,7 +723,7 @@ impl Game<'_> {
                 unicode: false,
             },
         );
-        self.styled_name_tag_quads(
+        self.styled_name_tag_quads_batched(
             o,
             lines,
             text_alpha,
