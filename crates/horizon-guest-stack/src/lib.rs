@@ -49,9 +49,7 @@ pub fn run_main<R>(body: impl FnOnce() -> R) -> R {
     {
         // SAFETY: pthread_main_np only reads the calling thread's identity.
         if inspect_current().is_err() && unsafe { libc::pthread_main_np() } != 0 {
-            let switched = on_new_stack(REQUIRED + HOST_HEADROOM, |stack| {
-                SWITCHED_MAIN_STACK[0].store(stack.start, std::sync::atomic::Ordering::Relaxed);
-                SWITCHED_MAIN_STACK[1].store(stack.end, std::sync::atomic::Ordering::Relaxed);
+            let switched = on_new_stack(REQUIRED + HOST_HEADROOM, |_| {
                 // Judged on the new stack: refuses as before if even that is too small.
                 prepare_main();
                 body()
@@ -68,12 +66,11 @@ pub fn run_main<R>(body: impl FnOnce() -> R) -> R {
     body()
 }
 
-/// The stack `run_main` switched the main thread to, as [start, end), or zeros.
-#[cfg(all(target_vendor = "apple", target_arch = "x86_64"))]
-static SWITCHED_MAIN_STACK: [std::sync::atomic::AtomicUsize; 2] = [
-    std::sync::atomic::AtomicUsize::new(0),
-    std::sync::atomic::AtomicUsize::new(0),
-];
+thread_local! {
+    /// The stack `on_new_stack` switched this thread to, as (start, end), or (0, 0) on its own.
+    /// It scopes `check_current`'s cache and tells `inspect_current` the switched stack's bounds.
+    static ACTIVE_STACK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
 
 /// Runs `body` on this same thread on a new stack of `size` bytes above a guard, then returns its
 /// result here, or resumes its panic here. `body` gets the new stack's usable range.
@@ -118,9 +115,12 @@ fn on_new_stack<R>(
     {
         let mut once = || {
             let body = body.take().expect("the new stack runs its body once");
+            let outer = ACTIVE_STACK.replace((stack.start, stack.end));
             outcome = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                 || body(stack.clone()),
             )));
+            // Also after a panic: the caught one is resumed only on the outer stack.
+            ACTIVE_STACK.set(outer);
         };
         let mut run: &mut dyn FnMut() = &mut once;
         // SAFETY: top is the page-aligned end of the writable part of a mapping that outlives
@@ -247,12 +247,22 @@ fn prepare() -> std::io::Result<()> {
 }
 
 /// Refuse guest entry when the calling thread's stack reservation is too small.
-/// Cache the platform query once per thread; the hot path reads only thread-local state.
+/// Cache the platform query once per thread and stack (`run_main` may switch the main thread's);
+/// the hot path reads only thread-local state.
 pub fn check_current() -> Result<(), &'static str> {
+    type Checked = Option<((usize, usize), Result<(), &'static str>)>;
     thread_local! {
-        static CHECK: std::cell::OnceCell<Result<(), &'static str>> = const { std::cell::OnceCell::new() };
+        static CHECK: std::cell::Cell<Checked> = const { std::cell::Cell::new(None) };
     }
-    CHECK.with(|check| *check.get_or_init(inspect_current))
+    let stack = ACTIVE_STACK.get();
+    match CHECK.get() {
+        Some((checked_on, result)) if checked_on == stack => result,
+        _ => {
+            let result = inspect_current();
+            CHECK.set(Some((stack, result)));
+            result
+        }
+    }
 }
 
 const REQUIRED: usize = GUEST_STACK_BYTES + HOST_HEADROOM;
@@ -282,6 +292,26 @@ fn too_small(size: usize, measured_by: &str) -> Result<(), &'static str> {
 }
 
 fn inspect_current() -> Result<(), &'static str> {
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(target_vendor = "apple", all(test, target_os = "linux"))
+    ))]
+    {
+        // On a stack on_new_stack allocated, its bounds are known: no platform query describes it.
+        let (start, end) = ACTIVE_STACK.get();
+        let anchor = 0u8;
+        let anchor = std::hint::black_box(&raw const anchor).addr();
+        if (start..end).contains(&anchor) {
+            return if anchor - start >= REQUIRED {
+                Ok(())
+            } else {
+                too_small(
+                    anchor - start,
+                    "the stack run_main allocated, below this frame",
+                )
+            };
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         // SAFETY: gettid only reads this thread's id.
@@ -352,18 +382,7 @@ fn inspect_current() -> Result<(), &'static str> {
                 size / 1024,
                 soft_stack_limit()
             );
-            // On the stack run_main allocated, its bounds are known; anywhere else, measure.
-            #[cfg(target_arch = "x86_64")]
-            let switched = {
-                let start = SWITCHED_MAIN_STACK[0].load(std::sync::atomic::Ordering::Relaxed);
-                let end = SWITCHED_MAIN_STACK[1].load(std::sync::atomic::Ordering::Relaxed);
-                (start..end).contains(&anchor).then(|| anchor - start)
-            };
-            #[cfg(not(target_arch = "x86_64"))]
-            let switched = None;
-            let room: Result<usize, String> =
-                switched.map_or_else(|| mapped_stack(anchor, REQUIRED, vm_region), Ok);
-            match room {
+            match mapped_stack(anchor, REQUIRED, vm_region) {
                 Ok(mapped) if mapped >= REQUIRED => {}
                 Ok(mapped) => {
                     return refuse(format!(
@@ -943,6 +962,42 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(panicked.downcast_ref::<&str>(), Some(&"on the new stack"));
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(target_vendor = "apple", target_os = "linux")
+    ))]
+    #[test]
+    fn the_check_follows_the_thread_onto_the_new_stack_and_back() {
+        // A thread too small for a guest, as the main thread is under Rosetta 2.
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let guest_sized = super::REQUIRED + super::HOST_HEADROOM;
+                // Refused first, and that cached refusal doesn't stick on the new stack...
+                assert!(super::check_current().is_err());
+                let inside = super::on_new_stack(guest_sized, |_| super::check_current());
+                assert_eq!(inside.unwrap(), Ok(()));
+                // ...nor the approval there once the thread is back on its own.
+                assert!(super::check_current().is_err());
+                // Also when the body panicked after an approved check.
+                let panicked = std::panic::catch_unwind(|| {
+                    super::on_new_stack(guest_sized, |_| -> u8 {
+                        super::check_current().unwrap();
+                        panic!("after an approved check")
+                    })
+                });
+                assert!(panicked.is_err());
+                assert!(super::check_current().is_err());
+                // A new stack smaller than the guest needs is refused.
+                let small =
+                    super::on_new_stack(super::GUEST_STACK_BYTES, |_| super::check_current());
+                assert!(small.unwrap().is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
