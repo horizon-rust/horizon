@@ -164,16 +164,18 @@ gh workflow run parity-hosted.yml --ref <branch> -f base=<commit>               
     parity state. Sealing is tar, zstd, the dataset's own encryption (AES-256-CBC, PBKDF2), then HMAC-SHA256 with
     a second key derived from the passphrase, over the entry's kind, its full cache key and the ciphertext.
     Sealing takes folders and regular files only: symbolic links stay out (each run makes its own again: the
-    prepared resources' links to the data, the shim's `java` and `javac`). Unsealing checks the tag and that the key
-    has the prefix the run asked for, decrypts, then lists the archive. It refuses absolute or `..` names, a name
-    twice, any symbolic link, a hard link other than to a regular file listed before it by exact name (Cargo's
-    binaries), and special files, then extracts into a new empty folder with `--keep-old-files`, renamed into place
+    prepared resources' links to the data, the shim's `java` and `javac`), a folder given as one included.
+    Unsealing checks the tag and that the key has the prefix the run asked for, decrypts, then lists the archive. It
+    refuses absolute or `..` names, a name twice, any symbolic link, a hard link other than to a regular file
+    listed before it by exact name (Cargo's binaries), and special files, then extracts into a new empty folder with `--keep-old-files`, renamed into place
     only when whole. An entry that fails is discarded with a warning, and the run goes on cold. The build is sealed
     too because a build script could copy data into it, and so that the binaries the harnesses run are
     authenticated.
   - Incremental builds are on (`CARGO_INCREMENTAL=1`) and `tools/ci/source_mtimes.py` gives unchanged sources their
     old dates, so a change rebuilds only what it touches. A damaged date file, oracle record or hash database is a
-    miss, never a red job. An oracle record holds the length and SHA-256 of its output streams, which are written
+    miss, never a red job. A shim that meets a failing hash database hashes files itself and never removes it (another
+    may have it open); `tools/parity.py` removes a damaged one, found by `PRAGMA quick_check`, before any shim
+    starts. An oracle record holds the length and SHA-256 of its output streams, which are written
     before it under temporary names: a stream cut short or of another write is a miss, never replayed. The oracle
     shim's runtime memo (`.local/parity-runner/runtime-memo`, guarded by one machine's file stat data) is never
     sealed or restored.

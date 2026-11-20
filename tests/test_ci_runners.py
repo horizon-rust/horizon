@@ -491,19 +491,23 @@ class HostedParityTests(unittest.TestCase):
         uploads = [step["with"]["path"] for step in self.steps if "upload-artifact" in step.get("uses", "")]
         self.assertEqual(uploads, ["${{ runner.temp }}/parity-hosted-logs/"])
 
-    def test_a_damaged_hash_database_is_made_again(self):
-        # An entry cut short or damaged is a cold start for that part, never a red job.
+    def test_a_damaged_hash_database_is_left_to_parity_py(self):
+        # An entry cut short or damaged is a cold start for that part, never a red job. The step only creates a
+        # missing database; tools/parity.py removes a damaged one before the first shim starts.
         step = self.step("The oracle cache, created before the harnesses start")
         program = re.search(r"<<'EOF'\n(.*)\nEOF", step["run"], re.S).group(1)
         with tempfile.TemporaryDirectory() as folder:
             cache = Path(folder) / "oracle-cache"
-            cache.mkdir()
-            (cache / "hashes.sqlite").write_bytes(b"not a database" * 100)
-            result = subprocess.run([sys.executable, "-c", program], cwd=ROOT, capture_output=True, text=True,
-                                    env={**os.environ, "PARITY_SHIM_CACHE": str(cache)})
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("::warning::the oracle shim's hash database is damaged", result.stdout)
-            self.assertTrue((cache / "hashes.sqlite").read_bytes().startswith(b"SQLite format 3"))
+            for damaged in (False, True):
+                if damaged:
+                    for path in cache.iterdir():
+                        path.unlink()
+                    (cache / "hashes.sqlite").write_bytes(b"not a database" * 100)
+                result = subprocess.run([sys.executable, "-c", program], cwd=ROOT, capture_output=True, text=True,
+                                        env={**os.environ, "PARITY_SHIM_CACHE": str(cache)})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                header = (cache / "hashes.sqlite").read_bytes()[:15]
+                self.assertTrue(header.startswith(b"not a database" if damaged else b"SQLite format 3"), header)
 
     def test_no_required_check_waits_for_it(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):

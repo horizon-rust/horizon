@@ -517,8 +517,8 @@ jobs:
         run: bash tools/ci/vanilla-data.sh
       # The oracles' shims (tools/parity_shim.py) share one hash database. On a cold cache the first ones all create
       # it and switch it to WAL at once, and a shim can fail there ("database is locked"), failing its harness's first
-      # run. Created here first, alone. A damaged one (an entry cut short) is only a cache of file hashes: made again,
-      # as the shims also do with one that fails later.
+      # run. Created here first, alone. A damaged one (an entry cut short) is left here: tools/parity.py removes it before
+      # the first shim starts (check_oracle_hashes), and a shim that meets one hashes files itself.
       - name: The oracle cache, created before the harnesses start
         env:
           PARITY_SHIM_CACHE: ${{ github.workspace }}/.local/parity-runner/oracle-cache
@@ -527,10 +527,7 @@ jobs:
           import sys
           sys.path.insert(0, "tools")
           import parity_shim
-          hashes = parity_shim.Hashes()  # a damaged one is made again (Hashes), never an error
-          if hashes.remade:
-              print("::warning::the oracle shim's hash database is damaged: made again")
-          hashes.close()
+          parity_shim.Hashes().close()  # never an error, a damaged database included
           EOF
       - name: The shard's harnesses
         id: harnesses

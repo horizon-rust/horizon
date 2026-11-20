@@ -125,10 +125,18 @@ listed() { (cd "$work" && /usr/bin/python3 -I -c "$listing" "${workspace#/}" "${
 case "$mode" in
   seal)
     members=()
+    skipped=0
     for folder in "$@"; do
+      # A folder given as a symbolic link would be archived under the name it leads to, and restored without the
+      # name given: refused before it is resolved, and counted with the links left out.
+      if [ -L "${folder%/}" ]; then
+        echo "::warning::a $label folder to seal is a symbolic link: left out"
+        skipped=$((skipped + 1))
+        continue
+      fi
       folder=$(realpath -m "$folder")
       allowed "$folder" || { echo "::error::a sealed folder must be under the checkout or RUNNER_TEMP"; exit 2; }
-      [ -d "$folder" ] && [ ! -L "$folder" ] && members+=("${folder#/}")
+      [ -d "$folder" ] && members+=("${folder#/}")
     done
     [ "${#members[@]}" -gt 0 ] || { echo "nothing to seal"; exit 0; }
     mkdir -p "$(dirname "$archive")"
@@ -138,7 +146,7 @@ case "$mode" in
     for path in "${excluded[@]}"; do pruned+=(-path "${path#/}" -o); done
     walk() { (cd / && find "${members[@]}" \( "${pruned[@]}" -false \) -prune -o "$@"); }
     walk \( -type d -o -type f \) -print0 > "$work/members"
-    left=$(walk ! -type d ! -type f -print | wc -l)
+    left=$(( $(walk ! -type d ! -type f -print | wc -l) + skipped ))
     tar -C / --format=posix --pax-option=delete=atime,delete=ctime --null --no-recursion -T "$work/members" -cf - |
       zstd -q -T0 -3 |
       openssl enc -e "${cipher[@]}" > "$work/archive"

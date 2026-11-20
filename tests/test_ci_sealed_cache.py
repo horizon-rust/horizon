@@ -237,6 +237,24 @@ class SealedCacheTests(unittest.TestCase):
         self.assertEqual((copy / "linked.txt").stat().st_ino, (copy / "oracle-cache/out.txt").stat().st_ino)
         self.assertEqual((copy / "linked.txt").read_bytes(), b"oracle output\n")
 
+    def test_a_folder_given_as_a_symbolic_link_is_left_out_not_followed(self):
+        # Followed, it would be sealed under the name it leads to, and the name given would be missing on restore.
+        real = self.workspace / "real"
+        real.mkdir()
+        (real / "inside.txt").write_bytes(b"x")
+        linked = self.workspace / ".local/linked"
+        linked.symlink_to(real, target_is_directory=True)
+        for given in (linked, f"{linked}/"):
+            with self.subTest(given=str(given)):
+                result = self.run_script("seal", "oracle", KEY, self.archive, given, self.folder)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("::warning::a oracle folder to seal is a symbolic link: left out", result.stdout)
+                self.assertIn("left out 1 links and special files", result.stdout)
+                stage, _ = self.unseal()
+                self.assertTrue((stage / str(self.file).lstrip("/")).exists())
+                self.assertFalse((stage / str(real).lstrip("/")).exists())
+                self.assertFalse((stage / str(linked).lstrip("/")).exists())
+
     def test_an_unpacking_that_fails_leaves_no_stage_even_with_read_only_folders(self):
         # A file under a file fails tar halfway, after a folder without write access was made: nothing reaches the
         # stage, and the private folder goes too.

@@ -128,24 +128,18 @@ def busy(error):
     return isinstance(error, sqlite3.OperationalError) and any(word in str(error) for word in ("locked", "busy"))
 
 
-def prepare(path, deadline, damaged=None):
+def prepare(path, deadline):
     """Make the hash database ready, in place: created if missing, switched to WAL, its table made; each step does
     nothing if already done. Shims starting together on an empty cache each switched it to WAL, and those that lost
     failed ("database is locked": 63 of 960 on Linux, 2026-11-20), failing their harness's first run. Now one does it
     under hashes.lock while the others wait for the lock. A shim from before this lock ignores it: meeting one
-    mid-way, this retries until the deadline. The file is replaced only when damaged: `damaged` is the inode number
-    of the file a shim found damaged, removed first if the file there still has it. Mostly that keeps a second shim
-    from removing one another shim just made again; a reused inode number only costs another remake. A process that
-    has the old file open keeps using it, unlinked."""
+    mid-way, this retries until the deadline. The file is never replaced, as another process may have it open."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_name("hashes.lock"), "a+b") as handle:
         while not file_lock.lock(handle, wait=False):
             if time.monotonic() >= deadline:
                 raise Uncached("another process held hashes.lock throughout")
             time.sleep(0.02)
-        if damaged is not None and inode(path) == damaged:
-            for name in (path.name, f"{path.name}-wal", f"{path.name}-shm"):
-                path.with_name(name).unlink(missing_ok=True)
         def in_time():
             if time.monotonic() >= deadline:
                 raise Uncached("the database stayed locked")
@@ -169,33 +163,24 @@ def prepare(path, deadline, damaged=None):
             time.sleep(0.02)
 
 
-def inode(path):
-    """The file's inode number, or None when there is none to read (another shim may be making it again)."""
-    try:
-        return os.stat(path).st_ino
-    except OSError:
-        return None
-
-
 class Hashes:
     """Content hashes keyed by path, size and mtime, shared by parallel harnesses. Only a memo: when the database
     fails in any way, at open or at any later lookup or store (a cache entry restored in part, a damaged page met
-    mid-run), that lookup is a miss, the file is hashed itself, and the database is made again, once; should the new
-    one fail too, this process hashes every file itself. It never fails the call. A database only busy past its
-    timeout is not damaged: that lookup is a miss and the database stays."""
+    mid-run), this process hashes every file itself from then on: a miss, never a failure. A shim never removes or
+    makes the database again, since another may still have it open (removing a database and its WAL files under an
+    open connection is one of the ways SQLite documents to corrupt it); tools/parity.py removes a damaged one before
+    any shim runs (check_oracle_hashes)."""
 
     def __init__(self):
         self.path = CACHE / "hashes.sqlite"
-        self.db, self.inode, self.remade = None, None, False
+        self.db = None
         # The clock starts before the warm probe, which keeps the usual busy timeout (no less patient than before
         # the lock): time it spent waiting counts against the setup that may follow.
         deadline = time.monotonic() + INIT_SECONDS
-        seen = inode(self.path)
         try:
             self.open(deadline)
         except sqlite3.Error:
             self.close()
-            self.remake(seen, deadline)
 
     def open(self, deadline):
         # A warm cache: the header and one schema query, no lock.
@@ -203,7 +188,6 @@ class Hashes:
             self.db = sqlite3.connect(self.path, timeout=60)
             try:
                 if self.db.execute(TABLE).fetchone():
-                    self.inode = inode(self.path)
                     return
             except sqlite3.OperationalError as error:
                 if not busy(error):
@@ -211,7 +195,6 @@ class Hashes:
             self.close()
         prepare(self.path, deadline)
         self.db = sqlite3.connect(self.path, timeout=60)
-        self.inode = inode(self.path)
 
     def close(self):
         if self.db is not None:
@@ -221,24 +204,6 @@ class Hashes:
                 pass
         self.db = None
 
-    def remake(self, damaged, deadline):
-        self.remade = True
-        try:
-            prepare(self.path, deadline, damaged)
-            self.db = sqlite3.connect(self.path, timeout=60)
-            self.db.execute(TABLE).fetchone()
-            self.inode = inode(self.path)
-        except (sqlite3.Error, OSError, Uncached):
-            self.close()
-
-    def failed(self, error):
-        if busy(error):
-            return
-        damaged = self.inode
-        self.close()
-        if not self.remade:
-            self.remake(damaged, time.monotonic() + INIT_SECONDS)
-
     def file(self, path):
         stat = os.stat(path)
         if self.db is not None:
@@ -246,8 +211,8 @@ class Hashes:
                 row = self.db.execute("select size, mtime, sha from hashes where path = ?", (path,)).fetchone()
                 if row and row[0] == stat.st_size and row[1] == stat.st_mtime_ns:
                     return row[2]
-            except sqlite3.Error as error:
-                self.failed(error)
+            except sqlite3.Error:
+                self.close()
         with open(path, "rb") as stream:
             sha = hashlib.file_digest(stream, "sha256").hexdigest()
         if self.db is not None:
@@ -255,8 +220,8 @@ class Hashes:
                 self.db.execute("insert or replace into hashes values (?, ?, ?, ?)",
                                 (path, stat.st_size, stat.st_mtime_ns, sha))
                 self.db.commit()
-            except sqlite3.Error as error:
-                self.failed(error)
+            except sqlite3.Error:
+                self.close()
         return sha
 
 

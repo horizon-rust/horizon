@@ -987,7 +987,9 @@ class OracleReuseTests(unittest.TestCase):
                 self.assertEqual(sorted(path.name for path in Path(temp).iterdir() if path.suffix == ".tmp"), [])
                 self.assertEqual(state(key, record), expected)
 
-    def test_a_hash_database_that_fails_at_any_point_is_a_miss_and_made_again(self):
+    def test_a_hash_database_that_fails_is_left_alone_and_files_are_hashed_directly(self):
+        # Another shim may still have it open: a shim never removes or remakes it, and from its first failure on
+        # hashes every file itself, a miss and never a failure.
         import sqlite3
         from tools import parity_shim
         expected = hashlib.sha256(Path(parity_shim.__file__).read_bytes()).hexdigest()
@@ -1003,78 +1005,87 @@ class OracleReuseTests(unittest.TestCase):
             def close(self):
                 pass
 
+        class FailingStore(Failing):
+            def execute(self, statement, *args):
+                if statement.startswith("select"):
+                    return sqlite3.connect(":memory:").execute("select 1 where 0")
+                return super().execute(statement, *args)
+
+        class Busy(Failing):
+            def execute(self, *args):
+                raise sqlite3.OperationalError("database is locked")
+
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity_shim, "CACHE", Path(temp) / "cache"):
             path = parity_shim.CACHE / "hashes.sqlite"
             hashes = parity_shim.Hashes()
             hashes.db.execute("insert into hashes values ('marker', 0, 0, 'x')")
             hashes.db.commit()
-            # A lookup that fails mid-run: the file is hashed itself and the database is made again (the marker is
-            # gone), and the next lookup uses the new one.
-            hashes.db.close()
-            hashes.db = Failing()
-            self.assertEqual(hashes.file(parity_shim.__file__), expected)
-            self.assertIsNotNone(hashes.db)
-            self.assertIsNone(hashes.db.execute("select 1 from hashes where path = 'marker'").fetchone())
-            self.assertEqual(hashes.file(parity_shim.__file__), expected)
-            # Failing again after being made again: this process hashes every file itself, still never failing.
-            hashes.db.close()
-            hashes.db = Failing()
-            self.assertEqual(hashes.file(parity_shim.__file__), expected)
-            self.assertIsNone(hashes.db)
-            self.assertEqual(hashes.file(parity_shim.__file__), expected)
-            # A store that fails (the lookup passed) is the same.
-            hashes = parity_shim.Hashes()
-
-            class FailingStore(Failing):
-                def execute(self, statement, *args):
-                    if statement.startswith("select"):
-                        return sqlite3.connect(":memory:").execute("select 1 where 0")
-                    return super().execute(statement, *args)
-
-            hashes.db.close()
-            hashes.db = FailingStore()
-            self.assertEqual(hashes.file(parity_shim.__file__), expected)
-            self.assertFalse(isinstance(hashes.db, FailingStore))
             hashes.close()
-            # A file that is no database at all, as a restore cut short leaves it: opened, found damaged, made again.
+            for failing in (Failing, FailingStore, Busy):
+                with self.subTest(failing.__name__):
+                    hashes = parity_shim.Hashes()
+                    hashes.db.close()
+                    hashes.db = failing()
+                    self.assertEqual(hashes.file(parity_shim.__file__), expected)
+                    self.assertIsNone(hashes.db)
+                    self.assertEqual(hashes.file(parity_shim.__file__), expected)
+                    # The database is as it was: nothing removed or made again.
+                    db = sqlite3.connect(path)
+                    self.assertEqual(db.execute("select sha from hashes where path = 'marker'").fetchone(), ("x",))
+                    db.close()
+            # A file that is no database at all, as a restore cut short leaves it: left as it is.
             for name in ("hashes.sqlite-wal", "hashes.sqlite-shm"):
                 (parity_shim.CACHE / name).unlink(missing_ok=True)
-            path.write_bytes(b"not a database" * 512)
+            garbage = b"not a database" * 512
+            path.write_bytes(garbage)
             hashes = parity_shim.Hashes()
+            self.assertIsNone(hashes.db)
             self.assertEqual(hashes.file(parity_shim.__file__), expected)
+            self.assertEqual(path.read_bytes(), garbage)
+
+    def test_a_damaged_hash_database_is_removed_before_the_shims_start(self):
+        import sqlite3
+        from tools import parity_shim
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity_shim, "CACHE", Path(temp) / "cache"):
+            cache = parity_shim.CACHE
+            path = cache / "hashes.sqlite"
+            parity.check_oracle_hashes(cache)  # none yet: nothing to do
+            self.assertFalse(path.exists())
+            hashes = parity_shim.Hashes()
+            hashes.db.execute("insert into hashes values ('marker', 0, 0, 'x')")
+            hashes.db.commit()
+            hashes.close()
+            # A sound one is kept.
+            parity.check_oracle_hashes(cache)
+            db = sqlite3.connect(path)
+            self.assertEqual(db.execute("select sha from hashes where path = 'marker'").fetchone(), ("x",))
+            # One locked by another process, or not checked in time, is left as it is.
+            db.execute("begin exclusive")
+            parity.check_oracle_hashes(cache)
+            db.execute("rollback")
+            db.close()
+            parity.check_oracle_hashes(cache, seconds=-1)
+            self.assertTrue(path.exists())
+            # One that is no database: removed with its WAL files, and the first shim makes it again.
+            path.write_bytes(b"not a database" * 512)
+            (cache / "hashes.sqlite-wal").write_bytes(b"x")
+            (cache / "hashes.sqlite-shm").write_bytes(b"x")
+            parity.check_oracle_hashes(cache)
+            self.assertEqual(sorted(p.name for p in cache.iterdir() if p.name.startswith("hashes.sqlite")), [])
+            hashes = parity_shim.Hashes()
             self.assertTrue(parity_shim.in_wal_mode(path))
             hashes.close()
-            # Only busy: a miss for that lookup, and the database stays.
-            hashes = parity_shim.Hashes()
-            inode = path.stat().st_ino
-
-            class Busy(Failing):
-                def execute(self, *args):
-                    raise sqlite3.OperationalError("database is locked")
-
-            hashes.db.close()
-            hashes.db = busy = Busy()
-            self.assertEqual(hashes.file(parity_shim.__file__), expected)
-            self.assertIs(hashes.db, busy)
-            self.assertEqual(path.stat().st_ino, inode)
-
-    def test_a_hash_database_made_again_by_another_shim_meanwhile_is_no_error(self):
-        # Another shim's remake can unlink the file between this one's connect and its look at the inode.
-        from tools import parity_shim
-        stat = os.stat
-
-        def vanishing(path, *args, **kwargs):
-            if str(path).endswith("hashes.sqlite"):
-                raise FileNotFoundError(path)
-            return stat(path, *args, **kwargs)
-
-        expected = hashlib.sha256(Path(parity_shim.__file__).read_bytes()).hexdigest()
-        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity_shim, "CACHE", Path(temp) / "cache"):
-            with mock.patch.object(parity_shim.os, "stat", side_effect=vanishing):
-                hashes = parity_shim.Hashes()
-            self.assertIsNone(hashes.inode)
-            self.assertEqual(hashes.file(parity_shim.__file__), expected)
-            hashes.close()
+            # One with a damaged page: a page of the table overwritten.
+            db = sqlite3.connect(path)
+            db.execute("pragma journal_mode=delete")
+            db.executemany("insert into hashes values (?, 0, 0, 'x')", ((f"p{i:06d}",) for i in range(5000)))
+            db.commit()
+            db.close()
+            data = bytearray(path.read_bytes())
+            data[4096 * 3:4096 * 3 + 512] = b"\xff" * 512
+            path.write_bytes(bytes(data))
+            parity.check_oracle_hashes(cache)
+            self.assertFalse(path.exists())
 
     def test_a_damaged_hash_database_never_fails_the_call(self):
         cache = Path(self.env["PARITY_SHIM_CACHE"])
@@ -1083,6 +1094,8 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(self.oracle(), 1)
         self.assertEqual(self.oracle(), 1)
         self.assertEqual(self.reasons(), ["no-record", "hit"])
+        # The shims left it as it was: tools/parity.py removes it before the next run's shims start.
+        self.assertEqual((cache / "hashes.sqlite").read_bytes(), b"\x00garbage" * 1024)
 
     def test_an_environment_miss_names_every_variable_that_differs(self):
         # Against the last run of the same command line: one changed, one added, one gone, and an ignored one that
