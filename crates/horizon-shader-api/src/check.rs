@@ -15,7 +15,7 @@ use crate::manifest::{OptionKind, PackOption};
 use crate::package::Pack;
 use crate::stages::{
     Composed, GROUP, KEPT_BINDING, RAY_ENTITY_RETAINED_BINDING, RAY_ENTITY_STORE_BINDING,
-    RAY_LIGHTS_BINDING, RAY_LOOKS_BINDING, RAY_SCENE_BINDING, STEP_NAMES, StageKind,
+    RAY_LIGHTS_BINDING, RAY_LOOKS_BINDING, RAY_SCENE_BINDING, STEP_NAMES, StageKind, TRACE_NAMES,
     compose_traced, identifiers, lights_on, step_on,
 };
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
@@ -1255,15 +1255,6 @@ fn find_statement(
 /// The pack's step as `trace_step` calls it.
 const STEP_SIGNATURE: &str = "fn ray_step(c: RayCandidate, state: ptr<function, RayState>) -> u32";
 
-/// The functions that trace a ray: a step runs inside one ray query and starts no other.
-const TRACING: [&str; 5] = [
-    "trace_step",
-    "trace",
-    "trace_any",
-    "trace_layers",
-    "trace_any_layers",
-];
-
 /// In a stage that has `trace_step` (its prelude defines it), the pack's `ray_step` takes the
 /// prelude's `RayCandidate` and a pointer to the pack's `RayState`, the type `trace_step` takes,
 /// returns a `u32` of `RAY_` actions, and reaches no trace function.
@@ -1297,7 +1288,9 @@ fn step_rules(module: &naga::Module, own: &Composed) -> Vec<Problem> {
         );
         return vec![located(own, at, message)];
     }
-    match reached_call(module, &step.body, &TRACING) {
+    // A step runs inside one ray query and starts no other.
+    let tracing: Vec<&str> = TRACE_NAMES.iter().copied().chain(["trace_step"]).collect();
+    match reached_call(module, &step.body, &tracing) {
         Some(name) => vec![located(
             own,
             at,

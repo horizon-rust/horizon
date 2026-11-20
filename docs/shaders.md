@@ -438,7 +438,7 @@ them is built as without it. First build with the key: Nightly `TBD`.
 | | |
 | --- | --- |
 | The pack's | `struct RayState { ... }`, any type (an `alias` too; a spectral pack's array of bands), and `fn ray_step(c: RayCandidate, state: ptr<function, RayState>) -> u32` |
-| What `ray_step` returns | `RAY_PASS`: go on past the surface. `RAY_STOP`: keep it as the nearest hit so far, which ends the ray at it. `RAY_END`: end the query now. `RAY_STOP \| RAY_END`: both |
+| What `ray_step` returns | `RAY_PASS`: go on past the surface. `RAY_STOP`: keep it as the nearest hit so far, which ends the ray at it. `RAY_END`: end the query now, the hit being the nearest kept by then. `RAY_STOP \| RAY_END`: keep this one, then end |
 | `RayCandidate` | `distance` along the ray, `layer` (`RAY_SOLID`, `RAY_TRANSLUCENT` or `RAY_ENTITY`); its other fields are Horizon's |
 | Read where called | `candidate_stops(c)`, whether `trace_layers` stops there; `candidate_albedo(c)`, `candidate_tint(c)`, `candidate_material(c)`, `candidate_tags(c)`, `candidate_fluid(c)`, each the `RayHit` field of its name at the candidate. A step pays for those it calls |
 | The result | The nearest surface a step kept, as `trace_layers` gives a hit; `distance` negative where it kept none |

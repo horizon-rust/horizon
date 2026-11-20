@@ -244,9 +244,9 @@ fn ray_tracing() -> String {
          direction: vec3<f32>, max_distance: f32, layers: u32, state: ptr<function, RayState>) -> RayHit` makes one ray\n  \
          query over `layers`, as `trace_layers` does, and calls `ray_step` with `state` for every surface the ray crosses,\n  \
          clear texels and all. The step returns what to do with it, bits to OR together: `RAY_PASS` (0) goes on past it,\n  \
-         `RAY_STOP` (1) keeps it as the nearest hit so far, which shortens the ray to it, `RAY_END` (2) ends the query now.\n  \
-         The result is the nearest candidate a step kept, as `trace_layers` gives a hit; `distance` is negative where it\n  \
-         kept none. `struct RayCandidate`: `distance: f32`, along the ray in blocks, and `layer: u32`, `RAY_SOLID`,\n  \
+         `RAY_STOP` (1) keeps it as the nearest hit so far, which shortens the ray to it, `RAY_END` (2) ends the query now,\n  \
+         the hit being the nearest kept by then. The result is that nearest candidate, as `trace_layers` gives a hit;\n  \
+         `distance` is negative where a step kept none. `struct RayCandidate`: `distance: f32`, along the ray in blocks, and `layer: u32`, `RAY_SOLID`,\n  \
          `RAY_TRANSLUCENT` or `RAY_ENTITY`; its other fields are Horizon's. Functions read the rest, paid for only where\n  \
          called, each the `RayHit` field of its name as if the candidate were the hit: `fn candidate_albedo(c:\n  \
          RayCandidate) -> vec4<f32>`, `candidate_tint` (a `vec4<f32>`; calling it binds the scene's looks, as reading\n  \

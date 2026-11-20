@@ -1089,7 +1089,8 @@ fn ray_light_at(i: u32) -> u32 {
 const RAY_STEP: &str = "\
 // What the pack's `ray_step` tells `trace_step` to do with a candidate, bits to OR together: go
 // on past it (`RAY_PASS`), keep it as the nearest hit so far, which shortens the ray to it
-// (`RAY_STOP`), end the query now, with the nearest hit kept so far (`RAY_END`).
+// (`RAY_STOP`), end the query now (`RAY_END`): the hit is then the nearest kept by now, this
+// candidate too where the same answer has `RAY_STOP`.
 const RAY_PASS: u32 = 0u;
 const RAY_STOP: u32 = 1u;
 const RAY_END: u32 = 2u;
@@ -2164,7 +2165,8 @@ pub(crate) fn identifiers(text: &str) -> Vec<(usize, &str)> {
 }
 
 /// The functions that trace a ray.
-const TRACE_NAMES: [&str; 4] = ["trace", "trace_any", "trace_layers", "trace_any_layers"];
+pub(crate) const TRACE_NAMES: [&str; 4] =
+    ["trace", "trace_any", "trace_layers", "trace_any_layers"];
 
 /// Whether the files of `pack`, a pack with `[ray_tracing]`, name `RAY_ENTITY` anywhere outside
 /// a comment, dead code included: only then do its traced stages have the entity layer, and does
