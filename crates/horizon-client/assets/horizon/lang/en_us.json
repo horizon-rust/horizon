@@ -1089,6 +1089,8 @@
   "horizon.pvp.combat_sounds.tooltip": "Under Legacy, leaves out the attack sounds 1.9 added (strong, weak, sweep, critical...). Hurt sounds stay.",
   "horizon.pvp.combat_rules": "1.8 combat in worlds you host",
   "horizon.pvp.combat_rules.tooltip": "Single player and the worlds you open to LAN fight by 1.8.9's rules: no attack cooldown or sweep, 1.8 weapon damage, Strength, Sharpness and critical hits. Servers you join keep their own rules.",
+  "horizon.pvp.combat_slow_on_hit": "1.8 sprint-hit slowdown",
+  "horizon.pvp.combat_slow_on_hit.tooltip": "On a server running 1.8 combat rules, a sprint hit that lands cuts your speed and stops your sprint in the hit tick. Off by default; only turn it on if sprint hits get you set back.",
   "Bindings": "Bindings",
   "Play": "Play",
   "Device": "Device",

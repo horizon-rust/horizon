@@ -165,6 +165,11 @@ Legacy also leaves out what 1.9 added around a hit: the sweep arc and the damage
 with **1.8 hit sounds** (`combatSounds`) the `entity.player.attack.*` sounds (strong, weak, crit, sweep,
 knockback, no damage); hurt sounds and crit particles stay. `pvp::Combat`.
 
+**Sprint-hit slowdown** (`combatSlowOnHit`, default off) is a client-only compatibility option for servers
+running 1.8 combat rules through a protocol bridge: a sprint hit that lands cuts this client's horizontal
+speed and holds its sprint off for that tick's move, as 1.8.9 did. It sends no new packet, and is off by
+default so a fresh install plays exactly as before.
+
 ## 1.8 combat in worlds you host (`combatRules`, default off)
 
 The other options only change the look; this one changes the rules, so it applies only where Horizon is the

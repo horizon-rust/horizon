@@ -222,6 +222,11 @@ impl Game<'_> {
     pub(in crate::game) fn set_pvp_legacy_rules(&mut self, on: bool) {
         self.settings.extras.pvp.combat.rules = on;
     }
+    /// Whether a landed sprint hit cuts this client's speed and stops its sprint
+    /// in the hit tick, for servers running 1.8 combat rules. Client-only.
+    pub(in crate::game) fn pvp_slow_on_hit(&self) -> bool {
+        self.settings.extras.pvp.combat.slow_on_hit
+    }
     /// A sound Combat feel Legacy keeps quiet.
     pub(in crate::game) fn pvp_mutes_sound(&self, name: &str) -> bool {
         self.settings.extras.pvp.combat.mutes_sound(name)

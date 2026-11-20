@@ -111,6 +111,16 @@ pub fn attacker_slows_after_hit(
     base > 0.0 && knockback > 0.0
 }
 
+/// Whether an opt-in client compatibility setting cuts the attacker's speed
+/// on this hit. Servers that run 1.8 combat rules behind a protocol bridge
+/// apply 1.8.9's attacker cut on every sprint hit that lands, with no attack
+/// strength condition; the client's own cut above is charge-gated. This only
+/// decides whether to cut this client's own speed in the hit tick, and sends
+/// nothing new to the server.
+pub fn legacy_pvp_hit_cuts_speed(enabled: bool, damage: f32, sprinting: bool) -> bool {
+    enabled && sprinting && damage > 0.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +186,16 @@ mod tests {
             !attacker_slows_after_hit(CLIENT_DAMAGE, 0.0, 0.9, true),
             "the bonus needs more than 0.9"
         );
+    }
+    #[test]
+    fn legacy_cut_is_opt_in_and_only_for_a_damaging_sprint_hit() {
+        assert!(!legacy_pvp_hit_cuts_speed(false, CLIENT_DAMAGE, true), "off by default");
+        assert!(legacy_pvp_hit_cuts_speed(true, CLIENT_DAMAGE, true));
+        assert!(!legacy_pvp_hit_cuts_speed(true, 0.0, true));
+        assert!(!legacy_pvp_hit_cuts_speed(true, CLIENT_DAMAGE, false));
+        // The vanilla decision stays charge-gated and independent of the option.
+        assert!(!attacker_slows_after_hit(CLIENT_DAMAGE, 0.0, 0.5, true));
+        assert!(attacker_slows_after_hit(CLIENT_DAMAGE, 0.0, 1.0, true));
     }
     #[test]
     fn a_hit_without_sprinting_or_knockback_does_not() {

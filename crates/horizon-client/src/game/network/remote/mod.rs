@@ -478,6 +478,10 @@ pub(super) struct Remote {
     pub(super) professions: Arc<horizon_client::mobs::villager::ResolvedProfessions>,
     pub session: Session,
     pub brand: String,
+    /// A landed sprint hit with the opt-in 1.8 compatibility cut stops this
+    /// tick's sprint restart, so the walk speed and STOP_SPRINTING reach the
+    /// server with the hit tick's move. Cleared at the next input tick.
+    pub(super) suppress_sprint_tick: bool,
     pub(super) recipe_viewer: crate::game::recipe_book::ViewerChannels,
     /// This connection's configured feature flags, carried through reconfiguration.
     pub(super) features: std::sync::Arc<[String]>,
@@ -1169,6 +1173,7 @@ impl Game<'_> {
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
+            suppress_sprint_tick: false,
             carried: std::cell::Cell::new(None),
             was_shared_flags: 0,
             was_living_flags: 0,
@@ -1411,6 +1416,7 @@ impl Game<'_> {
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
+            suppress_sprint_tick: false,
             was_shared_flags: 0,
             was_living_flags: 0,
             last_recorded_pose: None,
@@ -6323,7 +6329,10 @@ impl Game<'_> {
             jump: held(Action::Jump),
             shift: held(Action::Sneak),
             sprint: held(Action::Sprint),
-            sprint_suppressed: false,
+            sprint_suppressed: self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.suppress_sprint_tick),
             analog: None,
         }
         .with_stick(stick.filter(|_| playing));
@@ -8708,6 +8717,8 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
+        // A hit this tick may set this again through `remote_player_attack`.
+        r.suppress_sprint_tick = false;
         let mut input = r.input.take_queued();
         let stop = std::mem::take(&mut r.stop_mining);
         // Minecraft.tick runs handleKeybinds only while `gui.screen() == null`: a
@@ -8804,7 +8815,9 @@ impl Game<'_> {
     /// hit has no attacker side; but `RemotePlayer.hurtClient` is true, so a
     /// hit on another player with extra knockback runs the attacker's side of
     /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
-    /// stop. Without it the next move outruns the server's player.
+    /// stop. Without it the next move outruns the server's player. With the opt-in
+    /// 1.8 compatibility setting, a landed sprint hit also cuts this client's speed
+    /// and keeps its sprint off for this tick's move, as the server's 1.8 rules do.
     fn remote_player_attack(&mut self, mob: usize) {
         // Java dispatches this through the target's RemotePlayer type. The
         // level_players map is profile bookkeeping and can lag the entity;
@@ -8846,11 +8859,18 @@ impl Game<'_> {
                 mob_tracking_body(m),
             );
         }
-        if !horizon_client::attack_strength::attacker_slows_after_hit(
+        let vanilla = horizon_client::attack_strength::attacker_slows_after_hit(
             damage, knockback, strength, sprinting,
-        ) {
+        );
+        let legacy = horizon_client::attack_strength::legacy_pvp_hit_cuts_speed(
+            self.pvp_slow_on_hit(),
+            damage,
+            sprinting,
+        );
+        if !vanilla && !legacy {
             return;
         }
+        // One cut per hit, whether one or both rules asked for it.
         if let Some(p) = self.player.as_mut() {
             let slowdown = horizon_client::attack_strength::ATTACKER_SLOWDOWN;
             p.velocity = Vec3::new(
@@ -8858,6 +8878,9 @@ impl Game<'_> {
                 p.velocity.y,
                 p.velocity.z * slowdown,
             );
+        }
+        if legacy && let Some(r) = self.remote.as_mut() {
+            r.suppress_sprint_tick = true;
         }
         self.stop_sprint_after_extra_knockback();
     }

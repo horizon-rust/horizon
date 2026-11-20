@@ -765,6 +765,10 @@ pub struct Combat {
     /// cooldown, no sweep, 1.8 weapon damage, effects, enchantments and critical hits
     /// (`horizon_client::legacy_combat`). Never used as a client of a server.
     pub rules: bool,
+    /// Client-only compatibility for servers running 1.8 combat rules behind a protocol
+    /// bridge: cut this client's speed and stop its sprint in the tick of a landed sprint
+    /// hit, as 1.8.9 did. No packet changes; off by default.
+    pub slow_on_hit: bool,
 }
 impl Combat {
     /// Whether this client leaves out sound `name` a server sent: under Legacy with its
@@ -918,6 +922,7 @@ impl Pvp {
             "combatIndicator" => self.combat.indicator = flag(value, self.combat.indicator),
             "combatSounds" => self.combat.sounds = flag(value, self.combat.sounds),
             "combatRules" => self.combat.rules = flag(value, self.combat.rules),
+            "combatSlowOnHit" => self.combat.slow_on_hit = flag(value, self.combat.slow_on_hit),
             "viewTime" => {
                 t.time = match value {
                     "off" => None,
@@ -1046,8 +1051,8 @@ impl Pvp {
         let feel = if c.legacy { "legacy" } else { "modern" };
         let _ = write!(
             out,
-            "combatFeel:{feel}\ncombatIndicator:{}\ncombatSounds:{}\ncombatRules:{}\n",
-            c.indicator, c.sounds, c.rules
+            "combatFeel:{feel}\ncombatIndicator:{}\ncombatSounds:{}\ncombatRules:{}\ncombatSlowOnHit:{}\n",
+            c.indicator, c.sounds, c.rules, c.slow_on_hit
         );
     }
 }
@@ -1195,6 +1200,8 @@ opts! {
         "Under Legacy, leaves out the attack sounds 1.9 added (strong, weak, sweep, critical...). Hurt sounds stay.";
     CombatRules, "combat_rules", "1.8 combat in worlds you host",
         "Single player and the worlds you open to LAN fight by 1.8.9's rules: no attack cooldown or sweep, 1.8 weapon damage, Strength, Sharpness and critical hits. Servers you join keep their own rules.";
+    CombatSlowOnHit, "combat_slow_on_hit", "1.8 sprint-hit slowdown",
+        "On a server running 1.8 combat rules, a sprint hit that lands cuts your speed and stops your sprint in the hit tick. Off by default; only turn it on if sprint hits get you set back.";
 }
 /// The PvP & HUD page: headers (language keys) and options.
 pub fn rows() -> Vec<Result<Opt, &'static str>> {
@@ -1275,7 +1282,16 @@ pub fn rows() -> Vec<Result<Opt, &'static str>> {
     rows.push(Err("horizon.pvp.header.chat"));
     rows.extend([ChatTimestamps, ChatCompact, ChatCopy, ChatSearch].map(Ok));
     rows.push(Err("horizon.pvp.header.combat"));
-    rows.extend([CombatFeel, CombatIndicator, CombatSounds, CombatRules].map(Ok));
+    rows.extend(
+        [
+            CombatFeel,
+            CombatIndicator,
+            CombatSounds,
+            CombatRules,
+            CombatSlowOnHit,
+        ]
+        .map(Ok),
+    );
     rows
 }
 impl Opt {
@@ -1299,7 +1315,7 @@ impl Opt {
             FireLower | ShieldSize | TotemSize | GlintColour | ClearWater | ClearLava => None,
             ViewTime | ViewWeather => None,
             ChatTimestamps | ChatCompact | ChatCopy | ChatSearch => None,
-            CombatFeel | CombatIndicator | CombatSounds | CombatRules => None,
+            CombatFeel | CombatIndicator | CombatSounds | CombatRules | CombatSlowOnHit => None,
             HudPingCorner => Some(HudPing),
             HudCoordsCorner => Some(HudCoords),
             HudServerCorner => Some(HudServer),
@@ -1344,6 +1360,7 @@ impl Opt {
             Opt::CombatIndicator => p.combat.indicator,
             Opt::CombatSounds => p.combat.sounds,
             Opt::CombatRules => p.combat.rules,
+            Opt::CombatSlowOnHit => p.combat.slow_on_hit,
             _ => return None,
         })
     }
@@ -1502,6 +1519,7 @@ impl Opt {
             Opt::CombatIndicator => p.combat.indicator = !p.combat.indicator,
             Opt::CombatSounds => p.combat.sounds = !p.combat.sounds,
             Opt::CombatRules => p.combat.rules = !p.combat.rules,
+            Opt::CombatSlowOnHit => p.combat.slow_on_hit = !p.combat.slow_on_hit,
             Opt::ViewWeather => {
                 let all: Vec<_> = std::iter::once(None)
                     .chain(ViewWeather::ALL.map(Some))
