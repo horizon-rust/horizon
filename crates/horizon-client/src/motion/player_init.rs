@@ -111,6 +111,7 @@ impl PlayerMotion {
             attack_log: Vec::new(),
             border: None,
             collision_exclusions: Default::default(),
+            creative_reach_cache: None,
         })
     }
 }

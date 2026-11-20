@@ -59,6 +59,9 @@ impl AttachmentLifetime {
     pub fn registration(&self) -> Option<AttachmentRegistration> {
         self.registration.as_deref().cloned()
     }
+    pub fn registration_ref(&self) -> Option<&AttachmentRegistration> {
+        self.registration.as_deref()
+    }
 
     /// Take lifetime ownership of an authoritative map's registration. Rebinding
     /// the map creates a new generation before replacing an old slot, so destruction
