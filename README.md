@@ -40,8 +40,7 @@
 - **Multiplayer:** vanilla and Horizon servers, LAN, and invite codes for playing your world with friends. You can [host a server](https://playhorizon.dev/docs/hosting) too.
 - **Mods:** Horizon's own mod system, with mods like zoom and a minimap, and shader packs. Browse the [catalogue](https://playhorizon.dev/mods) or [make a mod](https://playhorizon.dev/docs/make-a-mod).
 - **Beyond vanilla:** terrain up to 1,024 chunks away, HDR, controller support, graphics presets and dynamic lights.
-
-The dedicated server is measured too: in a four-thread server run, Horizon averaged 47.83 ms per tick with 50 bots while vanilla's watchdog stopped its server during warm-up. Horizon used 1.11 GB of RSS at 50 bots, and the full comparison against vanilla, Paper and Fabric + Lithium is in [the server benchmark](docs/performance/server-vs-vanilla.md). Paper is a separately optimized, feature-breaking server and is a reference point rather than a direct vanilla-compatible comparison.
+- **Dedicated server:** on a four-thread machine at 50 bots, Horizon averaged 47.83 ms per tick and 1.11 GB RSS while vanilla's watchdog stopped its server during warm-up. See the [server benchmark](docs/performance/server-vs-vanilla.md) for the full comparison against vanilla, Fabric + Lithium and Paper (included as a separate, feature-breaking reference).
 
 <h2 align="center">What you need</h2>
 
@@ -73,6 +72,7 @@ The dedicated server is measured too: in a four-thread server run, Horizon avera
 
 <p align="center">
   <a href="docs/native-client.md#run-from-a-checkout"><b>Build guide</b></a> ·
+  <a href="docs/README.md"><b>Developer docs</b></a> ·
   <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
   <a href="GOVERNANCE.md"><b>Governance</b></a> ·
   <a href="https://github.com/sponsors/ludovic111"><b>Sponsor</b></a>
