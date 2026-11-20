@@ -70,6 +70,9 @@ thread_local! {
     /// The stack `on_new_stack` switched this thread to, as (start, end), or (0, 0) on its own.
     /// It scopes `check_current`'s cache and tells `inspect_current` the switched stack's bounds.
     static ACTIVE_STACK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    /// `check_current`'s answer, and the stack it was given on.
+    static CHECK: std::cell::Cell<Option<((usize, usize), Result<(), &'static str>)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Runs `body` on this same thread on a new stack of `size` bytes above a guard, then returns its
@@ -82,55 +85,99 @@ fn on_new_stack<R>(
     size: usize,
     body: impl FnOnce(std::ops::Range<usize>) -> R,
 ) -> std::io::Result<R> {
-    // Zeroed room above the stack's top: a backtrace taken on the new stack that walks past its
-    // first frame by the stack pointer reads zeros, which end the walk, not unmapped memory.
-    const GUARD: usize = 64 * 1024;
-    const ABOVE: usize = 64 * 1024;
-    let length = GUARD + size + ABOVE;
-    // SAFETY: a new private anonymous mapping that nothing else refers to.
-    let base = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
+    let mapped = MappedStack::new(size)?;
+    Ok(on_stack(&mapped, body))
+}
+
+/// A stack mapping: a guard, the stack, and zeroed room above the stack's top, so a backtrace
+/// taken on it that walks past its first frame by the stack pointer reads zeros, which end the
+/// walk, not unmapped memory. Unmapped when dropped.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_vendor = "apple", all(test, target_os = "linux"))
+))]
+struct MappedStack {
+    base: *mut libc::c_void,
+    length: usize,
+    stack: std::ops::Range<usize>,
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_vendor = "apple", all(test, target_os = "linux"))
+))]
+impl MappedStack {
+    fn new(size: usize) -> std::io::Result<Self> {
+        const GUARD: usize = 64 * 1024;
+        const ABOVE: usize = 64 * 1024;
+        let length = GUARD + size + ABOVE;
+        // SAFETY: a new private anonymous mapping that nothing else refers to.
+        let base = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if base == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mapped = Self {
+            base,
             length,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-            -1,
-            0,
-        )
-    };
-    if base == libc::MAP_FAILED {
-        return Err(std::io::Error::last_os_error());
+            stack: base.addr() + GUARD..base.addr() + GUARD + size,
+        };
+        // SAFETY: the first GUARD bytes of the mapping just made.
+        if unsafe { libc::mprotect(base, GUARD, libc::PROT_NONE) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(mapped)
     }
-    // SAFETY: the first GUARD bytes of the mapping just made.
-    if unsafe { libc::mprotect(base, GUARD, libc::PROT_NONE) } != 0 {
-        let error = std::io::Error::last_os_error();
-        // SAFETY: the whole mapping just made, unused.
-        unsafe { libc::munmap(base, length) };
-        return Err(error);
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_vendor = "apple", all(test, target_os = "linux"))
+))]
+impl Drop for MappedStack {
+    fn drop(&mut self) {
+        // SAFETY: the mapping `new` made; nothing runs on it once `on_stack` has returned.
+        unsafe { libc::munmap(self.base, self.length) };
     }
-    let stack = base.addr() + GUARD..base.addr() + GUARD + size;
-    let top = stack.end;
+}
+
+/// Runs `body` on `mapped`. A guest-stack check cached for the outer stack is set aside, so the
+/// body checks afresh, and whatever the body cached is dropped on the way out, so a later switch
+/// to a mapping at the same address checks afresh too.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_vendor = "apple", all(test, target_os = "linux"))
+))]
+fn on_stack<R>(mapped: &MappedStack, body: impl FnOnce(std::ops::Range<usize>) -> R) -> R {
+    let stack = mapped.stack.clone();
     let mut body = Some(body);
     let mut outcome = None;
     {
         let mut once = || {
             let body = body.take().expect("the new stack runs its body once");
-            let outer = ACTIVE_STACK.replace((stack.start, stack.end));
+            let outer = (ACTIVE_STACK.replace((stack.start, stack.end)), CHECK.take());
             outcome = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                 || body(stack.clone()),
             )));
             // Also after a panic: the caught one is resumed only on the outer stack.
-            ACTIVE_STACK.set(outer);
+            ACTIVE_STACK.set(outer.0);
+            CHECK.set(outer.1);
         };
         let mut run: &mut dyn FnMut() = &mut once;
-        // SAFETY: top is the page-aligned end of the writable part of a mapping that outlives
-        // the call, and `once` never unwinds.
-        unsafe { call_on_stack(top, &mut run) };
+        // SAFETY: the stack's end is the page-aligned end of the writable part of a mapping that
+        // outlives the call, and `once` never unwinds.
+        unsafe { call_on_stack(stack.end, &mut run) };
     }
-    // SAFETY: the mapping made above; nothing on that stack is live once its body returned.
-    unsafe { libc::munmap(base, length) };
     match outcome.expect("the new stack ran its body") {
-        Ok(value) => Ok(value),
+        Ok(value) => value,
         Err(payload) => std::panic::resume_unwind(payload),
     }
 }
@@ -250,10 +297,6 @@ fn prepare() -> std::io::Result<()> {
 /// Cache the platform query once per thread and stack (`run_main` may switch the main thread's);
 /// the hot path reads only thread-local state.
 pub fn check_current() -> Result<(), &'static str> {
-    type Checked = Option<((usize, usize), Result<(), &'static str>)>;
-    thread_local! {
-        static CHECK: std::cell::Cell<Checked> = const { std::cell::Cell::new(None) };
-    }
     let stack = ACTIVE_STACK.get();
     match CHECK.get() {
         Some((checked_on, result)) if checked_on == stack => result,
@@ -998,6 +1041,31 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(target_vendor = "apple", target_os = "linux")
+    ))]
+    #[test]
+    fn a_later_switch_to_the_same_stack_checks_afresh() {
+        // Checks at least 2 MiB below where it starts.
+        fn deep_check(depth: usize) -> Result<(), &'static str> {
+            let frame = std::hint::black_box([1u8; 4096]);
+            if depth == 0 {
+                return super::check_current();
+            }
+            let result = deep_check(depth - 1);
+            std::hint::black_box(&frame);
+            result
+        }
+        // One mapping, so both switches have the same address and size.
+        let mapped = super::MappedStack::new(super::REQUIRED + 1024 * 1024).unwrap();
+        // Near its top there is room enough...
+        assert_eq!(super::on_stack(&mapped, |_| super::check_current()), Ok(()));
+        // ...and with no check on the outer stack in between, the next switch deep below it must
+        // not reuse that approval.
+        assert!(super::on_stack(&mapped, |_| deep_check(512)).is_err());
     }
 
     #[test]
