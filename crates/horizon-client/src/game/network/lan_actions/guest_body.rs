@@ -379,9 +379,7 @@ impl Game<'_> {
                 MotionEvent::Health(horizon_client::health::HealthEvent::DamageBroadcast {
                     source,
                 }) => self.guest_damage_broadcast(conn, source),
-                // LivingEntity.playHurtSound: the server's `Entity.playSound`
-                // reaches every player around but the hurt one, whose own
-                // client plays it from handleDamageEvent (arismoko/horizon#4149).
+                // LivingEntity.makeSound: every player around but that one.
                 MotionEvent::HurtSound(sound) => self.guest_hurt_sound(conn, sound),
                 // LivingEntity.checkFallDamage: the crumbs reach every player.
                 MotionEvent::Fall(horizon_client::landing::FallEvent::Particles {

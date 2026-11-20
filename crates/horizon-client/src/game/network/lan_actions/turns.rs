@@ -1091,19 +1091,19 @@ impl Game<'_> {
         host.hub.damage_event(id, kind, None, None, at);
     }
 
-    /// `LivingEntity.playHurtSound` for a guest: the server's `Entity.playSound`
-    /// reaches every player around but the hurt one, whose own client plays it
-    /// from `handleDamageEvent` (arismoko/horizon#4149).
+    /// `Player.playSound` excludes the guest; its client plays its own sound.
     pub(super) fn guest_hurt_sound(&mut self, conn: u32, sound: &str) {
-        let Some(at) = self
+        let Some((at, id)) = self
             .lan
             .as_ref()
             .and_then(|host| host.hub.guest(conn))
-            .map(|g| g.position)
+            .map(|g| (g.position, g.entity_id))
         else {
             return;
         };
-        self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+        if id != self.own_entity_id() {
+            self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+        }
         self.send_level_sound(LevelSound::new(sound, at, 1.0, 1.0), Some(conn));
     }
 
