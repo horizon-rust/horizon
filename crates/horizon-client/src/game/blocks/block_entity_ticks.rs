@@ -600,7 +600,7 @@ impl Game<'_> {
             return;
         }
         let at = BlockPos::new(pos.0, pos.1, pos.2);
-        self.with_level_light(|b, level, ticks| b.tick_daylight_detector(level, ticks, at));
+        self.with_level(|b, level, ticks| b.tick_daylight_detector(level, ticks, at));
         let _ = self.process_level_events();
     }
     /// `AbstractFurnaceBlockEntity.serverTick` of the furnace at `pos`, and

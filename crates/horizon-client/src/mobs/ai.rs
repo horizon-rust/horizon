@@ -1308,7 +1308,37 @@ pub fn finish_tick(
     }
     if m.species() == Species::Mannequin {
         m.extra.static_env_revision = if m.is_static_mannequin() {
-            Some(w.world.revision)
+            let at = m.position;
+            let below = w.world.block(
+                at.x.floor() as i32,
+                (at.y - 0.2).floor() as i32,
+                at.z.floor() as i32,
+            );
+            let inside = w.world.block(
+                at.x.floor() as i32,
+                at.y.floor() as i32,
+                at.z.floor() as i32,
+            );
+            let inert = !matches!(
+                w.facts.get(below).name.as_str(),
+                "minecraft:turtle_egg"
+                    | "minecraft:magma_block"
+                    | "minecraft:cactus"
+                    | "minecraft:sweet_berry_bush"
+                    | "minecraft:campfire"
+                    | "minecraft:soul_campfire"
+                    | "minecraft:pointed_dripstone"
+                    | "minecraft:wither_rose"
+            ) && !matches!(
+                w.facts.get(inside).name.as_str(),
+                "minecraft:cactus"
+                    | "minecraft:sweet_berry_bush"
+                    | "minecraft:wither_rose"
+                    | "minecraft:fire"
+                    | "minecraft:soul_fire"
+                    | "minecraft:powder_snow"
+            );
+            inert.then_some(w.world.revision)
         } else {
             None
         };
@@ -7990,6 +8020,7 @@ mod walk_target_tests {
         m.first_tick = false;
         m.invulnerable_flag = true;
         m.extra.immovable = true;
+        m.extra.effects_dirty = false;
         m.extra.effects.push(crate::mobs::StoredEffect::new(
             "minecraft:resistance",
             -1,

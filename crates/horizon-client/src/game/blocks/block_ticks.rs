@@ -471,7 +471,7 @@ impl Game<'_> {
         for fluids in [false, true] {
             let mut laps = horizon_client::spans::laps();
             let name = if fluids { "tb_fluids" } else { "tb_scheduled" };
-            if !self.with_level_light(|b, level, ticks| b.scheduled_begin(level, ticks, fluids)) {
+            if !self.with_level(|b, level, ticks| b.scheduled_begin(level, ticks, fluids)) {
                 laps.lap(name);
                 continue;
             }
@@ -494,7 +494,7 @@ impl Game<'_> {
                     break;
                 }
             }
-            self.with_level_light(|b, _, ticks| b.scheduled_finish(ticks, fluids));
+            self.with_level(|b, _, ticks| b.scheduled_finish(ticks, fluids));
             laps.lap(name);
         }
         Ok(())

@@ -251,7 +251,7 @@ impl Game<'_> {
                             continue;
                         }
                         let bounds = m.bounds();
-                        let reach = (3.0 * f64::from(m.model_scale().max(1.0))).powi(2);
+                        let reach = (16.0 * f64::from(m.model_scale().max(1.0))).powi(2);
                         let near_player = |pos: Vec3| {
                             let dx = pos.x - m.position.x;
                             let dy = pos.y - m.position.y;
@@ -731,6 +731,7 @@ impl Game<'_> {
                     .restore(mobs, horizon_client::join_seq::RestoreOrder::SpawnsFirst);
                 guests = self.lan_guest_views();
                 mobs = self.mobs.lift();
+                positions = Some(mobs.iter().enumerate().map(|(i, m)| (m.id, i)).collect());
                 spare = guests.first().map(|g| g.1.clone());
                 if let Some(host) = self.lan.as_mut()
                     && !guests.is_empty()
