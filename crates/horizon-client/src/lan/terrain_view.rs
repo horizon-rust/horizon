@@ -6,6 +6,7 @@ use crate::{
     section_mask::SectionMask,
     world::World,
 };
+use horizon_core::nbt::Tag;
 use mod_api::{BlockState, TerrainPattern, TerrainView, TerrainViewError};
 use std::{
     collections::VecDeque,
@@ -211,7 +212,18 @@ pub(super) fn neighbours(world: &World, (x, z): Column) -> Neighbours {
 }
 
 /// The cells on adjacent faces whose authoritative states this projection actually read.
-pub(super) struct Faces([Face; 4]);
+pub(super) struct Faces {
+    faces: [Face; 4],
+    /// What a saved column's body conceals, to replay the reveals of a viewer (`Faces::saved`).
+    concealed: Option<Vec<Concealed>>,
+}
+
+/// A block the body of a saved column shows in another state: what it is, and the tag a reveal sends.
+pub(super) struct Concealed {
+    pub(super) pos: Pos,
+    pub(super) state: u32,
+    pub(super) tag: Option<(i32, Tag)>,
+}
 
 struct Face {
     stamp: Option<Weak<Chunk>>,
@@ -230,15 +242,45 @@ fn current_chunk(chunk: Option<&Arc<Chunk>>, stamp: Option<&Weak<Chunk>>) -> boo
 
 impl Faces {
     pub(super) fn new(neighbours: &Neighbours) -> Self {
-        Self(neighbours.each_ref().map(|c| Face {
-            stamp: c.as_ref().map(Arc::downgrade),
-            reads: Vec::new(),
-        }))
+        Self {
+            faces: neighbours.each_ref().map(|c| Face {
+                stamp: c.as_ref().map(Arc::downgrade),
+                reads: Vec::new(),
+            }),
+            concealed: None,
+        }
+    }
+
+    /// [`Self::new`] for a column read from the save, which also keeps what its body conceals: no
+    /// level holds the column to read it from again.
+    pub(super) fn saved(neighbours: &Neighbours) -> Self {
+        Self {
+            concealed: Some(Vec::new()),
+            ..Self::new(neighbours)
+        }
+    }
+
+    pub(super) fn conceal(&mut self, pos: Pos, state: u32) {
+        if let Some(list) = self.concealed.as_mut() {
+            list.push(Concealed {
+                pos,
+                state,
+                tag: None,
+            });
+        }
+    }
+
+    pub(super) fn concealed(&self) -> &[Concealed] {
+        self.concealed.as_deref().unwrap_or_default()
+    }
+
+    pub(super) fn concealed_mut(&mut self) -> &mut [Concealed] {
+        self.concealed.as_deref_mut().unwrap_or_default()
     }
 
     pub(super) fn read(&mut self, face: usize, (x, y, z): Pos, covered: bool) {
         let along = (if face < 2 { z } else { x }) & 15;
-        self.0[face].reads.push(FaceRead {
+        self.faces[face].reads.push(FaceRead {
             y,
             along: along as u8,
             covered,
@@ -246,7 +288,7 @@ impl Faces {
     }
 
     pub(super) fn current(&mut self, world: &World, rules: &Rules, at: Column) -> bool {
-        for (i, (key, face)) in adjacent(at).zip(&mut self.0).enumerate() {
+        for (i, (key, face)) in adjacent(at).zip(&mut self.faces).enumerate() {
             if face.reads.is_empty() {
                 continue;
             }
@@ -271,10 +313,13 @@ impl Faces {
     }
 
     pub(super) fn bytes(&self) -> usize {
-        self.0
+        self.faces
             .iter()
             .map(|face| face.reads.capacity() * std::mem::size_of::<FaceRead>())
-            .sum()
+            .sum::<usize>()
+            + self.concealed.as_ref().map_or(0, |list| {
+                list.capacity() * std::mem::size_of::<Concealed>()
+            })
     }
 }
 
@@ -285,6 +330,23 @@ impl Selection {
         } else {
             rules.in_world(world, pos, state)
         }
+    }
+
+    /// [`Self::state`] as it was before the writes `previous` holds (the states they replaced).
+    pub(super) fn state_before(
+        &self,
+        world: &World,
+        rules: &Rules,
+        pos: Pos,
+        state: u32,
+        previous: &FxHashMap<Pos, u32>,
+    ) -> u32 {
+        if self.reveals.contains(&pos) {
+            return state;
+        }
+        rules.state(pos, state, |p| {
+            previous.get(&p).map(|&s| Some(s)).unwrap_or_else(|| world_state(world, p))
+        })
     }
 }
 
@@ -366,7 +428,10 @@ impl Views {
                 ..Selection::default()
             };
         } else if id.is_some() {
-            if dimensions.len() == 32 {
+            // A released slot (its refresh still pending) is not held by the mod; the second bound
+            // keeps those entries from piling up in dimensions that get no pass.
+            let held = dimensions.values().filter(|s| s.id.is_some()).count();
+            if held == 32 || dimensions.len() == 64 {
                 return Err(TerrainViewError::Limit);
             }
             dimensions.insert(

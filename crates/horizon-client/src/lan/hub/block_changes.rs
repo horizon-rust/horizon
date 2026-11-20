@@ -11,7 +11,7 @@ use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     viewed_levels::Level,
 };
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 impl Hub {
     /// The players sent chunk `key` of the level in place: those in it (None), and those whose
@@ -98,6 +98,22 @@ impl Hub {
     pub(in crate::lan) fn broadcast_block_changes(&mut self, world: &mut World) {
         self.prepare_terrain_pass();
         let has_views = self.has_terrain_views();
+        // The states this tick's writes replaced: what a protected view's neighbours showed before.
+        // The writes held back for the next pass keep theirs for it.
+        let previous = if self.terrain.is_some() {
+            let taken = world.block_previous.take().unwrap_or_default();
+            world.block_previous = Some(
+                world
+                    .block_log_held
+                    .iter()
+                    .filter_map(|p| Some((*p, *taken.get(p)?)))
+                    .collect(),
+            );
+            taken
+        } else {
+            world.block_previous = None;
+            Default::default()
+        };
         // Chunks changed in bulk (`World::edit_runs`) go whole to those who see them: one packet each, where a
         // change of each block would be thousands (the client lights and meshes them once, on its workers).
         let bulk: Vec<(i32, i32)> = if world.bulk_log.is_empty() {
@@ -249,6 +265,7 @@ impl Hub {
                 self.send_to_holders(&ordinary, &packet.encode());
             }
             let mut candidates = extra.remove(&(sx, sy, sz)).unwrap_or_default();
+            let mut sent_to = crate::fast_hash::FxHashMap::<usize, Arc<Vec<_>>>::default();
             if has_views {
                 candidates.extend(positions.iter().copied());
                 candidates.sort_unstable();
@@ -265,15 +282,40 @@ impl Hub {
                         continue;
                     };
                     let personal = (!view.reveals.is_empty()).then_some(conn);
-                    let body = encoded
+                    let (sent, body) = encoded
                         .entry((rules.generation, personal))
                         .or_insert_with(|| {
-                            block_packet(section, &candidates, |p| {
-                                view.state(world, rules, p, state_at(p))
-                            })
-                            .encode()
-                        });
-                    self.send_to_holders(&[(i, level)], body);
+                            // A block that only sits beside a change is sent to a player whose
+                            // picture of it changes, so its position says nothing more than the
+                            // picture does.
+                            let sent: Arc<Vec<_>> = Arc::new(
+                                candidates
+                                    .iter()
+                                    .copied()
+                                    .filter(|p| {
+                                        positions.binary_search(p).is_ok() || {
+                                            let state = state_at(*p);
+                                            view.state(world, rules, *p, state)
+                                                != view.state_before(
+                                                    world, rules, *p, state, &previous,
+                                                )
+                                        }
+                                    })
+                                    .collect(),
+                            );
+                            let body = (!sent.is_empty()).then(|| {
+                                block_packet(section, &sent, |p| {
+                                    view.state(world, rules, p, state_at(p))
+                                })
+                                .encode()
+                            });
+                            (sent, body)
+                        })
+                        .clone();
+                    if let Some(body) = body {
+                        self.send_to_holders(&[(i, level)], &body);
+                    }
+                    sent_to.insert(i, sent);
                 }
             }
             if recording {
@@ -301,9 +343,15 @@ impl Hub {
                             .copied()
                             .filter(|&(i, _)| {
                                 let conn = self.guests[i].conn;
-                                (positions.binary_search(&pos).is_ok()
-                                    || self.terrain_protected(conn, &self.config.dimension))
-                                    && self.terrain_state(conn, world, pos, state) == state
+                                let sent = match sent_to.get(&i) {
+                                    Some(sent) => sent.binary_search(&pos).is_ok(),
+                                    None => {
+                                        positions.binary_search(&pos).is_ok()
+                                            && !self
+                                                .terrain_protected(conn, &self.config.dimension)
+                                    }
+                                };
+                                sent && self.terrain_state(conn, world, pos, state) == state
                             })
                             .collect(),
                     )

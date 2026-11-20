@@ -557,6 +557,8 @@ impl Game<'_> {
         let pos = [edit.pos.0, edit.pos.1, edit.pos.2];
         if let Some(host) = self.lan.as_mut() {
             if !host.hub.terrain_metadata_visible(conn, &self.world, pos) {
+                // The reservation `open_text_edit` made must not outlive the denied editor.
+                self.world.block_entities.set_sign_editor(edit.pos, None);
                 return;
             }
             host.hub.send_block_correction(conn, &self.world, pos);

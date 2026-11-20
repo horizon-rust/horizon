@@ -1448,11 +1448,12 @@ fn a_viewed_level_selects_terrain_by_its_own_dimension() {
                 {
                     assert_eq!(level, NETHER_INDEX);
                     let sections = p.chunk.sections(16, 15, 6).unwrap();
-                    state[i] = Some(
-                        sections[(y >> 4) as usize]
-                            .states
-                            .get(crate::chunk::index(x, y, z)),
-                    );
+                    // Every copy of the centre column a player is sent must show its own view.
+                    let shown = sections[(y >> 4) as usize]
+                        .states
+                        .get(crate::chunk::index(x, y, z));
+                    assert_eq!(shown, [1, 1, 2][i], "guest {i} was sent the wrong column");
+                    state[i] = Some(shown);
                 }
             }
         }

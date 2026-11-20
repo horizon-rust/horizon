@@ -76,6 +76,11 @@ impl Runs {
             payloads: Vec::new(),
         }
     }
+    /// Whether a packet of this size can be sent at all: not one too large to wrap.
+    pub(crate) fn fits(packet: &[u8]) -> bool {
+        RUN_HEAD + packet.len() + 5 <= MAX_RUN
+    }
+
     /// Adds a play clientbound packet as `Clientbound::encode` writes it, and says whether it
     /// will be sent. One too large to wrap at all, or that the codec refuses, is not; the first
     /// is logged once.
@@ -326,7 +331,10 @@ impl Hub {
             let (taken, bodies): (Vec<_>, Vec<_>) = taken
                 .into_iter()
                 .filter_map(|(idx, chunk)| {
+                    // A body no run can hold stays queued but is passed over, so it takes
+                    // none of the batch's places from the columns behind it.
                     self.protected_body(protected, &rules, chunk, world, &protos, false)
+                        .filter(|body| Runs::fits(body))
                         .map(|body| ((idx, chunk), body))
                 })
                 .take(budget)

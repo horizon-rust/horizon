@@ -201,6 +201,8 @@ fn wait_for_chunks(hub: &mut Hub, world: &mut World, players: &[&Receiver<Out>])
 #[test]
 fn terrain_views_filter_shared_batches_deltas_metadata_and_corrections() {
     let (mut hub, rx, mut world) = setup();
+    // The hub starts recording the states writes replace on its first pass.
+    hub.broadcast_block_changes(&mut world);
     let packets = wait_for_chunks(&mut hub, &mut world, &rx.iter().collect::<Vec<_>>());
     for (i, packets) in packets.iter().enumerate() {
         let chunk = initial(packets).unwrap();
@@ -226,8 +228,9 @@ fn terrain_views_filter_shared_batches_deltas_metadata_and_corrections() {
     );
 
     let open_face = [16, 64, 1];
-    Arc::make_mut(world.chunks.get_mut(&(1, 0)).unwrap()).set(0, open_face[1], open_face[2], 0);
-    world.block_log.as_mut().unwrap().push(tuple(open_face));
+    world
+        .set(open_face[0], open_face[1], open_face[2], BlockStateId(0))
+        .unwrap();
     hub.broadcast_block_changes(&mut world);
     for receiver in &rx[..2] {
         assert_eq!(
@@ -265,12 +268,8 @@ fn terrain_views_filter_shared_batches_deltas_metadata_and_corrections() {
         panic!("machine")
     };
     machine.set_client_update_fields(Compound::from([("effect".into(), Tag::Int(12))]));
-    Arc::make_mut(world.chunks.get_mut(&(0, 0)).unwrap()).set(11, 64, 1, 0);
-    world
-        .block_log
-        .as_mut()
-        .unwrap()
-        .extend([(11, 64, 1), tuple(MACHINE)]);
+    world.set(11, 64, 1, BlockStateId(0)).unwrap();
+    world.block_log.as_mut().unwrap().push(tuple(MACHINE));
     hub.broadcast_block_changes(&mut world);
     for receiver in &rx {
         let packets = drain(receiver);
@@ -312,7 +311,7 @@ fn saved_far_view_uses_resident_faces_and_preserves_the_save() {
     use horizon_assets::resource_source::ResourceRoot;
     use horizon_world::registry::BlockRegistry;
 
-    let (hub, _, mut world) = setup();
+    let (mut hub, _, mut world) = setup();
     let rules = hub.terrain_rules(1).unwrap();
     let root = tempfile::tempdir().unwrap();
     let biome_dir = root.path().join("data/minecraft/worldgen/biome");
@@ -352,7 +351,8 @@ fn saved_far_view_uses_resident_faces_and_preserves_the_save() {
 
     let mut far = Far::new(24, registry, biomes.clone());
     far.set_level(DIM, &save, &hub.encoder);
-    let mut get = |world: &World, protected| {
+    hub.far = Some(far);
+    let get = |far: &mut Far, world: &World, protected| {
         let until = Instant::now() + Duration::from_secs(2);
         loop {
             assert!(Instant::now() < until, "saved column never arrived");
@@ -378,17 +378,44 @@ fn saved_far_view_uses_resident_faces_and_preserves_the_save() {
         }
     };
 
-    let ordinary = get(&world, false);
+    let ordinary = get(hub.far.as_mut().unwrap(), &world, false);
     assert_eq!(section_state(&ordinary, CHEST), 2);
     assert_eq!(ordinary.chunk.block_entities.len(), 1);
-    let buried = get(&world, true);
+    let buried = get(hub.far.as_mut().unwrap(), &world, true);
     assert_eq!(section_state(&buried, CHEST), 1);
     assert!(buried.chunk.block_entities.is_empty());
+
+    // A reveal of the first player is replayed on the column read from the save: the true state
+    // (a chest sends no tag); the second player, who revealed nothing, is sent no overlay.
+    let at = (12 * 16 + x, y, z);
+    hub.terrain
+        .as_mut()
+        .unwrap()
+        .players
+        .get_mut(&1)
+        .unwrap()
+        .get_mut(DIM)
+        .unwrap()
+        .reveals
+        .insert(at);
+    let overlays: Vec<_> = hub
+        .terrain_overlays(1, &world, [(12, 0)].into_iter())
+        .iter()
+        .map(|body| {
+            let mut reader = Reader::new(body);
+            C::decode(reader.varint().unwrap(), reader.rest()).unwrap()
+        })
+        .collect();
+    assert!(
+        matches!(&overlays[..], [C::BlockUpdate(state)]
+        if state.pos == [at.0, at.1, at.2] && state.state == 2)
+    );
+    assert!(hub.terrain_overlays(2, &world, [(12, 0)].into_iter()).is_empty());
 
     // The current disk body was prepared with an unavailable east face. An all-air resident
     // neighbour is known, so it invalidates that body even without a block-log event.
     world.chunks.insert((13, 0), Arc::new(Chunk::empty(13, 0)));
-    let exposed = get(&world, true);
+    let exposed = get(hub.far.as_mut().unwrap(), &world, true);
     assert_eq!(section_state(&exposed, CHEST), 2);
     assert_eq!(exposed.chunk.block_entities.len(), 1);
     let saved = save.load_far(12, 0, registry, &biomes).unwrap();
@@ -416,6 +443,45 @@ fn protected_shared_spawn() {
     println!(
         "protected shared spawn: {rate:.0} recipient chunks/s, {ms:.3} ms total in chunk passes"
     );
+}
+
+#[test]
+fn a_neighbour_change_that_keeps_a_blocks_picture_sends_nothing_at_its_position() {
+    let (mut hub, rx, mut world) = setup();
+    hub.broadcast_block_changes(&mut world);
+    wait_for_chunks(&mut hub, &mut world, &rx.iter().collect::<Vec<_>>());
+    // The chest's east face opens: its picture changes, so it is sent.
+    world.set(16, 64, 1, BlockStateId(0)).unwrap();
+    hub.broadcast_block_changes(&mut world);
+    for receiver in &rx {
+        drain(receiver);
+    }
+    // Another face opens: the chest already shows, so only the change itself is sent. A cover that
+    // sat beside plain stone would send exactly the same.
+    world.set(14, 64, 1, BlockStateId(0)).unwrap();
+    hub.broadcast_block_changes(&mut world);
+    for receiver in &rx[..2] {
+        let packets = drain(receiver);
+        assert_eq!(
+            packets.iter().find_map(|p| update_state(p, [14, 64, 1])),
+            Some(0)
+        );
+        assert!(packets.iter().all(|p| update_state(p, CHEST).is_none()));
+    }
+}
+
+#[test]
+fn a_released_selection_frees_its_slot_at_once() {
+    let (mut hub, _rx, _world) = setup();
+    // The player holds the overworld already.
+    for n in 1..32 {
+        let dimension = format!("test:dimension_{n}");
+        hub.set_terrain_view(1, &dimension, "test", Some(1)).unwrap();
+    }
+    assert!(hub.set_terrain_view(1, "test:one_more", "test", Some(1)).is_err());
+    // No pass has run in the released dimension, and its slot is free all the same.
+    hub.set_terrain_view(1, "test:dimension_1", "test", None).unwrap();
+    hub.set_terrain_view(1, "test:one_more", "test", Some(1)).unwrap();
 }
 
 #[test]

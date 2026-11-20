@@ -24,6 +24,8 @@ const ASKED: usize = 32;
 pub const LOOKS: usize = 2 * ASKED;
 /// The bodies kept for players coming back: this many bytes, this long.
 const KEPT_BYTES: usize = 96 << 20;
+/// ...and no more than this many bodies, whatever their size.
+const KEPT_COUNT: usize = 32_768;
 const KEPT_FOR: Duration = Duration::from_secs(300);
 /// How long a chunk the save doesn't have (or not as a full chunk with its light) is not looked for again.
 const MISSING_FOR: Duration = Duration::from_secs(30);
@@ -105,6 +107,8 @@ pub struct Far {
     /// Every body kept, oldest first, with when it was read (a later read of the column leaves its
     /// entry behind, skipped once it comes up).
     order: VecDeque<(Key, Instant)>,
+    /// How many bodies are kept (the entries of `order` that are not left behind).
+    kept: usize,
     bytes: usize,
     /// The reads asked for, true once what they read is out of date.
     asked: FxHashMap<Key, bool>,
@@ -178,6 +182,7 @@ impl Far {
             levels: Vec::new(),
             here: None,
             order: VecDeque::new(),
+            kept: 0,
             bytes: 0,
             asked: Default::default(),
             protected_asked: 0,
@@ -225,6 +230,19 @@ impl Far {
     /// A saved chunk of the level in place, asking for it to be read when there is room.
     pub fn saved(&mut self, x: i32, z: i32) -> Saved {
         self.find_saved(x, z, 0, None, || None)
+    }
+
+    /// What the kept protected body of a saved column concealed (`Faces::saved`), none once it is gone.
+    pub(super) fn concealed(&self, x: i32, z: i32, generation: u64) -> &[terrain_view::Concealed] {
+        let Some(level) = self.here else {
+            return &[];
+        };
+        self.levels[level]
+            .protected
+            .get(&(x, z))
+            .and_then(|variants| variants.get(&generation))
+            .and_then(|(_, _, faces)| faces.as_ref())
+            .map_or(&[], Faces::concealed)
     }
 
     pub(super) fn saved_for_view(
@@ -329,7 +347,7 @@ impl Far {
             source
                 .bodies
                 .insert((x, z), (now, body))
-                .map_or(0, |(_, b)| b.len())
+                .map(|(_, b)| b.len())
         } else {
             source
                 .protected
@@ -337,21 +355,21 @@ impl Far {
                 .or_default()
                 .insert(generation, (now, body, faces))
                 .as_ref()
-                .map_or(0, protected_bytes)
+                .map(protected_bytes)
         };
-        self.bytes -= old;
+        self.kept += usize::from(old.is_none());
+        self.bytes -= old.unwrap_or(0);
         self.order.push_back((key, now));
-        while self.bytes > KEPT_BYTES {
+        while self.bytes > KEPT_BYTES || self.kept > KEPT_COUNT {
             self.drop_oldest();
         }
-        if self.order.len() > 32_768 {
+        // Entries left behind by a later read or a removal are swept once they are half the queue, so
+        // the scan's cost is spread over the insertions that made them.
+        if self.order.len() > KEPT_COUNT && self.order.len() >= 2 * self.kept {
             let levels = &self.levels;
             self.order.retain(|((level, x, z, generation), at)| {
                 levels[*level].kept_at(*x, *z, *generation) == Some(*at)
             });
-            while self.order.len() > 32_768 {
-                self.drop_oldest();
-            }
         }
     }
 
@@ -368,15 +386,15 @@ impl Far {
     fn remove_body(&mut self, (level, x, z, generation): Key) {
         let source = &mut self.levels[level];
         if generation == 0 {
-            self.bytes -= source
-                .bodies
-                .remove(&(x, z))
-                .map_or(0, |(_, body)| body.len());
+            if let Some((_, body)) = source.bodies.remove(&(x, z)) {
+                self.bytes -= body.len();
+                self.kept -= 1;
+            }
         } else if let Some(variants) = source.protected.get_mut(&(x, z)) {
-            self.bytes -= variants
-                .remove(&generation)
-                .as_ref()
-                .map_or(0, protected_bytes);
+            if let Some(body) = variants.remove(&generation) {
+                self.bytes -= protected_bytes(&body);
+                self.kept -= 1;
+            }
             if variants.is_empty() {
                 source.protected.remove(&(x, z));
             }
@@ -392,6 +410,7 @@ impl Far {
         self.remove_body((level, x, z, 0));
         if let Some(variants) = self.levels[level].protected.remove(&(x, z)) {
             self.bytes -= variants.values().map(protected_bytes).sum::<usize>();
+            self.kept -= variants.len();
         }
         if self.protected_asked == 0 {
             if let Some(stale) = self.asked.get_mut(&(level, x, z, 0)) {
@@ -413,17 +432,17 @@ impl Far {
             return;
         };
         let source = &mut self.levels[level];
+        self.kept -= source.bodies.len();
         self.bytes -= source
             .bodies
             .drain()
             .map(|(_, (_, b))| b.len())
             .sum::<usize>();
-        self.bytes -= source
-            .protected
-            .drain()
-            .flat_map(|(_, v)| v.into_values())
-            .map(|body| protected_bytes(&body))
-            .sum::<usize>();
+        let variants = source.protected.drain().flat_map(|(_, v)| v.into_values());
+        for body in variants {
+            self.bytes -= protected_bytes(&body);
+            self.kept -= 1;
+        }
         self.missing.retain(|&(l, _, _), _| l != level);
         for (_, stale) in self.asked.iter_mut().filter(|((l, ..), _)| *l == level) {
             *stale = true;
@@ -594,5 +613,24 @@ mod tests {
         }
         assert!(far.levels[0].bodies.is_empty());
         assert!(matches!(read(&mut far, 6, 0), Saved::Body(_)));
+    }
+
+    /// The count limit evicts the oldest bodies, and entries a rewrite leaves behind are swept in
+    /// steps that spread their cost: the queue stays under twice the limit.
+    #[test]
+    fn kept_bodies_are_counted_and_stale_entries_swept_in_steps() {
+        let mut far = far(Arc::default());
+        let level = far.here.unwrap();
+        for x in 0..=KEPT_COUNT as i32 {
+            far.keep((level, x, 0, 0), Arc::from([0u8]), None);
+        }
+        assert_eq!(far.kept, KEPT_COUNT);
+        assert!(!far.levels[level].bodies.contains_key(&(0, 0)));
+        assert!(far.levels[level].bodies.contains_key(&(1, 0)));
+        for _ in 0..2 * KEPT_COUNT {
+            far.keep((level, 1, 0, 0), Arc::from([0u8]), None);
+            assert!(far.order.len() <= 2 * KEPT_COUNT + 1);
+        }
+        assert_eq!(far.kept, KEPT_COUNT);
     }
 }

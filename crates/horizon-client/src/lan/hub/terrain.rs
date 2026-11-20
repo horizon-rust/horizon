@@ -460,7 +460,7 @@ impl Hub {
         world: &World,
         columns: impl Iterator<Item = Column>,
     ) -> Vec<Vec<u8>> {
-        let Some((selection, _)) = self
+        let Some((selection, rules)) = self
             .terrain
             .as_ref()
             .and_then(|v| v.view(conn, &self.config.dimension))
@@ -470,16 +470,51 @@ impl Hub {
         if selection.reveals.is_empty() {
             return Vec::new();
         }
-        columns
-            .filter(|key| world.chunks.contains_key(key))
-            .flat_map(|key| {
-                selection
-                    .reveals
-                    .iter()
-                    .copied()
-                    .filter(move |&p| terrain_view::column(p) == key)
-            })
-            .flat_map(|pos| self.terrain_reveal_packets(world, pos).map(|p| p.encode()))
-            .collect()
+        let mut packets = Vec::new();
+        for key in columns {
+            let reveals = selection
+                .reveals
+                .iter()
+                .copied()
+                .filter(|&p| terrain_view::column(p) == key);
+            if world.chunks.contains_key(&key) {
+                for pos in reveals {
+                    packets.extend(self.terrain_reveal_packets(world, pos).map(|p| p.encode()));
+                }
+                continue;
+            }
+            // A saved far column: its snapshot is what the body kept of it.
+            let Some(far) = self.far.as_ref() else {
+                continue;
+            };
+            let reveals: Vec<_> = reveals.collect();
+            if reveals.is_empty() {
+                continue;
+            }
+            let concealed = far.concealed(key.0, key.1, rules.generation);
+            for pos in reveals {
+                let Some(hidden) = concealed.iter().find(|c| c.pos == pos) else {
+                    continue;
+                };
+                packets.push(
+                    C::BlockUpdate(play::BlockUpdate {
+                        pos: [pos.0, pos.1, pos.2],
+                        state: hidden.state as i32,
+                    })
+                    .encode(),
+                );
+                if let Some((kind, tag)) = &hidden.tag {
+                    packets.push(
+                        C::BlockEntityData(play::BlockEntityData {
+                            pos: [pos.0, pos.1, pos.2],
+                            kind: *kind,
+                            tag: tag.clone(),
+                        })
+                        .encode(),
+                    );
+                }
+            }
+        }
+        packets
     }
 }

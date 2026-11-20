@@ -526,7 +526,7 @@ impl TerrainEncoder {
                     let x = chunk.x * 16 + (index & 15) as i32;
                     let z = chunk.z * 16 + (index >> 4 & 15) as i32;
                     let pos = (x, y + (index >> 8) as i32, z);
-                    *value = rules.state(pos, *value, |p @ (x, ny, z)| {
+                    let shown = rules.state(pos, *value, |p @ (x, ny, z)| {
                         if (y..y + 16).contains(&ny) && terrain_view::column(p) == own {
                             return Some(original[crate::chunk::index(x, ny, z)]);
                         }
@@ -541,6 +541,10 @@ impl TerrainEncoder {
                         faces.read(face, p, rules.covers(state));
                         state
                     });
+                    if shown != *value {
+                        faces.conceal(pos, *value);
+                    }
+                    *value = shown;
                 }
                 if original == values {
                     return None;
@@ -1279,16 +1283,41 @@ impl ChunkEncoder {
         neighbours: &Neighbours,
         rules: &Rules,
     ) -> (Vec<u8>, terrain_view::Faces) {
-        let mut faces = terrain_view::Faces::new(neighbours);
+        let mut faces = terrain_view::Faces::saved(neighbours);
         let wires = self
             .terrain_encoder()
             .encode(chunk, neighbours, rules, &mut faces);
+        // The tags a reveal of a concealed block sends, from the same snapshot as the body.
+        for hidden in faces.concealed_mut() {
+            let Some(kind) = self.entity_type(hidden.state) else {
+                continue;
+            };
+            let entity = chunk
+                .block_entities
+                .iter()
+                .find(|(pos, _)| *pos == hidden.pos)
+                .and_then(|(pos, entity)| self.update_tag(*pos, hidden.state, entity));
+            hidden.tag = entity
+                .or_else(|| pot_tag(chunk, hidden.pos))
+                .map(|tag| (kind, tag));
+        }
         let entities = chunk.block_entities.iter().cloned().collect();
-        (
-            self.prepare_view(chunk, &entities, SectionMask::ALL, Some(&wires))
-                .write(),
-            faces,
-        )
+        let body = self
+            .prepare_view(chunk, &entities, SectionMask::ALL, Some(&wires))
+            .write();
+        self.release_read(chunk);
+        (body, faces)
+    }
+
+    /// Drop what encoding one saved column cached (its sections' wires and its heightmaps): the
+    /// column is dropped once sent, so nothing else will reuse them.
+    fn release_read(&self, chunk: &Chunk) {
+        let mut cache = self.cache.lock().unwrap();
+        for s in &chunk.sections {
+            cache.remove(&(Arc::as_ptr(s) as usize));
+        }
+        drop(cache);
+        self.heights.lock().unwrap().remove(&(chunk.x, chunk.z));
     }
 
     /// An encoder of the same level with caches of its own, for threads that encode saved chunks no
@@ -1315,12 +1344,7 @@ impl ChunkEncoder {
     pub fn body_alone(&self, chunk: &Chunk) -> Vec<u8> {
         let entities: HashMap<_, _> = chunk.block_entities.iter().cloned().collect();
         let body = self.body(chunk, &entities, SectionMask::ALL);
-        let mut cache = self.cache.lock().unwrap();
-        for s in &chunk.sections {
-            cache.remove(&(Arc::as_ptr(s) as usize));
-        }
-        drop(cache);
-        self.heights.lock().unwrap().remove(&(chunk.x, chunk.z));
+        self.release_read(chunk);
         body
     }
 
