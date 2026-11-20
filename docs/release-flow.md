@@ -387,8 +387,8 @@ the notes.
 
 | Archive | Runs on | Checks |
 | --- | --- | --- |
-| `horizon-linux-x86_64.tar.gz` | GitHub `ubuntu-22.04` (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
-| `horizon-linux-musl-x86_64.tar.gz` | Alpine 3.22 in Docker on GitHub `ubuntu-22.04`, targeting `x86_64-unknown-linux-musl` | musl loader and libraries only (`tools/check_imports.py --musl`), CPU baseline and every program's startup checked inside Alpine |
+| `horizon-linux-x86_64.tar.gz` | Blacksmith's `blacksmith-16vcpu-ubuntu-2204`, GitHub's Ubuntu 22.04 image (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
+| `horizon-linux-musl-x86_64.tar.gz` | Alpine 3.22 in Docker on Blacksmith's `blacksmith-16vcpu-ubuntu-2204`, targeting `x86_64-unknown-linux-musl` | musl loader and libraries only (`tools/check_imports.py --musl`), CPU baseline and every program's startup checked inside Alpine |
 | `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
 | `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is x64 |
 | `horizon-windows-arm64.zip` | GitHub `windows-11-vs2026-arm`, built for `aarch64-pc-windows-msvc`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is ARM64 and binaries start on the native runner |

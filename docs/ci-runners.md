@@ -20,7 +20,8 @@ mini's) is kept small by [`tools/ci/git-slim.sh`](../tools/ci/git-slim.sh) befor
 
 Blacksmith's runners (outside GitHub's 20-job pool) took over from GitHub's on 2026-11-17 for jobs that hold no
 secret and neither publish nor release: `checks`' `verify` ([below](#verify-on-blacksmith)), `perf-wasm`,
-`cargo-horizon-mod`'s `plan`, `needs-info`, and the bots whenever `SELF_HOSTED_CI=off` sends them away from ours.
+`cargo-horizon-mod`'s `plan`, `needs-info`, the Nightly's and the SDK's Linux build legs (below), and the bots whenever
+`SELF_HOSTED_CI=off` sends them away from ours.
 
 ## What stays on GitHub, and why
 
@@ -30,9 +31,13 @@ secret and neither publish nor release: `checks`' `verify` ([below](#verify-on-b
   writes the set of pull requests the Nightly holds), `native hook stamp` (it pushes a branch). playhorizon is a
   partner's server that the partner can reach, and a checks runner keeps what a fork's job left behind: neither may
   decide or sign what players download. `tests/test_ci_runners.py` pins it.
-- **Release builds**: Linux on `ubuntu-22.04` (players' binaries must link against its older glibc; our Linux
-  machines have newer ones), Windows on `windows-latest` (no Windows machine). macOS builds already run on the Mac
-  mini.
+- **Release builds**: Windows on `windows-latest` (no Windows machine). macOS builds already run on the Mac mini.
+  Linux (`game-build.yml`'s Linux, server, musl and wasm-std legs, `prebuilt-game-build.yml`'s two Linux SDK legs) runs
+  on Blacksmith's `blacksmith-16vcpu-ubuntu-2204`: players' binaries must link against Ubuntu 22.04's older glibc
+  (2.35; our Linux machines and Blacksmith's 24.04 image have newer ones), and each leg prints the newest glibc symbol
+  its programs need. These legs build unreviewed pull requests' code, so they take no secret and no cache there (no
+  sticky disk, no Rust cache). Blacksmith lists its 22.04 image as deprecated: when it goes, these legs need another
+  22.04-glibc build (GitHub's `ubuntu-22.04` until April 2027), not a newer image.
 
 ## verify on Blacksmith
 

@@ -1,5 +1,7 @@
 name: prebuilt game build
 # Read-only hosted builders. No release credentials, trusted cache reads or shared cache writes.
+# Linux on Blacksmith's Ubuntu 22.04 runners (outside GitHub's 20-job pool; 22.04 keeps the runtime's glibc baseline),
+# Windows and macOS on GitHub's.
 on:
   workflow_call:
     inputs:
@@ -50,10 +52,10 @@ jobs:
       matrix:
         include:
           - name: linux
-            os: ubuntu-22.04
+            os: blacksmith-16vcpu-ubuntu-2204
             target: x86_64-unknown-linux-gnu
           - name: linux-server
-            os: ubuntu-22.04
+            os: blacksmith-16vcpu-ubuntu-2204
             target: x86_64-unknown-linux-gnu
             server: true
           - name: windows
@@ -90,6 +92,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Build and collect
         run: python tools/prebuilt_game.py build prebuilt ${{ matrix.server && '--server' || '' }}
+      - name: The newest glibc symbol the Linux runtime needs
+        # Printed only, never failing: it shows the runner image kept the glibc baseline (Ubuntu 22.04: 2.35).
+        if: runner.os == 'Linux'
+        run: |
+          find prebuilt -type f \( -path 'prebuilt/bin/*' -o -name '*.so' \) | sort | while read -r file; do
+            echo "$file needs $(objdump -T "$file" 2>/dev/null | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -uV | tail -1 || true)"
+          done
       - name: Two native starter mods link against the SDK alone
         run: python tools/prebuilt_game.py smoke prebuilt
       - name: The installed native game loads both mods

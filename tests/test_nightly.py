@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tools.ci import nightly
 from tools.ci import nightly_set as ns
+from tests.test_ci_concurrency import yaml
 
 NOW = "2026-10-28T12:00:00+00:00"
 PATTERNS = ns.guarded_patterns((Path(__file__).resolve().parents[1] / ".github/CODEOWNERS").read_text())
@@ -218,8 +219,8 @@ class UntrustedBuildTests(unittest.TestCase):
     def test_an_untrusted_build_never_runs_on_the_release_runner(self):
         runs_on = [line for line in self.game.splitlines() if "runs-on:" in line]
         self.assertEqual(len(runs_on), 3)
-        # The host-independent wasm member is built on a credential-free hosted Linux runner.
-        hosted = [line for line in runs_on if line.strip() == "runs-on: ubuntu-22.04"]
+        # The host-independent wasm member is built on a credential-free hosted Linux runner (Blacksmith's).
+        hosted = [line for line in runs_on if line.strip() == "runs-on: blacksmith-16vcpu-ubuntu-2204"]
         self.assertEqual(len(hosted), 1)
         # The nightly's own runner: never the release runner, and never behind pull requests' parity queue.
         nightly_runner = "fromJSON('[\"self-hosted\", \"macOS\", \"horizon-nightly\"]')"
@@ -227,6 +228,23 @@ class UntrustedBuildTests(unittest.TestCase):
             if line in hosted:
                 continue
             self.assertIn(f"inputs.trusted && vars.MAC_RUNNER || {nightly_runner}", line)
+
+    def test_linux_archives_keep_the_ubuntu_22_04_glibc_baseline(self):
+        # Players' Linux programs link against the build image's glibc: 22.04's 2.35, never a newer image's.
+        for name in ("game-build.yml", "prebuilt-game-build.yml"):
+            matrix = yaml.safe_load((WORKFLOWS / name).read_text())["jobs"]["build"]["strategy"]["matrix"]["include"]
+            linux = [leg["os"] for leg in matrix if "ubuntu" in leg.get("os", "")]
+            self.assertGreaterEqual(len(linux), 2, name)
+            for os_label in linux:
+                self.assertIn(os_label, ("ubuntu-22.04", "blacksmith-16vcpu-ubuntu-2204"), name)
+
+    def test_the_mac_minis_steps_never_run_on_another_self_hosted_runner(self):
+        # Blacksmith's runners report themselves as self-hosted: the smoke run and its resources are the Mac mini's.
+        steps = yaml.safe_load(self.game)["jobs"]["build"]["steps"]
+        mac_only = [step for step in steps if "runner.environment == 'self-hosted'" in str(step.get("if", ""))]
+        self.assertGreaterEqual(len(mac_only), 4)
+        for step in mac_only:
+            self.assertTrue(step["if"].startswith("matrix.mac && "), step.get("name", step.get("uses")))
 
     def test_a_trusted_build_never_reads_the_shared_sccache(self):
         calls = self.game.count("bash tools/ci/runner-env.sh")
