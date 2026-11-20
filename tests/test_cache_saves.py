@@ -34,7 +34,7 @@ OTHER_CODE = re.compile(r"\bgit\s+(?:(?:-[Cc]\s+\S+|-\S+)\s+)*"
 
 
 def workflows():
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]):
         yield path.name, yaml.safe_load(path.read_text())
 
 
@@ -146,18 +146,21 @@ class PackBenchCacheTests(unittest.TestCase):
     def test_the_base_built_is_the_one_the_gate_judged(self):
         bench = next(s for s in self.job["steps"] if s.get("name") == "Bench the base, with the branch's bench")
         self.assertEqual(bench["env"]["BASE_SHA"], "${{ steps.gate.outputs.base }}")
-        self.assertIn('git worktree add ../base "$BASE_SHA"', bench["run"])
+        # Detached at the SHA: a local branch whose name looks like a SHA is never what gets checked out.
+        self.assertIn('git worktree add --detach ../base "$BASE_SHA"', bench["run"])
         self.assertNotIn("git fetch", bench["run"])
         self.assertNotIn("FETCH_HEAD", bench["run"])
 
-    def run_gate(self, repo, ref, sha, base):
+    def run_gate(self, repo, ref, sha, base, check=True):
         out = Path(repo) / "out"
         out.write_text("")
         script = self.gate["run"].replace(self.URL, repo)
         self.assertNotEqual(script, self.gate["run"])
         env = dict(os.environ, REF=ref, BASE=base, GITHUB_SHA=sha, GITHUB_OUTPUT=str(out))
-        subprocess.run([BASH, "-c", script], cwd=Path(repo) / "clone", env=env, check=True,
-                       capture_output=True)
+        done = subprocess.run([BASH, "-c", script], cwd=Path(repo) / "clone", env=env, check=check,
+                              capture_output=True)
+        if not check:
+            return done.returncode, out.read_text()
         return dict(line.split("=", 1) for line in out.read_text().splitlines())
 
     @unittest.skipUnless(BASH, "needs bash")
@@ -186,6 +189,16 @@ class PackBenchCacheTests(unittest.TestCase):
             # Off main nothing saves, its own commit as base included.
             self.assertEqual(self.run_gate(repo, "refs/heads/other", other, "other")["saves"], "false")
             self.assertEqual(self.run_gate(repo, "refs/heads/Main", main, "main")["saves"], "false")
+            # Anything but one source ref or SHA is refused before a fetch: a destination refspec, a second ref (the
+            # run's own SHA first, then another commit written to a branch named like it), an option, a forced
+            # update, whitespace, an empty base.
+            for base in (f"other:refs/heads/{main}", f"{main} other:refs/heads/{main}", f"{main} other",
+                         "+other", "-v", "--upload-pack=x", " main", "main\n", ""):
+                code, out = self.run_gate(repo, "refs/heads/main", main, base, check=False)
+                self.assertNotEqual(code, 0, repr(base))
+                self.assertEqual(out, "", repr(base))
+            self.assertEqual(git("for-each-ref", "--format=%(refname)", "refs/heads", cwd=Path(tmp) / "clone"),
+                             "refs/heads/main")
 
 
 if __name__ == "__main__":

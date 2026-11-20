@@ -48,7 +48,13 @@ jobs:
           BASE: ${{ inputs.base || 'main' }}
         run: |
           set -euo pipefail
-          git fetch -- https://github.com/horizon-rust/horizon.git "$BASE"
+          # One source ref or SHA: no destination (`:`), no second ref, no option, no forced update (`+`).
+          if ! [[ "$BASE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::base must be one ref or commit SHA"
+            exit 1
+          fi
+          git fetch --no-tags -- https://github.com/horizon-rust/horizon.git "$BASE"
+          [ "$(wc -l < "$(git rev-parse --git-path FETCH_HEAD)")" -eq 1 ]
           base=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
           saves=false
           if [ "$REF" = refs/heads/main ] && [ "$base" = "$GITHUB_SHA" ]; then
@@ -73,7 +79,7 @@ jobs:
           # Our runners keep the folder beside the checkout between jobs.
           git worktree remove --force ../base 2> /dev/null || rm -rf ../base
           git worktree prune
-          git worktree add ../base "$BASE_SHA"
+          git worktree add --detach ../base "$BASE_SHA"
           cp crates/horizon-client-render/examples/pack_load_bench.rs ../base/crates/horizon-client-render/examples/
           # A bench row that times a function the base lacks keeps it from building there: then
           # the branch's own rows compare the two ways.
