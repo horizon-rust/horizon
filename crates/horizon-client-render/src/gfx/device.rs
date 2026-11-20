@@ -82,9 +82,9 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
 /// then Vulkan, based on the device losses seen there (#7513). Other
 /// Windows systems try Vulkan, then DirectX 12, then OpenGL; Linux tries Vulkan then
 /// OpenGL. Each is tried when the one before has no surface, adapter or device. A native
-/// crash in the driver can't be
-/// caught in the game; the launcher switches the setting to DirectX 12 after one at
-/// the renderer's start (#746). macOS has Metal only.
+/// crash in the driver can't be caught in the game; the launcher switches the setting to
+/// DirectX 12 after one at the renderer's start on Vulkan (#746) or, on Windows, OpenGL
+/// (#18291). macOS has Metal only.
 pub(crate) fn backend_order(
     api: GraphicsApi,
     os: &str,
@@ -385,10 +385,12 @@ pub(super) fn device_search_timed_out(waited: Duration) -> String {
 /// The tries `open_device` makes, in turn: the chosen API's backends (`backend_order`) on a
 /// real GPU; when the player chose one API, the other backends `Auto` would try, on a real
 /// GPU; and last the chosen backends with a software adapter (WARP, llvmpipe) allowed.
-/// Software rendering takes most of a weak CPU even on the title screen: an Intel HD 2500 has
-/// DirectX 12 only through WARP and its GPU through OpenGL (#5185), and a Fermi GPU has no
-/// Vulkan or DirectX 12 driver but OpenGL (#3978). DirectX 12 never falls back to Vulkan: the
-/// launcher chooses it after Vulkan crashed in the driver (#746), which the game can't catch.
+/// Software rendering takes most of a weak CPU even on the title screen, so Auto and the
+/// other choices try every GPU first: an Intel HD 2500 has DirectX 12 only through WARP and
+/// its GPU through OpenGL (#5185), and a Fermi GPU has no Vulkan or DirectX 12 driver but
+/// OpenGL (#3978). DirectX 12 tries nothing else: the launcher chooses it after Vulkan or
+/// OpenGL crashed in the driver at the renderer's start (#746, #18291), which the game can't
+/// catch, so going back to either would crash again; WARP is slow but runs.
 pub(crate) fn device_search(
     api: GraphicsApi,
     os: &str,
@@ -396,14 +398,15 @@ pub(crate) fn device_search(
     wgpu_backend: bool,
 ) -> Vec<(Vec<wgpu::Backends>, bool)> {
     let chosen = backend_order(api, os, arch, wgpu_backend);
-    let others: Vec<_> = backend_order(GraphicsApi::Auto, os, arch, wgpu_backend)
-        .into_iter()
-        .filter(|b| !chosen.contains(b))
-        .filter(|&b| !(api == GraphicsApi::Dx12 && b == wgpu::Backends::VULKAN))
-        .collect();
     let mut tries = vec![(chosen.clone(), false)];
-    if !others.is_empty() {
-        tries.push((others, false));
+    if chosen != [wgpu::Backends::DX12] {
+        let others: Vec<_> = backend_order(GraphicsApi::Auto, os, arch, wgpu_backend)
+            .into_iter()
+            .filter(|b| !chosen.contains(b))
+            .collect();
+        if !others.is_empty() {
+            tries.push((others, false));
+        }
     }
     tries.push((chosen, true));
     tries

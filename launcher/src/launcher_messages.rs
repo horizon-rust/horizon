@@ -461,16 +461,16 @@ impl Launcher {
                                 .take()
                                 .and_then(|since| backend::crash_report_since(&home, since));
                             let switched = if error.is_some() && report.is_none() {
-                                self.switched_from_vulkan()
+                                self.switched_after_start_crash()
                             } else {
                                 None
                             };
-                            if let Some(api) = switched {
+                            if let Some((crashed, api)) = switched {
                                 self.client_error = Some(trf(
-                                    "Horizon's Vulkan renderer crashed while starting on this \
+                                    "Horizon's {crashed} renderer crashed while starting on this \
                                      graphics card, so the game now uses {api}. Press Play to \
                                      start it again. Video Settings > Graphics API switches back.",
-                                    &[("api", api)],
+                                    &[("crashed", crashed), ("api", api)],
                                 ));
                             } else if error.is_some() || report.is_some() {
                                 let summary = report

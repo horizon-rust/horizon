@@ -2671,38 +2671,69 @@ pub fn crash_summary(report: &str) -> Option<String> {
 /// The line the game prints when it has drawn its first frame.
 pub const GAME_FIRST_FRAME: &str = "Horizon: first frame";
 
-/// Whether a game's output ends in a crash while its Vulkan renderer started: an adapter line
-/// (`Horizon renderer: <GPU> (Vulkan, <type>)`) and no first frame. A native crash in a graphics
-/// driver leaves no crash report, only those lines (#746).
-pub fn vulkan_start_crashed<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> bool {
-    let mut vulkan = false;
+/// A graphics API whose driver can crash natively at the renderer's start, before the game
+/// can catch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartCrash {
+    Vulkan,
+    OpenGl,
+}
+
+impl StartCrash {
+    /// The API's name for the player.
+    pub fn label(self) -> &'static str {
+        match self {
+            StartCrash::Vulkan => "Vulkan",
+            StartCrash::OpenGl => "OpenGL",
+        }
+    }
+}
+
+/// The API a game's output ends in a crash on while its renderer started: the last adapter line
+/// (`Horizon renderer: <GPU> (<backend>, <type>)`) names Vulkan or OpenGL (`Gl`), and no first
+/// frame follows. A native crash in a graphics driver leaves no crash report, only those lines
+/// (#746, #18291).
+pub fn renderer_start_crash<S: AsRef<str>>(
+    lines: impl IntoIterator<Item = S>,
+) -> Option<StartCrash> {
+    let mut crashed = None;
     for line in lines {
         let line = line.as_ref();
         if line.starts_with(GAME_FIRST_FRAME) {
-            return false;
+            return None;
         }
         if let Some(adapter) = line.strip_prefix("Horizon renderer: ") {
             // The adapter line, not one of the start's steps: "<GPU> (<backend>, <type>)".
             if adapter.ends_with(')') && adapter.contains(" (") {
-                vulkan = adapter.contains(" (Vulkan, ");
+                crashed = if adapter.contains(" (Vulkan, ") {
+                    Some(StartCrash::Vulkan)
+                } else if adapter.contains(" (Gl, ") {
+                    Some(StartCrash::OpenGl)
+                } else {
+                    None
+                };
             }
         }
     }
-    vulkan
+    crashed
 }
 
 /// The game's graphics settings file in its home (the game's `graphics.rs`).
 const GRAPHICS_FILE: &str = "horizon-graphics.txt";
 
 /// The graphics API (the game's setting name, and its label) Auto switches to after a native
-/// crash at the Vulkan renderer's start: DirectX 12 on Windows (#746), OpenGL on Linux, where
-/// Auto also runs Mesa's hasvk on Ivy Bridge and Haswell, which Mesa itself calls incomplete
-/// there (#4293). `None` where the game has no other API (macOS: Metal only).
-pub fn vulkan_crash_fallback(os: &str) -> Option<(&'static str, &'static str)> {
-    match os {
-        "windows" => Some(("dx12", "DirectX 12")),
-        "macos" => None,
-        _ => Some(("opengl", "OpenGL")),
+/// crash at the renderer's start on `crashed`. Windows: DirectX 12 (#746), which then never
+/// tries Vulkan or OpenGL again, so an Intel HD 4000 whose OpenGL driver crashes gets WARP
+/// (#18291). Linux: OpenGL after Vulkan, where Auto also runs Mesa's hasvk on Ivy Bridge and
+/// Haswell, which Mesa itself calls incomplete there (#4293); nothing after OpenGL, which Auto
+/// reached only because Vulkan had no device. `None` where the game has no other API (macOS:
+/// Metal only).
+pub fn start_crash_fallback(crashed: StartCrash, os: &str) -> Option<(&'static str, &'static str)> {
+    match (crashed, os) {
+        (_, "macos") => None,
+        (_, "windows") => Some(("dx12", "DirectX 12")),
+        (StartCrash::Vulkan, _) => Some(("opengl", "OpenGL")),
+        (StartCrash::OpenGl, _) => None,
     }
 }
 
@@ -5571,19 +5602,52 @@ pub fn {f}("
             "Horizon: resources loaded in 11.3s; 35723 block states, 1658 items, 67 biomes",
             "Horizon renderer: Intel(R) HD Graphics 530 (Vulkan, IntegratedGpu)",
         ];
-        assert!(vulkan_start_crashed(start));
+        let vulkan = Some(StartCrash::Vulkan);
+        assert_eq!(renderer_start_crash(start), vulkan);
         // A step line after the adapter keeps it a start crash.
         let step = [start[1], "Horizon renderer: creating the pipelines"];
-        assert!(vulkan_start_crashed(step));
+        assert_eq!(renderer_start_crash(step), vulkan);
         // A crash after the first frame is the game's, not the renderer start's.
         let later = [start[1], "Horizon: first frame after 812 ms"];
-        assert!(!vulkan_start_crashed(later));
+        assert_eq!(renderer_start_crash(later), None);
         // Already on DirectX 12, or no renderer yet: nothing to switch.
         let dx12 = ["Horizon renderer: Intel(R) HD Graphics 530 (Dx12, IntegratedGpu)"];
-        assert!(!vulkan_start_crashed(dx12));
-        assert!(!vulkan_start_crashed(&start[..1]));
+        assert_eq!(renderer_start_crash(dx12), None);
+        assert_eq!(renderer_start_crash(&start[..1]), None);
         // Vulkan failed to open and DirectX 12 took over: its line is the last adapter.
-        assert!(!vulkan_start_crashed([start[1], dx12[0]]));
+        assert_eq!(renderer_start_crash([start[1], dx12[0]]), None);
+    }
+
+    /// #18291: Intel's OpenGL 4.0 driver for the HD 4000 dies building the pipelines.
+    #[test]
+    fn a_crash_after_the_opengl_adapter_line_and_before_the_first_frame_is_an_opengl_start_crash() {
+        let gl = "Horizon renderer: Intel(R) HD Graphics 4000 (Gl, IntegratedGpu)";
+        let step = [gl, "Horizon renderer: creating the pipelines"];
+        assert_eq!(renderer_start_crash(step), Some(StartCrash::OpenGl));
+        assert_eq!(
+            renderer_start_crash([gl, "Horizon: first frame after 2310 ms"]),
+            None
+        );
+        // Vulkan had no surface and OpenGL took over: OpenGL's crash, not Vulkan's.
+        let vulkan = "Horizon renderer: Intel(R) HD Graphics 4000 (Vulkan, IntegratedGpu)";
+        assert_eq!(
+            renderer_start_crash([vulkan, gl, step[1]]),
+            Some(StartCrash::OpenGl)
+        );
+    }
+
+    /// Where each start crash sends Auto: DirectX 12 on Windows after either (#746, #18291);
+    /// on Linux OpenGL after Vulkan (#4293) and nothing after OpenGL; nothing on macOS.
+    #[test]
+    fn a_start_crash_falls_back_by_api_and_system() {
+        let (vulkan, gl) = (StartCrash::Vulkan, StartCrash::OpenGl);
+        let api = |crashed, os| start_crash_fallback(crashed, os).map(|(api, _)| api);
+        assert_eq!(api(vulkan, "windows"), Some("dx12"));
+        assert_eq!(api(gl, "windows"), Some("dx12"));
+        assert_eq!(api(vulkan, "linux"), Some("opengl"));
+        assert_eq!(api(gl, "linux"), None);
+        assert_eq!(api(vulkan, "macos"), None);
+        assert_eq!(api(gl, "macos"), None);
     }
 
     #[test]
@@ -5615,12 +5679,10 @@ pub fn {f}("
     }
 
     /// #4293: an Ivy Bridge on Linux whose Vulkan driver (Mesa's hasvk) crashes at the renderer's
-    /// start plays on OpenGL next time; Windows keeps DirectX 12 (#746), macOS has nothing else.
+    /// start plays on OpenGL next time.
     #[test]
     fn a_vulkan_start_crash_on_linux_switches_auto_to_opengl() {
-        assert_eq!(vulkan_crash_fallback("windows").unwrap().0, "dx12");
-        assert_eq!(vulkan_crash_fallback("macos"), None);
-        let (api, _) = vulkan_crash_fallback("linux").unwrap();
+        let (api, _) = start_crash_fallback(StartCrash::Vulkan, "linux").unwrap();
         let home = std::env::temp_dir().join(format!("horizon-gl-switch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
