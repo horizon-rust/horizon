@@ -344,6 +344,28 @@ pub fn apply(
                 .or_default()
                 .push(line);
         }
+        // A call only the new build compiled (a new hook, or another call the generator now
+        // emits for a method that was there) refuses no mod built before: additive.
+        let before: BTreeSet<&str> = was.calls.iter().map(|c| c.key.as_str()).collect();
+        for call in now
+            .calls
+            .iter()
+            .filter(|c| !before.contains(c.key.as_str()))
+        {
+            let id = call_id(&call.key, surfaces);
+            let line = format!("call `{}` is new in the compiled table", call.key);
+            match diff.changes.iter_mut().find(|c| c.id == id) {
+                Some(change) => change.what.push(line),
+                None => diff.changes.push(Change {
+                    id,
+                    kind: ChangeKind::Added,
+                    class: Class::Additive,
+                    what: vec![line],
+                    members: Vec::new(),
+                    notes: Vec::new(),
+                }),
+            }
+        }
     }
     for (id, said) in lines {
         match diff.changes.iter_mut().find(|c| c.id == id) {

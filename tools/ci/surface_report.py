@@ -5,7 +5,7 @@ and core (`--calls`: what the game compares when a wasm mod loads), diffs them, 
 job summary. It also compares what both builds compiled (`--layouts`): the core layout and every call's hash, as the
 game compares them, which `crates/horizon-mod-api/examples/wire_layouts.rs` prints. The head's are built here; the
 base's are read from the build folder's store (`--store-layouts`, which only main's pushes fill, one file per commit;
-a symlink, another schema or a call count other than the base's source table is a miss) or built by checking the base
+a symlink, another schema, no calls or a call count other than the one written beside them is a miss) or built by checking the base
 out in place, with its own copy of the example, then the head again. A base without the example is compared by source
 alone, with a warning. A pull request that changes the gate's own code gets a warning line that the result needs a
 maintainer's look. The base comes from the event: on `pull_request` the checkout is
@@ -104,7 +104,8 @@ def build_layouts() -> str:
 
 
 def layout_calls(text: str) -> int | None:
-    """How many calls a compiled layouts document lists, or None for one this script cannot read."""
+    """How many calls a compiled layouts document lists, or None for one this script cannot read: another schema, no
+    calls, or not as many as the count its producer wrote beside them."""
     try:
         document = json.loads(text)
     except ValueError:
@@ -112,12 +113,15 @@ def layout_calls(text: str) -> int | None:
     if not isinstance(document, dict) or document.get("schema") != LAYOUTS_SCHEMA:
         return None
     calls = document.get("calls")
-    return len(calls) if isinstance(calls, list) else None
+    if not isinstance(calls, list) or not calls or document.get("count") != len(calls):
+        return None
+    return len(calls)
 
 
-def stored_layouts(store: Path | None, sha: str, expected: int) -> str | None:
-    """A commit's stored compiled layouts, or None (a miss, so the base is built): none stored, a symlink, another
-    schema, or not one call for each of the `expected` calls the base's source table lists."""
+def stored_layouts(store: Path | None, sha: str) -> str | None:
+    """A commit's stored compiled layouts, or None (a miss, so the base is built): none stored, a symlink, or one
+    `layout_calls` cannot read. Its calls are not checked against the head's reading of the base tree: a head whose
+    generator emits another call would turn a genuine base into a miss, and the compiled diff compares them anyway."""
     if store is None or store.is_symlink():
         return None
     path = store / f"{sha}.json"
@@ -127,7 +131,7 @@ def stored_layouts(store: Path | None, sha: str, expected: int) -> str | None:
         text = path.read_text()
     except OSError:
         return None
-    return text if expected and layout_calls(text) == expected else None
+    return text if layout_calls(text) else None
 
 
 def has_example(sha: str, run_git=git) -> bool:
@@ -147,7 +151,7 @@ def built_base_layouts(sha: str, build=build_layouts, run_git=git) -> str:
         run_git("checkout", "-q", "-f", "--detach", head)
 
 
-def compiled_layouts(sha: str, work: Path, store: Path | None, expected: int, build=build_layouts,
+def compiled_layouts(sha: str, work: Path, store: Path | None, build=build_layouts,
                      run_git=git) -> tuple[bool, str]:
     """Writes both builds' compiled layouts to work (base-layouts.json, head-layouts.json): (whether it did, a line
     saying where the base's came from). A base without the example (based before it) is compared by source alone,
@@ -155,15 +159,14 @@ def compiled_layouts(sha: str, work: Path, store: Path | None, expected: int, bu
     head = build()
     if layout_calls(head) is None:
         raise ValueError("this tree's wire_layouts printed no readable layouts")
-    base, origin = stored_layouts(store, sha, expected), "stored"
+    base, origin = stored_layouts(store, sha), "stored"
     if base is None:
         if not has_example(sha, run_git):
             return False, ("Warning: the base has no wire_layouts example, so only the source is compared; merge main "
                            "for the compiled comparison.\n")
         base, origin = built_base_layouts(sha, build, run_git), "built"
-        found = layout_calls(base)
-        if found != expected:
-            raise ValueError(f"the base's wire_layouts lists {found} calls, its source {expected}")
+        if layout_calls(base) is None:
+            raise ValueError("the base's wire_layouts printed no readable layouts")
     (work / "head-layouts.json").write_text(head)
     (work / "base-layouts.json").write_text(base)
     return True, f"The base's compiled layouts: {origin}.\n"
@@ -220,8 +223,8 @@ def last_line(text: str) -> str:
 
 
 def report(tool: str, base: Path, head: Path, work: Path, gate_on: bool, layouts=None) -> tuple[int, str]:
-    """Exports both trees at once, diffs them; (exit code, report text). `layouts(expected)`, given how many calls
-    the base's source table lists, writes both builds' compiled layouts to work (`compiled_layouts`)."""
+    """Exports both trees at once, diffs them; (exit code, report text). `layouts()` writes both builds' compiled
+    layouts to work (`compiled_layouts`)."""
     exports = {name: subprocess.Popen([tool, "surface", str(tree), str(work / f"{name}.json"),
                                        "--calls", str(work / f"{name}-calls.json")],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -236,8 +239,7 @@ def report(tool: str, base: Path, head: Path, work: Path, gate_on: bool, layouts
     compiled, said = False, ""
     if layouts is not None:
         try:
-            expected = len(json.loads((work / "base-calls.json").read_text()).get("calls", []))
-            compiled, said = layouts(expected)
+            compiled, said = layouts()
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             if gate_on:
                 return unchecked(gate_on, f"the compiled layouts could not be built ({error})")
@@ -303,10 +305,10 @@ def main() -> int:
             store = os.environ.get("WIRE_LAYOUTS_STORE")
             timed = []
 
-            def layouts(expected):
+            def layouts():
                 began = time.monotonic()
                 try:
-                    return compiled_layouts(sha, work, Path(store) if store else None, expected)
+                    return compiled_layouts(sha, work, Path(store) if store else None)
                 finally:
                     timed.append(time.monotonic() - began)
             code, text = report(tool, work / "base", ROOT, work, gate_on, layouts)

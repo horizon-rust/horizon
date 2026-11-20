@@ -491,3 +491,27 @@ fn compiled_layouts_of_another_schema_are_refused() {
     b.schema = COMPILED_SCHEMA + 1;
     assert!(Compiled::read(serde_json::to_string(&b).unwrap().as_bytes()).is_err());
 }
+
+#[test]
+fn a_call_only_the_new_build_compiled_is_additive() {
+    // The reviewer's case: the head's generator emits one more call for a method the base
+    // already had, so its reading of both trees lists the same calls, and only the compiled
+    // tables differ: 2315 calls in the base's, 2316 in the head's.
+    let s = surface(&["tick"], vec![]);
+    let b = boundary("c0", vec![call("Hooks::tick", "01", true, &[])]);
+    let keys: Vec<String> = (0..2316).map(|i| format!("Hooks::k{i:04}")).collect();
+    let table = |n: usize| {
+        let calls: Vec<(&str, &str)> = keys[..n].iter().map(|k| (k.as_str(), "a1")).collect();
+        built("l0", &calls)
+    };
+    let d = compiled((&s, &b, &table(2315)), (&s, &b, &table(2316)));
+    assert_eq!(d.verdict, Verdict::Additive);
+    assert!(undeclared(&d).is_empty());
+    assert_eq!(d.changes.len(), 1);
+    assert_eq!(d.changes[0].id, "call:Hooks::k2315");
+    assert_eq!(d.changes[0].class, Class::Additive);
+    assert_eq!(
+        d.changes[0].what,
+        ["call `Hooks::k2315` is new in the compiled table"]
+    );
+}

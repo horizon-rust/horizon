@@ -73,8 +73,8 @@ compiled change is reported under the call's id or `core:wire`, even when the so
 reaches, for example): one hash per call cannot tell whether that cause is all of it, so a note names the call or
 `core:wire` too. One note can list all of a change's ids. This also catches what the source shows nothing of, a
 crossing type's name (the `Wire` derive hashes it, a shape leaves it out) or a change to the generator itself. The
-base's compiled layouts come from a store that only main's pushes fill, one file per commit (a symlink, another schema
-or a call count other than the base's source table is a miss), or are built by checking the base out in place, with
+base's compiled layouts come from a store that only main's pushes fill, one file per commit (a symlink, another schema,
+no calls or a call count other than the one written beside them is a miss), or are built by checking the base out in place, with
 the base's own copy of the example. A base older than the example is compared by source alone, with a warning. A pull
 request that changes the gate's own code gets a warning that its result needs a maintainer's look. A source change the
 compiled hashes do not see still counts: a newtype that crosses `via` the type it wraps changes the
