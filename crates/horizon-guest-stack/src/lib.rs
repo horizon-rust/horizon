@@ -38,6 +38,135 @@ pub fn run_on_guest_stack(test: impl FnOnce() + Send + 'static) {
     }
 }
 
+/// Runs an executable's whole `main` as `body`, after [`prepare_main`]: call it first, around
+/// everything else. Where the main thread's stack is too small and nothing can enlarge it (an
+/// x86_64 game under Rosetta 2 gets the soft limit's 8 MiB whatever `-stack_size` it links, and the
+/// hard limit is below the guest stack), `body` runs on a guest-sized stack the main thread
+/// allocates. It stays on the main thread, where AppKit needs the window and the event loop, and
+/// where a guest's host imports find their caller's state.
+pub fn run_main<R>(body: impl FnOnce() -> R) -> R {
+    #[cfg(all(target_vendor = "apple", target_arch = "x86_64"))]
+    {
+        // SAFETY: pthread_main_np only reads the calling thread's identity.
+        if inspect_current().is_err() && unsafe { libc::pthread_main_np() } != 0 {
+            let switched = on_new_stack(REQUIRED + HOST_HEADROOM, |stack| {
+                SWITCHED_MAIN_STACK[0].store(stack.start, std::sync::atomic::Ordering::Relaxed);
+                SWITCHED_MAIN_STACK[1].store(stack.end, std::sync::atomic::Ordering::Relaxed);
+                // Judged on the new stack: refuses as before if even that is too small.
+                prepare_main();
+                body()
+            });
+            return switched.unwrap_or_else(|error| {
+                eprintln!(
+                    "GuestStackUnavailable: cannot allocate the main thread's stack: {error}"
+                );
+                std::process::exit(1);
+            });
+        }
+    }
+    prepare_main();
+    body()
+}
+
+/// The stack `run_main` switched the main thread to, as [start, end), or zeros.
+#[cfg(all(target_vendor = "apple", target_arch = "x86_64"))]
+static SWITCHED_MAIN_STACK: [std::sync::atomic::AtomicUsize; 2] = [
+    std::sync::atomic::AtomicUsize::new(0),
+    std::sync::atomic::AtomicUsize::new(0),
+];
+
+/// Runs `body` on this same thread on a new stack of `size` bytes above a guard, then returns its
+/// result here, or resumes its panic here. `body` gets the new stack's usable range.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_vendor = "apple", all(test, target_os = "linux"))
+))]
+fn on_new_stack<R>(
+    size: usize,
+    body: impl FnOnce(std::ops::Range<usize>) -> R,
+) -> std::io::Result<R> {
+    // Zeroed room above the stack's top: a backtrace taken on the new stack that walks past its
+    // first frame by the stack pointer reads zeros, which end the walk, not unmapped memory.
+    const GUARD: usize = 64 * 1024;
+    const ABOVE: usize = 64 * 1024;
+    let length = GUARD + size + ABOVE;
+    // SAFETY: a new private anonymous mapping that nothing else refers to.
+    let base = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            length,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if base == libc::MAP_FAILED {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the first GUARD bytes of the mapping just made.
+    if unsafe { libc::mprotect(base, GUARD, libc::PROT_NONE) } != 0 {
+        let error = std::io::Error::last_os_error();
+        // SAFETY: the whole mapping just made, unused.
+        unsafe { libc::munmap(base, length) };
+        return Err(error);
+    }
+    let stack = base.addr() + GUARD..base.addr() + GUARD + size;
+    let top = stack.end;
+    let mut body = Some(body);
+    let mut outcome = None;
+    {
+        let mut once = || {
+            let body = body.take().expect("the new stack runs its body once");
+            outcome = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || body(stack.clone()),
+            )));
+        };
+        let mut run: &mut dyn FnMut() = &mut once;
+        // SAFETY: top is the page-aligned end of the writable part of a mapping that outlives
+        // the call, and `once` never unwinds.
+        unsafe { call_on_stack(top, &mut run) };
+    }
+    // SAFETY: the mapping made above; nothing on that stack is live once its body returned.
+    unsafe { libc::munmap(base, length) };
+    match outcome.expect("the new stack ran its body") {
+        Ok(value) => Ok(value),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Calls `run` with the stack pointer at `top`, and restores it after.
+///
+/// # Safety
+/// `top` must be the 16-byte aligned end of writable memory deep enough for `run`, and `run`
+/// must not unwind.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_vendor = "apple", all(test, target_os = "linux"))
+))]
+unsafe fn call_on_stack(top: usize, run: &mut &mut dyn FnMut()) {
+    extern "C" fn enter(run: *mut std::ffi::c_void) {
+        // SAFETY: call_on_stack passes its live `run`.
+        let run = unsafe { &mut *run.cast::<&mut dyn FnMut()>() };
+        run();
+    }
+    // SAFETY: the caller's contract; r12 is callee-saved, so it still holds the old stack pointer
+    // when `enter` returns. A call needs rsp 16-byte aligned, which `top` is.
+    unsafe {
+        std::arch::asm!(
+            "mov r12, rsp",
+            "mov rsp, {top}",
+            "call {enter}",
+            "mov rsp, r12",
+            top = in(reg) top,
+            enter = sym enter,
+            in("rdi") std::ptr::from_mut(run).cast::<std::ffi::c_void>(),
+            out("r12") _,
+            clobber_abi("C"),
+        );
+    }
+}
+
 /// Must run before compiler-child handling or any game initialization.
 pub fn prepare_main() {
     if let Err(error) = prepare() {
@@ -223,7 +352,18 @@ fn inspect_current() -> Result<(), &'static str> {
                 size / 1024,
                 soft_stack_limit()
             );
-            match mapped_stack(anchor, REQUIRED, vm_region) {
+            // On the stack run_main allocated, its bounds are known; anywhere else, measure.
+            #[cfg(target_arch = "x86_64")]
+            let switched = {
+                let start = SWITCHED_MAIN_STACK[0].load(std::sync::atomic::Ordering::Relaxed);
+                let end = SWITCHED_MAIN_STACK[1].load(std::sync::atomic::Ordering::Relaxed);
+                (start..end).contains(&anchor).then(|| anchor - start)
+            };
+            #[cfg(not(target_arch = "x86_64"))]
+            let switched = None;
+            let room: Result<usize, String> =
+                switched.map_or_else(|| mapped_stack(anchor, REQUIRED, vm_region), Ok);
+            match room {
                 Ok(mapped) if mapped >= REQUIRED => {}
                 Ok(mapped) => {
                     return refuse(format!(
@@ -771,6 +911,38 @@ mod tests {
             }
         };
         assert!(super::mapped_stack(anchor, needed, failing).is_err());
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(target_vendor = "apple", target_os = "linux")
+    ))]
+    #[test]
+    fn a_body_runs_on_the_new_stack_and_its_panic_comes_back() {
+        const MIB: usize = 1024 * 1024;
+        // Each level keeps a 4 KiB frame alive across the call below it.
+        fn deep(depth: usize) -> usize {
+            let frame = std::hint::black_box([1u8; 4096]);
+            if depth == 0 {
+                return 0;
+            }
+            deep(depth - 1) + usize::from(std::hint::black_box(&frame)[0])
+        }
+        let answer = super::on_new_stack(64 * MIB, |stack| {
+            assert_eq!(stack.len(), 64 * MIB);
+            let local = 0u8;
+            let here = std::hint::black_box(&raw const local).addr();
+            assert!(stack.contains(&here), "{here:#x} is not in {stack:x?}");
+            // At least 16 MiB deep: far past this test thread's own stack.
+            deep(4096)
+        })
+        .unwrap();
+        assert_eq!(answer, 4096);
+        let panicked = std::panic::catch_unwind(|| {
+            super::on_new_stack(MIB, |_| -> u8 { panic!("on the new stack") })
+        })
+        .unwrap_err();
+        assert_eq!(panicked.downcast_ref::<&str>(), Some(&"on the new stack"));
     }
 
     #[test]

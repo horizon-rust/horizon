@@ -885,4 +885,5 @@ Releases ship often, so nothing they leave behind may grow without bound.
 
 Guest-stack release note (arismoko/horizon#3232): game and server executables reserve 136 MiB
 (144 MiB on macOS) for their main stack through MSVC `/STACK` or Apple `-stack_size` linker arguments;
-Linux raises RLIMIT_STACK and re-execs before initialization.
+Linux raises RLIMIT_STACK and re-execs before initialization. Rosetta 2 ignores `-stack_size`, so an
+Intel macOS program there runs its `main` on a stack its main thread allocates (`run_main`).
