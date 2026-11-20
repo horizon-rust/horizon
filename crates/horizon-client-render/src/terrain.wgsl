@@ -402,7 +402,7 @@ fn fade_code(w: f32) -> u32 {
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> TerrainWire {
-    let origin = slot_origins[block_slots[vertex >> 8u]];
+    let origin = slot_origins[block_slots[vertex >> 6u]];
     return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w));
 }
@@ -443,7 +443,7 @@ fn left_out() -> TerrainOut {
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> TerrainWire {
-    let origin = slot_origins[block_slots[vertex >> 8u]];
+    let origin = slot_origins[block_slots[vertex >> 6u]];
     if !opaque_quad(layer, origin.w) { return to_wire(left_out()); }
     return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w));
@@ -453,7 +453,7 @@ fn left_out() -> TerrainOut {
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> TerrainWire {
-    let origin = slot_origins[block_slots[vertex >> 8u]];
+    let origin = slot_origins[block_slots[vertex >> 6u]];
     if opaque_quad(layer, origin.w) { return to_wire(left_out()); }
     return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w));
@@ -656,18 +656,18 @@ fn corner_vertex(c: ArenaCorner, origin: vec4<f32>) -> TerrainOut {
 }
 @vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainWire {
     let s = section_corner(vertex);
-    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    let origin = slot_origins[block_slots[s.slot >> 6u]];
     return to_wire(corner_vertex(s.c, origin));
 }
 @vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainWire {
     let s = section_corner(vertex);
-    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    let origin = slot_origins[block_slots[s.slot >> 6u]];
     if !opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
     return to_wire(corner_vertex(s.c, origin));
 }
 @vertex fn vs_section_flat_cutout(@builtin(vertex_index) vertex: u32) -> TerrainWire {
     let s = section_corner(vertex);
-    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    let origin = slot_origins[block_slots[s.slot >> 6u]];
     if opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
     return to_wire(corner_vertex(s.c, origin));
 }
@@ -742,15 +742,17 @@ struct TerrainMsaa {
     let in = from_wire(wire);
     let s = solid_uncut(in);
     let mask = cutout_coverage(s.color.a, (in.layer & 0x8000u) != 0u);
-    return TerrainMsaa(solid_finish(in, s.texel, s.color), mask);
+    return TerrainMsaa(solid_light(solid_finish_at(in, s.texel, s.color, s.du, s.dv)), mask);
 }
 // `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
 @fragment fn fs_opaque(wire: TerrainWire) -> @location(0) vec4<f32> {
     let in = from_wire(wire);
-    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let texel = sprite_at(in.uv, in.layer & 0x7fffu, du, dv);
     var color = texel * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
-    return solid_finish(in, texel, color);
+    return solid_light(solid_finish_at(in, texel, color, du, dv));
 }
 // The water mirror (gfx.rs's reflection pass): what lies below the water plane
 // (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
@@ -763,23 +765,27 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     let s = solid_uncut(in);
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     if s.color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
-    return solid_finish(in, s.texel, s.color);
+    return solid_light(solid_finish_at(in, s.texel, s.color, s.du, s.dv));
 }
 // A solid pixel's sprite texel and colour before its cutout, which `solid_color` discards
 // below half alpha and `fs_solid_msaa` turns into coverage.
 struct SolidUncut {
     texel: vec4<f32>,
     color: vec4<f32>,
+    du: vec2<f32>,
+    dv: vec2<f32>,
 }
 fn solid_uncut(in: TerrainOut) -> SolidUncut {
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
     if faded(in.fade, in.local, dx, dy) { discard; }
-    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let texel = sprite_at(in.uv, in.layer & 0x7fffu, du, dv);
     var color = texel * in.color;
     // terrain.fsh: the fade-in mixes toward the fog colour.
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
-    return SolidUncut(texel, color);
+    return SolidUncut(texel, color, du, dv);
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
@@ -1079,6 +1085,11 @@ struct SunriseOut {
 }
 @vertex fn vs_sunrise(@location(0) clip: vec4<f32>, @location(1) weight: f32) -> SunriseOut {
     return SunriseOut(clip, weight);
+}
+// The sunrise fan drawn after solid terrain: pinned to the reversed-Z far plane (`z = 0.0`) so
+// `CompareFunction::Equal` draws only on pixels untouched by opaque geometry.
+@vertex fn vs_sunrise_depth(@location(0) clip: vec4<f32>, @location(1) weight: f32) -> SunriseOut {
+    return SunriseOut(vec4(clip.xy, 0.0, clip.w), weight);
 }
 @fragment fn fs_sunrise(in: SunriseOut) -> @location(0) vec4<f32> {
     return vec4(sky_finished(globals.sunrise.rgb).rgb, in.weight * globals.sunrise.a);

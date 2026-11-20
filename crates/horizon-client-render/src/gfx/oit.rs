@@ -581,16 +581,15 @@ impl Oit {
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        uploads: &mut super::upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
         size: [u32; 2],
         projection: &Mat4,
         wants: [bool; 2],
     ) {
-        queue.write_buffer(
-            &self.uniform,
-            0,
-            bytemuck::cast_slice(&[projection_terms(projection), [0.0; 2]].concat()),
-        );
+        let [p0, p1] = projection_terms(projection);
+        let terms = [p0, p1, 0.0, 0.0];
+        uploads.buffer(encoder, &self.uniform, 0, bytemuck::cast_slice(&terms));
         let [mask, clouds] = wants;
         if let Some(t) = self.targets.as_mut().filter(|t| t.size == size) {
             if mask && t.terrain_depth.is_none() {

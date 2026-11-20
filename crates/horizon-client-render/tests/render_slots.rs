@@ -16,6 +16,7 @@ fn render_provider_is_optional_and_installed_once() {
             needs.world_depth = true;
         },
         world_drawn_hooked: || true,
+        hand_drawn_hooked: || false,
     });
     assert!(render_slots::world_drawn_hooked());
     assert!(render_slots::needs().entity_spans);
@@ -28,6 +29,7 @@ fn render_provider_is_optional_and_installed_once() {
         hand_drawn: |_| panic!("second provider replaced the first"),
         render_needs: |_| panic!("second provider replaced the first"),
         world_drawn_hooked: || false,
+        hand_drawn_hooked: || false,
     });
     assert!(render_slots::world_drawn_hooked());
     assert!(render_slots::needs().world_depth);

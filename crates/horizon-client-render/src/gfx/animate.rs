@@ -225,12 +225,16 @@ impl SpriteAnimator {
                 group,
             });
         }
+        sprites.shrink_to_fit();
         let max_layer = animations.iter().map(|a| a.layer).max().unwrap_or(0);
         let mut is_animated = vec![false; (max_layer + 1) as usize];
         for a in animations {
             is_animated[a.layer as usize] = true;
         }
         let Some((pipeline, layout)) = pipeline else {
+            for data in &mut frames {
+                data.shrink_to_fit();
+            }
             let groups = keys
                 .iter()
                 .zip(&counts)
@@ -256,11 +260,11 @@ impl SpriteAnimator {
             };
         };
         let frames: Vec<_> = frames
-            .iter()
+            .into_iter()
             .map(|data| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Animated sprite frames"),
-                    contents: data,
+                    contents: &data,
                     usage: wgpu::BufferUsages::STORAGE,
                 })
             })
@@ -343,6 +347,16 @@ impl SpriteAnimator {
             .get(layer as usize)
             .copied()
             .unwrap_or(false)
+    }
+
+    /// Whether any animated sprite uses a Polytone mode driven by inputs other than `tick`.
+    pub fn has_modes(&self) -> bool {
+        self.sprites.iter().any(|s| s.animation.mode().is_some())
+    }
+
+    /// Whether every sprite has been written at least once.
+    pub fn all_shown(&self) -> bool {
+        self.sprites.iter().all(|s| s.shown.is_some())
     }
 
     /// Number of words needed to mark the animated layers visible this frame.

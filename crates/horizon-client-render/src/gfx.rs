@@ -397,15 +397,17 @@ impl<'a> SectionLists<'a> {
                         .slice(..),
                 ),
             };
-            pass.set_vertex_buffer(0, vertices);
+            let pulled_page = pulled
+                && index_page.is_none()
+                && self.flat.and_then(|f| f.page_group(page)).is_some();
+            if !pulled_page {
+                pass.set_vertex_buffer(0, vertices);
+            }
             if let Some(looks) = self.looks {
                 let translucent = self.translucent_arena.is_some() && index_page.is_some();
                 pass.set_bind_group(looks::GROUP, looks.page(page, translucent), &[]);
             }
-            if pulled
-                && index_page.is_none()
-                && let Some(group) = self.flat.and_then(|f| f.page_group(page))
-            {
+            if pulled_page && let Some(group) = self.flat.and_then(|f| f.page_group(page)) {
                 pass.set_bind_group(1, group, &[]);
             }
             pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
@@ -1353,6 +1355,357 @@ impl SolidPipeline {
     }
 }
 
+/// Exact bit-pattern key for `Renderer::update_lightmap`'s inputs. Skipping
+/// the 256-texel recompute on unchanged frames keeps high-FPS frames free of
+/// redundant lightmap math (fullbright still invalidates via its own bool).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LightmapKey {
+    sky_light_factor: u32,
+    ambient_light_color: [u32; 3],
+    sky_light_color: [u32; 3],
+    block_light_tint: [u32; 3],
+    darkness: u32,
+    gamma: u32,
+    night_vision: u32,
+    flicker: u32,
+    boss_darken: u32,
+    fullbright: bool,
+}
+
+impl LightmapKey {
+    fn new(
+        sky: &Sky,
+        darkness: f32,
+        gamma: f32,
+        night_vision: f32,
+        flicker: f32,
+        boss_darken: f32,
+        fullbright: bool,
+    ) -> Self {
+        if fullbright {
+            return Self {
+                sky_light_factor: 0,
+                ambient_light_color: [0; 3],
+                sky_light_color: [0; 3],
+                block_light_tint: [0; 3],
+                darkness: 0,
+                gamma: 0,
+                night_vision: 0,
+                flicker: 0,
+                boss_darken: 0,
+                fullbright: true,
+            };
+        }
+        Self {
+            sky_light_factor: sky.sky_light_factor.to_bits(),
+            ambient_light_color: sky.ambient_light_color.map(f32::to_bits),
+            sky_light_color: sky.sky_light_color.map(f32::to_bits),
+            block_light_tint: sky.block_light_tint.map(f32::to_bits),
+            darkness: darkness.to_bits(),
+            gamma: gamma.to_bits(),
+            night_vision: night_vision.to_bits(),
+            flicker: flicker.to_bits(),
+            boss_darken: boss_darken.to_bits(),
+            fullbright: false,
+        }
+    }
+}
+
+/// Pins a clip-space projection matrix to reversed-Z `z = 0.0` (the cleared
+/// far plane) while keeping `x`, `y` and `w` bit-identical so sky geometry
+/// drawn after solid terrain passes `CompareFunction::Equal` only on pixels
+/// untouched by opaque terrain.
+fn zero_z_row(m: Mat4) -> [[f32; 4]; 4] {
+    let mut cols = m.to_cols_array_2d();
+    for col in &mut cols {
+        col[2] = 0.0;
+    }
+    cols
+}
+
+/// Depth-equal (`z == 0.0` in reversed-Z) celestial pipelines and far-plane-pinned
+/// globals for drawing sun, moon and End sky after solid terrain.
+struct CelestialAfterSolid {
+    added: wgpu::RenderPipeline,
+    sun: Option<[wgpu::RenderPipeline; 2]>,
+    globals: wgpu::Buffer,
+    group: wgpu::BindGroup,
+}
+
+impl CelestialAfterSolid {
+    fn new(
+        kept: &reuse::On<'_>,
+        (layout, shader, vertex): (
+            &wgpu::PipelineLayout,
+            &wgpu::ShaderModule,
+            &[Option<wgpu::VertexBufferLayout<'_>>],
+        ),
+        (format, linear): (wgpu::TextureFormat, bool),
+        globals: wgpu::Buffer,
+        group: wgpu::BindGroup,
+    ) -> Self {
+        let pipeline = |label, entry, blend, write_mask| {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_entity"),
+                    compilation_options: Default::default(),
+                    buffers: vertex,
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Equal),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &linear_blend::frame_constants(format, linear),
+                        ..Default::default()
+                    },
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let component = |src_factor, dst_factor, operation| wgpu::BlendComponent {
+            src_factor,
+            dst_factor,
+            operation,
+        };
+        use wgpu::{BlendFactor as F, BlendOperation as Op};
+        let added = pipeline(
+            "Celestial bodies (after solid)",
+            "fs_sky_celestial",
+            wgpu::BlendState {
+                color: component(F::One, F::One, Op::Add),
+                alpha: component(F::Zero, F::OneMinusSrcAlpha, Op::Add),
+            },
+            wgpu::ColorWrites::ALL,
+        );
+        let sun = (format == LINEAR_FRAME).then(|| {
+            let affine = component(F::One, F::SrcAlpha, Op::Add);
+            let min = component(F::One, F::One, Op::Min);
+            [
+                pipeline(
+                    "The sun onto the sky (after solid)",
+                    "fs_sky_sun",
+                    wgpu::BlendState {
+                        color: affine,
+                        alpha: affine,
+                    },
+                    wgpu::ColorWrites::COLOR,
+                ),
+                pipeline(
+                    "The sun's clip (after solid)",
+                    "fs_sky_sun_clip",
+                    wgpu::BlendState {
+                        color: min,
+                        alpha: min,
+                    },
+                    wgpu::ColorWrites::COLOR,
+                ),
+            ]
+        });
+        Self {
+            added,
+            sun,
+            globals,
+            group,
+        }
+    }
+
+    fn draw_bodies(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        lifted: bool,
+        mut range: std::ops::Range<u32>,
+    ) {
+        if let Some(sun) = self
+            .sun
+            .as_ref()
+            .filter(|_| lifted && range.start == 0 && range.end >= 6)
+        {
+            for pipeline in sun {
+                pass.set_pipeline(pipeline);
+                pass.draw_indexed(0..6, 0, 0..1);
+            }
+            pass.set_pipeline(&self.added);
+            range.start = 6;
+        }
+        if !range.is_empty() {
+            pass.draw_indexed(range, 0, 0..1);
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct StarsUniform {
+    clip_from_sky: [[f32; 4]; 4],
+    color: [f32; 4],
+    hdr_settings: [f32; 4],
+    hdr_light: [f32; 4],
+}
+
+/// Depth-equal (`z == 0.0` in reversed-Z) star field drawn after solid terrain.
+struct StarsAfterSolid {
+    pipeline: wgpu::RenderPipeline,
+    group: wgpu::BindGroup,
+    uniform: wgpu::Buffer,
+    vertices: wgpu::Buffer,
+    count: u32,
+}
+
+impl StarsAfterSolid {
+    fn new(
+        device: &wgpu::Device,
+        kept: &reuse::On<'_>,
+        (format, linear): (wgpu::TextureFormat, bool),
+    ) -> Self {
+        let triangles = stars::star_triangles();
+        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Stars vertex buffer (after solid)"),
+            contents: bytemuck::cast_slice(&triangles),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Stars rotation and brightness (after solid)"),
+            size: std::mem::size_of::<StarsUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let layout = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Stars bindings (after solid)"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Stars resources (after solid)"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        let shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Stars shader (after solid)"),
+            source: wgpu::ShaderSource::Wgsl(
+                (wgsl_prefix::HDR_LIGHT.to_owned() + include_str!("gfx/stars.wgsl")).into(),
+            ),
+        });
+        let pipeline_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Stars layout (after solid)"),
+            bind_group_layouts: &[Some(&layout)],
+            ..Default::default()
+        });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x3];
+        let pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Stars (after solid)"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_stars"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 12,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attributes,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Equal),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_stars"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &linear_blend::frame_constants(format, linear),
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            group,
+            uniform,
+            vertices,
+            count: triangles.len() as u32,
+        }
+    }
+
+    fn prepare(
+        &self,
+        uploads: &mut upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        clip_from_sky: Mat4,
+        brightness: f32,
+        globals: &Globals,
+    ) {
+        let b = brightness.clamp(0.0, 1.0);
+        let uniform = StarsUniform {
+            clip_from_sky: zero_z_row(clip_from_sky),
+            color: [b; 4],
+            hdr_settings: globals.hdr_settings,
+            hdr_light: globals.hdr_light,
+        };
+        uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.group, &[]);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.draw(0..self.count, 0..1);
+    }
+}
+
 pub struct Renderer {
     msaa: msaa::Msaa,
     instance: wgpu::Instance,
@@ -1466,9 +1819,14 @@ pub struct Renderer {
     /// geometry over it. The mirror keeps `sky`: its per-pixel fan is cheap at
     /// the reflection's size and needs no second projection.
     sky_base: wgpu::RenderPipeline,
+    /// Depth-tested (`CompareFunction::Equal` at reversed-Z `z = 0.0`) variants
+    /// drawn after solid terrain so occluded sky pixels are skipped by early-Z.
+    sky_base_after_solid: wgpu::RenderPipeline,
     sunrise_pipeline: wgpu::RenderPipeline,
+    sunrise_after_solid: wgpu::RenderPipeline,
     sunrise_buffer: wgpu::Buffer,
     dark_disc: wgpu::RenderPipeline,
+    dark_disc_after_solid: wgpu::RenderPipeline,
     /// Clears the world pass's depth to the far plane so the first-person hand draws in the
     /// same pass (`hand_in_world`), as the hand's own pass would clear it.
     depth_reset: wgpu::RenderPipeline,
@@ -1538,9 +1896,11 @@ pub struct Renderer {
     fluid_pipeline: wgpu::RenderPipeline,
     terrain_model_pipelines: [wgpu::RenderPipeline; 3],
     celestial: celestial::Celestial,
+    celestial_after_solid: CelestialAfterSolid,
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
     stars: stars::Stars,
+    stars_after_solid: StarsAfterSolid,
     /// Custom sky layers (`crate::custom_sky`), and the frame's from the game.
     custom_sky: custom_sky::CustomSky,
     custom_sky_draws: Vec<crate::custom_sky::Draw>,
@@ -1619,6 +1979,8 @@ pub struct Renderer {
     animations: animate::SpriteAnimator,
     material_animations: material_animate::MaterialAnimations,
     active_animated_layers: Vec<u64>,
+    last_animated_tick: Option<u64>,
+    last_hud_animated_tick: Option<u64>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
     /// `section_copies`, which the next frame records its commands after:
@@ -1631,6 +1993,8 @@ pub struct Renderer {
     shrink_gate: ShrinkGate,
     /// Whether `lightmap` holds `lightmap_pixels` yet.
     lightmap_uploaded: bool,
+    /// Inputs of the last lightmap computation, to skip 256-texel recompute on unchanged frames.
+    lightmap_key: Option<LightmapKey>,
     sprite_minimum_size: u32,
     /// Each sprite layer's own side, before the arrays scaled it up (`mipmap::Settings::native_size`).
     sprite_native: Vec<u32>,
@@ -2809,6 +3173,57 @@ impl Renderer {
             false,
             None,
         );
+        // Depth-equal (`z == 0.0` in reversed-Z) sky pipelines for drawing after
+        // solid terrain: only pixels left untouched at the cleared far plane run
+        // the sky fragment shaders.
+        let sky_depth_equal = |label: &str,
+                               vertex: &str,
+                               fragment: &str,
+                               buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                               blend: Option<wgpu::BlendState>| {
+            let mut constants = sprite_constants.to_vec();
+            constants.extend(linear_blend::frame_constants(frame_format, linear_light));
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vertex),
+                    compilation_options: Default::default(),
+                    buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: tri,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Equal),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..Default::default()
+                    },
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: frame_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let sky_base_after_solid =
+            sky_depth_equal("Sky base (after solid)", "vs_sky", "fs_sky_base", &[], None);
         let sunrise_attributes = wgpu::vertex_attr_array![0=>Float32x4, 1=>Float32];
         let sunrise_buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: 20,
@@ -2839,6 +3254,13 @@ impl Renderer {
             false,
             Some(sunrise_blend),
         );
+        let sunrise_after_solid = sky_depth_equal(
+            "Sunrise fan (after solid)",
+            "vs_sunrise_depth",
+            "fs_sunrise",
+            &sunrise_buffers,
+            Some(sunrise_blend),
+        );
         let dark_disc = pipeline(
             "Dark disc",
             "vs_sky",
@@ -2848,6 +3270,13 @@ impl Renderer {
             None,
             false,
             false,
+            Some(alpha_blend),
+        );
+        let dark_disc_after_solid = sky_depth_equal(
+            "Dark disc (after solid)",
+            "vs_sky",
+            "fs_dark_disc",
+            &[],
             Some(alpha_blend),
         );
         let depth_reset = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -2973,6 +3402,12 @@ impl Renderer {
         });
         let hand_globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("First-person hand globals"),
+            size: std::mem::size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let celestial_after_solid_globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sky celestial globals"),
             size: std::mem::size_of::<Globals>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -3453,6 +3888,44 @@ impl Renderer {
                 },
             ],
         });
+        let celestial_after_solid_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Sky celestial resources"),
+            layout: &entity_bindings,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: celestial_after_solid_globals.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&lightmap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&lightmap_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&glint_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&glint_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&glint_armor_view),
+                },
+            ],
+        });
         let entity_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Entity layout"),
             bind_group_layouts: &[Some(&entity_bindings)],
@@ -3851,6 +4324,13 @@ impl Renderer {
             &entity_shader,
             &entity_vertex,
             (frame_format, linear_light),
+        );
+        let celestial_after_solid = CelestialAfterSolid::new(
+            &kept,
+            (&entity_layout, &entity_shader, &entity_vertex),
+            (frame_format, linear_light),
+            celestial_after_solid_globals,
+            celestial_after_solid_group,
         );
         drop(entity_step);
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
@@ -4328,6 +4808,7 @@ impl Renderer {
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, (frame_format, linear_light));
+        let stars_after_solid = StarsAfterSolid::new(&device, &kept, (frame_format, linear_light));
         let custom_sky = custom_sky::CustomSky::new(&device, (frame_format, linear_light));
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
@@ -4419,9 +4900,12 @@ impl Renderer {
             visbuf,
             sky,
             sky_base,
+            sky_base_after_solid,
             sunrise_pipeline,
+            sunrise_after_solid,
             sunrise_buffer,
             dark_disc,
+            dark_disc_after_solid,
             depth_reset,
             lines,
             lines_secondary,
@@ -4469,9 +4953,11 @@ impl Renderer {
             fluid_pipeline,
             terrain_model_pipelines,
             celestial,
+            celestial_after_solid,
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
             stars,
+            stars_after_solid,
             custom_sky,
             custom_sky_draws: Vec::new(),
             entity_outline,
@@ -4531,12 +5017,15 @@ impl Renderer {
             animations,
             material_animations,
             active_animated_layers: vec![0; active_layer_words],
+            last_animated_tick: None,
+            last_hud_animated_tick: None,
             uploads,
             section_uploads,
             section_copies: None,
             section_copy_bytes: 0,
             shrink_gate: ShrinkGate::default(),
             lightmap_uploaded: false,
+            lightmap_key: None,
             sprite_minimum_size,
             sprite_native: sprite_mips.iter().map(|s| s.native_size).collect(),
             mipmap_option: 4,
@@ -7027,43 +7516,56 @@ impl Renderer {
         flicker: f32,
         boss_darken: f32,
     ) {
-        // lightmap.fsh: per (block, sky) level.
-        let brightness = |level: f32| level / (4.0 - 3.0 * level);
-        let mut pixels = [0u8; 16 * 16 * 4];
-        for s in 0..16 {
-            for b in 0..16 {
-                let block_level = b as f32 / 15.0;
-                let sky_level = s as f32 / 15.0;
-                let block_brightness = brightness(block_level) * (1.4 + flicker);
-                let sky_brightness = brightness(sky_level) * sky.sky_light_factor;
-                // NightVisionColor defaults to 0x999999.
-                let mut color =
-                    Vec3::from(sky.ambient_light_color).max(Vec3::splat(0.6 * night_vision));
-                color += Vec3::from(sky.sky_light_color) * sky_brightness;
-                let parabolic = (2.0 * block_level - 1.0).powi(2);
-                let block_color = Vec3::from(sky.block_light_tint).lerp(Vec3::ONE, 0.9 * parabolic);
-                color += block_color * block_brightness;
-                // lightmap.fsh: a boss bar mixes the light toward 70/60/60%.
-                color = color.lerp(color * Vec3::new(0.7, 0.6, 0.6), boss_darken);
-                color -= Vec3::splat(darkness);
-                color = color.clamp(Vec3::ZERO, Vec3::ONE);
-                let max = color.max_element().max(1e-6);
-                let inverted = 1.0 - max;
-                let scaled = 1.0 - inverted.powi(4);
-                let not_gamma = color * (scaled / max);
-                color = color.lerp(not_gamma, gamma);
-                let i = (s * 16 + b) * 4;
-                pixels[i] = (color.x * 255.0) as u8;
-                pixels[i + 1] = (color.y * 255.0) as u8;
-                pixels[i + 2] = (color.z * 255.0) as u8;
-                pixels[i + 3] = 255;
-            }
+        let key = LightmapKey::new(
+            sky,
+            darkness,
+            gamma,
+            night_vision,
+            flicker,
+            boss_darken,
+            self.fullbright,
+        );
+        if self.lightmap_uploaded && self.lightmap_key == Some(key) {
+            return;
         }
-        if self.fullbright {
-            pixels.fill(255);
+        let mut pixels = [255u8; 16 * 16 * 4];
+        if !self.fullbright {
+            // lightmap.fsh: per (block, sky) level.
+            let brightness = |level: f32| level / (4.0 - 3.0 * level);
+            for s in 0..16 {
+                for b in 0..16 {
+                    let block_level = b as f32 / 15.0;
+                    let sky_level = s as f32 / 15.0;
+                    let block_brightness = brightness(block_level) * (1.4 + flicker);
+                    let sky_brightness = brightness(sky_level) * sky.sky_light_factor;
+                    // NightVisionColor defaults to 0x999999.
+                    let mut color =
+                        Vec3::from(sky.ambient_light_color).max(Vec3::splat(0.6 * night_vision));
+                    color += Vec3::from(sky.sky_light_color) * sky_brightness;
+                    let parabolic = (2.0 * block_level - 1.0).powi(2);
+                    let block_color =
+                        Vec3::from(sky.block_light_tint).lerp(Vec3::ONE, 0.9 * parabolic);
+                    color += block_color * block_brightness;
+                    // lightmap.fsh: a boss bar mixes the light toward 70/60/60%.
+                    color = color.lerp(color * Vec3::new(0.7, 0.6, 0.6), boss_darken);
+                    color -= Vec3::splat(darkness);
+                    color = color.clamp(Vec3::ZERO, Vec3::ONE);
+                    let max = color.max_element().max(1e-6);
+                    let inverted = 1.0 - max;
+                    let scaled = 1.0 - inverted.powi(4);
+                    let not_gamma = color * (scaled / max);
+                    color = color.lerp(not_gamma, gamma);
+                    let i = (s * 16 + b) * 4;
+                    pixels[i] = (color.x * 255.0) as u8;
+                    pixels[i + 1] = (color.y * 255.0) as u8;
+                    pixels[i + 2] = (color.z * 255.0) as u8;
+                    pixels[i + 3] = 255;
+                }
+            }
         }
         // The lightmap changes with the time of day, flicker and effects,
         // not every frame: upload only what differs from the texture.
+        self.lightmap_key = Some(key);
         if pixels == self.lightmap_pixels && self.lightmap_uploaded {
             return;
         }
@@ -7482,13 +7984,22 @@ impl Renderer {
             t.set_detail(self.pass_detail);
             t.begin(&self.device, &self.queue);
         }
-        if self.animated_textures {
-            self.hud.animate(
-                &mut self.uploads,
-                &mut encoder,
-                frame.ticks,
-                &self.animations,
-            );
+        if self.animated_textures && !self.hud.sprite_animations.is_empty() {
+            let same_tick = self.last_hud_animated_tick == Some(frame.ticks)
+                && self
+                    .hud
+                    .sprite_animations
+                    .iter()
+                    .all(|(_, a, prev)| a.mode().is_none() && prev.0 != usize::MAX);
+            if !same_tick {
+                self.hud.animate(
+                    &mut self.uploads,
+                    &mut encoder,
+                    frame.ticks,
+                    &self.animations,
+                );
+                self.last_hud_animated_tick = Some(frame.ticks);
+            }
         }
         self.update_lightmap(
             &mut encoder,
@@ -7631,7 +8142,11 @@ impl Renderer {
                 0,
                 0,
             ],
-            sunrise_fan: sunrise_fan::normals(frame.sky.sunrise_color[3], sun),
+            sunrise_fan: if frame.sky.sunrise_color[3] > 0.001 && !frame.title && frame.skybox {
+                sunrise_fan::normals(frame.sky.sunrise_color[3], sun)
+            } else {
+                [[0.0; 4]; 32]
+            },
             filtering: [
                 self.texture_filtering as f32,
                 self.sprite_textures[0].width() as f32,
@@ -7657,11 +8172,19 @@ impl Renderer {
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
+        let sky_visible = sky_open(frame);
+        let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
+        let pack_draws_hand = pack_post
+            && self
+                .pack_post
+                .as_ref()
+                .and_then(|p| p.1.as_ref())
+                .is_some_and(|p| p.has_hand());
         // The sunrise fan as sixteen triangles. Its clip positions use the sky's
         // own view (no TAA jitter; the bob and the spin, as `fs_sky`'s `view_ray`),
         // and its apex weight interpolates the barycentric the shader used to
         // compute for every sky pixel.
-        if frame.sky.sunrise_color[3] > 0.001 && !frame.title && frame.skybox {
+        if frame.sky.sunrise_color[3] > 0.001 && !frame.title && frame.skybox && sky_visible {
             let sky_view_proj = views.primary().view_proj(pose);
             let mut mesh = [[0.0f32; 5]; sunrise_fan::VERTICES];
             for (to, from) in mesh
@@ -7688,29 +8211,33 @@ impl Renderer {
             frame.depth_far,
         ));
         let hand_view_proj = hand_projection * frame.bob * view;
-        let hand_globals = Globals {
-            view_proj: hand_view_proj.to_cols_array_2d(),
-            ..globals
-        };
-        self.uploads.buffer(
-            &mut encoder,
-            &self.hand_globals,
-            0,
-            bytemuck::bytes_of(&hand_globals),
-        );
+        if frame.hand.len() >= 4 && !pack_draws_hand {
+            let hand_globals = Globals {
+                view_proj: hand_view_proj.to_cols_array_2d(),
+                ..globals
+            };
+            self.uploads.buffer(
+                &mut encoder,
+                &self.hand_globals,
+                0,
+                bytemuck::bytes_of(&hand_globals),
+            );
+        }
         // GameRenderer.render3dHud: DebugCrosshairRenderer draws with the
         // hand's projection but no bob, and FogMode.NONE (no fog colour).
-        let crosshair_globals = Globals {
-            view_proj: (hand_projection * view).to_cols_array_2d(),
-            fog_color: [0.0; 4],
-            ..globals
-        };
-        self.uploads.buffer(
-            &mut encoder,
-            &self.crosshair_globals,
-            0,
-            bytemuck::bytes_of(&crosshair_globals),
-        );
+        if !frame.debug_crosshair.is_empty() {
+            let crosshair_globals = Globals {
+                view_proj: (hand_projection * view).to_cols_array_2d(),
+                fog_color: [0.0; 4],
+                ..globals
+            };
+            self.uploads.buffer(
+                &mut encoder,
+                &self.crosshair_globals,
+                0,
+                bytemuck::bytes_of(&crosshair_globals),
+            );
+        }
         // 4x MSAA, unless a classic shader pack runs (a failed or refused one leaves `None`):
         // it and native displacement keep their single-sample pipelines, as does a material
         // whose four-sample layers the driver refused. Nor where its targets ran out of video
@@ -7998,35 +8525,44 @@ impl Renderer {
             }
         }
         if self.animated_textures {
-            self.active_animated_layers.fill(0);
-            let lists = self.world_views.sections.sections();
-            for v in visible.iter().chain(&shadow_visible).chain(lists) {
-                let s = self.sections.get(v.slot);
-                for &layer in &*s.animated_layers {
-                    let layer = layer as usize;
-                    self.active_animated_layers[layer / u64::BITS as usize] |=
-                        1_u64 << (layer % u64::BITS as usize);
-                }
-            }
-            for v in &visible_lods {
-                if let Some(tile) = self.lods.get(&v.key) {
-                    for &layer in &*tile.drawn().animated_layers {
-                        let layer = layer as usize;
-                        self.active_animated_layers[layer / u64::BITS as usize] |=
-                            1_u64 << (layer % u64::BITS as usize);
+            let cull_inactive = !frame.title && !gpu_frame;
+            let same_tick = self.last_animated_tick == Some(frame.ticks)
+                && !self.animations.has_modes()
+                && (!cull_inactive || self.animations.all_shown());
+            if !same_tick {
+                if cull_inactive {
+                    self.active_animated_layers.fill(0);
+                    let lists = self.world_views.sections.sections();
+                    for v in visible.iter().chain(&shadow_visible).chain(lists) {
+                        let s = self.sections.get(v.slot);
+                        for &layer in &*s.animated_layers {
+                            let layer = layer as usize;
+                            self.active_animated_layers[layer / u64::BITS as usize] |=
+                                1_u64 << (layer % u64::BITS as usize);
+                        }
                     }
-                    for &layer in &*tile.mesh.animated_layers {
-                        let layer = layer as usize;
-                        self.active_animated_layers[layer / u64::BITS as usize] |=
-                            1_u64 << (layer % u64::BITS as usize);
+                    for v in &visible_lods {
+                        if let Some(tile) = self.lods.get(&v.key) {
+                            for &layer in &*tile.drawn().animated_layers {
+                                let layer = layer as usize;
+                                self.active_animated_layers[layer / u64::BITS as usize] |=
+                                    1_u64 << (layer % u64::BITS as usize);
+                            }
+                            for &layer in &*tile.mesh.animated_layers {
+                                let layer = layer as usize;
+                                self.active_animated_layers[layer / u64::BITS as usize] |=
+                                    1_u64 << (layer % u64::BITS as usize);
+                            }
+                        }
                     }
                 }
+                // Visibility is collected before terrain draw commands are recorded,
+                // so upload the current mask here and keep animation updates ahead
+                // of every draw in this command buffer. A GPU frame's walk leaves out
+                // the sections GPU culling draws: every layer animates.
+                self.animate(&mut encoder, frame.ticks, cull_inactive);
+                self.last_animated_tick = Some(frame.ticks);
             }
-            // Visibility is collected before terrain draw commands are recorded,
-            // so upload the current mask here and keep animation updates ahead
-            // of every draw in this command buffer. A GPU frame's walk leaves out
-            // the sections GPU culling draws: every layer animates.
-            self.animate(&mut encoder, frame.ticks, !frame.title && !gpu_frame);
         }
         let listed = visible.len() + visible_lods.len();
         let viewed = listed + shadow_visible.len();
@@ -8328,29 +8864,32 @@ impl Renderer {
         let count = visible.len() + visible_lods.len();
         let budget = (count / 8).max(15).min(count);
         self.translucency_cursor %= count.max(1);
+        let oit_on = !frame.title && self.improved_transparency_runs();
         for (i, v) in visible.iter().enumerate().rev() {
             let s = self.sections.get_mut(v.slot);
             if let Some((index_page, index_start)) = s.sorted_indices {
-                let nearby = (v.key.0 - camera_section.0).abs() <= 2
-                    && (v.key.1 - camera_section.1).abs() <= 2
-                    && (v.key.2 - camera_section.2).abs() <= 2;
-                let scheduled = (i + count - self.translucency_cursor) % count < budget;
-                let origin = [
-                    v.key.0 * 16,
-                    self.layout.min_y() + v.key.1 * 16,
-                    v.key.2 * 16,
-                ];
-                if (!s.sort.is_sorted() || nearby || scheduled)
-                    && let Some(indices) =
-                        s.sort
-                            .update(camera.to_array(), origin, &mut self.translucent_sorter)
-                {
-                    self.uploads.buffer(
-                        &mut encoder,
-                        self.sorted_indices.buffer(index_page),
-                        index_start * 4,
-                        bytemuck::cast_slice(indices),
-                    );
+                if !oit_on || !s.sort.is_sorted() {
+                    let nearby = (v.key.0 - camera_section.0).abs() <= 2
+                        && (v.key.1 - camera_section.1).abs() <= 2
+                        && (v.key.2 - camera_section.2).abs() <= 2;
+                    let scheduled = (i + count - self.translucency_cursor) % count < budget;
+                    let origin = [
+                        v.key.0 * 16,
+                        self.layout.min_y() + v.key.1 * 16,
+                        v.key.2 * 16,
+                    ];
+                    if (!s.sort.is_sorted() || nearby || scheduled)
+                        && let Some(indices) =
+                            s.sort
+                                .update(camera.to_array(), origin, &mut self.translucent_sorter)
+                    {
+                        self.uploads.buffer(
+                            &mut encoder,
+                            self.sorted_indices.buffer(index_page),
+                            index_start * 4,
+                            bytemuck::cast_slice(indices),
+                        );
+                    }
                 }
                 let (page, first) = s.translucent_at;
                 self.translucent_draws.push((
@@ -8676,8 +9215,7 @@ impl Renderer {
             entities = &self.pack_entity_rest;
         }
         // GameRenderer.useImprovedTransparency. A shader pack keeps its own
-        // path.
-        let oit_on = !frame.title && self.improved_transparency_runs();
+        // path (`oit_on` computed above before translucent sorting).
         self.cracks_transparent = oit_on && !hdr_gain;
         let [
             entity_quads,
@@ -9027,15 +9565,6 @@ impl Renderer {
             (outline_base, outlined / 4),
             [self.config.width, self.config.height],
         );
-        if let Some((rotation, brightness)) = frame.stars {
-            self.stars.prepare(
-                &mut self.uploads,
-                &mut encoder,
-                jittered * rotation,
-                brightness,
-                &globals,
-            );
-        }
         self.custom_sky.prepare(
             &mut self.uploads,
             &mut encoder,
@@ -9044,6 +9573,44 @@ impl Renderer {
             &globals,
         );
         let celestial_vertices = frame.celestial.len().min(2048 * 4);
+        // In vanilla frames (no shader pack, custom sky, core/sky, visbuffer,
+        // world primitives, or GL depth remapping), draw the sky after solid
+        // terrain at reversed-Z `z = 0.0` with `CompareFunction::Equal` so
+        // early-Z skips shading every sky pixel occluded by opaque terrain.
+        let defer_sky = !frame.title
+            && !msaa_on
+            && sky_visible
+            && (frame.skybox || frame.end_sky)
+            && !self.custom_sky.is_drawing()
+            && !pack_post
+            && self.external.is_none()
+            && self.executor.is_none()
+            && self.visbuf.is_none()
+            && !world_primitives
+            && self.info.backend != wgpu::Backend::Gl
+            && self
+                .core_sky
+                .as_ref()
+                .is_none_or(|c| !c.draws_disc() && !(frame.stars.is_some() && c.draws_stars()));
+        if let Some((rotation, brightness)) = frame.stars {
+            if defer_sky {
+                self.stars_after_solid.prepare(
+                    &mut self.uploads,
+                    &mut encoder,
+                    jittered * rotation,
+                    brightness,
+                    &globals,
+                );
+            } else {
+                self.stars.prepare(
+                    &mut self.uploads,
+                    &mut encoder,
+                    jittered * rotation,
+                    brightness,
+                    &globals,
+                );
+            }
+        }
         if frame.end_sky && !frame.title {
             self.end_sky.prepare(&self.device, frame.end_sky_sprite);
         }
@@ -9053,6 +9620,18 @@ impl Renderer {
                 &self.celestial_buffer,
                 0,
                 bytemuck::cast_slice(&frame.celestial[..celestial_vertices]),
+            );
+        }
+        if defer_sky && (celestial_vertices > 0 || frame.end_sky) {
+            let sky_celestial_globals = Globals {
+                view_proj: zero_z_row(jittered),
+                ..globals
+            };
+            self.uploads.buffer(
+                &mut encoder,
+                &self.celestial_after_solid.globals,
+                0,
+                bytemuck::bytes_of(&sky_celestial_globals),
             );
         }
         let max_quads =
@@ -9240,7 +9819,6 @@ impl Renderer {
             self.show_stats(serial, cpu);
         }
         // The world's targets: the screen, or the scaled target of `post`.
-        let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
         // One of Horizon's own packs reads the same world target.
         let native_post = !frame.title && self.executor.is_some();
         self.set_up_pack_timing();
@@ -9291,12 +9869,6 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_lines());
-        let pack_draws_hand = pack_post
-            && self
-                .pack_post
-                .as_ref()
-                .and_then(|p| p.1.as_ref())
-                .is_some_and(|p| p.has_hand());
         let pack_draws_weather = pack_post
             && self
                 .pack_post
@@ -9359,7 +9931,8 @@ impl Renderer {
                 })
                 .prepare(
                     &self.device,
-                    &self.queue,
+                    &mut self.uploads,
+                    &mut encoder,
                     size,
                     &views.primary().projection,
                     [water_mask_quads > 0, cloud_quads > 0],
@@ -9389,7 +9962,6 @@ impl Renderer {
             }
         };
         let clear = linear_blend::stored_clear(clear, self.output.frame.linear_light);
-        let sky_visible = sky_open(frame);
         laps.lap("r_world_pass");
         // One of Horizon's own packs: this frame's inputs; in a timed frame its sky draws in a
         // pass of its own, so that it has a time of its own.
@@ -9704,7 +10276,7 @@ impl Renderer {
             );
             pass.set_bind_group(0, &self.group, &[]);
             pack_frame(&mut pass);
-            if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
+            if !defer_sky && (frame.title || (sky_visible && (frame.skybox || frame.end_sky))) {
                 pass.stage(self.own_timing.as_mut(), "sky");
                 let native_sky = !frame.title
                     && frame.skybox
@@ -10157,6 +10729,44 @@ impl Renderer {
             } else if surface.is_some() {
                 drop(pass);
                 pass = plain_pass(&mut encoder);
+            }
+            if defer_sky {
+                pass.stage(self.own_timing.as_mut(), "sky");
+                pass.set_bind_group(0, &self.group, &[]);
+                if frame.skybox {
+                    pass.set_pipeline(&self.sky_base_after_solid);
+                    pass.draw(0..3, 0..1);
+                    if frame.sky.sunrise_color[3] > 0.001 {
+                        pass.set_pipeline(&self.sunrise_after_solid);
+                        pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
+                        pass.draw(0..sunrise_fan::VERTICES as u32, 0..1);
+                    }
+                }
+                if celestial_vertices > 0 || frame.end_sky {
+                    pass.set_pipeline(&self.celestial_after_solid.added);
+                    pass.set_bind_group(0, &self.celestial_after_solid.group, &[]);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    if frame.end_sky {
+                        self.end_sky.draw(&mut pass);
+                    }
+                    if celestial_vertices > 0 {
+                        let lifted = hdr_gain && self.hdr.as_ref().is_some_and(|h| h.lighting);
+                        let quads = &frame.celestial[..celestial_vertices];
+                        let bodies = celestial::bodies(quads, false, false);
+                        pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
+                        self.celestial_after_solid
+                            .draw_bodies(&mut pass, lifted, bodies);
+                    }
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.stars.is_some() {
+                    self.stars_after_solid.draw(&mut pass);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.dark_disc {
+                    pass.set_pipeline(&self.dark_disc_after_solid);
+                    pass.draw(0..3, 0..1);
+                }
             }
             // RenderLevelStageEvent.AfterOpaqueBlocks: after solid and cutout terrain, before
             // entities.
@@ -10930,9 +11540,9 @@ impl Renderer {
             let engine_resolve = self.executor.is_some_and(|c| c.engine_resolve);
             let taa_resolved = engine_resolve
                 .then(|| {
-                    (self.world_post).resolve_taa(
+                    (self.world_post).resolve_taa_staged(
                         &self.device,
-                        &self.queue,
+                        &mut self.uploads,
                         &mut encoder,
                         self.own_timing.as_mut(),
                     )
@@ -10942,8 +11552,12 @@ impl Renderer {
                 let fxaa = (engine_resolve && self.world_post.antialias)
                     .then(|| self.world_post.resolved(&self.device))
                     .flatten()?;
-                self.world_post
-                    .finish(&self.queue, &mut encoder, &fxaa, self.own_timing.as_mut());
+                self.world_post.finish(
+                    &mut self.uploads,
+                    &mut encoder,
+                    &fxaa,
+                    self.own_timing.as_mut(),
+                );
                 Some(fxaa)
             });
             native.run_output(external::WorldOutput {
@@ -10979,7 +11593,7 @@ impl Renderer {
             fg_made = self.draw_generated(&mut encoder, frame, &camera, &overlay, onto);
         } else if scaled.is_some() {
             self.world_post.finish(
-                &self.queue,
+                &mut self.uploads,
                 &mut encoder,
                 &view_target,
                 self.own_timing.as_mut(),
@@ -10987,36 +11601,38 @@ impl Renderer {
         }
         if !frame.title {
             self.draw_world_views(&mut encoder, frame, globals, flat_frame, entity_quads);
-            let (depth, depth_size) = match &scaled {
-                Some((_, depth)) => (depth, self.world_post.size().unwrap_or(size)),
-                None => (&self.depth, size),
-            };
-            native_render::world_drawn(&mut native_render::WorldDrawn {
-                device: &self.device,
-                queue: &self.queue,
-                encoder: &mut encoder,
-                color: &target_texture,
-                color_view: &view_target,
-                color_format: self.output.frame.overlay_format,
-                size,
-                depth,
-                depth_size,
-                view_proj,
-                jittered,
-                camera: frame.camera,
-                entities: frame.entities,
-                spans: frame.entity_spans,
-                motion: frame.entity_motion,
-                atlas: self.hud.atlas_texture.as_ref(),
-                quad_indices: &self.indices,
-                block_sprites: native_render::BlockSpriteArrays {
-                    views: &self.sprite_views,
-                    split: self.sprite_split,
-                    size: self.sprite_textures[0].width(),
-                    nearest: &self.sprite_nearest,
-                    filtered: &self.sprite_sampler,
-                },
-            });
+            if native_render::world_drawn_hooked() {
+                let (depth, depth_size) = match &scaled {
+                    Some((_, depth)) => (depth, self.world_post.size().unwrap_or(size)),
+                    None => (&self.depth, size),
+                };
+                native_render::world_drawn(&mut native_render::WorldDrawn {
+                    device: &self.device,
+                    queue: &self.queue,
+                    encoder: &mut encoder,
+                    color: &target_texture,
+                    color_view: &view_target,
+                    color_format: self.output.frame.overlay_format,
+                    size,
+                    depth,
+                    depth_size,
+                    view_proj,
+                    jittered,
+                    camera: frame.camera,
+                    entities: frame.entities,
+                    spans: frame.entity_spans,
+                    motion: frame.entity_motion,
+                    atlas: self.hud.atlas_texture.as_ref(),
+                    quad_indices: &self.indices,
+                    block_sprites: native_render::BlockSpriteArrays {
+                        views: &self.sprite_views,
+                        split: self.sprite_split,
+                        size: self.sprite_textures[0].width(),
+                        nearest: &self.sprite_nearest,
+                        filtered: &self.sprite_sampler,
+                    },
+                });
+            }
         }
         // A 0.2 pack in SDR: its picture finishes on 8 bits before the hand, the camera overlays
         // and the HUD draw over it (`overlay_format`).
@@ -11086,11 +11702,6 @@ impl Renderer {
                 .take()
                 .and_then(|request| self.take_readback(request, &mut encoder, shown_texture))
         });
-        self.uploads.finish(&encoder);
-        if has_section_copies {
-            self.section_copy_bytes = 0;
-            self.section_uploads.finish(&encoder);
-        }
         if let Some(image) = surface_frame
             .as_ref()
             .map(|f| &f.texture)
@@ -11105,9 +11716,12 @@ impl Renderer {
             .filter(|_| self.surface.is_some())
             .map(|f| &f.0));
         match (&self.hdr, shown) {
-            (Some(hdr), Some(texture)) => {
-                hdr.present(&self.queue, &mut encoder, texture, self.own_timing.as_mut())
-            }
+            (Some(hdr), Some(texture)) => hdr.present_staged(
+                &mut self.uploads,
+                &mut encoder,
+                texture,
+                self.own_timing.as_mut(),
+            ),
             // Offscreen nothing shows HDR: the target gets the frame as SDR shows it, for
             // splitscreen's compositor.
             (Some(_), None) => {
@@ -11117,6 +11731,11 @@ impl Renderer {
                 }
             }
             (None, _) => {}
+        }
+        self.uploads.finish(&encoder);
+        if has_section_copies {
+            self.section_copy_bytes = 0;
+            self.section_uploads.finish(&encoder);
         }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
@@ -11309,7 +11928,7 @@ impl Renderer {
         // world (`Hdr::layered`).
         let layered = self.hdr.as_ref().is_some_and(|h| h.layered());
         if let Some(hdr) = &self.hdr {
-            hdr.begin(&self.queue, !frame.title);
+            hdr.begin_staged(&mut self.uploads, encoder, !frame.title);
         }
         if overlay.hand_quads > 0 {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -11342,7 +11961,7 @@ impl Renderer {
             pass.draw_indexed(0..overlay.hand_quads * 6, overlay.first_hand_vertex, 0..1);
         }
         // A native mod's turn after the hand, on the real frame only.
-        if overlay.real && !frame.title {
+        if overlay.real && !frame.title && native_render::hand_drawn_hooked() {
             native_render::hand_drawn(&mut native_render::HandDrawn {
                 device: &self.device,
                 queue: &self.queue,
@@ -11461,11 +12080,9 @@ impl Renderer {
             .map(|t| t.create_view(&Default::default()));
         let hud_target = hud.as_ref().unwrap_or(view_target);
         let coverage = self.hdr.as_ref().and_then(|h| h.coverage_view());
-        if let Some(view) = &coverage {
-            hud_coverage::clear(encoder, view);
-        }
         // GameRenderer.render3dHud: the debug crosshair after the hand and
-        // the screen effects.
+        // the screen effects. When it runs on the HDR layered lane, clear HUD
+        // coverage in its own LoadOp instead of beginning a separate clear pass.
         if overlay.crosshair > 0 {
             let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
                 view: hud_target,
@@ -11477,7 +12094,10 @@ impl Renderer {
                 },
             })];
             if let Some(view) = &coverage {
-                attachments.push(Some(hud_coverage::attachment(view)));
+                attachments.push(Some(hud_coverage::attachment_with(
+                    view,
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                )));
             }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("3d crosshair"),
@@ -11504,6 +12124,8 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
             let first = overlay.first_crosshair;
             pass.draw(0..4, first..first + overlay.crosshair);
+        } else if let Some(view) = &coverage {
+            hud_coverage::clear(encoder, view);
         }
         let menu_blur = frame
             .menu_blur
@@ -13488,6 +14110,68 @@ mod tests {
             ]]
         );
         assert!(super::outline_vertices(&[], glam::DVec3::ZERO).is_empty());
+    }
+    #[test]
+    fn lightmap_key_tracks_every_input_and_normalizes_fullbright() {
+        let mut sky = super::Sky::default();
+        let base = super::LightmapKey::new(&sky, 0.1, 0.5, 0.2, 0.05, 0.3, false);
+        assert_eq!(
+            base,
+            super::LightmapKey::new(&sky, 0.1, 0.5, 0.2, 0.05, 0.3, false)
+        );
+        assert_ne!(
+            base,
+            super::LightmapKey::new(&sky, 0.2, 0.5, 0.2, 0.05, 0.3, false)
+        );
+        assert_ne!(
+            base,
+            super::LightmapKey::new(&sky, 0.1, 0.6, 0.2, 0.05, 0.3, false)
+        );
+        assert_ne!(
+            base,
+            super::LightmapKey::new(&sky, 0.1, 0.5, 0.3, 0.05, 0.3, false)
+        );
+        assert_ne!(
+            base,
+            super::LightmapKey::new(&sky, 0.1, 0.5, 0.2, 0.06, 0.3, false)
+        );
+        assert_ne!(
+            base,
+            super::LightmapKey::new(&sky, 0.1, 0.5, 0.2, 0.05, 0.4, false)
+        );
+        let full = super::LightmapKey::new(&sky, 0.1, 0.5, 0.2, 0.05, 0.3, true);
+        assert_ne!(base, full);
+        sky.sky_light_factor = 0.25;
+        sky.ambient_light_color = [0.2, 0.3, 0.4];
+        sky.sky_light_color = [0.5, 0.6, 0.7];
+        sky.block_light_tint = [0.8, 0.7, 0.6];
+        assert_ne!(
+            base,
+            super::LightmapKey::new(&sky, 0.1, 0.5, 0.2, 0.05, 0.3, false)
+        );
+        // Fullbright overrides every texel to white, so changing sky or effects keeps the same key.
+        assert_eq!(
+            full,
+            super::LightmapKey::new(&sky, 0.9, 1.0, 0.8, 0.4, 0.7, true)
+        );
+    }
+    #[test]
+    fn zero_z_row_pins_clip_depth_to_zero_without_moving_xyw() {
+        let proj = super::world_projection(70.0, 16.0 / 9.0, 768.0)
+            * crate::camera::view_matrix(37.5, -18.0);
+        let pinned = glam::Mat4::from_cols_array_2d(&super::zero_z_row(proj));
+        for p in [
+            glam::Vec4::new(10.0, 100.0, -30.0, 1.0),
+            glam::Vec4::new(-80.0, 25.0, -100.0, 1.0),
+            glam::Vec4::new(100.0, -100.0, 100.0, 1.0),
+        ] {
+            let orig = proj * p;
+            let flat = pinned * p;
+            assert_eq!(flat.x.to_bits(), orig.x.to_bits());
+            assert_eq!(flat.y.to_bits(), orig.y.to_bits());
+            assert_eq!(flat.w.to_bits(), orig.w.to_bits());
+            assert_eq!(flat.z, 0.0);
+        }
     }
 }
 

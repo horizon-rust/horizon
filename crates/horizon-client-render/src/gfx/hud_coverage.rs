@@ -22,20 +22,26 @@ pub(crate) fn supported(
 }
 
 pub(crate) fn attachment(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> {
+    attachment_with(view, wgpu::LoadOp::Load)
+}
+
+pub(crate) fn attachment_with(
+    view: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+) -> wgpu::RenderPassColorAttachment<'_> {
     wgpu::RenderPassColorAttachment {
         view,
         resolve_target: None,
         depth_slice: None,
         ops: wgpu::Operations {
-            load: wgpu::LoadOp::Load,
+            load,
             store: wgpu::StoreOp::Store,
         },
     }
 }
 
 pub(crate) fn clear(encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-    let mut color = attachment(view);
-    color.ops.load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+    let color = attachment_with(view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("HUD coverage reset"),
         color_attachments: &[Some(color)],
