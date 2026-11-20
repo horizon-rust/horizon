@@ -53,6 +53,7 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import locale
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -730,9 +731,9 @@ def prebuild(artifacts, jobs):
         started = time.monotonic()
         # Stderr is read line by line, timed, so the summary can tell lock waits from compiling; stdout, which
         # Cargo leaves empty here, was discarded before too. Undecodable bytes are replaced: decoding as the lines
-        # arrive must never interrupt the build.
+        # arrive must never interrupt the build. The encoding is text mode's default, named so tests can pin it.
         with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                              text=True, errors="replace") as process:
+                              text=True, encoding=locale.getpreferredencoding(False), errors="replace") as process:
             try:
                 lines = [(time.monotonic(), line) for line in process.stderr]
                 process.wait()
@@ -825,20 +826,24 @@ def sccache_stats(environment):
         program = shutil.which("sccache", path=environment.get("PATH")) if wrapper == "compiler-cache.sh" \
             else environment["RUSTC_WRAPPER"]
         with tempfile.TemporaryFile() as output:
-            process = subprocess.Popen([program, "--show-stats"], stdin=subprocess.DEVNULL, stdout=output,
-                                       stderr=subprocess.DEVNULL)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-                return None
+            # run kills and reaps the probe on its timeout and on an interrupt, which still ends parity.py.
+            result = subprocess.run([program, "--show-stats"], stdin=subprocess.DEVNULL, stdout=output,
+                                    stderr=subprocess.DEVNULL, timeout=10)
             output.seek(0)
             text = output.read().decode("utf-8", errors="replace")
         counts = dict((name, int(value)) for name, value in SCCACHE_COUNTS.findall(text))
-        return counts if not process.returncode and len(counts) == 2 else None
+        return counts if not result.returncode and len(counts) == 2 else None
     except Exception:
         return None
+
+
+def printable(text, stream=None):
+    """text with what the stream's encoding can't hold (a cp1252 console and cargo's replaced bytes) replaced."""
+    encoding = getattr(stream or sys.stdout, "encoding", None) or "utf-8"
+    try:
+        return text.encode(encoding, errors="replace").decode(encoding)
+    except LookupError:
+        return text
 
 
 def describe_sccache(before, after):
@@ -1160,7 +1165,8 @@ class RemoteExecutor:
                     self.memory_budget = hello["memory"]
                     self.ready = True
                     if not hello["built"]:
-                        self._log("probe build failed; harnesses will report their own build errors:\n" + hello["errors"][-2000:])
+                        self._log("probe build failed; harnesses will report their own build errors:\n"
+                                  + printable(hello["errors"][-2000:]))
                     self._log(f"ready after {time.monotonic() - started:.0f}s: {self.jobs} harnesses at once, "
                               f"{self.memory_budget / (1 << 30):.0f} GB")
                 else:
@@ -2038,7 +2044,7 @@ def main():
             started = time.monotonic()
             built, errors = prebuild(artifacts, default_build_jobs())
             if not built:
-                print(errors[-4000:])
+                print(printable(errors[-4000:]))
                 print("Probe build failed; harnesses will report their own build errors.", flush=True)
             print(f"Probes built in {time.monotonic() - started:.0f}s.", flush=True)
         where = "".join(f", plus {host}" for host in hosts)
