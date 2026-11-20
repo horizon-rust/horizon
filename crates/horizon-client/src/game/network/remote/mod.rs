@@ -9127,7 +9127,6 @@ impl Game<'_> {
         if let [(Some(slot), button, input)] = ops {
             self.crafter_slot_clicked(*slot, *button, *input);
         }
-        let split = self.split_click(ops);
         let (container, menu) = self.remote_menu();
         let mut clicks = Vec::with_capacity(ops.len());
         for &(slot, button, input) in ops {
@@ -9140,6 +9139,8 @@ impl Game<'_> {
             };
             clicks.push((slot, button, input));
         }
+        // After the check: only a slot of the menu is read.
+        let split = self.split_click(ops);
         // Unpredicted: nothing changed, the carried stack as it is.
         let mut sent: Vec<Predicted> = clicks
             .iter()
@@ -11944,6 +11945,47 @@ pub(crate) mod tests {
         remote.entity_id = 7;
         remote.profile = 42;
         spawn
+    }
+
+    /// A right-click with an empty hand on the inventory's crafting result goes to the server
+    /// as a click on menu slot 0, whether the result is empty or a stack that could split.
+    #[test]
+    #[ignore = "daily"]
+    fn an_empty_hand_right_click_on_the_crafting_result_is_sent() {
+        use super::super::{Screen, native_entity_refs::tests::with_game};
+        use horizon_client::{items::ItemStack, menu::Input};
+        use horizon_protocol::packets::play;
+
+        with_game(|game| {
+            let (mut reader, _writer) = connect_menu_test(game);
+            spawn_menu_test(game);
+            game.set_screen(Screen::Inventory);
+            for result in [None, Some(ItemStack::new("minecraft:oak_planks", 4))] {
+                let row = format!("{result:?}");
+                game.carried = None;
+                game.remote.as_mut().unwrap().craft_result = result;
+                assert!(
+                    game.remote_menu_ops(&[(Some(200), 1, Input::Pickup)]),
+                    "{row}"
+                );
+                let sent = (0..32)
+                    .find_map(|_| {
+                        let (id, body) = reader.recv().unwrap_or_else(|e| panic!("{row}: {e:?}"));
+                        match play::Serverbound::decode(id, &body)
+                            .unwrap_or_else(|e| panic!("{row}: {e:?}"))
+                        {
+                            play::Serverbound::ContainerClick(sent) => Some(sent),
+                            _ => None,
+                        }
+                    })
+                    .unwrap_or_else(|| panic!("{row}: no click sent"));
+                assert_eq!(
+                    (sent.container, sent.slot, sent.button, sent.input),
+                    (0, 0, 1, 0),
+                    "{row}"
+                );
+            }
+        });
     }
 
     #[test]
