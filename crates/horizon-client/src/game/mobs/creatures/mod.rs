@@ -7896,7 +7896,7 @@ impl Game<'_> {
         // Who watches (`Entity.isInvisibleTo`): the local player's team.
         let viewer = self.player_team();
         self.rendered_mobs.set(0);
-        let (skinning, listened) = (self.skinning(), self.mob_render_listened());
+        let (skinning, hooks) = (self.skinning(), self.mob_render_hooks());
         // What custom entity model animations read of the frame.
         horizon_client::mobs::cem_anim::set_frame(horizon_client::mobs::cem_anim::Frame {
             time: self.world.game_time as f64 + alpha,
@@ -8003,7 +8003,7 @@ impl Game<'_> {
                 .then(|| self.remote_player_name(mob.id))
                 .flatten()
                 .map(|name| PlayerRender { name, local: false });
-            let pre = self.mod_render_pre(mob, who, listened, alpha as f32, camera, packed, out);
+            let pre = self.mod_render_pre(mob, who, hooks, alpha as f32, camera, packed, out);
             let Some(hidden) = pre else {
                 // What the mods drew in its place is culled as the entity's own would be.
                 if culling.rays_only() {
@@ -8033,13 +8033,14 @@ impl Game<'_> {
                 Vec::new()
             };
             let body = out.len();
-            // The GPU path: an ordinary mob, no layers the CPU path changes after drawing them
-            // (a player's, the HDR tiers below, the sulfur cube's shell). A glowing mob's
+            // The GPU path: an ordinary mob (or unarmored player when improved transparency is
+            // off and `SkinModels::tagged` permits `OIT_ENTITY`), no layers the CPU path changes
+            // after drawing them (the HDR tiers below, the sulfur cube's shell). A glowing mob's
             // silhouette is posed too (`SkinFrame::outline_since`), unless it is invisible:
             // then only the outline draws.
             let silhouette_on_gpu = outline.is_none() || !invisible;
             let posable = skinning
-                && !(is_player || modded)
+                && !modded
                 && !layers_only
                 && !seen_invisible
                 && silhouette_on_gpu
@@ -8049,6 +8050,7 @@ impl Game<'_> {
                     Species::Blaze | Species::MagmaCube | Species::GlowSquid | Species::SulfurCube
                 );
             let (mut skinned, mut parts, added) = (None, None, self.mod_layers(mob));
+            let want_parts = hooks.any_post_for(is_player) || added.is_some();
             if posable {
                 let mut models = self.skin_models.borrow_mut();
                 let mut frame = self.skin_frame.borrow_mut();
@@ -8062,7 +8064,7 @@ impl Game<'_> {
                     packed,
                     self.res.mob_data(),
                     hidden,
-                    (listened || added.is_some()).then_some(&mut parts),
+                    want_parts.then_some(&mut parts),
                     out,
                     &mut skin,
                 );
@@ -8078,7 +8080,7 @@ impl Game<'_> {
                         self.res.mob_data(),
                         &armor,
                         hidden,
-                        (listened || added.is_some()).then_some(&mut parts),
+                        want_parts.then_some(&mut parts),
                         out,
                     );
                 } else if layers_only {
@@ -8090,7 +8092,7 @@ impl Game<'_> {
                         packed,
                         self.res.mob_data(),
                         &armor,
-                        (listened || added.is_some()).then_some(&mut parts),
+                        want_parts.then_some(&mut parts),
                         out,
                     );
                 } else {
@@ -8103,7 +8105,7 @@ impl Game<'_> {
                         self.res.mob_data(),
                         &armor,
                         hidden,
-                        (listened || added.is_some()).then_some(&mut parts),
+                        want_parts.then_some(&mut parts),
                         out,
                     );
                 }
@@ -8130,13 +8132,8 @@ impl Game<'_> {
                 if !invisible {
                     self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
                 }
-                if !invisible
-                    && let Some((_, name)) = self
-                        .remote_player_names()
-                        .into_iter()
-                        .find(|(id, _)| *id == mob.id)
-                {
-                    self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
+                if !invisible && let Some(name) = who.as_ref().map(|w| w.name) {
+                    self.player_ears_geometry(mob, name, camera, alpha as f32, packed, out);
                 }
                 self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
                 self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);
@@ -8171,7 +8168,7 @@ impl Game<'_> {
                 }
                 self.mod_layer_geometry(mob, who, parts, added, alpha as f32, camera, packed, out);
             }
-            self.mod_render_post(mob, who, parts, alpha as f32, camera, packed, out);
+            self.mod_render_post(mob, who, hooks, parts, alpha as f32, camera, packed, out);
             if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if let Some(((first, _, _), _)) = skinned {
