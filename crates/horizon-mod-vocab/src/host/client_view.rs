@@ -17,10 +17,10 @@ pub trait ClientViewClientHost {
     #[access(ClientSetup)]
     fn hud_mode(&self) -> HudMode;
     /// Side: client.
-    /// Whether a HUD box in `corner` shows this frame, the corners `render_gui_post` places
-    /// boxes in: false for a corner F3's debug screen takes (`DebugScreenOverlay`), both top
-    /// corners while it is open (its left and right columns) and a bottom corner while one of
-    /// its charts is drawn there. A corner HUD skips a corner this reports taken.
+    /// Whether F3's debug screen leaves `corner` free this frame for a box `render_gui_post`
+    /// places: false for a corner it takes (`DebugScreenOverlay`), both top corners while it
+    /// is open (its left and right columns) and a bottom corner while one of its charts is
+    /// drawn there. Only F3: read [`Self::hud_mode`] for whether the HUD is drawn at all (F1).
     #[access(ClientSetup)]
     fn native_corner_shown(&self, corner: Corner) -> bool;
     /// Side: client.

@@ -227,7 +227,8 @@ fn bool_text(v: bool) -> &'static str {
 impl Extras {
     /// The settings official mod `mod_id` took over (`MOVED_KEYS`), from this file's `text`:
     /// each of its keys that has a line there, with the value the extra took from it, as
-    /// `serialize` writes it (the last line wins; one the extra can't read leaves its default).
+    /// `serialize` writes it: the last line it can read wins, and a key with no readable line
+    /// gives its default.
     /// Empty for any other mod.
     pub fn moved_settings(text: &str, mod_id: &str) -> Vec<(String, String)> {
         let Some(&(_, keys)) = MOVED_KEYS.iter().find(|(id, _)| *id == mod_id) else {
