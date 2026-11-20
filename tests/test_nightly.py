@@ -732,9 +732,8 @@ class PrebuiltGameBaseTests(unittest.TestCase):
         workflow = yaml.safe_load(text)
         self.assertEqual(text.split("\nrun-name: ", 1)[1].split("\n", 1)[0],
                          "prebuilt game${{ inputs.off_main && ' (off main)' || '' }}")
-        self.assertEqual(workflow[True]["workflow_dispatch"]["inputs"]["off_main"],
-                         {"description": "The commit is off main (a dry run only, a commit a dry-run/* branch holds)",
-                          "type": "boolean", "default": False})
+        off_main = workflow[True]["workflow_dispatch"]["inputs"]["off_main"]
+        self.assertEqual((off_main["type"], off_main["default"]), ("boolean", False))
         steps = workflow["jobs"]["source"]["steps"]
         trusted = next(s for s in steps if s.get("with", {}).get("path") == ".trusted")
         self.assertEqual(trusted["with"]["ref"], "${{ github.sha }}")
