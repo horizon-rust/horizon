@@ -201,8 +201,7 @@ impl Stats {
     /// [`Self::write`], reporting why it failed. The old file is left as it was then.
     pub fn try_write(&self, path: &Path) -> std::io::Result<()> {
         let text = serde_json::to_string_pretty(&self.to_json()).map_err(std::io::Error::other)?;
-        horizon_client::save::write_durable(path, text.as_bytes())
-            .map_err(|e| std::io::Error::other(e.to_string()))
+        horizon_client::save::write_durable_io(path, text.as_bytes())
     }
     /// The counters of a snapshot a mod hands over (`player_set_statistics`), read strictly: a JSON
     /// object with a `stats` object of type objects of whole numbers that fit an `i32`. Anything else is
@@ -469,7 +468,10 @@ mod tests {
         let before = std::fs::read_to_string(&path).unwrap();
         // the temporary file cannot be made (its name is a directory): the old file stays whole
         std::fs::create_dir(dir.join("p.json_new")).unwrap();
-        assert!(Stats::default().try_write(&path).is_err());
+        let error = Stats::default().try_write(&path).unwrap_err();
+        // The operating system's own error, not one rebuilt from its text.
+        assert_ne!(error.kind(), std::io::ErrorKind::Other, "{error}");
+        assert!(error.raw_os_error().is_some(), "{error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
