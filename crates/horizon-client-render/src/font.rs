@@ -883,6 +883,16 @@ impl Font {
     pub fn epoch(&self) -> u64 {
         self.generation.get() << 2 | u64::from(self.uniform) << 1 | u64::from(self.japanese)
     }
+    /// Whether the resources define the default font with any provider: a pack's font to draw
+    /// in, whatever characters it covers. None before a pack loads (the boot atlas) or where the
+    /// resources are missing.
+    pub fn has_default(&self) -> bool {
+        self.cache
+            .borrow()
+            .sets
+            .iter()
+            .any(|(id, set)| id == DEFAULT && !set.providers.is_empty())
+    }
     /// The glyph for a character in the default font (FontSet.getGlyph).
     pub fn glyph(&self, c: char) -> Glyph {
         self.glyph_of(DEFAULT, c)

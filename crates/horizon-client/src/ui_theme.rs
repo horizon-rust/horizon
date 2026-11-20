@@ -139,7 +139,7 @@ impl Fonts {
     /// take the design system's.
     fn load(atlas: &HudAtlas) -> Option<Self> {
         use horizon_client_render::menu_style;
-        let no_pack_font = || atlas.font.glyph('A').rect.is_none();
+        let no_pack_font = || !atlas.font.has_default();
         let given = menu_style::get()
             .fonts
             .or_else(|| menu_style::bundled_fonts().filter(|_| no_pack_font()))
@@ -1104,6 +1104,21 @@ mod tests {
         .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         atlas
+    }
+
+    /// The bundled faces stand in only where no pack has a font: a pack font covering one
+    /// character still counts as the pack's, and missing resources have none.
+    #[test]
+    fn a_pack_font_counts_whatever_it_covers() {
+        let pack = one_glyph_pack("has-default");
+        assert!(pack.font.glyph('A').rect.is_none(), "the pack has no A");
+        assert!(pack.font.has_default());
+        let missing = HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            Path::new("/nonexistent/horizon-test-assets").to_owned(),
+        ))
+        .unwrap();
+        assert!(!missing.font.has_default());
+        reset_atlas();
     }
 
     /// Start this thread's text cache for `atlas` with no fonts given, as vanilla's look runs
