@@ -708,6 +708,17 @@ pub trait PlayersBackendMut {
         sidebar: Option<Sidebar>,
     ) -> Result<bool, TextFormError>;
     /// Side: server.
+    /// Sends a standalone objective in the player's sidebar slot. The world's
+    /// scoreboard can subsequently replace the slot, including via a team
+    /// sidebar. None removes only this objective. This shares the objective
+    /// with `player_set_sidebar`; use one method consistently for a player.
+    #[access(WorldOnly)]
+    fn player_send_sidebar(
+        &mut self,
+        player: PlayerRef,
+        sidebar: Option<Sidebar>,
+    ) -> Result<bool, TextFormError>;
+    /// Side: server.
     /// Shows `name` for that player in everyone's Tab list (Paper's `Player.playerListName`,
     /// NeoForge's `ServerPlayer.refreshTabListName`), colours and all; None shows the name the
     /// game would (their nickname or real name). The `player_tab_list_name_format` hook still

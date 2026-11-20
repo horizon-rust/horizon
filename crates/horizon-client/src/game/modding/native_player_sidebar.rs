@@ -18,6 +18,23 @@ impl Game<'_> {
         player: PlayerRef,
         sidebar: Option<Sidebar>,
     ) -> Result<bool, TextFormError> {
+        self.apply_player_sidebar(player, sidebar, true)
+    }
+
+    pub(super) fn player_send_sidebar(
+        &mut self,
+        player: PlayerRef,
+        sidebar: Option<Sidebar>,
+    ) -> Result<bool, TextFormError> {
+        self.apply_player_sidebar(player, sidebar, false)
+    }
+
+    fn apply_player_sidebar(
+        &mut self,
+        player: PlayerRef,
+        sidebar: Option<Sidebar>,
+        track_display: bool,
+    ) -> Result<bool, TextFormError> {
         let online = self.native_acting_player() == Some(player)
             || self.online_player_record(player).is_some();
         if !online {
@@ -66,7 +83,13 @@ impl Game<'_> {
             }
             None => None,
         };
-        Ok(self.native_sidebar(player.uuid(), sidebar.as_ref()))
+        let uuid = player.uuid();
+        let sidebar = sidebar.as_ref();
+        Ok(if track_display {
+            self.native_sidebar(uuid, sidebar)
+        } else {
+            self.native_send_sidebar(uuid, sidebar)
+        })
     }
 }
 
@@ -120,6 +143,48 @@ mod tests {
             .iter()
             .position(|c| c.1 == colour)
             .unwrap() as i32
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn send_sidebar_clears_only_the_personal_objective() {
+        with_guests(|game| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(12, |g| {
+                    g.sender = PlayerSender::new(tx, Arc::new(AtomicUsize::new(0)));
+                })
+                .unwrap();
+            world_objective(
+                game,
+                "world_board",
+                horizon_client::scoreboard::SLOT_SIDEBAR,
+            );
+            let player = game.player(12).unwrap();
+            let sidebar = Sidebar::new(Text::literal("SMP"), Vec::new());
+            assert_eq!(player.send_sidebar(game, Some(sidebar)), Ok(true));
+            assert_eq!(displays(&sent(&rx)), [(1, SIDEBAR_OBJECTIVE.to_owned())]);
+            assert!(
+                !game
+                    .lan
+                    .as_ref()
+                    .unwrap()
+                    .hub
+                    .guest(12)
+                    .unwrap()
+                    .personal_sidebar
+            );
+
+            assert_eq!(player.send_sidebar(game, None), Ok(true));
+            let cleared = sent(&rx);
+            assert!(matches!(
+                cleared.as_slice(),
+                [C::SetObjective(objective)] if objective.method == 1 && objective.name == SIDEBAR_OBJECTIVE
+            ));
+        });
     }
 
     /// The sidebar reaches only that player: its objective, the sidebar slot and one score a

@@ -1,0 +1,1 @@
+horizon-client game::native_player_sidebar::tests::send_sidebar_clears_only_the_personal_objective lib daily resources
