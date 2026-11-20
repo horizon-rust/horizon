@@ -21,8 +21,8 @@ pub(super) struct Uploads {
     empty: FxHashSet<TileKey>,
 }
 
-/// Finished tile meshes not uploaded yet, the tiles they replace (removed
-/// once every mesh is in) and the columns they leave out.
+/// Finished tile meshes not uploaded yet, the tiles they replace and the
+/// columns they leave out.
 #[derive(Default)]
 pub(super) struct Pending {
     meshes: FxHashMap<TileKey, SectionMesh>,
@@ -32,6 +32,7 @@ pub(super) struct Pending {
     retry_at: FxHashMap<TileKey, Instant>,
     removed: FxHashSet<TileKey>,
     cutout: Option<FxHashSet<(i32, i32)>>,
+    needs_finish: bool,
 }
 
 impl Pending {
@@ -59,6 +60,7 @@ impl Pending {
         if cutout.is_some() {
             self.cutout = cutout;
         }
+        self.needs_finish = true;
     }
 
     fn take_next(&mut self, now: Instant) -> Option<(TileKey, SectionMesh)> {
@@ -82,6 +84,40 @@ impl Pending {
     }
 }
 
+/// Two tiles overlap when one is the other or its ancestor.
+#[derive(Default)]
+struct TileCoverage {
+    keys: FxHashSet<TileKey>,
+    ancestors: FxHashSet<TileKey>,
+}
+
+impl TileCoverage {
+    fn new(keys: impl IntoIterator<Item = TileKey>) -> Self {
+        let mut coverage = Self::default();
+        for key in keys {
+            coverage.insert(key);
+        }
+        coverage
+    }
+
+    fn insert(&mut self, mut key: TileKey) {
+        self.keys.insert(key);
+        while key.level < MAX_LEVEL && self.ancestors.insert(key.parent()) {
+            key = key.parent();
+        }
+    }
+
+    fn overlaps(&self, mut key: TileKey) -> bool {
+        !self.keys.is_empty()
+            && (self.ancestors.contains(&key)
+                || (key.level..=MAX_LEVEL).any(|_| {
+                    let contains = self.keys.contains(&key);
+                    key = key.parent();
+                    contains
+                }))
+    }
+}
+
 /// Small, its meshes boxed: `draw_frame` walks every tile each frame (thousands at long far
 /// distances), and that walk is bound by the memory it reads.
 pub(super) struct Tile {
@@ -100,6 +136,8 @@ pub(super) struct Tile {
     previous: Option<Box<StandIn>>,
     /// Last published shadow mesh when the world is holding a different stand-in.
     shadow_previous: Option<Box<StandIn>>,
+    /// A finished upload still waiting to start its world handoff.
+    awaits_publication: bool,
     /// Keep the published shadow while a new mesh or its finer cutouts are still uploading.
     shadow_waits: bool,
     /// Its slot in occlusion culling's results (`cull::TILE`), kept while
@@ -372,7 +410,7 @@ fn waiting_parent_cuts(
     false
 }
 
-/// Commits a renderer upload batch. A meshed parent can already leave out a
+/// Publishes the ready parts of a renderer upload batch. A meshed parent can leave out a
 /// child whose own worker job has yet to finish. Keep the published shadow
 /// until that child arrives, even after the visual stand-in has faded.
 fn finish_uploads(
@@ -380,6 +418,7 @@ fn finish_uploads(
     empty: &mut FxHashSet<TileKey>,
     free_slots: &mut Vec<u32>,
     removed: &FxHashSet<TileKey>,
+    unfinished: &TileCoverage,
     now: Instant,
     start_showing: impl Fn(TileKey) -> Instant,
 ) -> Vec<SectionGpu> {
@@ -395,6 +434,7 @@ fn finish_uploads(
         let tile = &lods[&key];
         if tile.dying.is_some()
             || removed.contains(&key)
+            || unfinished.overlaps(key)
             || !tile.finer_ready(|child| {
                 !removed.contains(&child)
                     && lods.get(&child).map_or_else(
@@ -408,6 +448,19 @@ fn finish_uploads(
     }
     let mut released = Vec::new();
     lods.retain(|&key, tile| {
+        if removed.contains(&key) {
+            return true;
+        }
+        if unfinished.overlaps(key) {
+            if tile.awaits_publication
+                && let Some(previous) = tile.previous.as_deref_mut()
+            {
+                // A second mesh can inherit a stand-in from an earlier fade.
+                // Keep it through the new fade once the held handoff publishes.
+                previous.since = None;
+            }
+            return true;
+        }
         tile.shown.get_or_insert_with(|| start_showing(key));
         released.extend(tile.finish_upload(now, !blocked.contains(&key)));
         if tile.mesh.is_some() || tile.shadow_waits {
@@ -513,6 +566,7 @@ impl Tile {
     }
 
     fn finish_upload(&mut self, now: Instant, finer_ready: bool) -> Option<SectionGpu> {
+        self.awaits_publication = false;
         if let Some(previous) = self.previous.as_deref_mut() {
             previous.since.get_or_insert(now);
         }
@@ -527,6 +581,9 @@ impl Tile {
     }
 
     fn release_visible_stand_in(&mut self, now: Instant) -> Option<SectionGpu> {
+        if self.awaits_publication {
+            return None;
+        }
         let since = self.previous.as_deref()?.since?;
         if now - since < FADE {
             return None;
@@ -568,19 +625,36 @@ impl Tile {
 impl Renderer {
     /// A tile meshed again (finer detail) takes its place at once, but for
     /// one meshed around near chunks or finer tiles that are new (`keep`):
-    /// its old mesh stands in while they fade in. A new one waits for the rest of its job
-    /// (`upload_lods`), then fades in.
+    /// its old mesh stands in while they fade in. A new one fades in once the
+    /// overlapping uploads are ready (`upload_lods`).
     fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) -> bool {
-        let (bounds, uploaded) = if mesh.solid.is_empty() && mesh.translucent.is_empty() {
-            (Bounds::default(), None)
-        } else {
-            let bounds = Bounds::mesh(mesh).expect("nonempty tile has bounds");
-            // The old tile owns its arena ranges until both new allocations succeed.
-            let Some(uploaded) = self.upload_mesh(mesh) else {
-                return false;
+        let shadows = self.executor.is_some_and(|caps| caps.shadow);
+        let split = self.translucent_arena.is_some();
+        let (bounds, uploaded, replace_now) =
+            if mesh.solid.is_empty() && mesh.translucent.is_empty() {
+                (Bounds::default(), None, false)
+            } else {
+                let bounds = Bounds::mesh(mesh).expect("nonempty tile has bounds");
+                // An ordinary replacement can take over the same ranges. A tile
+                // with a visual or shadow handoff needs both meshes alive.
+                let old = self.lods.get(&key).filter(|old| {
+                    !keep
+                        && old.shown.is_some()
+                        && old.dying.is_none()
+                        && old.previous.is_none()
+                        && old.shadow_previous.is_none()
+                        && !old.shadow_waits
+                        && (!shadows || (old.info.cutouts.is_none() && mesh.lod_cutouts.is_none()))
+                });
+                let ranges = old
+                    .and_then(|old| old.mesh.as_deref())
+                    .map(|mesh| mesh.ranges(split));
+                let replace_now = ranges.is_some();
+                let Some(uploaded) = self.upload_mesh(mesh, ranges.unwrap_or_default()) else {
+                    return false;
+                };
+                (bounds, Some(Box::new(uploaded)), replace_now)
             };
-            (bounds, Some(Box::new(uploaded)))
-        };
         if let Some(copies) = &mut self.capture_copies {
             if uploaded.is_some() {
                 copies.tile(key, mesh);
@@ -591,12 +665,20 @@ impl Renderer {
         self.lod_uploads.empty.remove(&key);
         let old = self.lods.remove(&key);
         let old_slot = old.as_ref().map(|tile| tile.cull_slot);
-        let shadows = self.executor.is_some_and(|caps| caps.shadow);
         let Handoff {
             shown,
             previous,
             shadow_previous,
         } = match old {
+            Some(old) if replace_now => {
+                let mesh = *old.mesh.expect("ordinary replacement has an old mesh");
+                let ranges = uploaded.as_deref().expect("new mesh").ranges(split);
+                self.release_mesh_except(mesh, ranges);
+                Handoff {
+                    shown: old.shown,
+                    ..Handoff::default()
+                }
+            }
             Some(old) if old.dying.is_none() => {
                 old.handoff(keep && uploaded.is_some(), shadows, |mesh| {
                     self.release_mesh(mesh)
@@ -631,7 +713,8 @@ impl Renderer {
                 alone: false,
                 previous,
                 shadow_previous,
-                shadow_waits: shadows,
+                awaits_publication: !replace_now,
+                shadow_waits: shadows && !replace_now,
                 cull_slot,
             },
         );
@@ -703,15 +786,15 @@ impl Renderer {
             .add(meshes, removed, cutout);
     }
 
-    /// Uploads queued tile meshes for about `budget` (at least one), then,
-    /// once all are in, fades them in over the tiles they replace.
+    /// Uploads queued tile meshes for about `budget` (at least one), then
+    /// fades the ready tiles in over the ones they replace.
     pub fn upload_lods(&mut self, budget: Duration) {
         let start = Instant::now();
         if self
             .lod_uploads
             .pending
             .as_ref()
-            .is_some_and(|p| p.retry_at.is_empty())
+            .is_some_and(|p| p.needs_finish && p.retry_at.is_empty())
         {
             // Far tiles fill the arenas too: large translucent pages wait for them.
             self.shrink_gate.wait(start, super::SHRINK_SETTLE);
@@ -770,96 +853,7 @@ impl Renderer {
         while let Some(pending) = &mut self.lod_uploads.pending {
             // Keys meshed again keep their place; removed ones are skipped.
             let Some((key, mesh)) = pending.take_next(start) else {
-                if !pending.meshes.is_empty() {
-                    // A refused upload still owns its place in this batch. It may be
-                    // needed for the new cutout or to replace a tile being retired.
-                    return;
-                }
-                let pending = self.lod_uploads.pending.take().expect("pending tiles");
-                // A tile fades in over the ones it replaces. One over nothing
-                // shows whole: its hidden chunks would open holes to the sky
-                // or the sea bed (dark patches, as far terrain first loads).
-                let replaced: FxHashSet<TileKey> = pending
-                    .removed
-                    .iter()
-                    .copied()
-                    .filter(|key| self.lods.contains_key(key))
-                    .collect();
-                let mut above_replaced = FxHashSet::default();
-                for &key in &replaced {
-                    let mut key = key;
-                    while key.level < MAX_LEVEL && above_replaced.insert(key.parent()) {
-                        key = key.parent();
-                    }
-                }
-                let over_replaced = |key: TileKey| {
-                    let mut ancestor = key;
-                    replaced.contains(&key)
-                        || above_replaced.contains(&key)
-                        || (key.level..MAX_LEVEL).any(|_| {
-                            ancestor = ancestor.parent();
-                            replaced.contains(&ancestor)
-                        })
-                };
-                // A removed tile no new tile overlaps, and no near chunk takes
-                // a column of, leaves the plan (out of range): it fades out.
-                // Over near chunks fading in it stays whole: two patterns
-                // fading at once left holes between them.
-                // Two tiles overlap when one is the other or its ancestor:
-                // `kept` holds the new tiles and the near chunks' columns
-                // (level 0), `above` their ancestors.
-                let mut kept: FxHashSet<TileKey> = self
-                    .lods
-                    .iter()
-                    .filter(|(_, tile)| tile.mesh.is_some() && tile.shown.is_none())
-                    .map(|(&key, _)| key)
-                    .collect();
-                let cut = pending.cutout.as_ref().unwrap_or(&self.lod_cutout);
-                kept.extend(cut.iter().map(|&(x, z)| TileKey { x, z, level: 0 }));
-                let mut above = FxHashSet::default();
-                for &key in &kept {
-                    let mut key = key;
-                    while key.level < MAX_LEVEL && above.insert(key.parent()) {
-                        key = key.parent();
-                    }
-                }
-                let alone = |key: TileKey| {
-                    let mut ancestor = key;
-                    !kept.contains(&key)
-                        && !above.contains(&key)
-                        && !(key.level..MAX_LEVEL).any(|_| {
-                            ancestor = ancestor.parent();
-                            kept.contains(&ancestor)
-                        })
-                };
-                let whole = start.checked_sub(FADE).unwrap_or(start);
-                let released_shadows = finish_uploads(
-                    &mut self.lods,
-                    &mut self.lod_uploads.empty,
-                    &mut self.lod_cull_free,
-                    &pending.removed,
-                    start,
-                    |key| {
-                        if over_replaced(key) { start } else { whole }
-                    },
-                );
-                for mesh in released_shadows {
-                    self.release_mesh(mesh);
-                }
-                for key in pending.removed {
-                    self.lod_uploads.empty.remove(&key);
-                    let alone = alone(key);
-                    if let Some(tile) = self.lods.get_mut(&key)
-                        && tile.dying.is_none()
-                    {
-                        tile.dying = Some(start);
-                        tile.alone = alone;
-                    }
-                }
-                if let Some(cutout) = pending.cutout {
-                    self.set_lod_cutout(cutout);
-                }
-                return;
+                break;
             };
             let [x, _, z] = key.origin();
             let size = key.size();
@@ -868,16 +862,127 @@ impl Renderer {
                 || taken.iter().any(|&(cx, cz)| {
                     (x..x + size).contains(&(cx * 16)) && (z..z + size).contains(&(cz * 16))
                 });
-            if !self.upload_lod(key, &mesh, keep) {
-                self.lod_uploads
-                    .pending
-                    .as_mut()
-                    .expect("pending tiles")
-                    .retry(key, mesh, start);
+            let uploaded = self.upload_lod(key, &mesh, keep);
+            let pending = self.lod_uploads.pending.as_mut().expect("pending tiles");
+            if uploaded {
+                pending.needs_finish = true;
+            } else {
+                pending.retry(key, mesh, start);
             }
             if start.elapsed() >= budget {
-                return;
+                if pending.retry_at.is_empty() {
+                    return;
+                }
+                // Settle disjoint work even if new uploads keep filling the
+                // frame budget while the blocked tiles wait for space.
+                break;
             }
+        }
+        if self
+            .lod_uploads
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.needs_finish)
+        {
+            let pending = self.lod_uploads.pending.take().expect("pending tiles");
+            self.finish_lod_uploads(pending, start);
+        }
+    }
+
+    fn finish_lod_uploads(&mut self, mut pending: Pending, now: Instant) {
+        let unfinished = TileCoverage::new(pending.meshes.keys().copied());
+        let replaced = TileCoverage::new(
+            pending
+                .removed
+                .iter()
+                .copied()
+                .filter(|key| self.lods.contains_key(key)),
+        );
+        let cutout = pending.cutout.as_ref().unwrap_or(&self.lod_cutout);
+        let kept = TileCoverage::new(
+            self.lods
+                .iter()
+                .filter(|(key, tile)| {
+                    tile.mesh.is_some() && tile.shown.is_none() && !pending.removed.contains(key)
+                })
+                .map(|(&key, _)| key)
+                .chain(cutout.iter().map(|&(x, z)| TileKey { x, z, level: 0 })),
+        );
+
+        // Fade over the tiles this one replaces. Where nothing stood before,
+        // show the new tile whole so its fade cannot open holes.
+        let whole = now.checked_sub(FADE).unwrap_or(now);
+        let released = finish_uploads(
+            &mut self.lods,
+            &mut self.lod_uploads.empty,
+            &mut self.lod_cull_free,
+            &pending.removed,
+            &unfinished,
+            now,
+            |key| if replaced.overlaps(key) { now } else { whole },
+        );
+        for mesh in released {
+            self.release_mesh(mesh);
+        }
+
+        // A refused child can hold up the whole parent that would replace an
+        // old sibling, even if the parent is already visible but cannot cast.
+        let mut withheld = TileCoverage::default();
+        let mut unpublished_shadows = TileCoverage::default();
+        for (&key, tile) in &self.lods {
+            if tile.dying.is_none() && !pending.removed.contains(&key) {
+                if tile.awaits_publication || (tile.shadow_waits && unfinished.overlaps(key)) {
+                    withheld.insert(key);
+                }
+                if tile.shadow_waits {
+                    unpublished_shadows.insert(key);
+                }
+            }
+        }
+        let overlaps_withheld = |key| unfinished.overlaps(key) || withheld.overlaps(key);
+        pending.removed.retain(|&key| {
+            if overlaps_withheld(key) || unpublished_shadows.overlaps(key) {
+                return true;
+            }
+            self.lod_uploads.empty.remove(&key);
+            if let Some(tile) = self.lods.get_mut(&key)
+                && tile.dying.is_none()
+            {
+                tile.dying = Some(now);
+                // If new terrain or near chunks overlap, fade them in over
+                // this tile; a second fade-out pattern would open holes.
+                tile.alone = !kept.overlaps(key);
+            }
+            false
+        });
+
+        if let Some(cutout) = pending.cutout.take() {
+            if pending.meshes.is_empty() {
+                self.set_lod_cutout(cutout);
+            } else {
+                // A column keeps its old cutout until the tile replacing it
+                // can be shown and cast, including a tile held by a retry.
+                let mut ready = cutout.clone();
+                for &(x, z) in self.lod_cutout.symmetric_difference(&cutout) {
+                    if overlaps_withheld(TileKey { x, z, level: 0 }) {
+                        if self.lod_cutout.contains(&(x, z)) {
+                            ready.insert((x, z));
+                        } else {
+                            ready.remove(&(x, z));
+                        }
+                    }
+                }
+                if ready != cutout {
+                    pending.cutout = Some(cutout);
+                }
+                if ready != self.lod_cutout {
+                    self.set_lod_cutout(ready);
+                }
+            }
+        }
+        if !pending.meshes.is_empty() || !pending.removed.is_empty() {
+            pending.needs_finish = false;
+            self.lod_uploads.pending = Some(pending);
         }
     }
 
@@ -932,6 +1037,7 @@ mod tests {
             alone: false,
             previous: None,
             shadow_previous: None,
+            awaits_publication: shown.is_none(),
             shadow_waits: shown.is_none(),
             cull_slot: 0,
         }
@@ -1077,6 +1183,7 @@ mod tests {
             &mut empty,
             &mut Vec::new(),
             &removed,
+            &TileCoverage::default(),
             now,
             |_| now,
         );
@@ -1089,11 +1196,92 @@ mod tests {
             &mut empty,
             &mut Vec::new(),
             &removed,
+            &TileCoverage::default(),
             now,
             |_| now,
         );
         let casters = collect_shadow(&tiles, DVec3::new(0.5, 80.0, 0.5));
         assert_eq!(casters.keys, [parent, child].into_iter().collect());
+    }
+
+    #[test]
+    fn finished_tiles_can_publish_beside_a_waiting_upload() {
+        let now = Instant::now();
+        let child = TileKey {
+            x: 4,
+            z: 0,
+            level: 0,
+        };
+        let parent = child.parent();
+        let disjoint = TileKey { x: 8, ..child };
+        let mut tiles = [
+            (parent, tile(1, 74.0, None)),
+            (disjoint, tile(1, 74.0, None)),
+        ]
+        .into_iter()
+        .collect();
+        let unfinished = TileCoverage::new([child]);
+        finish_uploads(
+            &mut tiles,
+            &mut FxHashSet::default(),
+            &mut Vec::new(),
+            &FxHashSet::default(),
+            &unfinished,
+            now,
+            |_| now,
+        );
+        assert!(tiles[&parent].shown.is_none());
+        assert!(tiles[&parent].shadow().is_none());
+        assert!(tiles[&disjoint].shown.is_some());
+        assert!(tiles[&disjoint].shadow().is_some());
+    }
+
+    #[test]
+    fn a_held_handoff_restarts_its_inherited_world_fade() {
+        let started = Instant::now();
+        let expired = started + FADE;
+        let child = TileKey {
+            x: 4,
+            z: 0,
+            level: 0,
+        };
+        let parent = child.parent();
+        let old = tile(1, 74.0, Some(started));
+        let mut next = tile(2, 74.0, Some(started));
+        next.awaits_publication = true;
+        next.previous = Some(Box::new(StandIn {
+            mesh: *old.mesh.unwrap(),
+            info: old.info,
+            since: Some(started),
+            casts_shadow: false,
+        }));
+        let mut tiles = [(parent, next)].into_iter().collect();
+        let mut empty = FxHashSet::default();
+        let mut slots = Vec::new();
+        let removed = FxHashSet::default();
+        finish_uploads(
+            &mut tiles,
+            &mut empty,
+            &mut slots,
+            &removed,
+            &TileCoverage::new([child]),
+            expired,
+            |_| expired,
+        );
+        finish_uploads(
+            &mut tiles,
+            &mut empty,
+            &mut slots,
+            &removed,
+            &TileCoverage::default(),
+            expired,
+            |_| expired,
+        );
+        let parent = tiles.get_mut(&parent).unwrap();
+        assert!(parent.release_visible_stand_in(expired).is_none());
+        assert_eq!(parent.drawn().solid, 1);
+        assert!(parent.release_visible_stand_in(expired + FADE).is_some());
+        assert_eq!(parent.drawn().solid, 2);
     }
 
     #[test]
@@ -1137,6 +1325,7 @@ mod tests {
                     &mut empty,
                     &mut slots,
                     &removed,
+                    &TileCoverage::default(),
                     expired,
                     |_| now
                 )
@@ -1159,6 +1348,7 @@ mod tests {
                 &mut empty,
                 &mut slots,
                 &removed,
+                &TileCoverage::default(),
                 expired,
                 |_| now,
             );
@@ -1271,6 +1461,7 @@ mod tests {
                 &mut empty,
                 &mut Vec::new(),
                 &removed,
+                &TileCoverage::default(),
                 now,
                 |_| now
             )
@@ -1298,6 +1489,7 @@ mod tests {
             &mut empty,
             &mut Vec::new(),
             &FxHashSet::default(),
+            &TileCoverage::default(),
             later,
             |_| later,
         );
@@ -1370,6 +1562,7 @@ mod tests {
                 &mut uploads.empty,
                 &mut Vec::new(),
                 &removed,
+                &TileCoverage::default(),
                 now,
                 |_| now
             )
@@ -1398,6 +1591,7 @@ mod tests {
             &mut rebuilt.empty,
             &mut Vec::new(),
             &removed,
+            &TileCoverage::default(),
             later,
             |_| later,
         );

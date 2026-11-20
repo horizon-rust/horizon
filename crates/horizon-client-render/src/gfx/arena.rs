@@ -20,6 +20,9 @@ pub const PAGE_BYTES: u64 = 256 << 20;
 /// wgpu-core adds to vertex buffers; the device's own limit still applies.
 pub const LARGE_PAGE_BYTES: u64 = (1 << 31) - (1 << 20);
 
+/// Arena page, first slot and unrounded slot count.
+pub(super) type Range = (u32, u64, u64);
+
 /// Free vertex ranges: start -> length, never adjacent.
 #[derive(Debug, PartialEq)]
 struct FreeList(BTreeMap<u64, u64>);
@@ -557,6 +560,23 @@ impl Arena {
         self.pages[index] = Some(page);
         Some((index as u32, start))
     }
+    /// Reserve space for a replacement without giving up its old range. The
+    /// caller can still draw the old mesh until every arena can fit the new one.
+    pub(super) fn alloc_reusing(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        vertices: u64,
+        old: Option<Range>,
+    ) -> Option<(u32, u64)> {
+        if let Some((page, start, old_vertices)) = old
+            && Self::span(vertices) <= Self::span(old_vertices).min(self.page_limit)
+        {
+            Some((page, start))
+        } else {
+            self.alloc(device, encoder, vertices)
+        }
+    }
     /// A range of `vertices` in a page that exists already and is not being
     /// emptied: never grows the arena.
     pub fn alloc_existing(&mut self, vertices: u64) -> Option<(u32, u64)> {
@@ -735,6 +755,20 @@ impl Arena {
             .expect("live arena page")
             .free
             .give(start, len);
+    }
+    /// Give back a range except for the prefix still in use by a mesh upload.
+    pub(super) fn release_except(&mut self, (page, start, vertices): Range, keep: Option<Range>) {
+        if let Some((keep_page, keep_start, keep_vertices)) = keep
+            && (page, start) == (keep_page, keep_start)
+        {
+            let len = Self::span(vertices).min(self.page_limit);
+            let kept = Self::span(keep_vertices);
+            if kept < len {
+                self.release(page, start + kept, len - kept);
+            }
+        } else {
+            self.release(page, start, vertices);
+        }
     }
     /// `release` for many ranges (page, start, vertices) at once.
     pub fn release_all(&mut self, ranges: impl IntoIterator<Item = (u32, u64, u64)>) {

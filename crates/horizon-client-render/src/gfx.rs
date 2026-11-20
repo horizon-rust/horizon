@@ -823,6 +823,14 @@ struct SectionGpu {
     /// Replaced only by its next mesh.
     ray_looks: [Box<[crate::mesher::QuadLook]>; 2],
 }
+
+#[derive(Default)]
+struct MeshRanges {
+    terrain: Option<arena::Range>,
+    translucent: Option<arena::Range>,
+    indices: Option<arena::Range>,
+}
+
 /// Extracts the animated sprite layers present in a section mesh. Meshing
 /// records the distinct layers, so uploading does not rescan every vertex.
 pub(crate) fn collect_animated_layers(
@@ -869,6 +877,17 @@ impl SectionGpu {
             (self.solid > 0).then_some((self.page, self.start, self.solid_slots)),
             (self.translucent > 0).then(|| (page, start, u64::from(self.translucent) * 4)),
         )
+    }
+    fn ranges(&self, split: bool) -> MeshRanges {
+        let (terrain, translucent) = self.vertex_ranges(split);
+        let indices = self
+            .sorted_indices
+            .map(|(page, start)| (page, start, u64::from(self.translucent) * 6));
+        MeshRanges {
+            terrain,
+            translucent,
+            indices,
+        }
     }
     /// Whether GPU culling keeps a record of it at `key` while it is on (`gpu_id`):
     /// it has solid quads, in one of the level's `sections`, which the pass's
@@ -5186,7 +5205,7 @@ impl Renderer {
         }
         let facts = MeshFacts::of(mesh);
         let fading = self.before_mesh(key, &facts);
-        let mut section = self.upload_mesh(mesh);
+        let mut section = self.upload_mesh(mesh, MeshRanges::default());
         if let Some(s) = section.as_mut().filter(|_| self.ray_looks) {
             s.ray_looks = [&mesh.solid_looks, &mesh.translucent_looks].map(|l| l[..].into());
         }
@@ -5246,7 +5265,7 @@ impl Renderer {
                 .insert_marked(key, section, mesh.bounds, marked);
         }
     }
-    fn upload_mesh(&mut self, mesh: &SectionMesh) -> Option<SectionGpu> {
+    fn upload_mesh(&mut self, mesh: &SectionMesh, old: MeshRanges) -> Option<SectionGpu> {
         let solid = (mesh.solid.len() / 4) as u32;
         let translucent = (mesh.translucent.len() / 4) as u32;
         if solid + translucent == 0 {
@@ -5280,19 +5299,25 @@ impl Renderer {
             solid_slots + mesh.translucent.len() as u64
         };
         let (page, start) = if main > 0 {
-            self.arena.alloc(&self.device, encoder, main)?
+            self.arena
+                .alloc_reusing(&self.device, encoder, main, old.terrain)?
         } else {
             (0, 0)
         };
         let release_main = |arena: &mut arena::Arena| {
             if main > 0 {
-                arena.release(page, start, main);
+                arena.release_except((page, start, main), old.terrain);
             }
         };
         let translucent_vertices = mesh.translucent.len() as u64;
         let translucent_at = match &mut self.translucent_arena {
             Some(arena) if translucent > 0 => {
-                match arena.alloc(&self.device, encoder, translucent_vertices) {
+                match arena.alloc_reusing(
+                    &self.device,
+                    encoder,
+                    translucent_vertices,
+                    old.translucent,
+                ) {
                     Some(at) => at,
                     None => {
                         release_main(&mut self.arena);
@@ -5303,13 +5328,19 @@ impl Renderer {
             _ => (page, start + solid_slots),
         };
         let sorted_indices = if translucent > 0 {
-            let indices =
-                self.sorted_indices
-                    .alloc(&self.device, encoder, u64::from(translucent) * 6);
+            let indices = self.sorted_indices.alloc_reusing(
+                &self.device,
+                encoder,
+                u64::from(translucent) * 6,
+                old.indices,
+            );
             if indices.is_none() {
                 release_main(&mut self.arena);
                 if let Some(arena) = &mut self.translucent_arena {
-                    arena.release(translucent_at.0, translucent_at.1, translucent_vertices);
+                    arena.release_except(
+                        (translucent_at.0, translucent_at.1, translucent_vertices),
+                        old.translucent,
+                    );
                 }
                 return None;
             }
@@ -5504,24 +5535,25 @@ impl Renderer {
         }
     }
     fn release_mesh(&mut self, s: SectionGpu) {
+        self.release_mesh_except(s, MeshRanges::default());
+    }
+    fn release_mesh_except(&mut self, s: SectionGpu, keep: MeshRanges) {
         if let (Some(flat), Some(id)) = (&mut self.flat, s.flat_id) {
             flat.remove(id);
         }
         if let (Some(gpu), Some(id)) = (&mut self.gpu_culling, s.gpu_id) {
             gpu.records.remove(id);
         }
-        if let Some((page, start)) = s.sorted_indices {
-            self.sorted_indices
-                .release(page, start, u64::from(s.translucent) * 6);
+        let ranges = s.ranges(self.translucent_arena.is_some());
+        if let Some(indices) = ranges.indices {
+            self.sorted_indices.release_except(indices, keep.indices);
         }
-        let (main, translucent) = s.vertex_ranges(self.translucent_arena.is_some());
-        if let Some((page, start, vertices)) = main {
-            self.arena.release(page, start, vertices);
+        if let Some(terrain) = ranges.terrain {
+            self.arena.release_except(terrain, keep.terrain);
         }
-        if let (Some(arena), Some((page, start, vertices))) =
-            (&mut self.translucent_arena, translucent)
+        if let (Some(arena), Some(translucent)) = (&mut self.translucent_arena, ranges.translucent)
         {
-            arena.release(page, start, vertices);
+            arena.release_except(translucent, keep.translucent);
         }
     }
     /// Video memory the arena keeps because fragmentation holds its pages
