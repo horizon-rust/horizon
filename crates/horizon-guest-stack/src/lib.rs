@@ -92,7 +92,9 @@ fn prepare() -> std::io::Result<()> {
     }
     if limit.rlim_max < required {
         return Err(std::io::Error::other(format!(
-            "stack hard limit is too low ({limits}); raise ulimit -Hs to at least {} KiB",
+            "stack hard limit is too low ({limits}); the game needs {} KiB of stack, raise \
+             ulimit -Hs to at least {} KiB",
+            required / 1024,
             required.saturating_add(HOST_HEADROOM as libc::rlim_t) / 1024
         )));
     }
@@ -135,6 +137,12 @@ fn refuse(why: String) -> Result<(), &'static str> {
     ))
 }
 
+/// A refusal where nothing could be measured: the reason, and the requirement.
+#[cfg(target_os = "linux")]
+fn unmeasured(why: &str) -> Result<(), &'static str> {
+    refuse(format!("{why}; needs {} KiB", REQUIRED / 1024))
+}
+
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 fn too_small(size: usize, measured_by: &str) -> Result<(), &'static str> {
     refuse(format!(
@@ -154,7 +162,7 @@ fn inspect_current() -> Result<(), &'static str> {
         let pid = libc::c_long::from(unsafe { libc::getpid() });
         match is_main_thread(tid, pid) {
             None => {
-                return refuse(format!(
+                return unmeasured(&format!(
                     "cannot tell whether this is the main thread: gettid failed ({tid_error})"
                 ));
             }
@@ -166,7 +174,9 @@ fn inspect_current() -> Result<(), &'static str> {
                         room / 1024,
                         REQUIRED / 1024
                     )),
-                    Err(why) => refuse(format!("cannot measure the main thread's stack: {why}")),
+                    Err(why) => {
+                        unmeasured(&format!("cannot measure the main thread's stack: {why}"))
+                    }
                 };
             }
             Some(false) => {}
@@ -175,8 +185,8 @@ fn inspect_current() -> Result<(), &'static str> {
         // SAFETY: pthread_self is live and attr is writable. Destroy only on success.
         unsafe {
             if libc::pthread_getattr_np(libc::pthread_self(), attr.as_mut_ptr()) != 0 {
-                return refuse(
-                    "cannot inspect the calling thread stack: pthread_getattr_np failed".to_owned(),
+                return unmeasured(
+                    "cannot inspect the calling thread stack: pthread_getattr_np failed",
                 );
             }
             let mut attr = attr.assume_init();
@@ -184,9 +194,8 @@ fn inspect_current() -> Result<(), &'static str> {
             let result = libc::pthread_attr_getstacksize(&attr, &mut size);
             libc::pthread_attr_destroy(&mut attr);
             if result != 0 {
-                return refuse(
-                    "cannot inspect the calling thread stack: pthread_attr_getstacksize failed"
-                        .to_owned(),
+                return unmeasured(
+                    "cannot inspect the calling thread stack: pthread_attr_getstacksize failed",
                 );
             }
             if size < REQUIRED {
@@ -256,8 +265,12 @@ fn main_thread_room() -> Result<(usize, String), String> {
     let maps = std::fs::read("/proc/self/maps")
         .map_err(|error| format!("/proc/self/maps unreadable ({error})"))?;
     let (below, top) = stack_row(&maps, start_stack).ok_or_else(|| {
-        format!("no [stack] row of /proc/self/maps holds startstack {start_stack:#x}")
+        format!(
+            "cannot read the stack's mapping: no valid [stack] row of /proc/self/maps holds \
+             startstack {start_stack:#x}"
+        )
     })?;
+    // stack_row guarantees below <= start_stack < top, so these differences cannot wrap.
     let (room, bound) = main_stack_room(soft_limit, below, guard_gap, top, start_stack);
     let used = (top - start_stack) / 1024;
     let bound = match bound {
@@ -289,7 +302,8 @@ fn start_stack(stat: &[u8]) -> Option<usize> {
 }
 
 /// The `[stack]` row of `/proc/<pid>/maps` that holds `address`, as (end of the row before it,
-/// its own end). The path field must be exactly the pseudo-name: a file may be called
+/// its own end), so `below <= address < end`; `None` also when a row before it is malformed or out
+/// of order. The path field must be exactly the pseudo-name: a file may be called
 /// `/opt/horizon-[stack]`. Mapped file names need not be UTF-8, so the rows are read as bytes.
 #[cfg(target_os = "linux")]
 fn stack_row(maps: &[u8], address: usize) -> Option<(usize, usize)> {
@@ -303,6 +317,10 @@ fn stack_row(maps: &[u8], address: usize) -> Option<(usize, usize)> {
         let (start, end) = std::str::from_utf8(fields.next()?).ok()?.split_once('-')?;
         let start = usize::from_str_radix(start, 16).ok()?;
         let end = usize::from_str_radix(end, 16).ok()?;
+        // Linux lists increasing, non-overlapping ranges; anything else is unreadable.
+        if start >= end || start < below {
+            return None;
+        }
         let path = fields.nth(4).map_or(&b""[..], <[u8]>::trim_ascii_start);
         if path == b"[stack]" && (start..end).contains(&address) {
             return Some((below, end));
@@ -460,6 +478,16 @@ mod tests {
         );
         // The file row never counts, even when it holds the address.
         assert_eq!(super::stack_row(maps, 0x0040_1000), None);
+        // Out-of-order or inverted rows before the stack make the table unreadable: no answer
+        // rather than a floor above the stack.
+        let out_of_order: &[u8] = b"7f100000-7f101000 r-xp 00000000 00:00 0
+7f000000-7f021000 rw-p 00000000 00:00 0                          [stack]
+";
+        assert_eq!(super::stack_row(out_of_order, 0x7f02_0000), None);
+        let inverted: &[u8] = b"10100000-10000000 rw-p 00000000 00:00 0
+7f000000-7f021000 rw-p 00000000 00:00 0                          [stack]
+";
+        assert_eq!(super::stack_row(inverted, 0x7f02_0000), None);
     }
 
     #[cfg(target_os = "linux")]
