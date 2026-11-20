@@ -8020,7 +8020,7 @@ mod walk_target_tests {
         m.first_tick = false;
         m.invulnerable_flag = true;
         m.extra.immovable = true;
-        m.extra.effects_dirty = false;
+        m.effects_dirty = false;
         m.extra.effects.push(crate::mobs::StoredEffect::new(
             "minecraft:resistance",
             -1,
