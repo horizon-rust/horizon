@@ -2,7 +2,8 @@
 
 Every benchmark Horizon writes uses this one JSON format: `horizon-client --benchmark`, the launcher's own
 measurements, and `tools/perf_bench.py` (which also writes it for vanilla and vanilla with mods). The same
-file is the local log a player can attach to an issue by hand; nothing uploads it. The types, the statistics and the hardware
+file is the local log a player can attach to an issue by hand, and is uploaded only if the player enables
+opt-in benchmark uploads ([telemetry.md](telemetry.md)). The types, the statistics and the hardware
 detection are in `crates/horizon-bench`; nothing else builds a report by hand.
 
 A report holds summaries and histogram counts, never raw frame streams: a 10-minute run is a few

@@ -266,14 +266,17 @@ turn the switch off.
 - **Confirm what can't be undone.** A command that deletes the player's things requires
   `confirm` and carries the MCP `destructiveHint`. In the game these are `world-delete`, `fill`
   and `setblock` (the table's `DESTRUCTIVE`); in the launcher, `remove`, `modpack remove`,
-  `mods remove`, `servers forget` and `account sign-out` (`cli_tools::DESTRUCTIVE`).
+  `mods remove`, `servers forget`, `account sign-out`, `data delete`, `worlds delete`,
+  `multiplayer remove`, `screenshots delete`, `packs remove`, `worlds datapack-remove`,
+  `unshare-log` and `instance launch` (`cli_tools::DESTRUCTIVE`).
   Without `confirm: true` the call is refused and the message says to ask the player. In the game
   CLI the flag is `--confirm`. The launcher CLI asks nothing: a person typing `remove` meant it.
 - **Ask before reaching out.** A command that sends data or reaches other people carries
   `openWorldHint`, and its description says "only when the player asks". In the game these are
-  `connect`, `lan`, `friends`, `chat` and `command`; in the launcher, `servers create` and
-  `share-log`. `play`'s `join` argument says the same. Bug and benchmark reports stay local;
-  there is no telemetry or data collection switch ([Horizon sends nothing](telemetry.md)).
+  `connect`, `lan`, `friends`, `chat` and `command`; in the launcher, `data allow`, `data send`,
+  `data bug`, `data benchmark`, `servers create` and `share-log` (`cli_tools::OPEN_WORLD`).
+  `play`'s `join` argument says the same. `bug-report` writes a local file; opt-in data collection
+  is off until the player enables it ([Opt-in data collection](telemetry.md)).
 - **No secrets.** No surface returns tokens, session files, keychain entries or invite secrets
   the player didn't ask to share:
   - accounts are names and UUIDs;
