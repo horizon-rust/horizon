@@ -201,8 +201,9 @@ fn ipv4_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     ends_token(bytes, end).then_some((end - i, IP))
 }
 
-/// Eight hex groups with colons, or fewer around a `::` (at least three groups, so a Rust path
-/// such as `a::b` is left alone).
+/// Eight hex groups with colons, or fewer around a `::` (at least two, as in `fd00::1`). A digit
+/// in it is what leaves a Rust path such as `a::b` or `f32::abs` alone; a bare `::1` (loopback)
+/// says nothing about the player.
 fn ipv6_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     if !starts_token(bytes, i) {
         return None;
@@ -216,7 +217,7 @@ fn ipv6_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     let groups: Vec<&str> = token.split(':').collect();
     let filled = groups.iter().filter(|g| !g.is_empty()).count();
     let ok = groups.iter().all(|g| g.len() <= 4)
-        && (filled == 8 || (token.contains("::") && filled >= 3))
+        && (filled == 8 || (token.contains("::") && filled >= 2))
         && groups.iter().any(|g| g.bytes().any(|b| b.is_ascii_digit()));
     (ok && ends_token(bytes, i + token.len())).then_some((token.len(), IP))
 }
@@ -351,6 +352,11 @@ mod tests {
         assert_eq!(s.scrub("joined 192.168.1.20:25565 ok"), "joined <ip> ok");
         assert_eq!(s.scrub("from 10.0.0.1."), "from <ip>.");
         assert_eq!(s.scrub("[2a01:e0a:1f2::5]"), "[<ip>]");
+        assert_eq!(
+            s.scrub("joined [fd00::1]:25565 ok"),
+            "joined [<ip>]:25565 ok"
+        );
+        assert_eq!(s.scrub("via fe80::1%eth0"), "via <ip>%eth0");
         assert_eq!(s.scrub("mail ana.b+mc@example.org now"), "mail <email> now");
         assert_eq!(
             s.scrub(
@@ -366,6 +372,7 @@ mod tests {
         for text in [
             "std::panicking::begin_panic (src/game.rs:12:5)",
             "a::b::c",
+            "f32::abs, u8::MAX, d3d12::Device::new",
             "driver 31.0.15.3623, Windows 10.0.19045.1",
             "wgpu 30.0.1",
             "commit 9fceb02d0ae598e95dc970b74767f19372d61af8",
