@@ -346,6 +346,8 @@ pub(super) fn convert_to_villager(from: &Mob, to: &mut Mob, nausea: bool) -> Vec
         }
     }
     to.extra.age = if from.is_baby() { -24000 } else { 0 };
+    // `ZombieVillager.finishConversion`: `setVillagerDataFinalized(getVillagerDataFinalized())`.
+    villager::ext_mut(to).data_finalized = villager::ext(from).is_some_and(|e| e.data_finalized);
     if nausea {
         to.add_effect("minecraft:nausea", 200, 0);
     }
@@ -492,7 +494,11 @@ mod tests {
         assert_eq!(zombie.extra.mount, Some(99));
         assert!(zombie.extra.passenger);
         let mut cured = mob(3, Species::Villager, "minecraft:villager");
-        convert_to_villager(&zombie, &mut cured, true);
+        assert!(!villager::ext(&zombie).is_some_and(|e| e.data_finalized));
+        villager::ext_mut(&mut zombie).data_finalized = true;
+        let drops = convert_to_villager(&zombie, &mut cured, true);
+        assert!(villager::ext(&cured).is_some_and(|e| e.data_finalized));
+        assert!(drops.is_empty());
         assert!(cured.silent);
         assert!(cured.no_ai);
         assert!(cured.no_gravity);

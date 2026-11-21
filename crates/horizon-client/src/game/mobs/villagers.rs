@@ -615,6 +615,7 @@ mod birth_tests {
         assert_eq!(baby.extra.age, -24000);
         assert_eq!(baby.extra.variant, 2);
         assert_eq!(baby.extra.bed, Some(BED));
+        assert!(villager::ext(baby).is_some_and(|data| data.data_finalized));
         assert_eq!(bed_owners(game), vec![baby.id]);
         assert_eq!(game.lan_entity_events, vec![(baby.id as i32, 12)]);
     }

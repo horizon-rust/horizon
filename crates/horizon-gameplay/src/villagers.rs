@@ -230,6 +230,8 @@ pub fn villager_birth<L: VillagerLevel + ?Sized>(
         child.extra.profession = Default::default();
         child.extra.age = -24000;
         child.extra.bed = Some(bed);
+        // `Villager.getBreedOffspring`: `setVillagerDataFinalized(true)`.
+        villager::ext_mut(child).data_finalized = true;
     }
     // VillagerMakeLove.giveBirth: entity event 12 for the child.
     l.mob_event_particles(id, 12);
