@@ -4,20 +4,39 @@ use super::*;
 /// Plan enabled native mods for an instance. Worker-only filesystem and release reads.
 pub fn routes(home: &Path, base: Option<&str>) -> Result<Routes, Failed> {
     require_consent()?;
-    let lease = crate::native_cache::Cache::acquire(&backend::build_dir()).map_err(cache_error)?;
+    let _turn = check_turn()?;
     let Some(folder) = stage_installed(home, root().join("installed.routes"))? else {
         return Ok(Routes::default());
     };
-    classify(&folder, base, &lease)
+    classify(&folder, base)
 }
 
-/// Share classification with an actual build under its existing cache lease.
-pub(super) fn classify(
-    folder: &Path,
-    base: Option<&str>,
-    // Held while the SDK's index, surface and build data are read and kept.
-    _lease: &crate::native_cache::Cache,
-) -> Result<Routes, Failed> {
+/// The route and update checks' own lock: they stage the installed mods into one folder, one
+/// check at a time. They never take the build lease, so a check fetching the SDK's files can't
+/// make a Build the player starts meanwhile wait or fail (#19294); the SDK's files are kept so
+/// that a check and a build can fetch them at once.
+fn check_turn() -> Result<fs::File, Failed> {
+    let native = root();
+    crate::native_cache::checked(&backend::build_dir(), true).map_err(cache_error)?;
+    fs::create_dir_all(&native).map_err(|e| format!("{}: {e}", native.display()))?;
+    crate::native_cache::checked(&native, true).map_err(cache_error)?;
+    let path = native.join("installed.routes.lock");
+    crate::native_cache::checked(&path, false).map_err(cache_error)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    file.lock()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(file)
+}
+
+/// Classification, shared by the checks and a build (under its lease). It reads and keeps the
+/// SDK's index, surface and build data, which need no build lease.
+pub(super) fn classify(folder: &Path, base: Option<&str>) -> Result<Routes, Failed> {
     let found = scan_bundles(folder)?;
     let mut result = Routes::default();
     let mut projects = Vec::new();
@@ -131,7 +150,7 @@ pub struct UpdateCheck {
 /// or Nightly `to`. Worker-only: it reads releases.
 pub fn update_check(home: &Path, to: &str) -> Result<UpdateCheck, Failed> {
     require_consent()?;
-    let _lease = crate::native_cache::Cache::acquire(&backend::build_dir()).map_err(cache_error)?;
+    let _turn = check_turn()?;
     let found = match stage_installed(home, root().join("installed.routes"))? {
         Some(folder) => scan_bundles(&folder)?,
         None => Vec::new(),
