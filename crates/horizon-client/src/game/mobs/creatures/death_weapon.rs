@@ -267,7 +267,7 @@ impl Game<'_> {
             }
         };
         // LootContextParams.ORIGIN of a death: the mob's position.
-        let place = self.loot_place_at([m.position.x, m.position.y, m.position.z], None);
+        let place = self.loot_place_at([m.position.x, m.position.y, m.position.z], None, None);
         let hurt = accepted.as_ref().map(|hit| hit.source()).or_else(|| {
             source.map(|(damage_type, causing)| {
                 let mut hit = death_hurt_source(damage_type, causing);

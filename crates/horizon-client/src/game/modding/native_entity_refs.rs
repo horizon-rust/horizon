@@ -422,7 +422,7 @@ impl Game<'_> {
         if let Some(entity) = entity {
             self.native_entity_target(entity)?;
         }
-        let place = self.loot_place_at(origin, None);
+        let place = self.loot_place_at(origin, None, None);
         horizon_world::loot::with_native_loot_place(place, || {
             let this_entity = entity.is_some();
             match world_items!(self).loot_sequence(table) {

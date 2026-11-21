@@ -1878,6 +1878,7 @@ impl Game<'_> {
             let place = self.loot_place_at(
                 pos.map(|v| f64::from(v) + 0.5),
                 self.loot_block_entity(pos, &name),
+                Some(state),
             );
             // `Explosion.getDirectSourceEntity`.
             let entity = self
