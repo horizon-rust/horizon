@@ -1,0 +1,13 @@
+# Written by make.py: rerun it after a new developer install, since [native] pins that build.
+id = "local_crate_api_check"
+name = "Local crate API check"
+version = "0.1.0"
+description = "The Fork's end-to-end check of gap/native-local-crate-api"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "fb33ad713f6d6321f7c998e2fcf5802ae085c8bf"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
