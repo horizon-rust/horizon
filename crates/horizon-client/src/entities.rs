@@ -1095,7 +1095,7 @@ impl ExperienceOrb {
             context,
             on_sound,
             entities,
-            &mut |_| false,
+            &mut |_, _| false,
         )
     }
 
@@ -1114,7 +1114,7 @@ impl ExperienceOrb {
         context: &horizon_world::native_load_context::LoopContext,
         on_sound: &mut dyn FnMut([f64; 3], f32),
         entities: &[Aabb],
-        invulnerable: &mut dyn FnMut(&mut World) -> bool,
+        invulnerable: &mut dyn FnMut(&mut World, &str) -> bool,
     ) -> (bool, OrbMove) {
         self.tick_among_inner(
             &mut world,
@@ -1128,7 +1128,7 @@ impl ExperienceOrb {
             context,
             on_sound,
             entities,
-            &mut |world| invulnerable(world),
+            &mut |world, damage| invulnerable(world, damage),
         )
     }
 
@@ -1146,7 +1146,7 @@ impl ExperienceOrb {
         context: &horizon_world::native_load_context::LoopContext,
         on_sound: &mut dyn FnMut([f64; 3], f32),
         entities: &[Aabb],
-        invulnerable: &mut dyn FnMut(&mut W) -> bool,
+        invulnerable: &mut dyn FnMut(&mut W, &str) -> bool,
     ) -> (bool, OrbMove) {
         self.ticks += 1;
         self.previous = self.position;
@@ -1155,7 +1155,9 @@ impl ExperienceOrb {
         let (eye_in_water, in_water, in_lava) = self.update_fluids(world, fluids, context);
         // `Entity.baseTick`'s fire step, right after the fluid step: an orb is
         // not fire immune, so each 20th tick of a burn hurts it for 1 (out of
-        // lava; `isInLava` is false on the first tick). The client only
+        // lava; `isInLava` is false on the first tick), unless it refuses
+        // `on_fire` (`ExperienceOrb.hurtServer`'s `isInvulnerableToBase`: an
+        // `Invulnerable` orb keeps its health). The client only
         // `clearFire`s (`min(0, ticks)`). A burn that empties its health discards it.
         let mut burnt_out = false;
         if !server {
@@ -1163,7 +1165,7 @@ impl ExperienceOrb {
         } else {
             if self.fire_ticks > 0 {
                 if self.fire_ticks % 20 == 0 && !(in_lava && self.ticks > 1) {
-                    burnt_out = self.hurt(1.0);
+                    burnt_out = !invulnerable(world, "minecraft:on_fire") && self.hurt(1.0);
                 }
                 self.fire_ticks -= 1;
             }
@@ -1334,7 +1336,7 @@ impl ExperienceOrb {
             wanted,
             next_float,
             on_sound,
-            &mut |_| false,
+            &mut |_, _| false,
         )
     }
 
@@ -1345,7 +1347,7 @@ impl ExperienceOrb {
         wanted: Vec3,
         next_float: &mut dyn FnMut() -> f32,
         on_sound: &mut dyn FnMut([f64; 3], f32),
-        invulnerable: &mut dyn FnMut(&mut W) -> bool,
+        invulnerable: &mut dyn FnMut(&mut W, &str) -> bool,
     ) -> bool {
         if self.health <= 0 {
             return true;
@@ -1366,7 +1368,12 @@ impl ExperienceOrb {
             })
         });
         for _ in 0..contacts {
-            let dead = !invulnerable(world) && self.hurt(4.0);
+            // Entity.lavaHurt: the burn sound (and its pitch draw) only for a
+            // hurt `hurtServer` took; an Invulnerable orb's refusal makes none.
+            if invulnerable(world, "minecraft:lava") {
+                continue;
+            }
+            let dead = self.hurt(4.0);
             let pitch = 2.0 + next_float() * 0.4;
             on_sound([self.position.x, self.position.y, self.position.z], pitch);
             if dead {
@@ -5095,9 +5102,44 @@ mod orb_lava_tests {
         });
     }
 
+    /// An `Invulnerable` orb refuses its burn too (`ExperienceOrb.hurtServer`'s
+    /// `isInvulnerableToBase`): the 20th tick asks the hook for `on_fire`, and a
+    /// refusal keeps the health while the fire burns on.
     #[test]
     #[ignore = "daily"]
-    fn an_invulnerable_orb_keeps_its_health_but_still_emits_lava_sound() {
+    fn an_invulnerable_orb_keeps_its_health_on_fire() {
+        with_fixture(|world, facts, collision, fluids, _| {
+            for refuses in [true, false] {
+                let mut orb = sample_orb(Vec3::new(20.5, 30.0, 20.5), 5);
+                orb.fire_ticks = 20;
+                let mut asked = Vec::new();
+                orb.tick_among_with_hook(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut || 0.0,
+                    None,
+                    fluids,
+                    crate::test_resources::server_loop_context(),
+                    &mut |_, _| {},
+                    &[],
+                    &mut |_, damage| {
+                        asked.push(damage.to_string());
+                        refuses
+                    },
+                );
+                assert_eq!(asked, ["minecraft:on_fire"]);
+                assert_eq!(orb.health, if refuses { 5 } else { 4 });
+                assert_eq!(orb.fire_ticks, 19);
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_invulnerable_orb_keeps_its_health_and_makes_no_lava_sound() {
         with_fixture(|world, facts, collision, fluids, assets| {
             let lava = assets.registry.default_state("minecraft:lava").unwrap();
             world.set(20, 4, 20, lava).unwrap();
@@ -5117,7 +5159,8 @@ mod orb_lava_tests {
                     crate::test_resources::server_loop_context(),
                     &mut |_, _| sounds += 1,
                     &[],
-                    &mut |_| {
+                    &mut |_, damage| {
+                        assert_eq!(damage, "minecraft:lava");
                         calls += 1;
                         true
                     },
@@ -5126,7 +5169,9 @@ mod orb_lava_tests {
             );
             assert_eq!(orb.health, 5);
             assert_eq!(calls, 1);
-            assert_eq!(sounds, 1);
+            // Entity.lavaHurt plays the burn (and draws its pitch) only for a
+            // hurt hurtServer took.
+            assert_eq!(sounds, 0);
         });
     }
 
