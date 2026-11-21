@@ -1230,6 +1230,23 @@ impl Game<'_> {
     pub(in crate::game) fn stack_max_size(&self, s: &ItemStack) -> u32 {
         s.max_stack_size(self.items())
     }
+    /// `ItemStack.getMaxStackSize` for an item and the components on it,
+    /// without a stack to read them from (`ItemInput.createItemStack(1)`,
+    /// the prototype `/give` limits and splits by).
+    pub(in crate::game) fn stack_max_size_of(
+        &self,
+        item: &str,
+        data: Option<&horizon_client::item_data::StackData>,
+    ) -> u32 {
+        // The prototype stack the limit and the split read their size from.
+        let prototype = ItemStack {
+            item: item.into(),
+            count: 1,
+            damage: 0,
+            extra: data.cloned().map(Box::new),
+        };
+        self.stack_max_size(&prototype)
+    }
     /// `ResourceOrIdArgument.getLootModifier`: an inline modifier (SNBT) or
     /// a registered one.
     pub(super) fn item_modifier_arg(&mut self, ctx: &Context, name: &str) -> R<serde_json::Value> {
