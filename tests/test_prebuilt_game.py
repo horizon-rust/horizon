@@ -536,18 +536,65 @@ class AllocatorSelectionTests(unittest.TestCase):
 
         commands = []
         # The timing report only when the workflow asks for one (dry runs): writing it can fail a build that compiled.
-        for timings in (None, "1"):
+        for timings, server in ((None, False), ("1", False), (None, True)):
             with patch.object(prebuilt_game, "stage", return_value=Path("staged")), \
                  patch.object(prebuilt_game, "head", return_value="fixture-commit"), \
                  patch.object(prebuilt_game, "rustc_host", return_value="fixture-host"), \
                  patch.object(prebuilt_game, "run", side_effect=capture), \
+                 patch.object(prebuilt_game.sys, "platform", "win32"), \
                  patch.dict(prebuilt_game.os.environ, {"CARGO_ENCODED_RUSTFLAGS": "-Cprefer-dynamic=no"}):
                 prebuilt_game.os.environ.pop("HORIZON_SDK_TIMINGS", None)
                 if timings:
                     prebuilt_game.os.environ["HORIZON_SDK_TIMINGS"] = timings
                 with self.assertRaises(Captured):
-                    prebuilt_game.build(Path("unused-sdk"), False)
-        self.assertEqual(["--timings" in command for command in commands], [False, True])
+                    prebuilt_game.build(Path("unused-sdk"), server)
+        self.assertEqual(["--timings" in command for command in commands], [False, True, False])
+        # A client's game library builds with the official parts, in one feature resolution (#19384); a server's alone.
+        client, _, server = commands
+        self.assertEqual(client[:2], ["cargo", "build"])
+        self.assertIn(prebuilt_game.OFFICIAL, client)
+        self.assertEqual(client[client.index("--features") + 1], f"{prebuilt_game.GAME}/system-allocator")
+        self.assertEqual(server[:2], ["cargo", "rustc"])
+        self.assertNotIn(prebuilt_game.OFFICIAL, server)
+
+    def test_a_crate_shared_with_the_official_parts_compiled_twice_stops_the_build(self):
+        target = Path("target-dir")
+
+        def artifact(crate: str, unit: str) -> dict:
+            return {"reason": "compiler-artifact", "package_id": unit, "target": {"name": crate, "kind": ["lib"]},
+                    "filenames": [str(target / "release/deps" / f"lib{crate}-{unit}.rlib")]}
+
+        once = [artifact("horizon_hooks", "a"), artifact("horizon_platform", "a"), artifact("log", "a")]
+        prebuilt_game.compiled_once(once, target)
+        for crate in prebuilt_game.SHARED_ONCE:
+            with self.subTest(crate), self.assertRaisesRegex(SystemExit, crate):
+                prebuilt_game.compiled_once([*once, artifact(crate, "b")], target)
+        # A host build of the same crate (a build script's) is not a second copy in the game.
+        host = {**artifact("horizon_hooks", "h"), "filenames": [str(Path("elsewhere/libhorizon_hooks-h.rlib"))]}
+        prebuilt_game.compiled_once([*once, host], target)
+
+    def test_a_client_executable_registers_the_official_parts_and_a_server_one_does_not(self):
+        template = prebuilt_game.API_MAIN.read_text()
+        self.assertIn("#[cfg(horizon_official)]\n    horizon_official::register();\n    horizon_mod_host::main();",
+                      template)
+        for official in (False, True):
+            with self.subTest(official=official), tempfile.TemporaryDirectory() as directory:
+                out = Path(directory) / "out"
+                (out / "deps").mkdir(parents=True)
+                link = Path(directory) / "official-link"
+                link.mkdir()
+                (link / "libhorizon_official-0123.rlib").write_bytes(b"")
+                commands = []
+                with patch.object(prebuilt_game, "extern_args", side_effect=lambda _, crate: ["--extern", crate]), \
+                     patch.object(prebuilt_game, "dylib", return_value=Path("host.dll")), \
+                     patch.object(prebuilt_game, "run", side_effect=lambda command, **_: commands.append(command)):
+                    prebuilt_game.api_route(out, [], link if official else None)
+                [command] = commands
+                self.assertEqual("--cfg" in command, official)
+                if official:
+                    self.assertEqual(command[command.index("--cfg") + 1], "horizon_official")
+                    self.assertIn(f"horizon_official={link / 'libhorizon_official-0123.rlib'}", command)
+                    self.assertIn(f"dependency={link}", command)
 
 
 class ExecutableLinkPolicyTests(unittest.TestCase):
@@ -851,7 +898,10 @@ class SmokeStartTests(unittest.TestCase):
         for code in (1, 0, 2, 3221225477):
             with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                result = subprocess.CompletedProcess([], code, stdout=prebuilt_game.NO_RESOURCES)
+                (root / "out").mkdir()
+                (root / "out" / prebuilt_game.IDENTITY).write_text(json.dumps({"side": "client"}))
+                result = subprocess.CompletedProcess(
+                    [], code, stdout=f"{prebuilt_game.NO_RESOURCES}\n{prebuilt_game.OFFICIAL_PARTS}: download it")
                 with patch.dict(sys.modules, {"lab": SimpleNamespace(game_env=lambda **_: {"HORIZON_HOME": "/inherited"})}), \
                      patch.object(prebuilt_game.subprocess, "run", return_value=result) as run, \
                      contextlib.redirect_stdout(io.StringIO()):
@@ -863,6 +913,29 @@ class SmokeStartTests(unittest.TestCase):
                 environment = run.call_args.kwargs["env"]
                 for key in ("HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
                     self.assertTrue(Path(environment[key]).is_relative_to(root))
+
+    def test_a_client_without_the_official_parts_or_a_server_with_them_fails(self):
+        from types import SimpleNamespace
+        # Only the official parts' hooks point the missing-files error at the launcher (#19384).
+        source = (prebuilt_game.ROOT / "crates/horizon-client/src/game/runtime/loading_screen.rs").read_text()
+        self.assertIn(f'"{prebuilt_game.OFFICIAL_PARTS}: download it at', source)
+        missing = f"{prebuilt_game.NO_RESOURCES}: no horizon-resources.json in /x\n"
+        official = missing + f"{prebuilt_game.OFFICIAL_PARTS}: download it at https://example.org (Download)."
+        for side, stdout, passes in (("client", official, True), ("client", missing, False),
+                                     ("server", missing, True), ("server", official, False)):
+            with self.subTest(side=side, passes=passes), tempfile.TemporaryDirectory() as directory:
+                out = Path(directory) / "out"
+                out.mkdir()
+                (out / prebuilt_game.IDENTITY).write_text(json.dumps({"side": side}))
+                result = subprocess.CompletedProcess([], 1, stdout=stdout)
+                with patch.dict(sys.modules, {"lab": SimpleNamespace(game_env=lambda **_: {})}), \
+                     patch.object(prebuilt_game.subprocess, "run", return_value=result), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if passes:
+                        prebuilt_game.start(out)
+                    else:
+                        with self.assertRaisesRegex(SystemExit, side):
+                            prebuilt_game.start(out)
 
 
 class PublicationGateTests(unittest.TestCase):
