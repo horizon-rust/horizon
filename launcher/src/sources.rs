@@ -526,38 +526,34 @@ pub(crate) const LINKED: &str = "linked-minecraft";
 /// remade by every prepare, so a move of the launcher's data leaves them out. None is followed,
 /// and a real file or folder at one of these paths is not listed (it is the player's to keep).
 pub(crate) fn linked_layout_links(launcher: &Path) -> Vec<PathBuf> {
+    // Each folder on the way must be a folder itself: a linked one is the copy's to refuse.
+    let plain_dir = |dir: &Path| fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir());
+    // Symlinks and junctions only (name-surrogate reparse points on Windows): a cloud
+    // placeholder folder is a reparse point too, and is the player's.
+    let is_link =
+        |path: &Path| fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     let linked = launcher.join(LINKED);
+    if !(plain_dir(launcher) && plain_dir(linked.as_path())) {
+        return Vec::new();
+    }
+    let mut links = vec![linked.join("libraries"), linked.join("assets")];
     // Only Unix links the client jar; Windows hard-links or copies it.
     #[cfg(unix)]
-    let jars: Vec<PathBuf> = {
-        let plain_dir = |dir: &Path| fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir());
+    {
         let versions = linked.join("versions");
-        let listed = [launcher, linked.as_path(), versions.as_path()]
-            .into_iter()
-            .all(plain_dir)
-            .then(|| fs::read_dir(&versions).ok())
-            .flatten();
-        listed
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| {
-                let mut jar = entry.file_name();
-                jar.push(".jar");
-                entry.path().join(jar)
-            })
-            .collect()
-    };
-    #[cfg(not(unix))]
-    let jars = Vec::new();
-    [linked.join("libraries"), linked.join("assets")]
-        .into_iter()
-        .chain(jars)
-        .filter(|path| {
-            fs::symlink_metadata(path)
-                .is_ok_and(|meta| crate::data_location::reject_link(path, &meta).is_err())
-        })
-        .collect()
+        if plain_dir(versions.as_path()) {
+            for entry in fs::read_dir(&versions).into_iter().flatten().flatten() {
+                let version = entry.path();
+                if plain_dir(version.as_path()) {
+                    let mut jar = entry.file_name();
+                    jar.push(".jar");
+                    links.push(version.join(jar));
+                }
+            }
+        }
+    }
+    links.retain(|path| is_link(path.as_path()));
+    links
 }
 
 /// Links a launcher's files into the official layout in `linked`: the client jar as
