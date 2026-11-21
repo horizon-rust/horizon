@@ -178,9 +178,15 @@ impl Renderer {
         // the shared indices cover them.
         let retained = frame.static_block_entities;
         let most = || (self.entity_batch.ray_ranges[2].1).max(Retained::most_quads(retained));
-        if entities && most() > self.index_quads {
-            self.index_quads = most().next_power_of_two();
-            self.indices = Self::quad_indices(&self.device, self.index_quads);
+        // A device that would not take the bigger buffer keeps the one it has: the quads past
+        // it go undrawn, and `render` reports the loss that did it (#15464).
+        let quads = most().next_power_of_two();
+        if entities
+            && quads > self.index_quads
+            && let Some(indices) = Self::quad_indices(&self.device, quads)
+        {
+            self.index_quads = quads;
+            self.indices = indices;
         }
         let stream = entities.then_some(Stream {
             buffer: &self.entity_buffer,
