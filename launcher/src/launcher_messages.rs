@@ -453,6 +453,15 @@ impl Launcher {
                                     .filter(|_| e.starts_with("Exited with"));
                                 tail.map_or(e.clone(), |t| format!("{e}: {t}"))
                             });
+                            self.prepare_fix = (self.prepare_error.is_some()
+                                && backend::prepare_offers_mojang())
+                            .then_some(PrepareFix::Mojang);
+                            // Deleted while it was being prepared: said as Prepare says it.
+                            if let Some(tag) =
+                                tag.as_deref().filter(|_| self.prepare_error.is_some())
+                            {
+                                self.version_still_installed(tag);
+                            }
                             let (ended, error) = (
                                 tag.map(|t| backend::prepared_in(&t)),
                                 self.prepare_error.clone(),

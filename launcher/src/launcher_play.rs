@@ -176,8 +176,32 @@ impl Launcher {
         }
     }
 
+    /// Whether `tag`, and the version whose files it prepares (a native build's base), are still
+    /// installed. The window reads the list once and a player may delete `versions` while it is
+    /// open: then the list is read again, the selection moves as after a removal, and Home says
+    /// so with Reinstall, never the deleted folder's OS error.
+    pub(crate) fn version_still_installed(&mut self, tag: &str) -> bool {
+        let base = backend::prepared_in(tag);
+        let Some((gone, installed)) = backend::gone(&[tag, &base]) else {
+            return true;
+        };
+        self.installed = installed;
+        if self.settings_save_error.is_none() {
+            self.settings.selection_from(&Settings::load());
+        }
+        self.settings.keep_installed_selection(&self.installed);
+        backend::forget_prepared();
+        self.play_when_prepared = None;
+        self.prepare_error = Some(backend::version_gone(&self.version_name(&gone)));
+        self.prepare_fix = Some(PrepareFix::Reinstall(gone));
+        false
+    }
+
     /// [`Self::prepare`] for `tag` rather than the selected version.
     pub(crate) fn prepare_version(&mut self, tag: String, from: backend::MinecraftFrom) {
+        if !self.version_still_installed(&tag) {
+            return;
+        }
         self.prepare_tag = Some(tag.clone());
         horizon_launcher::mojang::CANCEL.store(false, Ordering::Relaxed);
         let minecraft = self
@@ -187,6 +211,7 @@ impl Launcher {
             .unwrap_or_else(|| horizon_platform::prepare::artifacts::minecraft_dir(None));
         self.prepare_log.clear();
         self.prepare_error = None;
+        self.prepare_fix = None;
         self.prepare_log
             .push_back("Checking Java and your Minecraft install".into());
         let tx = self.tx.clone();
@@ -251,7 +276,7 @@ impl Launcher {
         let Some(tag) = self.selected().cloned() else {
             return;
         };
-        if !self.can_start(&tag) {
+        if !self.version_still_installed(&tag) || !self.can_start(&tag) {
             return;
         }
         self.starting_pack = None;
@@ -340,6 +365,12 @@ impl Launcher {
     /// Starts the game: the session first (a network round trip when the token needs
     /// renewing), then `drain` starts the process when it arrives.
     pub(crate) fn start_client(&mut self, tag: String, instance_id: Option<String>) {
+        if !self.version_still_installed(&tag) {
+            self.starting_pack = None;
+            self.joining = None;
+            self.quick_play = None;
+            return;
+        }
         // The folder this start reads, a pack's carried mods among it: never one being ported.
         let work = self.starting_pack.clone().or_else(|| {
             self.instances

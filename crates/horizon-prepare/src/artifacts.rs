@@ -344,6 +344,21 @@ fn has_libraries(files: &GameFiles) -> bool {
     })
 }
 
+/// The first client library the version JSON at `manifest` lists for this OS that the folder
+/// `libraries` lacks, looked for as [`has_libraries`] does, so a launcher choosing between
+/// Minecraft folders never calls one incomplete that the import would take. None when every one
+/// is there, and when the file lists none this can read: a caller that can't tell keeps the
+/// folder.
+pub fn missing_library(libraries: &Path, manifest: &Path) -> Option<PathBuf> {
+    let manifest = read_json(manifest).ok()?;
+    let artifacts = client_library_artifacts(&manifest).ok()?;
+    artifacts.into_iter().find_map(|(name, artifact)| {
+        let (path, _) = artifact_fields(artifact).ok()?;
+        let found = library_in(libraries, name, &safe_relative(path)?);
+        (!runs_without(name) && !found.is_file()).then_some(found)
+    })
+}
+
 /// A Maven name's path in a repository: `com.mojang:minecraft:26.3:client` is
 /// `com/mojang/minecraft/26.3/minecraft-26.3-client.jar`. Prism Launcher keeps a native's
 /// classifier in the artifact name (`org.lwjgl:lwjgl-freetype-natives-linux:3.4.3`), which this
