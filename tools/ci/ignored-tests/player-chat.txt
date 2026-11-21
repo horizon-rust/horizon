@@ -1,0 +1,2 @@
+# A player's chat line through the live hub needs prepared resources.
+horizon-client game::native_player_chat::tests::a_players_line_reaches_every_guest_once lib daily resources

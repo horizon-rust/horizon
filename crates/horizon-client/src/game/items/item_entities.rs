@@ -850,6 +850,27 @@ impl Game<'_> {
         false
     }
 
+    /// `Player#dropItem` for a mod's call: the selected stack thrown as the drop key throws it,
+    /// through `drop_held`'s checks. True when a stack was thrown; false for a spectator, no
+    /// eye position, a stack a part or listener kept, and an empty hand.
+    pub(in crate::game) fn drop_selected_stack(&mut self, all: bool) -> bool {
+        if self.spectator() || self.eye_position().is_none() {
+            return false;
+        }
+        if self.native_dropped_by_player_event(all) {
+            return false;
+        }
+        let Some(thrown) = horizon_client::items::take_held_drop(
+            &mut self.inventory[self.selected],
+            all,
+            false,
+        ) else {
+            return false;
+        };
+        self.player_drop(thrown);
+        true
+    }
+
     /// A guest's drop key. A drop the held item's Part refused sends the
     /// inventory back, undoing the removal the client predicted.
     pub(in crate::game) fn guest_drop_held(&mut self, gi: usize, conn: u32, all: bool) {

@@ -7236,6 +7236,13 @@ impl Game<'_> {
                 let at = self.eye_position().unwrap_or(center);
                 self.spawn_item(rest, at, [0.0, 0.0, 0.0], 40);
             }
+            // The milk bucket is given: a cow, mooshroom or goat was milked.
+            if g == "minecraft:milk_bucket"
+                && let (Some(player), Some(name)) =
+                    (self.lan_acting_uuid, self.lan_acting_name.clone())
+            {
+                self.native_player_milk_entity(player, &name, mob.0 as i32, &mob.1);
+            }
         }
         if let Some(stack) = armor_drop {
             // Mob.shearItem: PLAYER_SHEARED_EQUIPMENT with the armor and the wolf.
@@ -10080,6 +10087,8 @@ mod pickable_projectile_tests {
 
 #[cfg(test)]
 mod mob_pearl_hook_tests;
+#[cfg(test)]
+mod mob_milk_hook_tests;
 
 #[cfg(test)]
 mod breeding_orb_tests;

@@ -627,6 +627,26 @@ pub trait PlayersBackendMut {
     /// Refuses text deeper than 512 component nodes before applying any changes.
     fn player_action_bar(&mut self, player: PlayerRef, line: Text) -> Result<bool, TextFormError>;
     /// Side: server.
+    /// Shows a title and a subtitle on that player's screen (Paper's `Player#showTitle`,
+    /// `/title`): the timings first (`ClientboundSetTitlesAnimationPacket`), then the subtitle
+    /// (`ClientboundSetSubtitleTextPacket`) and the title (`ClientboundSetTitleTextPacket`),
+    /// in vanilla's order; a text that is None sends nothing for its line, and the other
+    /// stays as it was. `fade_in`, `stay` and `fade_out` are game ticks; a negative one leaves
+    /// that timing as the client has it (the client skips a negative timing, as with
+    /// `/title ... times`). Also inside a player's hook for the acting player. False when they
+    /// aren't on.
+    #[access(WorldOnly)]
+    /// Refuses text deeper than 512 component nodes before applying any changes.
+    fn player_show_title(
+        &mut self,
+        player: PlayerRef,
+        title: Option<Text>,
+        subtitle: Option<Text>,
+        fade_in: i32,
+        stay: i32,
+        fade_out: i32,
+    ) -> Result<bool, TextFormError>;
+    /// Side: server.
     /// The lines over and under that player's list of players (Tab):
     /// `ClientboundTabListPacket`, an empty text for none. False when they
     /// aren't on.
@@ -719,6 +739,22 @@ pub trait PlayersBackendMut {
     fn player_set_list_name(
         &mut self,
         player: PlayerRef,
+        name: Option<Text>,
+    ) -> Result<bool, TextFormError>;
+    /// Side: server.
+    /// Shows `name` for `target` in the Tab list of `viewer` only (TAB-style per-viewer layouts;
+    /// Paper has no equivalent, the packet is `ClientboundPlayerInfoUpdatePacket` with
+    /// `UPDATE_DISPLAY_NAME`, sent to that one client). Everyone else keeps the name
+    /// `player_set_list_name` and the format hook give. None takes the viewer's override back and
+    /// sends that viewer the target's usual name. The override is not sent again when the viewer
+    /// rejoins, and no format hook runs on it. A viewer the target is hidden from gets nothing.
+    /// False when the server list is unavailable, a handle is stale, the target or the viewer is
+    /// not online, or the viewer is a fake player (no client).
+    #[access(WorldOnly)]
+    fn player_set_list_name_for(
+        &mut self,
+        viewer: PlayerRef,
+        target: PlayerRef,
         name: Option<Text>,
     ) -> Result<bool, TextFormError>;
     /// Side: server.
@@ -951,6 +987,22 @@ pub trait PlayersBackendMut {
         player: PlayerRef,
         location: Option<GlobalPos>,
     ) -> bool;
+
+    /// Side: server.
+    /// `Player.playSound(Location, String, SoundCategory, float, float)`: plays sound event `sound` at
+    /// `at` for that player alone, whatever their distance, under `source`'s volume slider. The name,
+    /// source and volume checks of `level_play_sound` apply, and a refused sound sends nothing. False
+    /// when the sound is refused or the player is not on here.
+    #[access(WorldOnly)]
+    fn player_play_sound_at(
+        &mut self,
+        player: PlayerRef,
+        sound: &str,
+        source: SoundSource,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+    ) -> bool;
     /// Side: server.
     /// `FoodData.eat(nutrition, saturationModifier)`: adds `nutrition` to
     /// the food level (0 to 20) and `nutrition * modifier * 2` to the
@@ -1004,6 +1056,24 @@ pub trait PlayersBackendMut {
     /// held `slot`.
     #[access(WorldOnly)]
     fn player_set_selected_slot(&mut self, player: PlayerRef, slot: usize) -> bool;
+    /// Side: server.
+    /// The swap-hands key for a mod's call: the main-hand and off-hand stacks trade places, as
+    /// the F key does for a player who is not a spectator. The inventory sync tells the
+    /// client. Returns `true` when the hands were swapped. `false` for a spectator, a client,
+    /// and a stale or dead handle, with nothing changed. The call is not a key press: the
+    /// `player_swap_hands` hook is not heard for it, and it does not stop an item in use.
+    #[access(WorldOnly)]
+    fn player_swap_hands(&mut self, player: PlayerRef) -> bool;
+    /// Side: server.
+    /// `Player#dropItem(boolean)` (`Player.drop(true)`, the drop key): throws the player's
+    /// selected stack from their eyes along their view, the whole stack when `whole_stack` is
+    /// true and one item otherwise. It takes the same path as the drop key: a held item's
+    /// `on_dropped_by_player` part and listeners may keep the stack, and the removal is not
+    /// predicted by any client, so the next inventory sync shows it. Returns `true` when a
+    /// stack was thrown. `false` for an empty hand, a spectator, a stack kept by a part or a
+    /// listener, and a refused handle: a stale or dead player, or a client.
+    #[access(WorldOnly)]
+    fn player_drop_selected(&mut self, player: PlayerRef, whole_stack: bool) -> bool;
     /// Side: server.
     /// `Player.drop(stack, false, thrown_by_player)`: `stack` is thrown from the player's eyes
     /// along their view as an item entity, with the main hand swinging and `item_toss` asked
@@ -1160,6 +1230,19 @@ pub trait PlayersBackendMut {
     #[access(WorldOnly)]
     fn player_respawn(&mut self, player: PlayerRef) -> Result<(), RespawnRefusal>;
     /// Side: server.
+    /// Makes the player say `message` in public chat (Paper's `Player#chat`): a line shown to
+    /// every player who is on and shows chat, under the player's display name and the server's
+    /// chat format (`<name> message`), as an unsigned line, the way a mod's or a bot's line is
+    /// (the receiving clients show it as not verified, and a server that enforces secure
+    /// profiles still delivers it). It is also callable from inside the player's own hook.
+    /// The line does not go through the player's own chat event, the chat filter or
+    /// `chat_recipient`: it reaches every player who is on. Each refusal changes nothing and is
+    /// named by `PlayerChatRefusal`, checked in this order: `Stale`, `Empty`, `Command` (a
+    /// leading `/`: run commands with `entity.run_command`), `TooLong` (over 256 characters)
+    /// and `IllegalCharacter`.
+    #[access(WorldOnly)]
+    fn player_chat(&mut self, player: PlayerRef, message: &str) -> Result<(), PlayerChatRefusal>;
+    /// Side: server.
     /// The play packets the player's connection sent and received since the last call while
     /// packets were counted (`count_packets`), by direction (sent first) then id; clears them.
     /// Keep-alives and the disconnect are counted; packets of the login and configuration
@@ -1196,6 +1279,21 @@ pub trait PlayersBackendMut {
         player: PlayerRef,
         pos: [i32; 3],
         state: BlockState,
+    ) -> Result<(), PlayerWorldRefusal>;
+    /// Side: server.
+    /// Sends that player the block the world has at `pos` in `level` now, as a
+    /// `ClientboundBlockUpdatePacket` (Paper's `Player.sendBlockChange` with the block's own
+    /// data): the undo of an earlier `show_block` at that position. The world is not changed.
+    /// Refuses, sending nothing, with `PlayerWorldRefusal`: `Client`, `Stale` (no player behind
+    /// the handle), `NoConnection` (a fake player), `StaleLevel` (a level of an earlier open of
+    /// the world), `OtherLevel` (not the level in place, where the player is), `OutOfWorld` (y
+    /// outside the world), `NotLoaded` (the chunk at `pos` is not loaded) and `PositionNotSendable`.
+    #[access(WorldOnly)]
+    fn player_revert_block_change(
+        &mut self,
+        player: PlayerRef,
+        level: LevelRef,
+        pos: [i32; 3],
     ) -> Result<(), PlayerWorldRefusal>;
     /// Side: server.
     /// Writes `state` at `pos` in `level` for the player, for a state the mod already chose

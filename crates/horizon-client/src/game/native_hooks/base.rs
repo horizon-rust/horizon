@@ -2202,6 +2202,16 @@ impl Game<'_> {
         self.fire_block_failed_dispense(dimension, pos, item);
     }
 
+    /// A server player's death message, once built and before it is sent: `message` holds it,
+    /// and a mod may replace it or set it to `None` to say nothing. Server-side.
+    pub(in crate::game) fn native_player_death_message(
+        &mut self,
+        player: u128,
+        message: &mut Option<Text>,
+    ) {
+        self.fire_player_death_message(player, message);
+    }
+
     /// A beacon at `pos` activated or deactivated after its beam was checked.
     /// `active` says whether it now has a complete pyramid. Server-side.
     pub(in crate::game) fn native_beacon_state_change(
@@ -2268,6 +2278,17 @@ impl Game<'_> {
         entity: &str,
     ) {
         self.fire_player_bucket_entity(player, name, entity_id, entity);
+    }
+    /// A server player milked a cow, a mooshroom or a goat with a bucket, after the milk bucket
+    /// was given. `entity` is the species id. Server-side.
+    pub(in crate::game) fn native_player_milk_entity(
+        &mut self,
+        player: u128,
+        name: &str,
+        entity_id: i32,
+        entity: &str,
+    ) {
+        self.fire_player_milk_entity(player, name, entity_id, entity);
     }
     /// A server player changed a beacon's selected effects, after they were stored. Each selected
     /// effect is its load-owned key; None means no effect. Server-side.
@@ -3172,6 +3193,14 @@ impl Game<'_> {
         hand: &str,
     ) {
         self.fire_player_arm_swing(player, name, hand);
+    }
+    /// A guest's `UseItem` packet reached the server: a right click on air, with the held item's
+    /// id (`minecraft:air` for an empty hand). Server-side.
+    pub(in crate::game) fn native_player_air_right_click(
+        &mut self,
+        call: mod_api::__private::PlayerAirRightClickCall<'_>,
+    ) {
+        self.fire_player_air_right_click(call);
     }
     /// A guest's accepted movement made the server jump them from the ground. Server-side.
     pub(in crate::game) fn native_player_jump(&mut self, player: u128, name: &str) {

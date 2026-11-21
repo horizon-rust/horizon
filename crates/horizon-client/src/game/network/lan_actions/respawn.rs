@@ -396,38 +396,46 @@ impl Game<'_> {
                     }
                     None => self.guest_death_message(conn, me),
                 };
+                // PlayerDeathEvent#deathMessage: a mod may replace the text or set it to None.
+                let mut built = Some(text);
+                self.native_player_death_message(uuid, &mut built);
+                let announce = built.is_some();
+                let text = built.unwrap_or_else(|| horizon_client::text::Text::literal(""));
                 let message = horizon_client::lan::data::component_nbt(&text.component());
                 let board = &self.score.board;
                 let Some(host) = self.lan.as_ref() else {
                     return;
                 };
-                host.hub.system_message_to(message.clone(), |other| {
-                    horizon_client::scoreboard::death_message_reaches(board, &name, other)
-                });
-                if self.is_dedicated_server() {
-                    crate::game::dedicated::events::record(
-                        "death",
-                        &name,
-                        uuid,
-                        serde_json::json!({ "message": text.plain() }),
-                    );
-                    // Only a message for everyone is logged (`broadcastSystemMessage`).
-                    if board.players_team(&name).is_none_or(|t| {
-                        t.death_message_visibility == horizon_client::scoreboard::Visibility::Always
-                    }) {
-                        crate::game::dedicated::log(
-                            "INFO",
-                            &format!("System chat: {}", text.plain()),
+                if announce {
+                    host.hub.system_message_to(message.clone(), |other| {
+                        horizon_client::scoreboard::death_message_reaches(board, &name, other)
+                    });
+                    if self.is_dedicated_server() {
+                        crate::game::dedicated::events::record(
+                            "death",
+                            &name,
+                            uuid,
+                            serde_json::json!({ "message": text.plain() }),
                         );
+                        // Only a message for everyone is logged (`broadcastSystemMessage`).
+                        if board.players_team(&name).is_none_or(|t| {
+                            t.death_message_visibility
+                                == horizon_client::scoreboard::Visibility::Always
+                        }) {
+                            crate::game::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {}", text.plain()),
+                            );
+                        }
+                    } else if self.player.is_some()
+                        && horizon_client::scoreboard::death_message_reaches(
+                            board,
+                            &name,
+                            crate::game::chat::PLAYER_NAME,
+                        )
+                    {
+                        self.system_message(text);
                     }
-                } else if self.player.is_some()
-                    && horizon_client::scoreboard::death_message_reaches(
-                        board,
-                        &name,
-                        crate::game::chat::PLAYER_NAME,
-                    )
-                {
-                    self.system_message(text);
                 }
                 message
             } else {

@@ -1,0 +1,2 @@
+# A player's title packets through the live hub need prepared resources.
+horizon-client game::native_player_title::tests::a_title_goes_out_as_timings_subtitle_title lib daily resources

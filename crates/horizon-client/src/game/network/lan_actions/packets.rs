@@ -533,6 +533,27 @@ impl Game<'_> {
                 };
                 host.hub.ack(conn, p.sequence);
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
+                // A right click on air: the held item's id, minecraft:air for an empty hand.
+                let (player, name, item) = {
+                    let Some(host) = self.lan.as_ref() else {
+                        return;
+                    };
+                    let g = &host.hub.guests[gi];
+                    let held = if hand == Hand::Off {
+                        g.offhand.as_ref()
+                    } else {
+                        g.inventory.get(g.selected).and_then(Option::as_ref)
+                    };
+                    let item = held.map_or_else(|| "minecraft:air".to_owned(), |s| s.item.to_string());
+                    (g.uuid, g.name.clone(), item)
+                };
+                let hand_name = if hand == Hand::Off { "offhand" } else { "mainhand" };
+                self.native_player_air_right_click(mod_api::__private::PlayerAirRightClickCall {
+                    player,
+                    name: &name,
+                    hand: hand_name,
+                    item: &item,
+                });
                 let _ = self.guest_use_item(conn, gi, hand, Some((p.yaw, p.pitch)));
             }
             S::Attack(p) => {

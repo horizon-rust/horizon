@@ -1,0 +1,3 @@
+ids = ["method:PlayerRef::swap_hands"]
+why = "Adds a server call that swaps a player's main and off hand stacks, as the swap-hands key does, without the key's hook."
+migrate = "Additive. Returns true when the hands were swapped; a refused call changes nothing."

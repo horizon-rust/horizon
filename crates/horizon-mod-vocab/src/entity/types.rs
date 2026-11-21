@@ -1286,6 +1286,33 @@ pub enum RespawnRefusal {
     Alive,
 }
 
+/// Why [`PlayerRef::chat`] said nothing. Nothing was sent when one comes back; the checks run
+/// in the order the variants are listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum PlayerChatRefusal {
+    /// The handle no longer identifies a player who is on this server: it is stale, they left,
+    /// or it is a fake player, which has no chat line to show.
+    Stale,
+    /// The line is empty.
+    Empty,
+    /// The line starts with `/`. A command is run with `entity.run_command`, never said.
+    Command,
+    /// The line is longer than a client may send (256 characters, as `ServerboundChatPacket`
+    /// limits it).
+    TooLong,
+    /// The line holds a character a client may not send (a control character, DEL or `§`;
+    /// `StringUtil.isAllowedChatCharacter`).
+    IllegalCharacter,
+}
+
+impl NoBackend for PlayerChatRefusal {
+    fn no_backend() -> Self {
+        Self::Stale
+    }
+}
+
 impl NoBackend for RespawnRefusal {
     fn no_backend() -> Self {
         Self::Stale

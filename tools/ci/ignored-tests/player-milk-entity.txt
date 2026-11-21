@@ -1,0 +1,2 @@
+# The milking hook test needs prepared resources.
+horizon-client game::creatures::mob_milk_hook_tests::milking_with_a_bucket_is_heard_with_the_species lib daily resources

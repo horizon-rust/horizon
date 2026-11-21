@@ -444,6 +444,9 @@ pub struct Hub {
     /// Names a server mod shows for players in the Tab list only (`player_set_list_name`),
     /// by UUID, over their nickname.
     pub list_names: std::collections::HashMap<u128, crate::text::Text>,
+    /// Tab list names a mod shows to one viewer only (`player_set_list_name_for`), by
+    /// (viewer UUID, target UUID).
+    pub viewer_list_names: std::collections::HashMap<(u128, u128), crate::text::Text>,
     /// The name the server's user cache knew a joining player by, by UUID, looked up before the
     /// cache learns the new one (PlayerList.placeNewPlayer's `oldName`); taken by the join line.
     pub former_names: std::collections::HashMap<u128, String>,
@@ -891,6 +894,7 @@ impl Hub {
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),
             list_names: std::collections::HashMap::new(),
+            viewer_list_names: std::collections::HashMap::new(),
             former_names: std::collections::HashMap::new(),
             viewed: Default::default(),
         }
@@ -4993,6 +4997,56 @@ impl Hub {
         }));
     }
 
+    /// Per-viewer Tab list name (`player_set_list_name_for`): `name` for `target` in `viewer`'s Tab list
+    /// only, sent to that client alone. None drops the override and sends the target's usual entry.
+    /// False when either player is not online (a fake player has no client). Nothing is sent when the
+    /// viewer may not see the target (`sees`, `tab_hidden`), the override is kept anyway.
+    pub fn set_list_name_for(
+        &mut self,
+        viewer: u128,
+        target: u128,
+        name: Option<crate::text::Text>,
+    ) -> bool {
+        let Some(viewer_index) = self
+            .guests
+            .iter()
+            .position(|g| g.uuid == viewer && g.participates_online())
+        else {
+            return false;
+        };
+        let Some(target_name) = self
+            .guests
+            .iter()
+            .find(|g| g.uuid == target && g.participates_online())
+            .map(|g| g.name.clone())
+        else {
+            return false;
+        };
+        let visible = {
+            let viewer_guest = &self.guests[viewer_index];
+            self.sees(viewer_guest.permission, target) && !viewer_guest.tab_hidden.contains(&target)
+        };
+        let display_name = match &name {
+            Some(name) => Some(crate::scoreboard::component_tag(&name.component())),
+            None => self.tab_list_name(target, &target_name),
+        };
+        match name {
+            Some(name) => self.viewer_list_names.insert((viewer, target), name),
+            None => self.viewer_list_names.remove(&(viewer, target)),
+        };
+        if visible {
+            self.guests[viewer_index].send(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                actions: 0x20,
+                entries: vec![play::PlayerInfo {
+                    uuid: target,
+                    display_name: Some(display_name),
+                    ..Default::default()
+                }],
+            }));
+        }
+        true
+    }
+
     /// Paper's `Player.setPlayerListName`: `name` in place of the player's name in the Tab
     /// list (None: the nickname or real name again), sent to everyone at once
     /// (`ClientboundPlayerInfoUpdatePacket` `UPDATE_DISPLAY_NAME`) and kept for a rejoin.
@@ -6225,6 +6279,41 @@ mod tests {
         alice.dimension = "minecraft:overworld".into();
         hub.guests.push(alice);
         rx
+    }
+
+    /// A mod's list name is kept by UUID and goes to every client that has the player's Tab entry, and
+    /// A per-viewer Tab list name reaches that viewer's client only; None sends the usual entry back.
+    /// Uuid 1 is Bob (hub_with_a_guest), uuid 2 is Alice (add_alice).
+    #[test]
+    fn a_viewer_list_name_reaches_that_viewer_only() {
+        let (mut hub, bob) = hub_with_a_guest();
+        let alice = add_alice(&mut hub);
+        let entries = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+            sent(rx)
+                .into_iter()
+                .filter_map(|p| match p {
+                    play::Clientbound::PlayerInfoUpdate(update) if update.actions == 0x20 => {
+                        Some((
+                            update.entries[0].uuid,
+                            update.entries[0].display_name.clone(),
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let red = crate::text::Text::legacy("\u{a7}cBob");
+        let red_tag = crate::scoreboard::component_tag(&red.component());
+        assert!(hub.set_list_name_for(2, 1, Some(red.clone())));
+        assert_eq!(hub.viewer_list_names.get(&(2, 1)), Some(&red));
+        assert_eq!(entries(&alice), [(1, Some(Some(red_tag)))]);
+        assert!(entries(&bob).is_empty(), "only the viewer is told");
+        assert!(hub.set_list_name_for(2, 1, None));
+        assert!(!hub.viewer_list_names.contains_key(&(2, 1)));
+        assert_eq!(entries(&alice), [(1, Some(None))]);
+        // A player who is not on is refused, and nothing is kept.
+        assert!(!hub.set_list_name_for(2, 7, Some(red)));
+        assert!(!hub.viewer_list_names.contains_key(&(2, 7)));
     }
 
     /// A mod's list name is kept by UUID and goes to every client that has the player's Tab entry, and

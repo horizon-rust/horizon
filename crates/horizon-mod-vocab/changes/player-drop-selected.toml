@@ -1,0 +1,3 @@
+ids = ["method:PlayerRef::drop_selected"]
+why = "Adds a server call that throws a player's selected stack as the drop key does, one item or the whole stack (Paper's Player#dropItem)."
+migrate = "Additive. Returns true when a stack was thrown; a refused or empty drop throws nothing."

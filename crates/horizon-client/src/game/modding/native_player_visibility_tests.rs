@@ -300,3 +300,73 @@ fn a_client_cannot_ack_show_or_ask_who_sees() {
         assert_eq!(ghost.sees(game, ghost), Err(Refusal::Client));
     });
 }
+
+/// Revert sends the block the world has at the spot, to that player alone, and changes nothing:
+/// after a shown stone, the packet carries the world's own block again.
+#[test]
+#[ignore = "daily"]
+fn a_revert_sends_the_world_block_back() {
+    with_guests(|game| {
+        let b = game.player(13).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .guests
+            .update_connection(13, |g| {
+                g.sender = horizon_client::lan::PlayerSender::new(tx, Default::default());
+            });
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        let world_block = game.world.block(1, 70, 1);
+        let level = game.level(game.dim.id()).unwrap();
+        let shown_state = api_state(game, "minecraft:stone");
+        assert_eq!(b.show_block(game, [1, 70, 1], shown_state), Ok(()));
+        assert_eq!(b.revert_block_change(game, level, [1, 70, 1]), Ok(()));
+        assert_eq!(game.world.block(1, 70, 1), world_block);
+        let mut sent = Vec::new();
+        while let Ok(horizon_client::lan::Out::Packet(body)) = rx.try_recv() {
+            let mut r = horizon_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let Ok(C::BlockUpdate(u)) = C::decode(id, r.rest()) {
+                sent.push((u.pos, u.state));
+            }
+        }
+        assert_eq!(
+            sent,
+            [
+                ([1, 70, 1], stone.0 as i32),
+                ([1, 70, 1], world_block.0 as i32)
+            ]
+        );
+    });
+}
+
+/// Each refusal of `revert_block_change` is its own name, and a client answers `Client`.
+#[test]
+#[ignore = "daily"]
+fn each_revert_refusal_has_its_own_name() {
+    with_guests(|game| {
+        let b = game.player(13).unwrap();
+        let level = game.level(game.dim.id()).unwrap();
+        assert_eq!(
+            b.revert_block_change(game, level, [1, 2048, 1]),
+            Err(Refusal::OutOfWorld { pos: [1, 2048, 1] })
+        );
+        assert_eq!(
+            b.revert_block_change(game, level, [1 << 30, 70, 1]),
+            Err(Refusal::NotLoaded {
+                pos: [1 << 30, 70, 1]
+            })
+        );
+        assert_eq!(
+            stale(b).revert_block_change(game, level, [1, 70, 1]),
+            Err(Refusal::Stale)
+        );
+    });
+}

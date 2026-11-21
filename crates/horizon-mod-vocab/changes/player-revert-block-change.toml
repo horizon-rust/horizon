@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::revert_block_change"]
+why = "Adds PlayerRef::revert_block_change, the undo of show_block: it sends one player the block the world has at a position now, so a preview or an edit that showed a fake block can put the real one back without a chunk resend."
+migrate = "Additive. Refusals use the existing PlayerWorldRefusal names (StaleLevel, OtherLevel, OutOfWorld, NotLoaded, PositionNotSendable). Nothing in the world changes."

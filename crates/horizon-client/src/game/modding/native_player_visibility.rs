@@ -4,7 +4,7 @@ use super::{Game, native_server::PlayerRead};
 use horizon_client::lan::{guest::Guest, player_shown::player_shown};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_world::registry::BlockStateId;
-use mod_api::{PlayerRef, PlayerWorldRefusal as Refusal};
+use mod_api::{LevelRef, PlayerRef, PlayerWorldRefusal as Refusal};
 
 /// `BlockPos.asLong` packs x and z in 26 signed bits and y in 12: a value outside wraps.
 const HORIZONTAL: std::ops::Range<i32> = -(1 << 25)..(1 << 25);
@@ -129,6 +129,34 @@ impl Game<'_> {
             state: state.0 as i32,
         }));
         Ok(())
+    }
+    /// The block the world has at `pos` now, sent to the player alone (`player_show_block`
+    /// with that state). Nothing is written; the level must be the one in place, as
+    /// `player_place_block` requires.
+    pub(super) fn player_revert_block_change(
+        &mut self,
+        player: PlayerRef,
+        level: LevelRef,
+        pos: [i32; 3],
+    ) -> Result<(), Refusal> {
+        if !self.is_logical_server() {
+            return Err(Refusal::Client);
+        }
+        if self.native_level_world(level).is_none() {
+            return Err(Refusal::StaleLevel);
+        }
+        if level.dimension() != self.dim.key() {
+            return Err(Refusal::OtherLevel);
+        }
+        let [x, y, z] = pos;
+        if !self.world.shape.contains_y(y) {
+            return Err(Refusal::OutOfWorld { pos });
+        }
+        if !self.world.loaded(x, z) {
+            return Err(Refusal::NotLoaded { pos });
+        }
+        let state = self.world.block(x, y, z);
+        self.player_show_block(player, pos, state)
     }
     /// `ServerPlayer.broadcastToPlayer` of `target` for `viewer` (`lan::player_shown`).
     pub(super) fn player_sees(
