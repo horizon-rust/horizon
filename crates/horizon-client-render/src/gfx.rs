@@ -572,6 +572,7 @@ pub mod translucency;
 pub(crate) mod upload;
 mod upload_retry;
 use upload_retry::UploadRetries;
+pub mod cube_capture;
 mod view;
 mod view_sections;
 mod visbuffer;
@@ -1525,6 +1526,8 @@ pub struct Renderer {
     /// Native mods' world views' targets and pipelines, and the largest side the device gives one.
     world_views: world_views::Kept,
     world_view_side: u32,
+    /// A panorama capture in progress (`cube_capture`).
+    cube: cube_capture::Job,
     entity_pipeline: wgpu::RenderPipeline,
     static_entity_pipeline: wgpu::RenderPipeline,
     static_entity_group: wgpu::BindGroup,
@@ -4502,6 +4505,7 @@ impl Renderer {
             mirror: None,
             world_views: views,
             world_view_side: max_side,
+            cube: Default::default(),
             entity_pipeline,
             static_entity_pipeline,
             weather,
@@ -11307,6 +11311,7 @@ impl Renderer {
         // A `screenshot-sequence` frame is submitted here, so it can wait for it to
         // finish.
         let (encoder, surface_frame, after) = if readback.is_none()
+            && !self.cube.has_drawn()
             && frame.pack.frame_timing.is_none()
             && fg_frames.is_none()
             && hdr_readback.is_none()
@@ -11348,6 +11353,8 @@ impl Renderer {
                     self.visible = visible;
                     self.visible_lods = visible_lods;
                     self.shadow_visible = shadow_visible;
+                    // no face was drawn in this frame (`has_drawn`): reads those drawn before
+                    self.cube_submitted();
                     return Ok(true);
                 }
                 Err(back) => (back.encoder, back.surface, back.after),
@@ -11364,6 +11371,7 @@ impl Renderer {
         if let Some(read) = after.or_else(|| self.after_submit()) {
             read();
         }
+        self.cube_submitted();
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);
             timer.collect(&self.device, &mut self.gpu_times);

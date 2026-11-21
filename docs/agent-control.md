@@ -150,6 +150,7 @@ passes on without checking it).
 | Controllers | (all) | yes | yes | `pad` |
 | Respawn | Death | yes | yes | `respawn` |
 | Screenshots | (all) | yes | yes | PNG of the next frame, `--offscreen` too |
+| 360-degree capture, no GUI | (playing) | no | yes | `panorama PATH [--size N] [--format cube\|equirect]` |
 | F3 data | F3 | yes | yes | `key f3`; `status` (renderer, chunks, memory) |
 | Waits and events | (all) | yes | yes | `wait`, `wait-for`, `events` |
 | Effects, experience, enchantments, potions, fill | (cheats) | yes | yes | `effect`, `effects`, `xp`, `enchant`, `potion`, `fill` |
@@ -389,6 +390,31 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   loading. It is not frame-perfect and only makes sense on the same build and machine;
   `state.jsonl` is the oracle for where the re-run should have ended. A server recording replays
   only `--in-place`, into the same world.
+
+### Panorama: a 360-degree capture that shows only the world
+
+`horizon-ctl panorama PATH [--size N] [--format cube|equirect]` (and the client host's `panorama`
+for mods, [#18680](https://github.com/horizon-rust/horizon/issues/18680)) looks all the way round
+from the player's eye without anyone seeing it happen. The renderer draws the six 90-degree cube
+faces (vanilla's panoramic camera is 90 degrees, `Camera.calculateFov`) as **world views**
+(`gfx/world_views.rs`), one face on each of six frames, so no frame takes six times as long. A
+face is its own camera with its own section list and frustum, so sections behind the player are
+drawn. It goes into a texture that is never presented and is read back with `map_async` (nothing
+waits for the GPU); a worker thread writes the PNGs.
+
+- **World only, by construction.** A world view runs the world pass alone: sky, terrain, entities,
+  block entities. The hand, HUD, open screens, chat, boss bars, titles, the scoreboard, the tab
+  list, F3, vignette and the pumpkin, portal, freeze and nausea overlays, and mod GUI draws are
+  other passes that a world view never runs; the capture does not toggle F1 or touch any setting,
+  so the player's window shows exactly what it showed. (Like every world view it has no sun, moon,
+  stars, clouds, particles or weather yet.)
+- `cube` writes `PATH_south.png`, `_west`, `_north`, `_east`, `_up`, `_down`; `equirect` (the
+  default) writes `PATH`: four faces wide, two tall (at most 8192x4096), the player's heading in the
+  middle column, straight up on the top row. `--size` is a face's side, 16 to 4096 (default 1024).
+- One capture at a time; the six faces share the eye position of the first one. Needs an 8-bit
+  frame (not HDR output) and a world on screen; `--headless` answers as `screenshot` does.
+- It exists only because Agent Control is on: the socket is its only entrance, and the mod host
+  method `panorama` answers `PanoramaRefusal::AgentControlOff` while it is off.
 
 ### Repeatable screenshots
 

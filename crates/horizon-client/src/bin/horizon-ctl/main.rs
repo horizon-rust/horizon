@@ -583,7 +583,7 @@ fn absolute_paths(words: &mut [String]) {
         return;
     };
     match words.first().map(String::as_str) {
-        Some("screenshot") => {
+        Some("screenshot" | "panorama") => {
             if let Some(path) = words.get_mut(1) {
                 *path = cwd.join(&*path).display().to_string();
             }

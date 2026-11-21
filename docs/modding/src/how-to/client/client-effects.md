@@ -83,3 +83,7 @@ meshed so far and nothing where a section is not meshed yet.
 A new call replaces the current muffle; `ticks` of 0 ends it immediately. The effect belongs to the sound output, so every splitscreen player hears it. The call refuses an amount or strength outside 0 to 1, more than 64 exempt events, or an exempt event that is not a namespaced sound ID, without changing the output. Server code cannot call this client-only service.
 
 Play the accompanying sound through `ClientHost::play_local_sound` with a `SoundPlay`.
+
+## A 360-degree capture of the world
+
+`ClientHost::panorama(PanoramaRequest::equirect("night/view.png", 1024))` looks all the way round from the player's eye and writes the result to `screenshots/panorama/night/view.png` in the game folder. The renderer draws six 90-degree cube faces as world views, one on each of six frames, into a target that is never shown, so the player sees no change and no frame stalls. The picture holds the world only: no HUD, hand, open screen, chat or overlay, and no mod GUI draw. `PanoramaFormat::Cube` writes six files instead, `view_south.png` to `view_down.png`. The call returns a ticket; poll `panorama_status(ticket)` for `Pending`, `Done(files)` or `Failed(reason)` (the last eight finished tickets are kept). It runs only while Agent Control is on and refuses, naming why, with `PanoramaRefusal::AgentControlOff`, `NoRenderer` (`--headless`), `NoWorld` (the title screen), `Busy` (one capture at a time), `Size` (16 to 4096 pixels a face) or `Path` (not a plain relative name).

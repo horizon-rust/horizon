@@ -22,6 +22,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `save` | `save` | Save the world | none |
 | `quit` | `quit` | Save and exit the game | none |
 | `screenshot PATH` | `screenshot` | Write the next rendered frame as a PNG | none |
+| `panorama PATH [--size N] [--format cube\|equirect]` | `panorama` | Write a 360-degree capture of the world, without any GUI, as one equirectangular PNG or six cube-face PNGs | `path` (string, required): the PNG to write (cube: the name the faces' names are added to)<br>`--size` (integer): a cube face's side in pixels, 16 to 4096 (default 1024)<br>`--format` (cube, equirect): equirect: one picture (default); cube: six faces |
 
 ## Observe (JSON state)
 

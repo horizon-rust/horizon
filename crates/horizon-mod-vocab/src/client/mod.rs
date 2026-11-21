@@ -44,6 +44,7 @@ pub(crate) mod model_loader;
 pub mod music;
 pub(crate) mod narration;
 pub(crate) mod pack_finders;
+pub(crate) mod panorama;
 pub(crate) mod particle_keys;
 pub(crate) mod particle_providers;
 mod particle_stacks;

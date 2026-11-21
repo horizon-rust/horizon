@@ -95,4 +95,17 @@ pub trait ClientRenderClientHost {
     /// sprite): ask `native_block_sprites` again then. API 380.
     #[access(PublishedResources)]
     fn block_sprites_version(&self) -> u64;
+    /// Side: client.
+    /// Starts a 360-degree capture of the world from the player's eye: the six 90-degree cube
+    /// faces, drawn one a frame over six frames into a target that is never shown, then written as
+    /// `request.format` under `screenshots/panorama`. Only the world is drawn: no HUD, hand,
+    /// screen, chat, overlay or mod GUI, and the window's own frames are untouched. Poll the
+    /// returned ticket with `panorama_status`. It runs only while Agent Control is on
+    /// ([`PanoramaRefusal::AgentControlOff`] otherwise); one capture runs at a time.
+    #[access(WorldOnly)]
+    fn panorama(&mut self, request: PanoramaRequest) -> Result<u64, PanoramaRefusal>;
+    /// Side: client.
+    /// How the capture `ticket` (from `panorama`) stands; the last eight finished ones are kept.
+    #[access(WorldOnly)]
+    fn panorama_status(&self, ticket: u64) -> PanoramaStatus;
 }

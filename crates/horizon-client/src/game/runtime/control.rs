@@ -54,6 +54,7 @@ const HELP: &[&str] = &[
     "fill X1 Y1 Z1 X2 Y2 Z2 BLOCK   set a box of loaded blocks",
     "resume                         leave the pause menu",
     "screenshot PATH                write the next frame as PNG",
+    "panorama PATH [--size N] [--format cube|equirect]  360-degree capture of the world (no HUD) over six frames, as PNG(s)",
     "screenshot-sequence FRAMES STEP_MS PATH|cancel  a shader pack's first frames on a set clock (HORIZON_STILL), the last as PNG",
     "chat TEXT                      send a chat line or /command as if typed",
     "type TEXT                      type into the open chat box (key enter tap sends)",
@@ -1120,6 +1121,11 @@ impl Game<'_> {
                     background: false,
                 });
                 self.pending_screenshot = Some(reply.clone());
+                Ok(None)
+            }
+            "panorama" => {
+                let args = line.trim_start().strip_prefix("panorama").unwrap_or("");
+                self.panorama_command(args, reply)?;
                 Ok(None)
             }
             "chat" => {

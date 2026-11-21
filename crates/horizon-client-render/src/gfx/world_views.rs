@@ -218,6 +218,11 @@ impl Renderer {
             self.uploads
                 .buffer(encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
             self.draw_world_view(encoder, target, frame, lists, k, view);
+            if view.id == super::cube_capture::VIEW_ID {
+                // a panorama's face: copied for its readback, shown to no mod
+                self.cube_drawn(encoder, target);
+                continue;
+            }
             native_render::world_view_drawn(&mut native_render::WorldViewDrawn {
                 id: view.id,
                 parent: view.parent,
@@ -361,6 +366,13 @@ impl Renderer {
 }
 
 impl Target {
+    /// The color texture and its format, for a capture's copy (`cube_capture`).
+    pub(super) fn color(&self) -> &wgpu::Texture {
+        &self.color
+    }
+    pub(super) fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
     fn new(device: &wgpu::Device, [width, height]: [u32; 2], format: wgpu::TextureFormat) -> Self {
         let texture = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -495,5 +507,46 @@ mod tests {
             .with_clip_plane([0.0, 0.0, 1.0, -1e-43]);
         let camera = ViewCamera::new(&near, DVec3::ZERO, 1000.0);
         assert_eq!(camera.world_view, [1.0, 0.0, 1.0, 0.0]);
+    }
+
+    /// A panorama's faces are world views, which run the world pass alone: the function that
+    /// draws a view opens one render pass and names no GUI, hand, overlay, screen or mod GUI
+    /// draw, and no frame-wide pass of the window's. A GUI pass added there fails this test.
+    #[test]
+    fn a_world_view_runs_no_gui_pass() {
+        let source = include_str!("world_views.rs");
+        let start = source.find("    fn draw_world_view(").unwrap();
+        let end = source[start..].find("\nimpl Target").unwrap();
+        let body = &source[start..start + end];
+        assert_eq!(body.matches("begin_render_pass").count(), 1);
+        for gui in [
+            "hud",
+            "hand",
+            "overlay",
+            "crosshair",
+            "screen",
+            "vignette",
+            "gui_render_post",
+            "world_drawn",
+            "hand_drawn",
+            "draw_frame",
+            "font",
+            "chat",
+            "blit",
+            "present",
+        ] {
+            assert!(
+                !body.to_ascii_lowercase().contains(gui),
+                "a world view's draw names `{gui}`"
+            );
+        }
+        // the capture reads only the world view's own target, never the window's frame
+        let capture = include_str!("cube_capture.rs");
+        let drawn = &capture[capture.find("fn cube_drawn").unwrap()..];
+        let drawn = &drawn[..drawn.find("fn cube_submitted").unwrap()];
+        assert!(drawn.contains("target.color()"));
+        for window in ["view_target", "surface", "offscreen", "readback"] {
+            assert!(!drawn.contains(window), "the capture copies `{window}`");
+        }
     }
 }

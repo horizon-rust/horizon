@@ -46,10 +46,18 @@ impl Sections {
     /// The views mods ask for (`native_render::world_views`) that a device whose textures are at
     /// most `max_side` pixels a side draws, the views seen in a view before it; none, and no
     /// call, while no mod listens.
-    fn ask(&mut self, max_side: u32) {
+    fn ask(&mut self, max_side: u32, cube: Option<native_render::WorldView>) {
         self.views.begin(max_side);
-        if native_render::world_views_hooked() {
+        let hooked = native_render::world_views_hooked();
+        // A panorama capture's face (`cube_capture`) goes first, so a mod's views cannot fill
+        // the list before it; a refusal is logged and the face is asked again next frame.
+        if let Some(face) = cube {
+            let _ = self.views.push(face);
+        }
+        if hooked {
             native_render::world_views(&mut self.views);
+        }
+        if hooked || cube.is_some() {
             self.views.order();
         }
     }
@@ -162,8 +170,9 @@ impl Renderer {
         frustum: Frustum,
     ) -> JoinedFrusta {
         let max_side = self.world_view_side;
+        let cube = self.cube_view(camera);
         let sections = &mut self.world_views.sections;
-        sections.ask(max_side);
+        sections.ask(max_side, cube);
         sections.asked = true;
         let views = sections.views.views().iter().map(|v| Frustum {
             planes: super::frustum(ViewCamera::new(v, camera, far).view_proj),
@@ -188,6 +197,9 @@ impl Renderer {
         frame: &Frame,
         radius: i32,
     ) {
+        let cube = (!frame.title)
+            .then(|| self.cube_view(frame.camera))
+            .flatten();
         let sections = &mut self.world_views.sections;
         if frame.title && sections.asked {
             sections
@@ -196,7 +208,7 @@ impl Renderer {
         } else if frame.title {
             sections.views.begin(self.world_view_side);
         } else if !sections.asked {
-            sections.ask(self.world_view_side);
+            sections.ask(self.world_view_side, cube);
         }
         sections.asked = false;
         let views = sections.views.views();

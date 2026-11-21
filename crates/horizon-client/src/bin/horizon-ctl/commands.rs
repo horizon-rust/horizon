@@ -369,6 +369,12 @@ pub const COMMANDS: &[Cmd] = &[
     cmd!("screenshot", Session, "screenshot PATH", "write the next rendered frame as a PNG",
         "Relative paths are taken from horizon-ctl's directory. Over MCP the image is returned directly.",
         ["horizon-ctl screenshot view.png"], &[], mcp: true, local: false),
+    cmd!("panorama", Session, "panorama PATH [--size N] [--format cube|equirect]", "write a 360-degree capture of the world, without any GUI, as one equirectangular PNG or six cube-face PNGs",
+        "Draws the six 90-degree cube faces from the player's eye, one a frame over six frames, into a target that is never shown: only the world (sky, terrain, entities), no HUD, hand, open screen, chat, overlay or mod GUI, and the window's own frames are untouched. The faces are read back without waiting for the GPU and written on a worker; the reply comes once the files exist. cube writes PATH_south.png, _west, _north, _east, _up and _down (PATH's .png is dropped first); equirect (the default) writes PATH, four faces wide and two tall (at most 8192x4096) with the player's heading in the middle column. --size is a face's side in pixels, 16 to 4096 (default 1024). Relative paths are taken from horizon-ctl's directory. With --headless it answers as screenshot does.",
+        ["horizon-ctl panorama view.png", "horizon-ctl panorama faces/day.png --size 2048 --format cube"],
+        &[p("path", Ty::Str, "the PNG to write (cube: the name the faces' names are added to)"),
+          flag("size", Ty::Int, "a cube face's side in pixels, 16 to 4096 (default 1024)"),
+          flag("format", Ty::Enum(&["cube", "equirect"]), "equirect: one picture (default); cube: six faces")], mcp: true, local: false),
     // Observe
     cmd!("state", Observe, "state", "player, world, screen and crosshair target in one reply",
         "position, block_pos, eye, yaw, pitch, velocity, on_ground, health, food, saturation, xp, effects, gamemode, dimension, time, weather, the screen or title menu, the held item, what the crosshair points at and whether an action is running.",

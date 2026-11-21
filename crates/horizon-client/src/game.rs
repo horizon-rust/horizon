@@ -1693,6 +1693,11 @@ struct Game<'a> {
     pending_screenshot: Option<std::sync::mpsc::Sender<String>>,
     /// `screenshot-sequence` while it runs.
     screenshot_sequence: Option<screenshot_sequence::Sequence>,
+    /// `panorama`: the capture whose faces the renderer is drawing, those being written, and the
+    /// tickets mods ask about (`runtime/panorama.rs`).
+    panorama: Option<panorama::Capture>,
+    panorama_writing: Vec<panorama::Writing>,
+    panorama_tickets: panorama::Tickets,
     /// `render-capture DIR`: replied once the renderer wrote the scene.
     pending_render_capture: Option<std::sync::mpsc::Sender<String>>,
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>, bool)>,
@@ -10268,6 +10273,7 @@ impl Game<'_> {
                     }
                     self.clock.end_frame(self.pause);
                     self.poll_screenshot_writes();
+                    self.poll_panorama();
                     let mut consumed = !self.ui.screenshot_messages.is_empty();
                     let finished = self
                         .renderer
@@ -10914,6 +10920,9 @@ impl<'a> Game<'a> {
             perf: Default::default(),
             pending_screenshot: None,
             screenshot_sequence: None,
+            panorama: None,
+            panorama_writing: Vec::new(),
+            panorama_tickets: Default::default(),
             pending_render_capture: None,
             pending_bench: None,
             flight: None,
