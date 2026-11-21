@@ -16,7 +16,7 @@ opened from a file elsewhere (`/studio replay open <path>`) has the empty id.
 | `replay_close()` | world | Closes the replay at the end of the frame, as Escape does. |
 | `replay_pause()`, `replay_resume()` | world | Stop and start the clock at once. |
 | `replay_set_speed(speed)` | world | Sets the speed at once, `REPLAY_MIN_SPEED` (0.01) to `REPLAY_MAX_SPEED` (20); anything else, NaN included, is `InvalidSpeed`. |
-| `replay_seek(ms)` | world | Moves the clock at the end of the frame, rebuilding the recording's world there. Only forward for a replay that doesn't own its session (`BackwardSeek`). |
+| `replay_seek(ms)` | world | Moves the clock at the end of the frame; the world then shows the recording's state there (see below). Only forward for a replay that doesn't own its session (`BackwardSeek`). |
 
 `Ok(request)` from `replay_open` means the request is accepted; `request` is a non-zero id never given twice while
 the game runs (once every id has been given, `replay_open` is `Unavailable`). Exactly one of `replay_opened` or `replay_open_failed` follows with that id, whatever happens; only
@@ -39,6 +39,12 @@ a request for a replay that has closed or been replaced since is dropped. While 
 (close, pause, resume, a valid speed, seek) are `NotOpen` and `replay_state()` is None, so seek to a start point from
 `replay_opened`, not right after `replay_open`. `replay_set_speed` checks the speed first: an invalid one is
 `InvalidSpeed` either way.
+
+After a seek, the world shows the recording's state at the position the seek applied, and the next
+`replay_advanced` reports exactly that position. State that came only from the client's own simulation between
+packets (an entity moving between its updates, particles) is not promised to survive a seek. How the game gets
+there, and how long it takes, is not part of the contract: today a seek can take time in proportion to the
+position, so an exporter should let the replay advance where it can rather than seek every frame.
 
 The clock stays within the recording: `position_ms` never passes `duration_ms` (the recorded length, or the last
 packet's time when that is later), and `ended` is true exactly when the clock is at `duration_ms`, whether it played

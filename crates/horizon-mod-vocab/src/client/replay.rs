@@ -74,7 +74,7 @@ pub enum ReplayError {
     /// session. Leave it first (`disconnect`). Also why an accepted
     /// `replay_open` fails when such a session starts before the replay is ready.
     WorldBusy,
-    /// An accepted `replay_open` was replaced by a later one before the game took up its read
-    /// recording (`replay_open_failed` only).
+    /// An accepted `replay_open` was replaced by a later one while it was still waiting or
+    /// being read (`replay_open_failed` only).
     Superseded,
 }
