@@ -333,7 +333,7 @@ impl Launcher {
         let m = &self.mods;
         if let Some(e) = &m.error {
             // A failed search stays as an amber card: what happened in plain words, Try again,
-            // Modrinth while Horizon's own list is down, and the error's own words on request.
+            // and the error's own words on request.
             let details = m.error_details;
             let horizon = m.source == SourceId::Horizon && m.java_for(m.kind).is_none();
             let what = if horizon {
@@ -349,24 +349,6 @@ impl Launcher {
                     },
                 )),
             );
-            if horizon {
-                actions = actions.child(
-                    button(
-                        "mods-to-modrinth",
-                        "Browse Modrinth instead",
-                        Kind::Ghost,
-                        &t,
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.mods.source = SourceId::Modrinth;
-                        this.mods.browse.filters = Default::default();
-                        this.mods.browse.open = None;
-                        this.mods.picked = None;
-                        this.mods_search(0);
-                        cx.notify();
-                    })),
-                );
-            }
             actions = actions.child(
                 button(
                     "mods-error-details",

@@ -1921,13 +1921,10 @@ pub(super) fn auto_update(
     lines
 }
 
-/// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
-/// the rest.
-fn source_for(kind: PackKind) -> SourceId {
-    match kind {
-        PackKind::Mod | PackKind::Shader => SourceId::Horizon,
-        PackKind::ResourcePack | PackKind::Modpack | PackKind::DataPack => SourceId::Modrinth,
-    }
+/// Where a kind's tab searches: Horizon's registry, for every kind. (A Java instance's files
+/// are still Modrinth's, for its version: `Mods::java_for`.)
+fn source_for(_kind: PackKind) -> SourceId {
+    SourceId::Horizon
 }
 
 #[cfg(test)]
