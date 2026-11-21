@@ -214,14 +214,33 @@ pub fn set_labpbr_maps(on: bool) {
 pub fn labpbr_maps() -> bool {
     LABPBR_MAPS.load(std::sync::atomic::Ordering::Relaxed)
 }
+/// The LabPBR maps' budget in bytes from the `pbrBudgetMiB` setting (0 follows the block
+/// textures' budget), for resources loaded from now on.
+static PBR_BUDGET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The LabPBR maps' budget from the `pbrBudgetMiB` setting, so a pack's colours and its maps
+/// can be sized apart; 0 gives the maps their share of the block textures' budget again.
+pub fn set_pbr_budget(mib: u32) {
+    PBR_BUDGET.store(u64::from(mib) << 20, std::sync::atomic::Ordering::Relaxed);
+}
 /// Budget for either complete normal or specular image set: a quarter of the block textures'
 /// budget, so raising `textureBudgetMiB` sharpens a pack's LabPBR maps along with its colours.
 fn map_bytes(texture_budget: u64) -> u64 {
     texture_budget / 4
 }
-/// [`map_bytes`] for the budget the next resource load keeps to.
+/// The budget the next resource load keeps a map set to: `pbrBudgetMiB` when set, else
+/// [`map_bytes`] of the block textures' budget.
 fn max_map_bytes() -> u64 {
-    map_bytes(TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed))
+    map_budget(
+        TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed),
+        PBR_BUDGET.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+/// [`max_map_bytes`] for given budgets: `pbr_budget` in bytes, 0 for unset.
+fn map_budget(texture_budget: u64, pbr_budget: u64) -> u64 {
+    match pbr_budget {
+        0 => map_bytes(texture_budget),
+        bytes => bytes,
+    }
 }
 /// Fewer layers than any game has (vanilla's are about 1300): what a map is kept at while
 /// loading assumes at least these many share the array.
@@ -440,7 +459,14 @@ impl Sprites {
         self.specular.clear();
         let largest_map = self.pbr.iter().flatten().flatten().map(|m| m.0).max();
         self.pbr_size = largest_map.map_or(SPRITE_SIZE, |l| {
-            side_within(l.min(size), layers, max_map_bytes())
+            // An explicit `pbrBudgetMiB` may keep maps sharper than the colours; without it the
+            // maps never exceed them.
+            let cap = if PBR_BUDGET.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                l.min(size)
+            } else {
+                l
+            };
+            side_within(cap, layers, max_map_bytes())
         });
         if largest_map.is_some() {
             let pbr_size = self.pbr_size;
@@ -1355,6 +1381,20 @@ mod tests {
         assert_eq!(side_within(1024, 1300, map_bytes(1536 << 20)), 256);
     }
     #[test]
+    fn a_separate_pbr_budget_overrides_the_maps_without_touching_the_textures() {
+        // Unset, the maps keep their quarter of the textures' budget.
+        assert_eq!(
+            map_budget(DEFAULT_TEXTURE_BUDGET, 0),
+            map_bytes(DEFAULT_TEXTURE_BUDGET)
+        );
+        // Set, they ignore it: 1300 layers in 4 MiB pack at 16 px, in 384 MiB at 256 px.
+        assert_eq!(side_within(1024, 1300, map_budget(1536 << 20, 4 << 20)), 16);
+        assert_eq!(
+            side_within(1024, 1300, map_budget(DEFAULT_TEXTURE_BUDGET, 384 << 20)),
+            256
+        );
+    }
+    #[test]
     fn a_labpbr_map_selects_whole_texels_and_missing_layers_get_defaults() {
         // Selecting a texel preserves encoded channels, including categorical values.
         let frame = [
@@ -1420,6 +1460,22 @@ mod tests {
             sprites.specular[..128 * 128 * 4],
             resample(&maps[2], 16, 128)
         );
+    }
+    #[test]
+    fn an_explicit_pbr_budget_keeps_maps_sharper_than_the_colours() {
+        let sheet = |pbr_budget: u32| {
+            set_pbr_budget(pbr_budget);
+            let mut sprites = Sprites {
+                native: vec![(16, Arc::new(vec![vec![0; 16 * 16 * 4]]), 0)],
+                pbr: vec![[Some((64, vec![[9, 8, 7, 6].repeat(64 * 64)])), None]],
+                ..Default::default()
+            };
+            sprites.finish();
+            set_pbr_budget(0);
+            sprites.pbr_size
+        };
+        assert_eq!(sheet(0), 16);
+        assert_eq!(sheet(64), 64);
     }
     #[test]
     fn companion_grid_and_static_map_follow_colour_frame_selection() {
