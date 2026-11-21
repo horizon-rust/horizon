@@ -523,7 +523,8 @@ pub(crate) fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
 pub(crate) const LINKED: &str = "linked-minecraft";
 
 /// The links preparing makes in `launcher`'s [`LINKED`] folder: to another launcher's files,
-/// remade by every prepare, so a move of the launcher's data leaves them out. None is followed.
+/// remade by every prepare, so a move of the launcher's data leaves them out. None is followed,
+/// and a real file or folder at one of these paths is not listed (it is the player's to keep).
 pub(crate) fn linked_layout_links(launcher: &Path) -> Vec<PathBuf> {
     let linked = launcher.join(LINKED);
     // Only Unix links the client jar; Windows hard-links or copies it.
@@ -552,6 +553,10 @@ pub(crate) fn linked_layout_links(launcher: &Path) -> Vec<PathBuf> {
     [linked.join("libraries"), linked.join("assets")]
         .into_iter()
         .chain(jars)
+        .filter(|path| {
+            fs::symlink_metadata(path)
+                .is_ok_and(|meta| crate::data_location::reject_link(path, &meta).is_err())
+        })
         .collect()
 }
 
