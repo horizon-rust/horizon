@@ -475,6 +475,11 @@ impl SwingAnimation {
         duration: 6,
     };
 }
+impl Default for SwingAnimation {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// `LivingEntity.SwingDescription`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
