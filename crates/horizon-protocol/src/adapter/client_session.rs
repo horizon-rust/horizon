@@ -2479,4 +2479,35 @@ mod tests {
             assert_eq!(s.clientbound(&add(33)).unwrap(), None);
         }
     }
+
+    /// 1.21.4 added the duration to the trail particle's options (TargetColorParticleOption, 1.21.2 and
+    /// 1.21.3: a target and a colour only).
+    #[test]
+    fn a_trail_particle_has_no_duration_for_a_1_21_3_client() {
+        use crate::entity_data::{Particle, ParticleData};
+        let trail = play::Clientbound::LevelParticles(play::LevelParticles {
+            particle: Particle {
+                id: 59,
+                data: Some(ParticleData::Trail([1.5, 2.0, 3.0], 9, 40)),
+            },
+            override_limiter: false,
+            always_show: false,
+            pos: [0.0; 3],
+            dist: [0.0; 3],
+            max_speed: [0.0; 3],
+            count: 1,
+            randomization: 0,
+        })
+        .encode();
+        for (version, tail) in [
+            (ServerVersion::V1_21_3, &[0, 0, 0, 9][..]),
+            (ServerVersion::V1_21_4, &[0, 0, 0, 9, 40][..]),
+        ] {
+            let s = ClientSession::new(version);
+            s.reading.store(to_u8(State::Play), Ordering::Release);
+            s.writing.store(to_u8(State::Play), Ordering::Release);
+            let sent = s.clientbound(&trail).unwrap().unwrap();
+            assert!(sent.ends_with(tail), "{version:?}: {sent:?}");
+        }
+    }
 }
