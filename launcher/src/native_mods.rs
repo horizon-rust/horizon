@@ -1892,6 +1892,15 @@ fn judge_all(
     Ok(verdicts)
 }
 
+/// [`refused`], unless the player stopped the build while the request ran: then [`CANCELLED`],
+/// so the card shows no error for it.
+fn refused_unless_stopped(refusal: sdk_cache::Refusal) -> String {
+    match check_cancelled() {
+        Err(stopped) => stopped,
+        Ok(()) => refused(refusal),
+    }
+}
+
 /// A build's refusal of the mod tools, as the player reads it. A refused signature is short on
 /// screen, so its reason goes to the build log, where a report can quote it.
 fn refused(refusal: sdk_cache::Refusal) -> String {
@@ -2153,7 +2162,7 @@ fn pipeline(
         None
     } else {
         check_cancelled()?;
-        Some(sdk_cache::index(&sdk_base, &revision, &keys).map_err(refused)?)
+        Some(sdk_cache::index(&sdk_base, &revision, &keys).map_err(refused_unless_stopped)?)
     };
     let mut fitted: Vec<String> = Vec::new();
     if let Some(sdk) = &sdk {
@@ -2316,7 +2325,8 @@ fn pipeline(
                     Some(sdk) => sdk,
                     None => {
                         check_cancelled()?;
-                        fetched = sdk_cache::index(&sdk_base, &revision, &keys).map_err(refused)?;
+                        fetched = sdk_cache::index(&sdk_base, &revision, &keys)
+                            .map_err(refused_unless_stopped)?;
                         &fetched
                     }
                 };
@@ -2646,7 +2656,7 @@ pub fn build_then<R>(
         let folder = stage()?;
         let folder = folder.as_path();
         let profile = select_build_profile(instance.native_profile, profile, || {
-            planning::classify(folder, Some(base), lease)
+            planning::classify_until(folder, Some(base), lease, &check_cancelled)
                 .map_err(|error| Failed::Other(error.said(caller)))
         })?;
         let built = isolated(
@@ -2758,7 +2768,7 @@ pub fn build_server(
         }
         let lease = cache.map_err(str::to_owned)?;
         let profile = select_build_profile(Profile::default(), profile, || {
-            planning::classify(folder, Some(base), lease)
+            planning::classify_until(folder, Some(base), lease, &check_cancelled)
         })?;
         let built = pipeline(
             lease,
@@ -4739,6 +4749,22 @@ mod tests {
             result.map_err(String::from)
         );
         assert!(steps.borrow().is_empty(), "{:?}", steps.borrow());
+    }
+
+    /// #19300: an SDK index request that failed while Stop was pending ends as the stop.
+    #[test]
+    fn a_failed_index_request_while_stopping_ends_as_the_stop() {
+        let _guard = scratch_state();
+        let offline = || sdk_cache::Refusal::Offline {
+            build: "the Nov 13 update".into(),
+            bytes: None,
+        };
+        arm_cancel();
+        assert_ne!(refused_unless_stopped(offline()), CANCELLED);
+        cancel();
+        let stopped = refused_unless_stopped(offline());
+        arm_cancel();
+        assert_eq!(stopped, CANCELLED);
     }
 
     /// #18669: native mods turned off in Storage while a build waits for the last cleanup stop
