@@ -443,6 +443,10 @@ fn the_check_refuses_a_step_it_can_t_run() {
             "    var cs: array<RayCandidate, 2>;\n    _ = ray_step(cs[1], &nearest);\n",
             13,
         ),
+        (
+            "    _ = ray_step(array<RayCandidate, 2>()[0], &nearest);\n",
+            13,
+        ),
     ] {
         let zeroed = LAYERS_STEP.replace(at_call, &format!("{zero}{at_call}"));
         let problems = refused(&zeroed, "constructs `RayCandidate`");
@@ -451,6 +455,14 @@ fn the_check_refuses_a_step_it_can_t_run() {
             ("post.wgsl", line)
         );
     }
+    let wrapped = format!(
+        "struct Hold {{ c: RayCandidate }}\n{}",
+        LAYERS_STEP.replace(
+            at_call,
+            &format!("    _ = ray_step(Hold().c, &nearest);\n{at_call}")
+        )
+    );
+    refused(&wrapped, "constructs `RayCandidate`");
     let global = format!(
         "var<private> held: RayCandidate;\n{}",
         LAYERS_STEP.replace(
@@ -463,9 +475,9 @@ fn the_check_refuses_a_step_it_can_t_run() {
         (problems[0].file.as_str(), problems[0].line),
         ("post.wgsl", 1)
     );
-    // A candidate passed along, or copied from one, is read, not built.
+    // A candidate passed along, or copied into a `let` or initialized `var`, is read, not built.
     let passed = "struct RayState { n: u32 }
-fn keep(c: RayCandidate) -> u32 { let d = c; return select(RAY_PASS, RAY_STOP, d.distance > 0.0); }
+fn keep(c: RayCandidate) -> u32 { let d = c; var copy = c; return select(RAY_PASS, RAY_STOP, d.distance > 0.0 && copy.distance > 0.0); }
 fn ray_step(c: RayCandidate, state: ptr<function, RayState>) -> u32 { return keep(c); }
 fn post(input: PostInput) -> vec4<f32> {
     var s = RayState(0u);
