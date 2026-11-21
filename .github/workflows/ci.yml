@@ -207,6 +207,45 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         run: python3 tools/check_addresses.py ${BASE:+--base "$BASE"}
+      # The guards below ran only in the fork's gate (dyna-ci.yml) until it was removed in 878ac3917e (#18354).
+      # crates/horizon-mod-wasm/wire-loopback/build.rs declares tests/wire_loopback/*.rs: its root gains no module line
+      # and no test (the test count only against a base, so not on main's pushes).
+      - name: wire_loopback root does not grow
+        if: steps.queued.outputs.tested != 'true'
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: python3 tools/hotspots/check_wire_loopback.py ${BASE:+--base "$BASE"}
+      - name: Vocabulary state has explicit ownership
+        if: steps.queued.outputs.tested != 'true'
+        run: python3 tools/check_mod_vocabulary_state.py
+      # One file per topic in tools/ci/ignored-tests/: well-formed rows, each test in one file, nothing else in the
+      # folder, no file at the retired single-list path.
+      - name: Ignored-test policy files read cleanly
+        if: steps.queued.outputs.tested != 'true'
+        run: python3 tools/ci/check_ignored_test_rows.py
+      # The unit tier: a test that boots the game is #[ignore = "daily"]; the fixtures are in tools/ci/game-boot-fixtures.txt.
+      - name: Game-boot tests are daily tests
+        if: steps.queued.outputs.tested != 'true'
+        run: python3 tools/ci/check_game_boot_tests.py
+      # The unit tier: a test that starts a child process is #[ignore = "daily"]; helpers in tools/ci/process-spawns.txt.
+      - name: Process-starting tests are daily tests
+        if: steps.queued.outputs.tested != 'true'
+        run: python3 tools/ci/check_process_tests.py
+      # The mod-host map's tables (docs/layering/mod-host-map.md#generated-tables), built on main's pushes instead of
+      # committed, so no pull request has to regenerate them. About 30 s of Python, no build; it runs even when the merge
+      # queue verified the commit, which is how most of main's commits arrive.
+      - name: Build the mod-host map tables
+        id: mod_host_map
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 tools/layering/scan_engine_mod_edges.py --map target/layering/mod-host-map-tables.md
+      - name: Upload the mod-host map tables
+        if: steps.mod_host_map.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mod-host-map
+          path: target/layering/mod-host-map-tables.md
+          if-no-files-found: error
       # A nested workspace's Cargo.lock goes stale when a crate it reaches outside its folder changes its dependencies,
       # and only its own build, after the merge, would notice (tools/ci/nested_locks.py). Index only, no compiling; it
       # runs only when a resolution input changed against the event's base: the main GitHub's merge commit sits on
@@ -270,7 +309,8 @@ jobs:
         env:
           TESTED: ${{ steps.queued.outputs.tested }}
         run: |
-          [ "$TESTED" = true ] || cargo +stable fmt --all -- --check
+          # format_scan.py runs `cargo fmt --all -- --check`, then rustfmt on the files no `mod` line reaches.
+          [ "$TESTED" = true ] || RUSTUP_TOOLCHAIN=stable python3 tools/ci/format_scan.py
           cargo +stable clippy --workspace --all-targets --locked -- -D warnings
       - name: Load probe
         if: always()
