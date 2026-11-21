@@ -456,4 +456,30 @@ mod off_level_tests {
             assert!(sulfur_cube::primed(game.mob_object(74).unwrap()));
         });
     }
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_invisible_sulfur_cube_keeps_its_contained_block_geometry() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:sulfur_cube")
+                .unwrap()
+                .clone();
+            let mut m = horizon_client::mobs::Mob::new(
+                80,
+                kind,
+                Vec3::new(0.0, 80.0, 0.0),
+                0.0,
+            );
+            m.extra.set_body(Some("minecraft:tnt".into()));
+            m.flags.set(horizon_client::mobs::entity_flags::INVISIBLE, true);
+            assert!(m.is_invisible());
+
+            let mut out = Vec::new();
+            game.sulfur_cube_body_geometry(&m, 0.0, glam::Mat4::IDENTITY, 0, &mut out);
+            assert!(!out.is_empty(), "contained block generates vertices even when sulfur cube is invisible");
+        });
+    }
 }
