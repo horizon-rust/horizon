@@ -1,0 +1,3 @@
+ids = ["type:CommandArgumentKind"]
+why = "CommandArgumentKind gains Token: one space-free token (`*`, `**`, `mod:acct/1`) that the usage's later arguments may follow. A command that accepts a wildcard for every player or account, as an economy's give and take do, cannot use Word (it stops at `*`) or Greedy (it must be last)."
+migrate = "Additive for mods that build against the new enum. A host that matches CommandArgumentKind exhaustively adds the arm; the layout hash changes because the enum has a third variant."

@@ -23,7 +23,7 @@ use super::{Dim, Game, commands::execute, respawn_anchor::RespawnConfig};
 use crate::game::level_control_hooks::LevelControl;
 pub(super) use argument_kinds::{CommandArguments, command_arguments};
 use argument_kinds::{
-    UNCENTERED, argument_type, custom_value, dimension_value, nbt_value, parsed_type, parser,
+    TOKEN, UNCENTERED, argument_type, custom_value, dimension_value, nbt_value, parsed_type, parser,
     positional_value, resource_parser,
 };
 use mod_api::__private::game::*;
@@ -108,6 +108,7 @@ fn usage_nodes(
             .transpose()?;
         let builtin =
             resource.or_else(|| parser(kind).map(|(parser, properties, _)| (parser, properties)));
+        let mut token = false;
         let (parser, properties, greedy, custom) = match builtin {
             Some((parser, properties)) => (parser, properties, kind == "text", None),
             None => {
@@ -121,6 +122,12 @@ fn usage_nodes(
                 {
                     mod_api::CommandArgumentKind::Word => (json!({"type": "word"}), false),
                     mod_api::CommandArgumentKind::Greedy => (json!({"type": "greedy"}), true),
+                    // The wire says `word`: a client that does not know the type parses one
+                    // word, and the node's `token` marker (below) makes the server read a token.
+                    mod_api::CommandArgumentKind::Token => {
+                        token = true;
+                        (json!({"type": "word"}), false)
+                    }
                     _ => {
                         return Err(format!(
                             "`{usage}`: argument type `{kind}` uses a kind this build cannot read"
@@ -144,6 +151,9 @@ fn usage_nodes(
         if custom.is_some() || kind == "id" {
             if let Some(id) = custom {
                 node["custom_argument"] = id.into();
+            }
+            if token {
+                node[TOKEN] = true.into();
             }
             node["suggestions"] = "minecraft:ask_server".into();
         }
@@ -3308,6 +3318,57 @@ mod tests {
         let (range, suggestions) = dispatcher.suggestions(&parse, typed.len(), &registries);
         assert_eq!(range, (8, typed.len()));
         assert_eq!(suggestions[0].apply(typed), "replace dirt");
+    }
+
+    /// A test mod's account argument: one token, so `*` and `**` are taken as typed.
+    struct TokenArgument;
+
+    impl mod_api::CommandArgumentType for TokenArgument {
+        fn kind(&self) -> mod_api::CommandArgumentKind {
+            mod_api::CommandArgumentKind::Token
+        }
+
+        fn parse(&self, input: &str) -> Result<String, mod_api::CommandArgumentError> {
+            Ok(input.to_owned())
+        }
+
+        fn suggest(
+            &self,
+            _: Option<&mod_api::CommandSender>,
+            _: &str,
+        ) -> Vec<mod_api::CommandSuggestion> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_token_argument_goes_out_as_a_word_and_is_read_as_a_token_by_the_server() {
+        let arguments: CommandArguments = HashMap::from([(
+            "test:account".into(),
+            Arc::new(TokenArgument) as Arc<dyn mod_api::CommandArgumentType>,
+        )]);
+        let (tree, _, problems) = super::command_tree(
+            &[mod_api::Command::new("eco give <who:test:account> <amount:integer>")],
+            |_| false,
+            &arguments,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        let who = &tree["children"]["eco"]["children"]["give"]["children"]["who"];
+        assert_eq!(who["parser"], "brigadier:string");
+        assert_eq!(who["properties"]["type"], "word");
+        assert_eq!(who["token"], true);
+        let mut dispatcher = Dispatcher::new();
+        register_dispatcher(&mut dispatcher, &tree, "native_mod_command", &arguments);
+        let registries = horizon_client::command::Registries::default();
+        let parsed = dispatcher.parse("eco give ** 7", &registries);
+        let (context, _) = parsed.executable().unwrap();
+        assert_eq!(
+            context.get("who"),
+            Some(&Arg::Custom {
+                kind: "test:account".into(),
+                value: "**".into(),
+            })
+        );
     }
 
     /// A type whose completion mixes one the text can hold with one it cannot.

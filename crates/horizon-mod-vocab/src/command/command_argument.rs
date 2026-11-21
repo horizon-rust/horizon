@@ -23,6 +23,13 @@ pub enum CommandArgumentKind {
     Word,
     /// The rest of the line, spaces included: the argument must be the usage's last.
     Greedy,
+    /// One token: every character up to the next space or the end of the line, so `*` and `**`
+    /// (a wildcard for every player, every account) and punctuation such as `:` or `/` are
+    /// taken, where [`Word`](Self::Word) stops at them. It takes no quotes and no escapes, and
+    /// the token is never empty. The argument may be followed by more arguments. A vanilla client
+    /// that does not know the type parses it as a Brigadier word, so it may show a token with
+    /// such characters in red; the server still takes it as written.
+    Token,
 }
 
 /// Why a custom argument's parser refused the text a player wrote.
@@ -167,8 +174,9 @@ pub trait CommandArgumentType: Send + Sync + 'static {
 
     /// Validate the text a client wrote and return the value `run_mod_command` receives.
     ///
-    /// `input` is one word (see [`CommandArgumentKind::Word`] for its characters), or the rest
-    /// of the line for [`CommandArgumentKind::Greedy`]. Return the canonical text to deliver (an
+    /// `input` is one word (see [`CommandArgumentKind::Word`] for its characters), the rest
+    /// of the line for [`CommandArgumentKind::Greedy`], or one space-free token for
+    /// [`CommandArgumentKind::Token`]. Return the canonical text to deliver (an
     /// id, a lower-cased name, `"3"` for `"03"`), or the message shown to the player when the
     /// input is not valid.
     fn parse(&self, input: &str) -> Result<String, CommandArgumentError>;

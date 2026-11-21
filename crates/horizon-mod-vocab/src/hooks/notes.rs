@@ -32,7 +32,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`, `vec3`, `id`, and any command argument type a mod registered
   (`Registrar::register_command_argument`): its namespaced id is the kind, as in
   `<machine:mymod:machine>`. A custom argument is one word (or the rest of the line when its type says
-  `Greedy`) and delivers its type's canonical value in `run_mod_command`. The usages of one command merge into
+  `Greedy`; one space-free token, such as `*`, when it says `Token`) and delivers its type's canonical value in `run_mod_command`. The usages of one command merge into
   one tree, which every player receives after vanilla's (filtered by their level, as vanilla's is), so their
   chat box completes and colours it. A client that does not know a custom type still parses and completes it:
   the tree sends the argument as a Brigadier string and asks the server for its suggestions. Fabric sends
