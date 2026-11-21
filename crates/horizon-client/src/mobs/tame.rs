@@ -369,7 +369,7 @@ impl Goal for SitWhenOrdered {
         JUMP | MOVE
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if !m.extra.sitting && !m.extra.tame {
+        if !m.extra.sitting || !m.extra.tame {
             return false;
         }
         if m.fluids.in_water || !m.on_ground {
@@ -871,6 +871,7 @@ fn shake_tick(m: &mut Mob, wet: bool, server: bool, events: &mut Vec<MobEvent>) 
 /// `updatePersistentAnger`).
 pub fn stand_when_hurt(m: &mut Mob) {
     m.extra.sitting = false;
+    m.extra.sitting_pose = false;
 }
 /// `Wolf.getTailAngle`.
 fn tail_angle(m: &Mob) -> f32 {
@@ -878,7 +879,10 @@ fn tail_angle(m: &Mob) -> f32 {
         1.539_380_4
     } else if m.extra.tame {
         let max = m.attrs.max_health;
-        let ratio = (max - m.health) / max;
+        if max <= 0.0 {
+            return PI / 5.0;
+        }
+        let ratio = ((max - m.health) / max).clamp(0.0, 1.0);
         (0.55 - ratio * 0.4) * PI
     } else {
         PI / 5.0
@@ -2721,6 +2725,58 @@ mod goal_timing_tests {
             assert!(!goal.can_use(&mut m, &mut cx), "nowhere to lie down");
             assert_eq!(goal.0.next_start, 40, "CatLieOnBlockGoal.nextStartTick");
         });
+    }
+
+    #[test]
+    fn a_tame_wolf_tail_angle_is_clamped_and_follows_health() {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:wolf".into();
+        k.species = Species::Wolf;
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+
+        // Untamed wolf
+        assert_eq!(tail_angle(&m), std::f32::consts::PI / 5.0);
+
+        // Tamed wolf at full health
+        m.extra.tame = true;
+        m.attrs.max_health = 40.0;
+        m.health = 40.0;
+        assert_eq!(tail_angle(&m), 0.55 * std::f32::consts::PI);
+
+        // Tamed wolf half health
+        m.health = 20.0;
+        assert_eq!(tail_angle(&m), 0.35 * std::f32::consts::PI);
+
+        // Tamed wolf zero health
+        m.health = 0.0;
+        assert_eq!(tail_angle(&m), 0.15 * std::f32::consts::PI);
+
+        // Health exceeds max (MC-175622) - must not spin or shoot up past 0.55 * PI
+        m.health = 80.0;
+        assert_eq!(tail_angle(&m), 0.55 * std::f32::consts::PI);
+
+        // Negative health clamped
+        m.health = -10.0;
+        assert_eq!(tail_angle(&m), 0.15 * std::f32::consts::PI);
+
+        // Angry wolf
+        m.extra.anger = 100;
+        assert_eq!(tail_angle(&m), 1.539_380_4);
+    }
+
+    #[test]
+    fn stand_when_hurt_clears_sitting_and_sitting_pose() {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.species = Species::Wolf;
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        m.extra.sitting = true;
+        m.extra.sitting_pose = true;
+
+        stand_when_hurt(&mut m);
+        assert!(!m.extra.sitting, "ordered to sit cleared");
+        assert!(!m.extra.sitting_pose, "sitting pose cleared");
     }
 }
 
