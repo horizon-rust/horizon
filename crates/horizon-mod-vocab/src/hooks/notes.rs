@@ -48,7 +48,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
 
 - **`run_mod_command`**: `event.command` is an owned `CommandInvocation` with its literal path, its `dimension` and
-  `position` after `execute in/at`, and named `CommandArgumentValue` values, not raw command text. Integer, number and boolean
+  `position` after `execute in/at`, and named `CommandArgumentValue` values. `event.command.raw()` gives the untrusted source text of the leaf command. Integer, number and boolean
   values retain the dispatcher's types; word and greedy text are strings. Player selectors resolve to a single live
   `PlayerRef`, items become component-bearing stacks of one, and block positions resolve source-relative/local
   coordinates without requiring loaded chunks. `mod_id` is a loaded package id as a string; `resource:<registry>`

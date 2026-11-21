@@ -1,0 +1,1 @@
+horizon-client game::native_server::tests::direct_player_mod_commands_can_validate_their_own_arguments lib daily resources

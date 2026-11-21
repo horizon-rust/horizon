@@ -137,7 +137,7 @@ impl CommandArgument {
     }
 }
 
-/// A native command parsed once by the server's dispatcher, never a raw line.
+/// A mod command parsed once by the server's dispatcher.
 ///
 /// Missing optional arguments are absent. Selectors are permission-checked and resolved
 /// on the server before any listener runs. `entity` and `player` select exactly one;
@@ -157,6 +157,7 @@ pub struct CommandInvocation {
     /// The execution position, after `execute at` or `positioned`; the console's is the
     /// world spawn's block corner.
     pub position: [f64; 3],
+    raw: String,
 }
 
 impl CommandInvocation {
@@ -173,7 +174,21 @@ impl CommandInvocation {
             arguments,
             dimension,
             position,
+            raw: String::new(),
         }
+    }
+
+    /// Attach the source text to an invocation being built by a host or a test.
+    pub fn with_raw(mut self, raw: String) -> Self {
+        self.raw = raw;
+        self
+    }
+
+    /// The command as submitted, without its leading slash. For `execute … run`
+    /// and `return run`, this is the leaf command. This is untrusted input.
+    /// Empty for invocations constructed without source text.
+    pub fn raw(&self) -> &str {
+        &self.raw
     }
 
     /// The last argument registered under `name`, or `None` when it is absent.

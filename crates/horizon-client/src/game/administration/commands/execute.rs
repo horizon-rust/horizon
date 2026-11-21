@@ -66,6 +66,8 @@ pub(in crate::game) struct ExecState {
     /// Function IDs in execution order, with the active frame last.
     pub functions: Vec<String>,
     pub prepared_function: Option<super::super::functions::PreparedFunctionCall>,
+    /// Original input for the active parsed mod command, including any execute prefix.
+    pub native_command_input: Option<String>,
 }
 
 /// A modifier that brings the sources to `max_command_forks` ends the chain
@@ -258,8 +260,11 @@ impl Game<'_> {
         let parse = d.parse(line, &self.ui.registries);
         let (ctx, _) = parse.executable()?;
         let ctx = ctx.clone();
-        let root = parse.context.clone();
-        self.with_source(source, |g| g.run_chain(&root, &ctx))
+        let input = (ctx.command == Some("native_mod_command")).then_some(parse.input);
+        let saved = std::mem::replace(&mut self.exec.native_command_input, input);
+        let result = self.with_source(source, |g| g.run_chain(&parse.context, &ctx));
+        self.exec.native_command_input = saved;
+        result
     }
     /// Run a parsed command (`root` is the first context; `ctx` the one with
     /// the executable node): `execute` and `return` walk their own chains.

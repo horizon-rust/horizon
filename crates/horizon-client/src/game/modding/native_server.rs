@@ -2049,7 +2049,14 @@ impl Game<'_> {
     /// The shared command-node executor, also reached by functions and `execute`.
     pub(super) fn run_native_command(&mut self, context: Context) -> super::commands::R<i32> {
         use super::commands::err;
+        let start = context.range.0;
         let command = self.resolve_native_command(context)?;
+        let raw = self
+            .exec
+            .native_command_input
+            .as_deref()
+            .and_then(|input| input.get(start..));
+        let command = command.with_raw(raw.unwrap_or_default().to_owned());
         let origin = self.native_command_origin(self.ui.registries.permission)?;
         let mut ran = false;
         self.native_run_mod_command(&origin, &command, &mut ran);
@@ -2187,6 +2194,19 @@ impl Game<'_> {
         Ok(self.native_invocation(context.literals, arguments))
     }
 
+    /// Dispatch raw input before parsing a registered player command.
+    fn run_registered_player_command(&mut self, line: &str, permission: u8) -> bool {
+        if !mod_api::__private::listened(mod_api::HookId::RegisteredPlayerCommand) {
+            return false;
+        }
+        let Some(player) = self.native_acting_player() else {
+            return false;
+        };
+        let mut handled = false;
+        self.native_registered_player_command(player, permission, line, &mut handled);
+        handled
+    }
+
     /// A guest's command for the mods, inside their swap
     /// (`run_guest_command`): true when one ran it.
     pub(super) fn perform_native_command(&mut self, conn: u32, permission: u8, line: &str) -> bool {
@@ -2204,7 +2224,9 @@ impl Game<'_> {
             return false;
         }
         let previous = std::mem::replace(&mut self.ui.registries.permission, permission);
-        self.run_command(line);
+        if !self.run_registered_player_command(line, permission) {
+            self.run_command(line);
+        }
         self.ui.registries.permission = previous;
         true
     }
@@ -2425,7 +2447,10 @@ mod tests {
         ));
         let plain = ItemStack::new("minecraft:stick", 5);
         assert_eq!(api_stack_or_keep(Some(unknown.clone()), &mut kept), None);
-        assert_eq!(api_stack_or_keep(Some(odd_components.clone()), &mut kept), None);
+        assert_eq!(
+            api_stack_or_keep(Some(odd_components.clone()), &mut kept),
+            None
+        );
         assert_eq!(api_stack_or_keep(None, &mut kept), None);
         assert_eq!(
             api_stack_or_keep(Some(plain.clone()), &mut kept),
@@ -3639,6 +3664,61 @@ mod tests {
 
     #[test]
     #[ignore = "daily"]
+    fn direct_player_mod_commands_can_validate_their_own_arguments() {
+        struct Commands(Arc<Mutex<Vec<(u128, String)>>>);
+
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Commands {
+            fn register_commands(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::RegisterCommandsEvent<'_>,
+            ) {
+                event
+                    .commands
+                    .push(mod_api::Command::op("raw <coins:integer>", 3));
+            }
+
+            fn registered_player_command(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::RegisteredPlayerCommandEvent<'_>,
+            ) -> mod_api::Flow {
+                assert_eq!(event.permission, 3);
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((event.player.uuid(), event.raw.to_owned()));
+                mod_api::Flow::Cancel
+            }
+        }
+
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        mod_platform::testing::with_mods(
+            vec![mod_api::ModEntry::new(
+                "raw_commands",
+                Box::new(Commands(heard.clone())),
+            )]
+            .into(),
+            || {
+                super::super::native_guest_turn_tests::with_guests(|game| {
+                    game.build_registries();
+                    game.register_native_commands();
+                    game.as_guest(12, |game| {
+                        let line = "raw 2147483648";
+                        assert!(!game.perform_native_command(12, 0, line));
+                        assert!(game.perform_native_command(12, 3, line));
+                    })
+                    .unwrap();
+                    assert!(game.perform_native_console_command("raw 1"));
+                })
+            },
+        );
+        assert_eq!(*heard.lock().unwrap(), [(12, "raw 2147483648".into())]);
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn native_typed_commands_reach_listeners_after_parse_and_source_resolution() {
         use mod_api::{CommandArgumentValue as Value, CommandInvocation};
         struct Commands(Arc<Mutex<Vec<(bool, CommandInvocation)>>>);
@@ -3717,7 +3797,7 @@ mod tests {
                         assert_eq!(game.world.random.state(), random, "denied selectors must not resolve");
                         assert!(heard.lock().unwrap().is_empty(), "failed input must not reach listeners");
                         for line in [
-                            "typed give guest13 37 hello typed world",
+                            "typed give guest13 37 hello  typed world",
                             "typed give @s -4",
                             "typed opt",
                             "typed opt 9",
@@ -3774,11 +3854,13 @@ mod tests {
                     assert_eq!(heard.len(), 12);
                     let first = &heard[0].1;
                     assert_eq!(first.literals, ["typed", "give"]);
+                    assert_eq!(first.raw(), "typed give guest13 37 hello  typed world");
+                    assert_eq!(heard[11].1.raw(), "typed opt 13");
                     assert_eq!(first.argument("who"), Some(&Value::Player(other)));
                     assert_eq!(first.argument("amount"), Some(&Value::Integer(37)));
                     assert_eq!(
                         first.argument("message"),
-                        Some(&Value::String("hello typed world".into()))
+                        Some(&Value::String("hello  typed world".into()))
                     );
                     assert_eq!(heard[1].1.argument("who"), Some(&Value::Player(acting)));
                     assert_eq!(heard[1].1.argument("amount"), Some(&Value::Integer(-4)));

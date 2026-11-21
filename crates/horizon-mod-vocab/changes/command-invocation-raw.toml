@@ -1,0 +1,3 @@
+ids = ["type:CommandInvocation"]
+why = "A parsed mod command also carries the untrusted text of the leaf invocation."
+migrate = "Rebuild against this SDK. Existing constructors are unchanged. Use CommandInvocation::raw to read the text while keeping typed arguments for validated values."
