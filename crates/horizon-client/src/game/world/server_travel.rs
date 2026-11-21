@@ -1296,10 +1296,26 @@ impl Game<'_> {
                     None => self.end_arrival(trip.target, &mut trip.finder),
                 };
                 match arrival {
-                    Ok(Some((at, turned))) => {
+                    Ok(Some(arrival)) => {
+                        if arrival.missing_respawn_block
+                            && let Some(host) = self.lan.as_mut()
+                        {
+                            // TeleportTransition.missingRespawnBlock, sent by
+                            // ServerPlayer.teleport before the move: the
+                            // client says "You have no home bed or charged
+                            // anchor".
+                            host.hub.missing_respawn_block(trip.conn);
+                        }
+                        // ServerPlayer.teleport sets the transition's whole
+                        // rotation: a bed's or anchor's level pitch.
+                        if let Some(pitch) = arrival.pitch
+                            && let Some(host) = self.lan.as_mut()
+                        {
+                            host.hub.guests.update(i, |g| g.pitch = pitch);
+                        }
                         // EndPortalBlock.getPortalDestination: PLACE_PORTAL_TICKET.
-                        self.place_portal_ticket(Self::chunk_of(at));
-                        (at, turned.unwrap_or(yaw))
+                        self.place_portal_ticket(Self::chunk_of(arrival.at));
+                        (arrival.at, arrival.yaw.unwrap_or(yaw))
                     }
                     Ok(None) => {
                         self.server_trips.insert(k, trip);
@@ -2541,6 +2557,10 @@ mod credits_respawn_tests {
         std::fs::remove_dir_all(scratch).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "server_travel/end_exit_tests.rs"]
+mod end_exit_tests;
 
 #[cfg(test)]
 #[path = "server_travel/hold_tests.rs"]
