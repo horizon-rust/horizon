@@ -98,6 +98,7 @@ impl Game<'_> {
             "mob_attack" => DamageKind::MobAttack,
             "mob_attack_no_aggro" => DamageKind::MobAttackNoAggro,
             "arrow" => DamageKind::Arrow,
+            "trident" => DamageKind::Trident,
             "thrown" | "mob_projectile" => DamageKind::Thrown,
             "fireball" | "unattributed_fireball" => DamageKind::Fireball,
             "wither_skull" => DamageKind::WitherSkull,
@@ -110,7 +111,14 @@ impl Game<'_> {
             "lava" => DamageKind::Lava,
             "drown" => DamageKind::Drown,
             "dry_out" => DamageKind::DryOut,
-            "magic" | "indirect_magic" | "dragon_breath" => DamageKind::Magic,
+            "magic" | "indirect_magic" => DamageKind::Magic,
+            // `DamageCommand.damage`: keep `dragonBreath` and its `#no_knockback` tag.
+            "dragon_breath" => DamageKind::Named(horizon_client::mobs::NamedDamage::new(
+                "minecraft:dragon_breath",
+                horizon_client::mobs::NamedDamage::BYPASSES_ARMOR
+                    | horizon_client::mobs::NamedDamage::PANIC_CAUSES
+                    | horizon_client::mobs::NamedDamage::NO_KNOCKBACK,
+            )),
             "sting" => DamageKind::Sting,
             "cactus" => DamageKind::Cactus,
             "sweet_berry_bush" => DamageKind::SweetBerryBush,

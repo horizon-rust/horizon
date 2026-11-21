@@ -6,13 +6,7 @@ impl Game<'_> {
     pub(in crate::game) fn projectile_damage_kind(&self, shot: &Projectile) -> DamageKind {
         match shot.kind {
             ProjectileKind::Arrow { .. } => DamageKind::Arrow,
-            ProjectileKind::Trident => DamageKind::Named(
-                horizon_client::mobs::NamedDamage::registered(
-                    &self.health_resources.damage,
-                    "minecraft:trident",
-                )
-                .expect("registered vanilla trident damage"),
-            ),
+            ProjectileKind::Trident => DamageKind::Trident,
             ProjectileKind::SmallFireball | ProjectileKind::LargeFireball { .. } => {
                 DamageKind::Fireball
             }
@@ -179,7 +173,7 @@ impl Game<'_> {
         pos: [f64; 3],
         source: Option<(&'static str, u32)>,
     ) {
-        use horizon_client::mobs::{DamageKind, Who, drops};
+        use horizon_client::mobs::{Who, drops};
         use horizon_world::loot::{LootDamage, LootEntity};
         let accepted = m
             .accepted_hit
@@ -214,24 +208,12 @@ impl Game<'_> {
                     }),
                 None => None,
             };
-            let direct = match d.kind {
-                DamageKind::Arrow => Some(LootEntity {
-                    kind: "minecraft:arrow".into(),
+            let direct = match projectile_entity(d.kind) {
+                Some(kind) => Some(LootEntity {
+                    kind: kind.into(),
                     ..LootEntity::default()
                 }),
-                DamageKind::Fireball => Some(LootEntity {
-                    kind: "minecraft:fireball".into(),
-                    ..LootEntity::default()
-                }),
-                DamageKind::WitherSkull => Some(LootEntity {
-                    kind: "minecraft:wither_skull".into(),
-                    ..LootEntity::default()
-                }),
-                DamageKind::Fireworks => Some(LootEntity {
-                    kind: "minecraft:firework_rocket".into(),
-                    ..LootEntity::default()
-                }),
-                _ => source.clone(),
+                None => source.clone(),
             };
             LootDamage {
                 kind: source_damage_type(d).into(),

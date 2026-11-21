@@ -1740,13 +1740,7 @@ impl Game<'_> {
                 .map(|o| self.mob_entity(o)),
             None => None,
         };
-        let projectile = match d.kind {
-            DamageKind::Arrow => Some("minecraft:arrow"),
-            DamageKind::Fireball => Some("minecraft:fireball"),
-            DamageKind::WitherSkull => Some("minecraft:wither_skull"),
-            DamageKind::Fireworks => Some("minecraft:firework_rocket"),
-            _ => None,
-        };
+        let projectile = projectile_entity(d.kind);
         let direct = match projectile {
             Some(kind) => Some(horizon_client::advancements::EntityView {
                 kind: kind.into(),
@@ -8575,6 +8569,18 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
     })
 }
 pub(super) use horizon_client::health::{damage_type, melee, source_damage_type};
+/// The direct entity's id of a projectile hit (`DamageSource.getDirectEntity`).
+pub(super) fn projectile_entity(kind: horizon_client::mobs::DamageKind) -> Option<&'static str> {
+    use horizon_client::mobs::DamageKind as K;
+    match kind {
+        K::Arrow => Some("minecraft:arrow"),
+        K::Trident => Some("minecraft:trident"),
+        K::Fireball => Some("minecraft:fireball"),
+        K::WitherSkull => Some("minecraft:wither_skull"),
+        K::Fireworks => Some("minecraft:firework_rocket"),
+        _ => None,
+    }
+}
 /// A Horizon item stack as a loot stack (id, count, damage, enchantments,
 /// and its custom data as SNBT for `minecraft:custom_data` predicates).
 fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
@@ -9498,6 +9504,132 @@ mod damage_type_tests {
                 "example:fan_fire"
             );
         }
+    }
+
+    /// `/damage <target> <amount> <type>`: the source's type is the one asked
+    /// for, so `DamageSource.getMsgId` gives the type's own message key.
+    #[test]
+    fn the_damage_command_keeps_the_types_registry_id() {
+        for ty in [
+            "minecraft:arrow",
+            "minecraft:trident",
+            "minecraft:magic",
+            "minecraft:dragon_breath",
+        ] {
+            assert_eq!(
+                source_damage_type(Damage {
+                    kind: Game::damage_kind(&catalog(), ty),
+                    attacker: None,
+                    from: None,
+                    attacker_species: None,
+                }),
+                ty
+            );
+        }
+    }
+
+    /// `DamageCommand.damage` uses `#no_knockback` for `dragon_breath`;
+    /// `LivingEntity.hurtServer` still takes health without changing motion.
+    #[test]
+    fn dragon_breath_from_the_damage_command_leaves_motion_unchanged() {
+        use crate::health::TestLevel;
+
+        let catalog = catalog();
+        let kind = cow_type();
+        let mut level = TestLevel::new(0);
+        let velocity = Vec3::new(0.6, 0.2, -0.4);
+        for ty in ["dragon_breath", "minecraft:dragon_breath"] {
+            for from in [None, Some([2.0, 0.0, 1.0])] {
+                let mut mob = Mob::new(1, kind.clone(), Vec3::ZERO, 0.0);
+                mob.velocity = velocity;
+                assert!(mob.damage(
+                    &mut level.level(),
+                    2.0,
+                    Damage {
+                        kind: Game::damage_kind(&catalog, ty),
+                        attacker: None,
+                        from,
+                        attacker_species: None,
+                    },
+                ));
+                assert_eq!(mob.health, 8.0, "the source still bypasses armor");
+                assert_eq!(mob.velocity, velocity, "{ty}, from={from:?}");
+            }
+        }
+        let mut control = Mob::new(2, kind, Vec3::ZERO, 0.0);
+        control.velocity = velocity;
+        assert!(control.damage(
+            &mut level.level(),
+            2.0,
+            Damage::of(Game::damage_kind(&catalog, "minecraft:trident")),
+        ));
+        assert_ne!(control.velocity, velocity, "ordinary hits still knock back");
+    }
+
+    /// A cow's type with only what a hurt and a push read: armor enough to
+    /// show a source that bypasses it.
+    fn cow_type() -> std::sync::Arc<horizon_client::mobs::MobType> {
+        use horizon_client::mobs::{Anim, Brain, MobType, Part, Species};
+        std::sync::Arc::new(MobType {
+            shadow: None,
+            id: "minecraft:cow".into(),
+            species: Species::Cow,
+            width: 0.9,
+            height: 1.4,
+            eye_height: 1.3,
+            category: "creature".into(),
+            max_health: 10.0,
+            speed: 0.2,
+            flying_speed: 0.02,
+            attack_damage: 0.0,
+            attack_knockback: 0.0,
+            follow_range: 16.0,
+            step_height: 0.6,
+            armor: 20.0,
+            armor_toughness: 0.0,
+            knockback_resistance: 0.0,
+            jump_strength: 0.42,
+            attributes: Default::default(),
+            item_stack_limits: Default::default(),
+            attribute_bounds: Default::default(),
+            gravity: 0.08,
+            safe_fall_distance: 3.0,
+            fall_damage_multiplier: 1.0,
+            water_efficiency: 0.0,
+            water_slowdown: 0.8,
+            air_speed: 0.02,
+            baby_scale: 0.5,
+            head_rot_speed: 10.0,
+            max_head_x_rot: 40.0,
+            max_head_y_rot: 75.0,
+            ambient_interval: 80,
+            flags: Default::default(),
+            model: std::sync::Arc::new(Part {
+                name: "root".into(),
+                pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                polygons: Vec::new(),
+                children: Vec::new(),
+            }),
+            layers: Default::default(),
+            texture: String::new(),
+            brain: Brain::Passive,
+            anim: Anim::Humanoid { zombie_arms: false },
+            sounds: [""; 3],
+            sound_overrides: Default::default(),
+            food: Default::default(),
+            tempt: Default::default(),
+            passenger_attachments: Vec::new(),
+        })
+    }
+
+    /// A catalog with no damage types of its own: `/damage`'s native kinds
+    /// need no registry entry.
+    fn catalog() -> horizon_world::damage_source::Catalog {
+        horizon_world::damage_source::Catalog::from_json(
+            &serde_json::json!({"data_version": horizon_world::DATA_VERSION, "types": []}),
+            &serde_json::json!({}),
+        )
+        .unwrap()
     }
 
     /// `DamageSources.explosion`: a blast with a causing entity is
