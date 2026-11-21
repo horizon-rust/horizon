@@ -416,6 +416,23 @@ fn other_launchers_links_are_left_out_of_the_move() {
     assert_eq!(fs::read(outside.0.join("client.jar")).unwrap(), b"jar");
 }
 
+#[test]
+fn real_files_where_other_launchers_links_go_are_moved() {
+    let f = Fixture::new("build");
+    let linked = f.source.launcher.join("linked-minecraft");
+    for (path, bytes) in [
+        ("assets/indexes/1.json", &b"assets"[..]),
+        ("libraries/a.jar", b"library"),
+        ("versions/1.0/1.0.jar", b"jar"),
+    ] {
+        fs::create_dir_all(linked.join(path).parent().unwrap()).unwrap();
+        fs::write(linked.join(path), bytes).unwrap();
+    }
+    let roots = migrate(&f.source, &f.target(), &f.bootstrap, |_| {}).unwrap();
+    assert_eq!(snapshot(&f.source.launcher), snapshot(&roots.launcher));
+    assert_eq!(snapshot(&linked).len(), 3);
+}
+
 #[cfg(unix)]
 struct PermissionsGuard(PathBuf, fs::Permissions);
 #[cfg(unix)]
