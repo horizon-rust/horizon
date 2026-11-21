@@ -135,6 +135,10 @@ pub(super) struct AdvState {
     /// place on its tab (`DisplayInfo` x, y), in tree order.
     pub(super) positions: Option<Vec<(f32, f32)>>,
     pub(super) progress: Progress,
+    /// How many times a mod replaced a player's whole progress (`player.set_advancements`), by player
+    /// (the game's own player under 0): a grant that ran a hook which replaced that player's progress
+    /// completed nothing itself.
+    pub(super) replaced: std::collections::HashMap<u128, u32>,
     pub(super) loaded: bool,
     pub(super) toasts: VecDeque<Toast>,
     /// Awards skip the toast (`/advancement grant ... everything`).
@@ -891,15 +895,32 @@ impl Game<'_> {
         for (ai, ci) in hits {
             let a = &tree.list[ai];
             let was = self.adv.progress.done(a);
+            let replaced = self.replacements();
             let criterion = &a.criteria[ci].name;
             if self.adv.progress.grant(&a.id, criterion, &date) {
                 self.advancement_progress(a, criterion, ProgressType::Grant);
             }
             self.progress_changed(ai);
-            if !was && self.adv.progress.done(a) {
+            // A mod's hook that replaced the progress is no grant of this criterion: what it imported
+            // completed the advancement, not this trigger, and nothing is awarded for it.
+            if !was && self.adv.progress.done(a) && self.replacements() == replaced {
                 self.award(ai);
             }
         }
+    }
+    /// How many times a mod replaced the progress of the player the game acts as now.
+    pub(in crate::game) fn replacements(&self) -> u32 {
+        self.adv
+            .replaced
+            .get(&self.lan_acting_uuid.unwrap_or(0))
+            .copied()
+            .unwrap_or(0)
+    }
+    /// A mod replaced the acting player's whole progress.
+    pub(in crate::game) fn note_replacement(&mut self) {
+        let player = self.lan_acting_uuid.unwrap_or(0);
+        let count = self.adv.replaced.entry(player).or_insert(0);
+        *count = count.wrapping_add(1);
     }
     /// `PlayerAdvancements.award` / `revoke` after a criterion's progress changed.
     fn advancement_progress(
@@ -2540,11 +2561,14 @@ impl Game<'_> {
         let mut changed = false;
         for c in names {
             let was = self.adv.progress.done(a);
+            let replaced = self.replacements();
             if self.adv.progress.grant(&a.id, c, &date) {
                 changed = true;
                 self.advancement_progress(a, c, ProgressType::Grant);
                 self.progress_changed(index);
-                if !was && self.adv.progress.done(a) {
+                // A progress hook that replaced this player's progress (a mod's import) completed
+                // nothing by this grant: no reward for it.
+                if !was && self.adv.progress.done(a) && self.replacements() == replaced {
                     self.award(index);
                 }
             }
