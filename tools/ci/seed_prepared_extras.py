@@ -14,6 +14,12 @@ def seed(source: Path, target: Path):
             continue
         if path.is_symlink() or not path.is_file():
             continue
+        # Never write through a symlink in the target tree. Path.exists() follows the
+        # link and is False for a dangling one, so copyfile() would create the file at
+        # the link's destination, outside the seeded tree. is_symlink() is an lstat
+        # check and sees dangling links too (same as os.path.lexists + islink).
+        if destination.is_symlink():
+            raise ValueError(f"refusing to seed through symlink destination: {destination}")
         if destination.exists():
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
