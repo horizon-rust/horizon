@@ -3314,7 +3314,7 @@ impl Game<'_> {
         [yaw, pitch]: [f32; 2],
     ) -> [f32; 2] {
         let rot = [wrap_degrees(yaw), pitch.clamp(-90.0, 90.0)];
-        let previous_point = self.world_spawn_position().map(|v| v.floor() as i32);
+        let previous_point = self.raw_world_spawn_position().map(|v| v.floor() as i32);
         let old_angle = self.level.world_spawn_angle;
         let moved_level = self.level.spawn_dimension() != level.id();
         let old = self.level.world_spawn.replace(pos);

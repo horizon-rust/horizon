@@ -79,15 +79,42 @@ impl SpawnLevel for Columns<'_, '_> {
 }
 
 impl Game<'_> {
+    /// The world spawn's level (`level.dat` `spawn.dimension`): where a player
+    /// without a point of its own comes back (`MinecraftServer.findRespawnDimension`).
+    pub(super) fn world_spawn_dimension(&self) -> super::Dim {
+        super::Dim::from_id(self.level.spawn_dimension())
+    }
+    /// `Level.getWorldBorderAdjustedRespawnData`: a world spawn outside the
+    /// border moves to the border's centre column, at its motion-blocking
+    /// height (where `PlayerSpawnFinder.fixupSpawnHeight` starts); the level
+    /// and the angle stay. The border and the column read are the level in
+    /// place's, so another level's spawn is used as it is stored.
+    pub(super) fn border_adjusted_world_spawn(&self) -> Option<[i32; 3]> {
+        let pos = self.level.world_spawn?;
+        if self.world_spawn_dimension() != self.dim
+            || self.border.contains(f64::from(pos[0]), f64::from(pos[2]))
+        {
+            return Some(pos);
+        }
+        let [cx, cz] = self.border.center();
+        let (x, z) = (cx.floor() as i32, cz.floor() as i32);
+        let y = self
+            .spawn_columns()
+            .height(HeightmapType::MotionBlocking, x, z);
+        Some([x, y, z])
+    }
     fn spawn_columns(&self) -> Columns<'_, '_> {
         Columns {
             world: &self.world,
             properties: &self.pack.assets.properties,
             binding: self.collision,
-            // The spawn searches are the overworld's (PlayerSpawnFinder); a
-            // ceiling starts them at the generator's spawn height.
-            has_ceiling: self.level_shapes.overworld.has_ceiling,
-            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
+            // A ceiling starts the search at the generator's spawn height.
+            has_ceiling: self.level_shapes.get(self.dim.id()).has_ceiling,
+            spawn_height: if self.dim == super::Dim::Overworld {
+                self.spawn_origin.map_or(64, |(_, height)| height)
+            } else {
+                64
+            },
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.

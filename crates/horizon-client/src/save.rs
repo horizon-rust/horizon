@@ -8520,6 +8520,7 @@ mod tests {
             dimension: "minecraft:the_nether".into(),
             world_spawn: Some([8, 64, 8]),
             world_spawn_angle: [45.0, -10.0],
+            world_spawn_dimension: Some("minecraft:the_nether".into()),
             spawn: Some([20.0, 70.0, 20.0]),
             difficulty_locked: true,
             flying: true,
@@ -8558,6 +8559,10 @@ mod tests {
         assert_eq!(back.dimension, "minecraft:the_nether");
         assert_eq!(back.world_spawn, Some([8, 64, 8]));
         assert_eq!(back.world_spawn_angle, [45.0, -10.0]);
+        assert_eq!(
+            back.world_spawn_dimension.as_deref(),
+            Some("minecraft:the_nether")
+        );
         assert_eq!(back.spawn, Some([8.0, 64.0, 8.0]));
         assert_eq!(
             back.respawn_elsewhere,

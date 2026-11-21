@@ -36,6 +36,9 @@ impl Game<'_> {
         // player's open container goes with it, so a chest's lid (its opener
         // count) falls instead of staying up for a player who is gone.
         self.guest_close_menus_and_tell(conn);
+        // `findRespawnDimension`'s level: the world spawn's, unless the guest
+        // has a point of its own.
+        let world_spawn_dimension = self.world_spawn_dimension();
         let Some(host) = self.lan.as_mut() else {
             return;
         };
@@ -67,7 +70,7 @@ impl Game<'_> {
                 f64::from(c.pos[2]) + 0.5,
             ]
         });
-        let level = elsewhere.map_or(crate::game::Dim::Overworld, |c| c.dim);
+        let level = own.map_or(world_spawn_dimension, |c| c.dim);
         let spawn = elsewhere.map_or(spawn, |c| {
             [
                 f64::from(c.pos[0]) + 0.5,
@@ -82,29 +85,35 @@ impl Game<'_> {
         // (`arrive_server_trips`).
         let forced_spawn = host.hub.guests[i].spawn;
         let point_level = level;
-        // The fresh player faces where `hub.respawn` turns it by default,
-        // not the way the dead one faced.
+        // The fresh player faces the respawn data's angle when it has no
+        // point of its own (`TeleportTransition.createDefault`); a bed or
+        // anchor turns it once the block is found.
+        let angle = if own.is_none() {
+            self.level.world_spawn_angle
+        } else {
+            [0.0; 2]
+        };
         let found = crate::game::respawn_position::Respawn {
             dim: level,
             at: horizon_core::geometry::Vec3::new(spawn[0], spawn[1], spawn[2]),
-            yaw: 0.0,
-            pitch: 0.0,
+            yaw: angle[0],
+            pitch: angle[1],
         };
         let decision = (server && elsewhere.is_none() && forced_spawn.is_some())
             .then(|| self.respawn_position(conn, found, None))
             .flatten();
         let keep_point = decision.is_none_or(|d| d.copy);
-        let (level, spawn) = match decision {
+        let (level, mut spawn) = match decision {
             Some(d) => (d.to.dim, [d.to.at.x, d.to.at.y, d.to.at.z]),
             None => (level, spawn),
         };
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        let rotation = decision.map(|d| [d.to.yaw, d.to.pitch]);
+        let rotation = Some(decision.map_or(angle, |d| [d.to.yaw, d.to.pitch]));
         let back = self.dim;
         let left = crate::game::Dim::from_id(&host.hub.guests[i].dimension);
-        let away = server && host.hub.guests[i].dimension != level.id();
+        let away = level != back || host.hub.guests[i].dimension != level.id();
         if server {
             self.server_trips.retain(|t| !t.is(conn));
         }
@@ -112,9 +121,15 @@ impl Game<'_> {
             log::error!("could not open {}: {e}", level.id());
             return;
         }
+        // The world spawn of the level in place, whose border may differ from
+        // the one the respawn was decided in.
+        let world = self.world_spawn_position();
         let Some(host) = self.lan.as_mut() else {
             return;
         };
+        if own.is_none() && host.hub.guests[i].spawn.is_none() {
+            spawn = world;
+        }
         let (cloned, name) = host.hub.guests.update(i, |g| {
             // restartClientLoadTimerAfterRespawn.
             g.dead = false;
@@ -256,12 +271,8 @@ impl Game<'_> {
             let found = self
                 .as_guest(conn, |g| g.resolve_server_respawn(c, true))
                 .flatten();
-            let world = self
-                .level
-                .world_spawn
-                .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
-                    [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
-                });
+            let world = self.world_spawn_position();
+            let world_angle = self.level.world_spawn_angle;
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
@@ -276,7 +287,12 @@ impl Game<'_> {
                 [at.x, at.y, at.z]
             });
             if found.is_none() {
-                // TeleportTransition.missingRespawnBlock.
+                // TeleportTransition.missingRespawnBlock: the world spawn's
+                // angle is where the player faces.
+                host.hub.guests.update(i, |guest| {
+                    guest.yaw = world_angle[0];
+                    guest.pitch = world_angle[1];
+                });
                 host.hub.missing_respawn_block(conn);
                 self.world_spawn_trip(conn, None);
             }
