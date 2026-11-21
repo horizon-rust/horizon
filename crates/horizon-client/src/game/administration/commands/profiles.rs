@@ -32,8 +32,10 @@ impl Game<'_> {
         horizon_gameplay::commands::profiles::stop(&mut ListsTarget { game: self, lists })
     }
 
-    /// SaveAllCommand. Every save waits for the chunks to be written, so
-    /// `flush` changes nothing.
+    /// SaveAllCommand.saveAll: `commands.save.saving` to the source, then
+    /// `commands.save.success` to it and the other operators, or the
+    /// `ERROR_FAILED` it throws (result 0) when the save did not go through.
+    /// `flush` changes nothing: every save waits for the chunks to be written.
     pub(super) fn cmd_save_all(&mut self) -> R<i32> {
         let lists = self.dedicated_lists()?;
         horizon_gameplay::commands::profiles::save_all(&mut ListsTarget { game: self, lists })
@@ -48,6 +50,36 @@ impl Game<'_> {
                 Text::translate("commands.save.failed", &[]).with_color(horizon_client::text::RED)
             }
         }
+    }
+
+    /// `cmd_save_all` for a guest, once their turn ended and their own state
+    /// is back in their record (`run_guest_command`): the success line to them
+    /// and to the other operators, or the `ERROR_FAILED` only to them. Returns
+    /// the command's result.
+    pub(in crate::game) fn finish_deferred_save_all(
+        &mut self,
+        (who, silent): (Text, bool),
+        lines: &mut Vec<Text>,
+    ) -> bool {
+        let reply = self.save_all_reply();
+        let saved = reply.translation_key() == Some("commands.save.success");
+        // sendSuccess(line, true): a silent source sends nothing; else the
+        // source hears it when it takes success feedback
+        // (`send_command_feedback`), the operators always, and a dedicated
+        // server's console logs it (`log_admin_commands`).
+        if !silent {
+            if saved {
+                if self.accepts_success() {
+                    lines.push(reply.clone());
+                }
+                // The guest's source is a player's, not the server's.
+                self.broadcast_to_admins_as(who, true, reply);
+            } else {
+                // sendFailure: the source alone, always (`acceptsFailure`).
+                lines.push(reply);
+            }
+        }
+        saved
     }
 
     /// SaveOffCommand and SaveOnCommand.
@@ -402,3 +434,7 @@ impl Game<'_> {
         horizon_gameplay::commands::profiles::whitelist(&mut ListsTarget { game: self, lists }, id, ctx)
     }
 }
+
+#[cfg(test)]
+#[path = "save_all_command_tests.rs"]
+mod save_all_command_tests;

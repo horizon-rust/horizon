@@ -40,7 +40,11 @@ impl ProfilesHost for ListsTarget<'_, '_> {
         self.game.lan_acting.is_some()
     }
     fn save_after_guest_turn(&mut self) {
-        self.game.save_after_guest_turn = true;
+        // The save and its feedback run once the turn ends (`finish_deferred_save_all`),
+        // still as the source that ran the command: its admin line's display name and
+        // its silence, read now, while it is current.
+        let silent = self.game.command_source.is_some_and(|s| s.silent);
+        self.game.save_after_guest_turn = Some((self.game.admin_who(), silent));
     }
     fn save_game(&mut self) -> Result<(), String> {
         Game::save_game(self.game).map_err(|e| e.to_string())

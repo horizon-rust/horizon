@@ -1931,9 +1931,10 @@ struct Game<'a> {
     acting_abilities: Option<horizon_client::lan::abilities::PlayerAbilities>,
     /// Other players in the current guest turn, including borrowed ancestor bodies.
     lan_building_boxes: building_players::BuildingPlayers,
-    /// A guest's `/save-all`: saved once their turn ends (`run_guest_command`),
-    /// when their own state is back in their record.
-    save_after_guest_turn: bool,
+    /// A guest's `/save-all`: its admin line's display name and its source's
+    /// silence, saved once their turn ends (`run_guest_command`), their state
+    /// back in their record.
+    save_after_guest_turn: Option<(horizon_client::text::Text, bool)>,
     /// Guests whose records are displaced by nested player swaps, outer first.
     lan_guest_swaps: Vec<u32>,
     /// Guests whose last turn a panic ended after their state was written back and the outer
@@ -10989,7 +10990,7 @@ impl<'a> Game<'a> {
             acting_abilities: None,
             native_commands: Default::default(),
             lan_building_boxes: Default::default(),
-            save_after_guest_turn: false,
+            save_after_guest_turn: None,
             lan_guest_swaps: Vec::new(),
             lan_interrupted_turns: Vec::new(),
             keep_owner_files: false,

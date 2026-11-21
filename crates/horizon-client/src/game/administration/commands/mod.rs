@@ -415,6 +415,13 @@ impl Game<'_> {
     /// server the console when `log_admin_commands`. Queued while the
     /// command runs; `send_admin_feedback` sends it.
     pub(super) fn broadcast_to_admins(&mut self, message: Text) {
+        let who = self.admin_who();
+        let player = self.lan_acting.is_some();
+        self.broadcast_to_admins_as(who, player, message);
+    }
+    /// `broadcast_to_admins` with the source's name and whether it is a
+    /// player's, read before a guest's `/save-all` saves after its turn.
+    pub(super) fn broadcast_to_admins_as(&mut self, who: Text, player: bool, message: Text) {
         let informs = match self.console_broadcast {
             Some(broadcast) => broadcast,
             None => self.lan_acting.is_some() || self.lan.is_some(),
@@ -432,7 +439,7 @@ impl Game<'_> {
             .bool_at(horizon_client::gamerules::vanilla::SEND_COMMAND_FEEDBACK);
         // MinecraftServer.sendSystemMessage, unless the server is the source.
         let console = self.console_broadcast.is_none()
-            && self.lan_acting.is_some()
+            && player
             && self.is_dedicated_server()
             && self
                 .ui
@@ -441,13 +448,6 @@ impl Game<'_> {
         if !ops && !console {
             return;
         }
-        // getDisplayName: the entity the command runs as (`execute as`), or
-        // the server's own source, "Server".
-        let who = match self.command_source.and_then(|s| s.entity) {
-            Some(entity) => self.target_name(entity),
-            None if self.console_broadcast.is_some() => self.server_name(),
-            None => self.player_display_name(),
-        };
         let line = Text::translate("chat.type.admin", &[who, message])
             .with_color(text::GRAY)
             .italic();
