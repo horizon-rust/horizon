@@ -40,19 +40,38 @@ struct Column {
     decorated: bool,
 }
 
-/// A generator that makes every column: a proto, decorated on request, and
-/// finished into a level chunk.
-struct Plain;
+/// A generator that makes every column: a proto, decorated on request and
+/// finished into a level chunk. One column can fail its generation, as a
+/// generator reports one that threw (`ChunkGenerator::generated`), and one can
+/// come from the save.
+struct Plain {
+    failed: Option<(i32, i32)>,
+    saved: Option<(i32, i32)>,
+}
 
 impl ChunkGenerator for Plain {
     type Worker = ();
     fn worker(&self) {}
+    /// The one column the save already holds: the barrier must load it even
+    /// when a failed generation sits one chunk away.
+    fn load(&self, x: i32, z: i32) -> Option<Chunk> {
+        if self.saved == Some((x, z)) {
+            Some(Chunk::empty(x, z))
+        } else {
+            None
+        }
+    }
     fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
         Box::new(Column {
             x,
             z,
             decorated: false,
         })
+    }
+    fn generated(&self, proto: &Proto) -> bool {
+        proto
+            .downcast_ref::<Column>()
+            .is_some_and(|c| Some((c.x, c.z)) != self.failed)
     }
     fn decorates(&self) -> bool {
         true
@@ -79,12 +98,8 @@ impl ChunkGenerator for Plain {
     }
 }
 
-#[test]
-fn forced_chunks_reach_vanillas_rings() {
-    let Some(root) = resources() else {
-        return;
-    };
-    let assets = Arc::new(Assets::load(&root).unwrap());
+fn worker_context(root: &Path) -> Arc<WorkerContext> {
+    let assets = Arc::new(Assets::load(root).unwrap());
     let render = Arc::new(
         assets
             .reload(&horizon_assets::resource_source::ResourceRoot::directory(
@@ -92,11 +107,11 @@ fn forced_chunks_reach_vanillas_rings() {
             ))
             .unwrap(),
     );
-    let facts = BlockFacts::load(&root, assets.registry).unwrap();
-    let visibility = models::load_visibility(&root, assets.registry).unwrap();
-    let context = Arc::new(WorkerContext {
+    let facts = BlockFacts::load(root, assets.registry).unwrap();
+    let visibility = models::load_visibility(root, assets.registry).unwrap();
+    Arc::new(WorkerContext {
         tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility, None).unwrap()),
-        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
+        light: Arc::new(LightTables::load(root, assets.registry, &facts).unwrap()),
         biomes: Arc::new(
             Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
                 root.to_path_buf(),
@@ -107,8 +122,41 @@ fn forced_chunks_reach_vanillas_rings() {
         render: render.clone(),
         hidden_states: Arc::from([]),
         part_tables: Default::default(),
+    })
+}
+
+/// One forced load barrier in a thread of its own: without the failure exit
+/// it never returns, and the test has to fail rather than hang.
+fn forced_load(
+    mut streaming: Streaming,
+    mut world: World,
+    (x, z): (i32, i32),
+    never: &str,
+) -> (World, Streaming) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let barrier = thread::spawn(move || {
+        let changed = streaming.set_forced_loaded(&mut world, x, z, true);
+        let _ = tx.send((changed, world, streaming));
     });
-    let mut streaming = Streaming::new(Arc::new(Plain), context, 2);
+    let (_changed, world, streaming) = rx.recv_timeout(Duration::from_secs(20)).expect(never);
+    barrier.join().unwrap();
+    (world, streaming)
+}
+
+#[test]
+fn forced_chunks_reach_vanillas_rings() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let context = worker_context(&root);
+    let mut streaming = Streaming::new(
+        Arc::new(Plain {
+            failed: None,
+            saved: None,
+        }),
+        context,
+        2,
+    );
     // The player stands far away: only the forced chunk's own rings are
     // generated.
     streaming.center = (0, 0);
@@ -153,4 +201,56 @@ fn forced_chunks_reach_vanillas_rings() {
             assert_eq!(proto, None, "({x}, {z})");
         }
     }
+}
+
+/// The load barrier of a forced chunk ends when the generation it needs
+/// failed: the mark never becomes a column, and the barrier runs no sweep, the
+/// only place a mark is dropped, so waiting again would never end (#18403).
+/// It pumps the queue first, so a column the save holds still loads beside a
+/// failure.
+#[test]
+fn a_forced_load_ends_when_its_generation_failed() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let context = worker_context(&root);
+    let generator = Arc::new(Plain {
+        failed: Some((40, -40)),
+        saved: Some((40, -41)),
+    });
+    let mut streaming = Streaming::new(generator, context, 2);
+    streaming.center = (0, 0);
+    streaming.radius = 2;
+    let world = World::new(BlockStateId(0), 0);
+    // The failed generation is not finished into an empty column.
+    let (world, streaming) = forced_load(
+        streaming,
+        world,
+        (40, -40),
+        "the forced load barrier never returned",
+    );
+    assert!(
+        !world.chunks.contains_key(&(40, -40)),
+        "a failed generation became a column"
+    );
+    // A column beside it needs the failed one's decoration, so its own
+    // barrier has to end too.
+    let (world, streaming) = forced_load(
+        streaming,
+        world,
+        (41, -40),
+        "the forced load beside the failed column never returned",
+    );
+    // The barrier loads a column the save holds before it gives up: a saved
+    // column needs no decoration, so a failed neighbour must not stop it.
+    let (world, _streaming) = forced_load(
+        streaming,
+        world,
+        (40, -41),
+        "the forced load of a saved column never returned",
+    );
+    assert!(
+        world.chunks.contains_key(&(40, -41)),
+        "a saved column was dropped because a neighbour's generation failed"
+    );
 }

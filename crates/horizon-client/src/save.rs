@@ -5021,6 +5021,11 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
         }
         proto
     }
+    /// The inner generator's rule: streaming asks the wrapper, so a saved
+    /// world must not turn a failed proto chunk into a column either.
+    fn generated(&self, proto: &crate::streaming::Proto) -> bool {
+        self.inner.generated(proto)
+    }
     fn is_decorated(&self, proto: &crate::streaming::Proto) -> bool {
         self.inner.is_decorated(proto)
     }

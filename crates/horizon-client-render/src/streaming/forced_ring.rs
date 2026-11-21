@@ -110,11 +110,13 @@ mod tests {
         // The generation plan fetches the 3x3 the chunk ticks with first.
         let world = World::new(horizon_world::registry::BlockStateId(0), 0);
         let (generating, finishing) = (FxHashSet::default(), FxHashSet::default());
+        let failed = FxHashSet::default();
         let protos = FxHashMap::default();
         let input = GenerationInputs {
             ranges: ranges(&forced),
             world: &world,
             generating: &generating,
+            failed: &failed,
             protos: &protos,
             finishing: &finishing,
             decorates: true,

@@ -1120,6 +1120,14 @@ impl ChunkGenerator for VanillaTerrain {
     fn is_decorated(&self, proto: &Proto) -> bool {
         matches!(proto.downcast_ref::<VanillaProto>(), Some(VanillaProto::Ready(c)) if c.is_decorated())
     }
+    /// A chunk whose generation threw (`proto`): the streamer keeps the column
+    /// ungenerated and asks for it again rather than writing an empty one.
+    fn generated(&self, proto: &Proto) -> bool {
+        matches!(
+            proto.downcast_ref::<VanillaProto>(),
+            Some(VanillaProto::Ready(_))
+        )
+    }
     fn proto_status(&self, proto: &Proto) -> Option<horizon_world::chunk_status::ChunkStatus> {
         let VanillaProto::Ready(chunk) = proto.downcast_ref::<VanillaProto>()? else {
             return None;
@@ -1299,6 +1307,10 @@ impl ChunkGenerator for VanillaTerrain {
         let proto = proto.downcast::<VanillaProto>().expect("vanilla proto");
         let mut chunk = match *proto {
             VanillaProto::Ready(c) => c,
+            // Unreachable since failed proto chunks stopped reaching a finish
+            // job (`ChunkGenerator::generated`): the empty column this makes is
+            // what used to be saved for a chunk whose generation failed. Kept as
+            // the last resort of a generator bound to this method alone.
             VanillaProto::Failed(x, z) => return Chunk::with_layout(x, z, self.layout()),
         };
         let mut out = chunk.column(self);

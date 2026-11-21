@@ -55,6 +55,11 @@ impl Game<'_> {
     /// (`arrivals::StopWait`), every login refused, the server ticking on. A second `stop` ends the
     /// wait; a second signal ends the process (`horizon_threads::catch_stop_signals`).
     pub(super) fn stop_now(&mut self, state: &super::ServerState) -> bool {
+        // A panic on another thread ends the process once this run has saved
+        // (`dedicated::EmergencyStop`): no transfer wait holds it back.
+        if self.stopped_by_a_crash() {
+            return true;
+        }
         let asked = std::mem::take(&mut state.lists.lock().unwrap().stop);
         let stop = asked || horizon_threads::stop_requests() > 0;
         let Some(host) = self.lan.as_mut() else {

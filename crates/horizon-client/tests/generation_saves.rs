@@ -679,3 +679,178 @@ fn the_end_asks_for_no_creature_packs_and_the_overworld_does() {
         );
     }
 }
+
+/// Streaming asks the wrapper, so a saved world keeps the inner generator's
+/// failed-generation rule: without it a failed proto chunk is decorated,
+/// finished and saved as an empty column, the bug of #18403.
+#[test]
+fn a_saved_world_keeps_the_failed_generation_rule() {
+    use horizon_client::save::{Persistent, SaveDir};
+    /// A proto chunk that knows whether its generation failed.
+    struct Marker {
+        failed: bool,
+    }
+    struct Failing;
+    impl ChunkGenerator for Failing {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), x: i32, _: i32) -> Proto {
+            Box::new(Marker { failed: x == 0 })
+        }
+        fn finish(&self, _: Proto) -> Chunk {
+            Chunk::empty(0, 0)
+        }
+        fn generated(&self, proto: &Proto) -> bool {
+            !proto.downcast_ref::<Marker>().unwrap().failed
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let biomes = Arc::new(
+        Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+            root.to_path_buf(),
+        ))
+        .unwrap(),
+    );
+    let dir = std::env::temp_dir().join(format!("horizon-failed-rule-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let persistent = Persistent {
+        inner: Arc::new(Failing),
+        save: Arc::new(SaveDir::new(
+            dir.clone(),
+            horizon_client::save::LevelShape::OVERWORLD,
+        )),
+        registry: assets,
+        biomes,
+    };
+    let failed: Proto = Box::new(Marker { failed: true });
+    let good: Proto = Box::new(Marker { failed: false });
+    assert!(
+        !ChunkGenerator::generated(&persistent, &failed),
+        "the save wraps a failed generation as a generated column"
+    );
+    assert!(
+        ChunkGenerator::generated(&persistent, &good),
+        "the save stops passing on the inner generator's rule"
+    );
+    drop(persistent);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A crash stop (`Streaming::abort_generation`) lets the save through: a
+/// worker that panicked never finishes its decoration, and the crash hook's
+/// 30 s must write the world instead of waiting for it.
+#[test]
+fn an_aborted_streaming_does_not_hold_the_save() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Column {
+        x: i32,
+        z: i32,
+    }
+    struct Slow {
+        decorating: Arc<AtomicBool>,
+    }
+    impl ChunkGenerator for Slow {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
+            Box::new(Column { x, z })
+        }
+        fn decorates(&self) -> bool {
+            true
+        }
+        fn decorate(&self, _: &mut (), _region: &mut [Proto; 9]) {
+            // The job a panicked worker never finishes.
+            self.decorating.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(1500));
+        }
+        fn finish(&self, proto: Proto) -> Chunk {
+            let column = proto.downcast::<Column>().unwrap();
+            Chunk::empty(column.x, column.z)
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let context = worker_context(&root);
+    let decorating = Arc::new(AtomicBool::new(false));
+    let generator = Arc::new(Slow {
+        decorating: decorating.clone(),
+    });
+    let mut streaming = Streaming::new(generator, context, 2);
+    streaming.center = (0, 0);
+    streaming.radius = 2;
+    streaming.forced.insert((40, -40));
+    let mut world = World::new(BlockStateId(0), 0);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !decorating.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "no decoration ever started");
+        let _ = streaming.update(&mut world);
+        thread::sleep(Duration::from_millis(5));
+    }
+    // The crash stop: no job in flight will ever be finished.
+    streaming.abort_generation();
+    let started = Instant::now();
+    let _step = streaming.prepare_save(&mut world, true, started + Duration::from_secs(10));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the save waited {:?} for a decoration the crash stop ended",
+        started.elapsed()
+    );
+}
+
+/// A crash stop gives up on the save jobs too: the worker that panicked in one
+/// never answers it, and the crash hook's 30 s must write the world instead.
+#[test]
+fn a_crash_stop_does_not_wait_for_a_lost_save_job() {
+    use horizon_client::streaming::ProtoSave;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Saving {
+        started: Arc<AtomicBool>,
+    }
+    impl ChunkGenerator for Saving {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
+            Box::new(())
+        }
+        fn finish(&self, _: Proto) -> Chunk {
+            Chunk::empty(0, 0)
+        }
+        fn save_protos(&self, _: &[&Proto]) {
+            self.started.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(1500));
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let started = Arc::new(AtomicBool::new(false));
+    let mut streaming = Streaming::new(
+        Arc::new(Saving {
+            started: started.clone(),
+        }),
+        worker_context(&root),
+        2,
+    );
+    let mut world = World::new(BlockStateId(0), 0);
+    streaming.submit_protos(vec![ProtoSave {
+        pos: (0, 0),
+        proto: Box::new(()),
+    }]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !started.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the save job never started");
+        thread::sleep(Duration::from_millis(5));
+    }
+    streaming.abort_generation_for_a_crash();
+    let started_saving = Instant::now();
+    let _step = streaming.prepare_save(&mut world, true, started_saving + Duration::from_secs(10));
+    assert!(
+        started_saving.elapsed() < Duration::from_millis(500),
+        "the save waited {:?} for a save job whose worker is gone",
+        started_saving.elapsed()
+    );
+}

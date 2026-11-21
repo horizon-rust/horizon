@@ -1774,6 +1774,9 @@ struct Game<'a> {
     level_shapes: horizon_client::chunk::LevelShapes,
     /// This game is that server thread's (game/world/integrated.rs).
     serving: Option<integrated::Serving>,
+    /// The dedicated server's run in flight, for a worker's panic to stop and
+    /// save it (game/interface/dedicated/mod.rs, `EmergencyStop`).
+    emergency_save: Option<std::sync::Arc<dedicated::EmergencyStop>>,
     /// The open world is shared behind an invite code (game/network/friends.rs).
     #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
@@ -10917,6 +10920,7 @@ impl<'a> Game<'a> {
             integrated: None,
             level_shapes: Default::default(),
             serving: None,
+            emergency_save: None,
             world_options: None,
             options_to_world_options: false,
             command_block_screen: None,

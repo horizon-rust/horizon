@@ -918,6 +918,67 @@ struct ServerState {
     force_game_mode: bool,
 }
 
+/// The dedicated server's emergency save: `MinecraftServer.runServer`'s
+/// finally, reached from the panic hook instead of the tick loop's own stop.
+///
+/// A panic on a worker thread ends the process (`crash::install`), and a
+/// process that ends does not save. The hook (`run_dedicated`) therefore asks
+/// the tick loop to stop — `stop_now` reads [`Self::stop`] — and waits, bounded,
+/// for the ordinary teardown to save players and worlds
+/// (`stop_dedicated` → `finish_server_save`), as single player's server does
+/// (`world/integrated.rs`).
+#[derive(Default)]
+pub(super) struct EmergencyStop {
+    /// The server thread, known once `run_dedicated` starts.
+    server: OnceLock<std::thread::ThreadId>,
+    /// The crashing thread asked the tick loop to stop.
+    stop: AtomicBool,
+    /// The run ended, its last save included: what the hook waits for.
+    finished: AtomicBool,
+}
+
+impl EmergencyStop {
+    fn stop_requested(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    /// Run on the crashing worker, inside the panic hook: ask the server to
+    /// stop and wait for its teardown, at most `timeout`. Returns whether the
+    /// run finished; false when the wait timed out.
+    fn request_and_wait(&self, timeout: Duration) -> bool {
+        // A panic on the server thread itself unwinds through the tick loop's
+        // own handler, which saves (`server_lifecycle`); waiting here would
+        // wait for this very thread.
+        if self.server.get() == Some(&std::thread::current().id())
+            || self.finished.load(Ordering::Acquire)
+        {
+            return true;
+        }
+        log::warn!("Horizon: saving the world before the crash");
+        self.stop.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        while !self.finished.load(Ordering::Acquire) {
+            let Some(left) = timeout.checked_sub(started.elapsed()) else {
+                log::warn!(
+                    "Horizon: the world did not save within {} s",
+                    timeout.as_secs()
+                );
+                return false;
+            };
+            std::thread::sleep(left.min(Duration::from_millis(10)));
+        }
+        true
+    }
+}
+
+/// Marks the run finished however it ends, so a waiting hook never outlives it.
+struct Finished(Arc<EmergencyStop>);
+impl Drop for Finished {
+    fn drop(&mut self) {
+        self.0.finished.store(true, Ordering::Release);
+    }
+}
+
 /// `SaveAllCommand.saveAll`'s reply to its source: `commands.save.success` when
 /// the save went through, `commands.save.failed` (the `ERROR_FAILED` it throws)
 /// when it did not.
@@ -1029,7 +1090,34 @@ impl Game<'_> {
     /// DedicatedServer.initServer and MinecraftServer.runServer.
     // The epoch starts at world open; failures before that send no lifecycle event.
     pub(super) fn run_dedicated(&mut self) -> Result<()> {
-        self.run_server_lifecycle(true, Self::run_dedicated_inner)
+        // A worker's panic ends the process from the panic hook (`crash::install`):
+        // this server has to save before that, as single player's does
+        // (`world/integrated.rs`). Registered before any worker starts; the hook
+        // asks the tick loop to stop and waits for the teardown's own save.
+        let emergency = Arc::new(EmergencyStop::default());
+        _ = emergency.server.set(std::thread::current().id());
+        self.emergency_save = Some(emergency.clone());
+        let registered = horizon_client::crash::on_emergency_save({
+            let emergency = emergency.clone();
+            move || {
+                emergency.request_and_wait(Duration::from_secs(30));
+            }
+        });
+        let finished = Finished(emergency.clone());
+        let result = self.run_server_lifecycle(true, Self::run_dedicated_inner);
+        // Everything the stop saves has been saved: the crashing worker may go.
+        drop(finished);
+        self.emergency_save = None;
+        drop(registered);
+        result
+    }
+
+    /// Whether a panic on another thread asked this server to stop and save
+    /// (`EmergencyStop`): the startup waits end and the ordinary teardown saves.
+    pub(super) fn stopped_by_a_crash(&self) -> bool {
+        self.emergency_save
+            .as_ref()
+            .is_some_and(|emergency| emergency.stop_requested())
     }
 
     fn run_dedicated_inner(&mut self, startup_began: &mut bool) -> Result<()> {
@@ -1643,6 +1731,9 @@ impl Game<'_> {
         if self.is_dedicated_server() {
             if self.level.spawn.is_none() {
                 let [x, y, z] = loop {
+                    if self.stopped_by_a_crash() {
+                        return Err("a worker panicked while the world was loading".into());
+                    }
                     self.update_world();
                     if let Some(pos) = self.find_world_spawn()? {
                         break pos;
@@ -2748,6 +2839,53 @@ mod tests {
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// An emergency save waits for the server's run to save and give up on the
+    /// timeout; on the server thread itself it returns at once, as the tick
+    /// loop's own handler saves there. Mirrors `world/integrated.rs`'s
+    /// `emergency_save_waits_for_finished_and_times_out`.
+    #[test]
+    fn an_emergency_save_waits_for_the_run_and_gives_up_at_the_timeout() {
+        use super::{EmergencyStop, Finished};
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+
+        // A run that saves when it is asked to: the guard marks it finished as
+        // the server's teardown does on its way out.
+        let emergency = std::sync::Arc::new(EmergencyStop::default());
+        let server = {
+            let emergency = emergency.clone();
+            std::thread::spawn(move || {
+                let _finished = Finished(emergency.clone());
+                while !emergency.stop.load(Ordering::Relaxed) {
+                    std::thread::yield_now();
+                }
+            })
+        };
+        let id = server.thread().id();
+        emergency.server.set(id).unwrap();
+        assert!(emergency.request_and_wait(Duration::from_secs(2)));
+        assert!(emergency.finished.load(Ordering::Acquire));
+        assert!(emergency.stop.load(Ordering::Relaxed));
+        server.join().unwrap();
+        // A run that already ended needs nothing, and asks for no stop.
+        let over = EmergencyStop::default();
+        over.finished.store(true, Ordering::Release);
+        assert!(over.request_and_wait(Duration::ZERO));
+        assert!(!over.stop.load(Ordering::Relaxed));
+        // A run that does not finish in time: bounded, and the stop is still asked.
+        let stuck = EmergencyStop::default();
+        stuck.server.set(id).unwrap();
+        let started = Instant::now();
+        assert!(!stuck.request_and_wait(Duration::from_millis(20)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(stuck.stop.load(Ordering::Relaxed));
+        // On the server thread's own panic the tick loop saves: no wait, no stop.
+        let own = EmergencyStop::default();
+        own.server.set(std::thread::current().id()).unwrap();
+        assert!(own.request_and_wait(Duration::ZERO));
+        assert!(!own.stop.load(Ordering::Relaxed));
+    }
 
     /// A console line runs in the overworld even after a server tick left the nether in place.
     #[test]
