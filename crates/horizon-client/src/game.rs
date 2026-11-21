@@ -1540,6 +1540,9 @@ struct Game<'a> {
     /// The roll, in degrees, a native mod's camera drew the last frame with (`native_camera_roll`),
     /// 0 when none rolled it.
     posed_roll: f32,
+    /// Roll already resolved by `render_sequence_frame` for the next `render_frame` call so
+    /// sequence validation and rendering share one `camera_roll` dispatch.
+    sequence_frame_roll: Option<f32>,
     /// `LocalPlayer.postEffects`: the chains the server has the screen run
     /// (`ClientboundPostEffectsPacket`), in order.
     post_effects: Vec<String>,
@@ -8076,8 +8079,9 @@ impl Game<'_> {
                 view
             }
         });
+        let sequence_roll = self.sequence_frame_roll.take();
         self.posed_roll = if mod_camera && view.is_some() {
-            self.native_camera_roll_now(camera_alpha as f32)
+            sequence_roll.unwrap_or_else(|| self.native_camera_roll_now(camera_alpha as f32))
         } else {
             0.0
         };
@@ -10815,6 +10819,7 @@ impl<'a> Game<'a> {
             native_camera_frame: None,
             posed_rotation: None,
             posed_roll: 0.0,
+            sequence_frame_roll: None,
             post_effects: Vec::new(),
             polytone_post_ticks: 0.0,
             spectated_post_effect: None,

@@ -95,12 +95,9 @@ impl Game<'_> {
 
     /// What a sequence's frames must share: the world, the camera, the settings, the pack and
     /// the window's size.
-    fn sequence_scene(&mut self) -> Result<String> {
+    fn sequence_scene(&mut self, roll: f32) -> Result<String> {
         let view = self.camera_view(1.0).ok_or("no camera")?;
         let (position, yaw, pitch) = self.native_camera_pose_now(1.0, view);
-        // The roll the last frame drew with, not a second `camera_roll` call: a listener that
-        // answers each call differently can't pass this check while the captured roll moves.
-        let roll = self.posed_roll;
         let renderer = self.renderer.as_ref().ok_or("no renderer")?;
         Ok(format!(
             "{:?}",
@@ -153,7 +150,7 @@ impl Game<'_> {
         if !picked.is_empty() && kind.is_none() {
             return Err("the shader pack isn't running (still loading, or it failed)".into());
         }
-        let scene = self.sequence_scene()?;
+        let scene = self.sequence_scene(self.posed_roll)?;
         let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
         renderer.reset_shader_pack_history();
         self.screenshot_sequence = Some(Sequence {
@@ -219,7 +216,12 @@ impl Game<'_> {
             sequence.scene.clone(),
         );
         let refusal = self.sequence_refusal();
-        match (refusal, self.sequence_scene()) {
+        let roll = if refusal.is_none() && !self.shows_panorama() && !self.studio.flying() {
+            self.native_camera_roll_now(self.clock.camera_fraction() as f32)
+        } else {
+            0.0
+        };
+        match (refusal, self.sequence_scene(roll)) {
             (None, Ok(now)) if now == scene => {}
             (refusal, _) => {
                 let reason = refusal.unwrap_or(
@@ -238,7 +240,9 @@ impl Game<'_> {
             });
             renderer.screenshot_result = None;
         }
+        self.sequence_frame_roll = Some(roll);
         let drawn = self.render_frame();
+        self.sequence_frame_roll = None;
         let renderer = self.renderer.as_mut().ok_or("no renderer")?;
         // Still queued when the frame wasn't drawn, or when the PNG is to be taken
         // again smaller (out of memory): not this sequence's frame.
