@@ -670,3 +670,127 @@ mod birth_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod pickup_tests {
+    use super::*;
+    use crate::game::game_tests::tests::server_game;
+    use horizon_client::advancements as adv;
+    use horizon_client::motion::PlayerMotion;
+    use horizon_world::lazy_json::LazyJson;
+
+    const ADV: &str = "horizon:test/villager_pickup";
+    const TRIGGER: &str = "minecraft:thrown_item_picked_up_by_entity";
+    const THROWER: [i32; 4] = [413, 0, 0, 1];
+
+    /// A villager at (4.5, 100, 6.5) that ticked this tick, its
+    /// `canPickUpLoot` set to `loot`, with three loaves of bread at its feet
+    /// that can be picked up at once. Returns the villager's id.
+    fn villager_beside_bread(game: &mut Game<'_>, loot: bool) -> u32 {
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:villager")
+            .unwrap()
+            .clone();
+        let id = game.next_entity + 1;
+        game.next_entity = id;
+        let mut villager = Mob::new(id, kind, Vec3::new(4.5, 100.0, 6.5), 0.0);
+        villager.extra.pick_up_loot = loot;
+        game.mobs.push(villager);
+        game.creatures.ticked.insert(id);
+        let bread = ItemStack::new("minecraft:bread", 3);
+        game.spawn_item(bread, [4.5, 100.0, 6.5], [0.0; 3], 0);
+        id
+    }
+
+    /// The loaves the villager `id` carries, and those still on the ground.
+    fn loaves(game: &Game<'_>, id: u32) -> (u32, u32) {
+        let bread = |s: &ItemStack| {
+            if &*s.item == "minecraft:bread" {
+                s.count
+            } else {
+                0
+            }
+        };
+        let m = game.mobs.iter().find(|m| m.id == id).unwrap();
+        let carried = villager::ext(m).map_or(0, |x| x.inventory.iter().map(bread).sum());
+        let lying = game.dropped.iter().map(|e| bread(&e.stack)).sum();
+        (carried, lying)
+    }
+
+    /// `Mob.aiStep` loots only `if (this.canPickUpLoot() && ...)`: a villager
+    /// whose `CanPickUpLoot` a command or its data turned off leaves the bread
+    /// it wants where it lies, and takes it once the flag is back on.
+    #[test]
+    #[ignore = "daily"]
+    fn a_villager_that_cannot_pick_up_loot_takes_nothing() {
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        let id = villager_beside_bread(&mut game, false);
+        game.villager_pickups();
+        assert_eq!(loaves(&game, id), (0, 3), "loot pickup off");
+        let m = game.mobs.iter_mut().find(|m| m.id == id).unwrap();
+        m.extra.pick_up_loot = true;
+        game.villager_pickups();
+        assert_eq!(loaves(&game, id), (3, 0), "loot pickup on");
+    }
+
+    /// An advancement on the pickup trigger for bread, as a data pack would
+    /// add one: no vanilla advancement tests it, so the tree needs its own.
+    fn install_pickup_advancement(game: &mut Game<'_>) {
+        let mut tree = Arc::new(adv::Tree::default());
+        let one = Arc::get_mut(&mut tree).unwrap();
+        one.list.push(adv::Advancement {
+            id: ADV.into(),
+            parent: None,
+            display: None,
+            criteria: vec![adv::Criterion {
+                name: "pickup".into(),
+                trigger: TRIGGER.into(),
+                conditions: LazyJson::new(&serde_json::json!({
+                    "item": {"items": "minecraft:bread"}
+                })),
+            }],
+            requirements: vec![vec!["pickup".into()]],
+            rewards: Default::default(),
+        });
+        one.by_id.insert(ADV.into(), 0);
+        one.by_trigger.insert(TRIGGER.into(), vec![(0, 0)]);
+        game.adv.tree = tree;
+    }
+
+    /// `InventoryCarrier.pickUpItem` calls `mob.onItemPickup` before the bread
+    /// goes into the inventory, and `LivingEntity.onItemPickup` fires
+    /// `CriteriaTriggers.THROWN_ITEM_PICKED_UP_BY_ENTITY` for the player who
+    /// threw it, as a panda's or a piglin's pickup does.
+    #[test]
+    #[ignore = "daily"]
+    fn a_villager_that_takes_a_thrown_item_credits_the_thrower() {
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        game.options.dedicated = None;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 100.0, 4.5)).unwrap());
+        game.level.player_uuid = Some(THROWER);
+        game.level.health = 20.0;
+        game.creative = false;
+        // A world of its own under the temporary folder, never the cwd.
+        game.world_root = std::env::temp_dir().join(format!(
+            "horizon-villager-pickup-world-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&game.world_root);
+        game.build_registries();
+        install_pickup_advancement(&mut game);
+        let id = villager_beside_bread(&mut game, true);
+        game.just_spawned_item().unwrap().thrower = Some(THROWER);
+        game.villager_pickups();
+        assert_eq!(loaves(&game, id), (3, 0), "the villager took the bread");
+        assert!(
+            game.adv.progress.has(ADV, "pickup"),
+            "the thrower's advancement: {:?}",
+            game.adv.progress.criteria
+        );
+        let _ = std::fs::remove_dir_all(&game.world_root);
+    }
+}
