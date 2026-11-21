@@ -106,10 +106,11 @@ impl Launcher {
                 cmd.envs(vars.iter().map(|(k, v)| (k, v)));
                 Ok(())
             };
+            let id = run.clone().unwrap_or_else(|| tag.clone());
             self.starting_client = Some(tag);
             // The jar phase keeps the row of the started instance on Starting.
             self.starting_instance = run.clone();
-            let stop = self.pre_launch_stop_for(&launch);
+            let stop = self.pre_launch_stop_for(&id, &launch);
             jar_launch::client(cmd, profile, launch, stop, run, self.tx.clone());
         }
     }

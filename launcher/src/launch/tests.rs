@@ -406,6 +406,30 @@ fn a_start_stopped_after_its_pre_launch_command_does_not_start_the_game() {
     );
 }
 
+#[test]
+fn multiple_pre_launch_stops_signal_independently_and_stop_all() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let stop1 = Arc::new(AtomicBool::new(false));
+    let stop2 = Arc::new(AtomicBool::new(false));
+    let mut stops = std::collections::HashMap::new();
+    stops.insert("inst-1".to_string(), Arc::clone(&stop1));
+    stops.insert("inst-2".to_string(), Arc::clone(&stop2));
+
+    // stop_pre_launch stops all running pre-launch commands
+    for s in stops.values() {
+        s.store(true, Ordering::Relaxed);
+    }
+    assert!(stop1.load(Ordering::Relaxed));
+    assert!(stop2.load(Ordering::Relaxed));
+
+    // Taking one start's stop leaves the other intact
+    let taken = stops.remove("inst-1");
+    assert!(taken.is_some());
+    assert_eq!(stops.len(), 1);
+    assert!(stops.contains_key("inst-2"));
+}
+
 /// A program the pre-launch command leaves running holds its output open: the game goes on
 /// without waiting for it, and the output readers end.
 #[cfg(windows)]

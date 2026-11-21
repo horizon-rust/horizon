@@ -116,7 +116,7 @@ impl Launcher {
                 Msg::JavaGame(id, home, cmd) => {
                     self.starting_client = None;
                     self.starting_instance = None;
-                    let stop = self.pre_launch_stop.take();
+                    let stop = self.pre_launch_stops.remove(&id);
                     let cmd = horizon_launcher::launch::unless_stopped(cmd, stop.as_deref());
                     let spawned = cmd.and_then(|(cmd, vars)| {
                         self.client_vars = vars;
@@ -155,7 +155,7 @@ impl Launcher {
                 Msg::JarClient { run, prepared } => {
                     self.starting_client = None;
                     self.starting_instance = None;
-                    let stop = self.pre_launch_stop.take();
+                    let stop = run.as_ref().and_then(|id| self.pre_launch_stops.remove(id));
                     match horizon_launcher::launch::unless_stopped(*prepared, stop.as_deref()) {
                         Ok(cmd) => {
                             self.client_home = cmd.get_current_dir().map(|d| d.to_path_buf());
@@ -431,7 +431,11 @@ impl Launcher {
                                 prepare_outcome(error, tag.as_deref(), backend::check_prepared);
                             // Play pressed before the version was prepared plays now.
                             if let Some((tag, instance)) = self.play_when_prepared.take() {
-                                if error.is_none() && backend::check_prepared(&tag) {
+                                if error.is_none()
+                                    && backend::check_prepared(&tag)
+                                    && self.can_start(&tag)
+                                    && !self.pre_launch_stoppable()
+                                {
                                     self.starting_pack = None;
                                     self.start_client(tag, Some(instance));
                                 } else if error.is_none() {

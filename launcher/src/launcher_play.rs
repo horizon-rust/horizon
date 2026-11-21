@@ -290,6 +290,7 @@ impl Launcher {
             if self.client.is_some() || self.starting_client.is_some() {
                 return;
             }
+            self.play_when_prepared = None;
             self.starting_pack = None;
             self.start_java(instance, server);
             return;
@@ -300,6 +301,7 @@ impl Launcher {
         if !self.version_still_installed(&tag) || !self.can_start(&tag) {
             return;
         }
+        self.play_when_prepared = None;
         self.starting_pack = None;
         self.start_client(tag, self.selected_instance().map(|i| i.id.clone()));
     }
@@ -315,7 +317,7 @@ impl Launcher {
             Some(std::time::SystemTime::now() - std::time::Duration::from_secs(2));
         self.starting_client = Some(instance.id.clone());
         self.starting_instance = Some(instance.id.clone());
-        let stop = self.pre_launch_stop_for(&instance.launch);
+        let stop = self.pre_launch_stop_for(&instance.id, &instance.launch);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let log = |line: String| {
@@ -337,13 +339,13 @@ impl Launcher {
     /// Whether the start under way can be stopped for its instance's pre-launch command, which
     /// Windows runs to its end before the game.
     pub(crate) fn pre_launch_stoppable(&self) -> bool {
-        self.pre_launch_stop.is_some()
+        !self.pre_launch_stops.is_empty()
     }
 
     /// Stops the start under way, its pre-launch command with what it started; once that
     /// succeeded, the game still does not start.
     pub(crate) fn stop_pre_launch(&self) {
-        if let Some(stop) = &self.pre_launch_stop {
+        for stop in self.pre_launch_stops.values() {
             stop.store(true, Ordering::Relaxed);
         }
     }
@@ -352,11 +354,14 @@ impl Launcher {
     /// ([`Self::pre_launch_stoppable`]) when Windows runs a pre-launch command.
     pub(crate) fn pre_launch_stop_for(
         &mut self,
+        id: &str,
         launch: &horizon_launcher::launch::Launch,
     ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         let stop = std::sync::Arc::default();
-        self.pre_launch_stop = (cfg!(windows) && !launch.pre_launch.trim().is_empty())
-            .then(|| std::sync::Arc::clone(&stop));
+        if cfg!(windows) && !launch.pre_launch.trim().is_empty() {
+            self.pre_launch_stops
+                .insert(id.to_string(), std::sync::Arc::clone(&stop));
+        }
         stop
     }
 

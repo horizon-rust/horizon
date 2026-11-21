@@ -486,9 +486,10 @@ struct Launcher {
     starting_client: Option<String>,
     /// The instance that start is for, whatever is selected by the time it ends.
     starting_instance: Option<String>,
-    /// The Stop of the start under way while it may run its instance's pre-launch command
+    /// The Stops of the starts under way while they may run their instance's pre-launch command
     /// (Windows runs it before the game): kept until the start's result is handled.
-    pre_launch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pre_launch_stops:
+        std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Play was pressed on a version not prepared yet: it starts once this preparation ends well.
     play_when_prepared: Option<(String, String)>,
     /// Join a friend: the code typed on the Play page, and the one the game

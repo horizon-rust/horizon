@@ -15,6 +15,10 @@ impl Render for Launcher {
         }
         if std::mem::take(&mut self.restyle) {
             self.theme = self.settings_theme(window);
+            let wide = if self.theme.glass { 72 } else { 38 };
+            self.args_input.show(wide);
+            self.proxy_input
+                .show(if self.theme.glass { 72 } else { 44 });
         }
         glass_ui::set_on(self.theme.glass);
         glass_ui::set_light(!self.theme.dark);
