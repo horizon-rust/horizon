@@ -496,6 +496,7 @@ struct GameLevel<'w> {
     drop_into: Option<Vec<ItemStack>>,
 }
 struct PlayerCollision {
+    entity_id: u32,
     y: f64,
     descending: bool,
     fall_distance: f64,
@@ -2685,6 +2686,7 @@ impl Game<'_> {
         let player_collision = self.player.as_ref().filter(|_| !spectator).map(|p| {
             let main_hand = self.inventory.get(self.selected).and_then(Option::as_ref);
             PlayerCollision {
+                entity_id: p.entity_id as u32,
                 y: p.position.y,
                 descending: p.velocity.y < 0.0,
                 fall_distance: p.fall_distance,
