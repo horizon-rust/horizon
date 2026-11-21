@@ -201,6 +201,16 @@ impl Menu {
         stack: &mut ItemStack,
     ) {
         let role = self.slots[index].role;
+        // A mod result's onTake hears what its move took.
+        if role == super::Role::ModResult {
+            let moved = clicked.count.saturating_sub(stack.count);
+            if moved > 0 {
+                let mut taken = clicked.clone();
+                taken.count = moved;
+                self.on_take(env, index, &mut taken);
+            }
+            return;
+        }
         let rest = matches!(
             role,
             super::Role::MerchantResult | super::Role::Output | super::Role::StoneResult

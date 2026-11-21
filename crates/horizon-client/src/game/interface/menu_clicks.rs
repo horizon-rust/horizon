@@ -470,8 +470,11 @@ impl Game<'_> {
             self.remote_menu_type()
         };
         menu.set_registry_id(menu_id);
+        // A result slot's take names the menu type after the click (`menu_result_take`).
+        let mod_menu_type = menu_id.map(str::to_owned);
         menu.set_block_pos(self.container.map(|(x, y, z)| [x, y, z]));
         menu.brewed_potion_hook = !mod_api::__private::mods().is_empty();
+        menu.mod_result_hook = menu.brewed_potion_hook;
         if matches!(kind, Kind::Mount(_)) {
             menu.mount = self.mount_menu_entity();
         }
@@ -656,6 +659,7 @@ impl Game<'_> {
         let crafted = std::mem::take(&mut menu.crafted);
         let brewed = std::mem::take(&mut menu.brewed);
         let brewed_potion_takes = std::mem::take(&mut menu.brewed_potion_takes);
+        let mod_result_takes = std::mem::take(&mut menu.mod_result_takes);
         let equipped = std::mem::take(&mut menu.equipped);
         let item_crafted = std::mem::take(&mut menu.item_crafted);
         for (_, stack, _) in &item_crafted {
@@ -678,6 +682,14 @@ impl Game<'_> {
                 let (player, entity_id) = (self.native_acting_id(), self.own_entity_id());
                 for stack in &brewed_potion_takes {
                     self.native_player_brewed_potion(player, entity_id, stack);
+                }
+            }
+            if !mod_result_takes.is_empty()
+                && let (Some(menu_type), Some((x, y, z))) = (mod_menu_type.as_deref(), self.container)
+            {
+                let (player, entity_id) = (self.native_acting_id(), self.own_entity_id());
+                for (slot, stack) in &mod_result_takes {
+                    self.native_menu_result_take(player, entity_id, menu_type, [x, y, z], *slot, stack);
                 }
             }
             for stack in dropped {
