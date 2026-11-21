@@ -446,7 +446,7 @@ Keep them out of a `shared` file that a sky, weather, tonemap or vertex stage al
 | Read where called | `candidate_stops(c)`, whether `trace_layers` stops there; `candidate_albedo(c)`, `candidate_tint(c)`, `candidate_material(c)`, `candidate_tags(c)`, `candidate_fluid(c)`, each the `RayHit` field of its name at the candidate. A step pays for those it calls |
 | The result | The nearest surface a step kept, as `trace_layers` gives a hit; `distance` negative where it kept none |
 | Order | None: surfaces don't come nearest first, and one beyond the surface kept in the end may have been stepped before it was kept. A step that gathers (multiplies, adds) keeps nothing, so everything out to `max_distance` counts, or records each contribution's `c.distance` in its state and drops those past the result's `distance` |
-| Twice | A surface can reach the step twice in one query: the graphics APIs allow it, and Horizon's scene doesn't forbid it yet. A step that only keeps, ends or takes a minimum is unaffected; one that multiplies can count a pane twice |
+| Repeats | A surface may reach the step more than once in one query: the graphics APIs allow it, and Horizon's scene doesn't forbid it yet. A step that only keeps, ends or takes a minimum is unaffected; one that multiplies can count a pane more than once |
 | Without the scene | No surface reaches the step: the result misses and `state` stays as passed |
 | Refused | A `ray_step` that reaches a trace function (`trace_step` too), a stage without `RayState` or with another `ray_step`, a pack that builds a `RayCandidate` |
 

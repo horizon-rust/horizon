@@ -307,7 +307,10 @@ fn post(input: PostInput) -> vec4<f32> {
     return input.color * trace_step(ray_step(RayState(1.0).a));
 }
 ";
-    assert!(post(own, "").is_ok());
+    // A pack's own `trace_step` is not Horizon's: the renderer reads that it doesn't step.
+    let report = post(own, "").unwrap();
+    assert!(report.stages[0].scene.is_some());
+    assert!(!report.stages[0].traces_steps() && !report.ray_steps());
     let problems = post(own, "step = true\n").unwrap_err();
     assert!(
         says(&problems, "redefinition of `trace_step`"),
@@ -427,6 +430,49 @@ fn the_check_refuses_a_step_it_can_t_run() {
         "    _ = ray_step(RayCandidate(1.0, RAY_SOLID), &nearest);\n    let hit = trace_step(",
     );
     refused(&built, "constructs `RayCandidate`");
+    // Nor as a zero value: `RayCandidate()`, or a variable left without an initializer, alone, in
+    // an array or at module scope.
+    let at_call = "    let hit = trace_step(";
+    for (zero, line) in [
+        ("    _ = ray_step(RayCandidate(), &nearest);\n", 13),
+        (
+            "    var c: RayCandidate;\n    _ = ray_step(c, &nearest);\n",
+            13,
+        ),
+        (
+            "    var cs: array<RayCandidate, 2>;\n    _ = ray_step(cs[1], &nearest);\n",
+            13,
+        ),
+    ] {
+        let zeroed = LAYERS_STEP.replace(at_call, &format!("{zero}{at_call}"));
+        let problems = refused(&zeroed, "constructs `RayCandidate`");
+        assert_eq!(
+            (problems[0].file.as_str(), problems[0].line),
+            ("post.wgsl", line)
+        );
+    }
+    let global = format!(
+        "var<private> held: RayCandidate;\n{}",
+        LAYERS_STEP.replace(
+            at_call,
+            &format!("    _ = ray_step(held, &nearest);\n{at_call}")
+        )
+    );
+    let problems = refused(&global, "constructs `RayCandidate`");
+    assert_eq!(
+        (problems[0].file.as_str(), problems[0].line),
+        ("post.wgsl", 1)
+    );
+    // A candidate passed along, or copied from one, is read, not built.
+    let passed = "struct RayState { n: u32 }
+fn keep(c: RayCandidate) -> u32 { let d = c; return select(RAY_PASS, RAY_STOP, d.distance > 0.0); }
+fn ray_step(c: RayCandidate, state: ptr<function, RayState>) -> u32 { return keep(c); }
+fn post(input: PostInput) -> vec4<f32> {
+    var s = RayState(0u);
+    return input.color * trace_step(vec3<f32>(0.0), frame.sun_direction, 8.0, RAY_SOLID, &s).distance;
+}
+";
+    assert!(post(passed, "step = true\n").is_ok());
     // The vertex stage's `vertex`, which the material's module holds, runs in a vertex shader.
     let vertex = format!(
         "{}fn vertex(input: VertexInput) -> vec3<f32> {{\n    \
@@ -505,4 +551,50 @@ fn post_entries_sharing_a_file_compose_as_without_the_key() {
             .collect::<Vec<_>>()
     };
     assert_eq!(sources("step = true\n"), sources(""));
+}
+
+/// Two post entries of one file under the key, only one of them listing a file that names the
+/// step: each has `trace_step` by its own files, whichever comes first.
+#[test]
+fn post_entries_sharing_a_file_step_by_their_own_files() {
+    let stepping = "struct RayState { n: u32 }
+fn ray_step(c: RayCandidate, state: ptr<function, RayState>) -> u32 {
+    return select(RAY_PASS, RAY_STOP, candidate_stops(c));
+}
+fn shade(p: vec3<f32>) -> f32 {
+    var s = RayState(0u);
+    return trace_step(p, frame.sun_direction, 8.0, RAY_SOLID, &s).distance;
+}
+";
+    let plain = "fn shade(p: vec3<f32>) -> f32 { return 1.0; }\n";
+    let pass =
+        "fn post(input: PostInput) -> vec4<f32> { return input.color * shade(vec3<f32>(0.0)); }\n";
+    for stepped_first in [true, false] {
+        let entry =
+            |helper: &str| format!("[[post]]\nfile = \"post.wgsl\"\nfiles = [\"{helper}\"]\n");
+        let (first, second) = match stepped_first {
+            true => (entry("stepping.wgsl"), entry("plain.wgsl")),
+            false => (entry("plain.wgsl"), entry("stepping.wgsl")),
+        };
+        let manifest = format!(
+            "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n{first}{second}\
+             [tonemap]\nfile = \"t.wgsl\"\n[ray_tracing]\nstep = true\n"
+        );
+        let files = [
+            (MANIFEST, manifest.as_str()),
+            ("post.wgsl", pass),
+            ("stepping.wgsl", stepping),
+            ("plain.wgsl", plain),
+            ("t.wgsl", TONEMAP),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let steps: Vec<bool> = (report.stages.iter())
+            .filter(|s| s.kind == StageKind::Post)
+            .map(|s| s.traces_steps())
+            .collect();
+        assert_eq!(steps, [stepped_first, !stepped_first]);
+        assert!(report.ray_steps());
+    }
 }

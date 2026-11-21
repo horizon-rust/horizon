@@ -259,8 +259,8 @@ fn ray_tracing() -> String {
          drops those past the result's `distance`. A stage has one `ray_step` and one `RayState`, shared by every\n  \
          `trace_step` call in it. A surface may reach the step more than once in one query: the graphics APIs allow it unless the\n  \
          scene's geometry forbids it, which Horizon's doesn't yet. A step that only keeps, ends, or takes a minimum or a\n  \
-         maximum is unaffected; one that multiplies (light through glass) can count a pane twice. Without the scene there\n  \
-         is no candidate: every ray misses and `state` stays as passed. The check refuses a stage without `RayState` or\n  \
+         maximum is unaffected; one that multiplies (light through glass) can count a pane more than once. Without the scene\n  \
+         there is no candidate: every ray misses and `state` stays as passed. The check refuses a stage without `RayState` or\n  \
          with another `ray_step`, a `ray_step` that reaches a trace function (`trace_step` too), and a pack that\n  \
          constructs a `RayCandidate`.\n\
          \n\

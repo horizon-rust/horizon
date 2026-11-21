@@ -457,8 +457,8 @@ asks for ray queries and keeps the scene with any pack or none; any other value 
   drops those past the result's `distance`. A stage has one `ray_step` and one `RayState`, shared by every
   `trace_step` call in it. A surface may reach the step more than once in one query: the graphics APIs allow it unless the
   scene's geometry forbids it, which Horizon's doesn't yet. A step that only keeps, ends, or takes a minimum or a
-  maximum is unaffected; one that multiplies (light through glass) can count a pane twice. Without the scene there
-  is no candidate: every ray misses and `state` stays as passed. The check refuses a stage without `RayState` or
+  maximum is unaffected; one that multiplies (light through glass) can count a pane more than once. Without the scene
+  there is no candidate: every ray misses and `state` stays as passed. The check refuses a stage without `RayState` or
   with another `ray_step`, a `ray_step` that reaches a trace function (`trace_step` too), and a pack that
   constructs a `RayCandidate`.
 
