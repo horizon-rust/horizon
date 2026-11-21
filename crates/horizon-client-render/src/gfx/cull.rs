@@ -719,13 +719,16 @@ impl Cull {
             return;
         }
         if tests > r.capacity {
-            r.capacity = tests.next_power_of_two();
-            r.buffer = buffer(
-                device,
-                "Section test readback",
-                r.capacity * 4,
-                READBACK_USAGE,
-            );
+            let capacity = tests.next_power_of_two();
+            // Without room (#13624) the old buffer is kept and the frame reads nothing back.
+            let label = "Section test readback";
+            let Some(grown) =
+                super::frame_targets::buffer(device, label, capacity * 4, READBACK_USAGE)
+            else {
+                return;
+            };
+            r.capacity = capacity;
+            r.buffer = grown;
         }
         encoder.copy_buffer_to_buffer(&self.results, 0, &r.buffer, 0, tests * 4);
         r.stamp = self.stamp;

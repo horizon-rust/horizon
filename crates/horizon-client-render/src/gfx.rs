@@ -7393,7 +7393,7 @@ impl Renderer {
         let surface = self.surface.take();
         let hdr = self.hdr.take_if(|_| !layered);
         let offscreen = std::mem::replace(&mut self.offscreen, target);
-        let window_depth = std::mem::replace(&mut self.depth, Some(depth));
+        let window_depth = self.depth.replace(depth);
         // The frame's own targets at `size` can run out of memory too.
         let drawn = frame_targets::in_screenshot(|| {
             self.draw_frame(frame, Some(GpuChecks::push(&self.device)), output)
@@ -9245,7 +9245,8 @@ impl Renderer {
                     .get_mut(&snapshot.section)
                     .expect("made above");
                 if gpu.origin != snapshot.origin {
-                    let Some(origin_buffer) = origin(&self.device, &snapshot.origin) else {
+                    let Some(origin_buffer) = origin(&self.device, &self.queue, &snapshot.origin)
+                    else {
                         missed = true;
                         continue;
                     };
