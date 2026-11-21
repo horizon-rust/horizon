@@ -18,6 +18,14 @@ use horizon_world::{
     registry::BlockStateId,
 };
 
+/// `FallingBlockEntity.tick`'s `isStuckInWater`: a concrete-powder block in a
+/// water fluid state solidifies instead of continuing to fall through it.
+/// The caller must report it; `falling_block_landed` only knows the carried
+/// state and the cell it was asked to land in.
+fn concrete_stuck_in_water(name: &str, fluid: horizon_client::blocks::Fluid) -> bool {
+    name.ends_with("_concrete_powder") && fluid == horizon_client::blocks::Fluid::Water
+}
+
 /// An entity that isn't living, landing (`Entity.checkFallDamage` -> `Block.fallOn`).
 /// Only farmland (the level random's draw), honey (the slide sound and entity
 /// event 54) and the fall-damage calls reach one: it writes no block.
@@ -324,13 +332,20 @@ impl Game<'_> {
             }
             return;
         }
+        let stuck_in_water = concrete_stuck_in_water(
+            &name,
+            self.res
+                .facts()
+                .get(self.world.block(pos[0], pos[1], pos[2]))
+                .fluid,
+        );
         let landing = self.with_level(|b, level, ticks| {
             b.falling_block_landed(
                 level,
                 ticks,
                 BlockPos::new(pos[0], pos[1], pos[2]),
                 block.state,
-                false,
+                stuck_in_water,
             )
         });
         if let Landing::Placed(state) = landing {
@@ -439,7 +454,25 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::concrete_stuck_in_water;
     use crate::game::{Game, native_entity_refs::tests::with_game};
+    use horizon_client::blocks::Fluid;
+
+    /// `FallingBlockEntity.tick`'s `isStuckInWater`: only concrete powder in
+    /// water stops falling there, so `falling_block_landed` is told to land it.
+    #[test]
+    fn only_concrete_powder_in_water_is_stuck() {
+        assert!(concrete_stuck_in_water(
+            "minecraft:red_concrete_powder",
+            Fluid::Water
+        ));
+        assert!(!concrete_stuck_in_water(
+            "minecraft:red_concrete_powder",
+            Fluid::Lava
+        ));
+        assert!(!concrete_stuck_in_water("minecraft:sand", Fluid::Water));
+    }
+
     use horizon_client::{items::ItemStack, motion::PlayerMotion};
     use horizon_core::{equipment_slot::EquipmentSlot, geometry::Vec3};
     use mod_api::{
