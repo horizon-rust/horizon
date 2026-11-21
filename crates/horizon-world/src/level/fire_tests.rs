@@ -227,6 +227,15 @@ fn a_level_hears_each_block_fire_burns() {
         panic!("the burned wool is heard once, not {wool_heard:?}");
     };
     assert_eq!((state, face), (wool, Direction::West));
+    // `block_burn` names the fire that burns the wool: the fire at (0, 1, 0).
+    assert!(
+        w.level
+            .burn_asks
+            .borrow()
+            .contains(&(burned, Some(BlockPos::new(0, 1, 0)))),
+        "block_burn asked about {burned:?} without its igniting fire: {:?}",
+        w.level.burn_asks.borrow()
+    );
 
     // The level hears TNT while it is present, before it primes.
     let primed = burn_east(&mut w, BlockPos::new(0, 1, 20), tnt);

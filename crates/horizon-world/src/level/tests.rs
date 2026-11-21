@@ -88,6 +88,8 @@ pub(crate) struct TestLevel {
     pub lava_ignites: HashMap<BlockStateId, bool>,
     /// Positions where `allow_block_burn` refuses, as a `block_burn` listener would.
     pub unburnable: HashSet<BlockPos>,
+    /// Every `allow_block_burn` ask: the position and the igniting fire it names.
+    pub burn_asks: std::cell::RefCell<Vec<(BlockPos, Option<BlockPos>)>>,
     /// Every `on_caught_fire`: position, old state, face and the level events before it.
     pub caught_fire: Vec<(BlockPos, BlockStateId, Direction, usize)>,
     /// What `before_smoke_source` answers for a state.
@@ -148,6 +150,7 @@ impl TestLevel {
             fire_sources: HashMap::new(),
             lava_ignites: HashMap::new(),
             unburnable: HashSet::new(),
+            burn_asks: Default::default(),
             caught_fire: Vec::new(),
             smoke_sources: HashMap::new(),
             openers: HashMap::new(),
@@ -350,7 +353,8 @@ impl LevelAccess for TestLevel {
         self.lava_asks.borrow_mut().push((state, pos, face));
         *ignites = self.lava_ignites.get(&state).copied();
     }
-    fn allow_block_burn(&self, pos: BlockPos) -> bool {
+    fn allow_block_burn(&self, pos: BlockPos, igniting: Option<BlockPos>) -> bool {
+        self.burn_asks.borrow_mut().push((pos, igniting));
         !self.unburnable.contains(&pos)
     }
     fn on_caught_fire(

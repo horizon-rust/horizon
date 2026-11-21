@@ -75,6 +75,9 @@ pub(super) struct NativeLifecycle {
     pub(super) held_joins: Vec<u32>,
     /// Item notices waiting for their join decision.
     pub(super) pending_item_spawns: Vec<(u32, String, i32, [f64; 3])>,
+    /// The spawn reason of each mob a spawn site finalized and that has not joined yet
+    /// (`entity_join_level_reason`'s `reason`). Taken at the join, dropped with the entity.
+    pub(super) spawn_reasons: std::collections::HashMap<u32, mod_api::SpawnReason>,
     /// The log has named the entity id exhaustion (`entity_ids_exhausted`).
     pub(super) ids_exhausted_told: bool,
 }

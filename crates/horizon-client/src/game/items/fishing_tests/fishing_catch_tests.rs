@@ -297,3 +297,35 @@ fn fishing_catch_invalid_drops_keep_the_earlier_listeners_outputs() {
         "{warnings:?}"
     );
 }
+
+/// `player_fish_detail` hears the hooked entity's id on a state-4 reel-in, with the literal values.
+struct HookedFish;
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for HookedFish {
+    fn player_fish_detail(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::PlayerFishDetailEvent<'_>,
+    ) -> mod_api::Flow {
+        assert_eq!(event.player, 7);
+        assert_eq!(event.name, "catcher");
+        assert_eq!(event.state, 4);
+        assert_eq!(event.caught, Some(42));
+        mod_api::Flow::Continue
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn player_fish_reports_the_hooked_entity_on_a_reel_in() {
+    mod_platform::testing::with_mods(
+        vec![mod_api::ModEntry::new("hooked", Box::new(HookedFish))].into(),
+        || {
+            crate::game::native_entity_refs::tests::with_game(|game| {
+                let mut cancel = false;
+                game.native_player_fish_detail(7, "catcher", 4, Some(42), &mut cancel);
+                assert!(!cancel);
+            });
+        },
+    );
+}

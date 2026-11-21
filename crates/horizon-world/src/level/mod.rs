@@ -525,7 +525,7 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn allow_block_ignite(&self, _pos: BlockPos, _cause: &'static str) -> bool {
         true
     }
-    fn allow_block_burn(&self, _pos: BlockPos) -> bool {
+    fn allow_block_burn(&self, _pos: BlockPos, _igniting: Option<BlockPos>) -> bool {
         true
     }
     /// Select or cancel the feature a block is about to grow into; `None` when

@@ -24,4 +24,16 @@ impl Game<'_> {
     ) {
         self.fire_explosion_detonate(dimension, center, blocks, entities);
     }
+    /// `native_explosion_detonate` with `source`, the exploding entity's id (`None` when
+    /// untracked): heard right after it, on the same lists. Server-side.
+    pub(in crate::game) fn native_explosion_detonate_detail(
+        &mut self,
+        dimension: &str,
+        center: [f64; 3],
+        source: Option<u32>,
+        blocks: &mut Vec<[i32; 3]>,
+        entities: &mut Vec<EntityRef>,
+    ) {
+        self.fire_explosion_detonate_detail(dimension, center, source, blocks, entities);
+    }
 }

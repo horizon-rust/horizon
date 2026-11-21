@@ -554,6 +554,17 @@ impl Game<'_> {
             };
             let corner = exit.min_corner;
             self.native_portal_create(dim, [corner.x, corner.y, corner.z]);
+            // The rectangle runs along the travel axis (East for an x-axis
+            // portal, South otherwise) and up, as `create_portal` finds it.
+            let (dx, dz) = if x_axis { (1, 0) } else { (0, 1) };
+            let mut created = Vec::new();
+            for a in 0..exit.axis1_size {
+                for b in 0..exit.axis2_size {
+                    let at = corner.offset(a * dx, b, a * dz);
+                    created.push([at.x, at.y, at.z]);
+                }
+            }
+            self.native_portal_create_detail(dim, [corner.x, corner.y, corner.z], &created);
             // A portal built for the entity: the ticket goes on the chunk it
             // arrives in (`TeleportTransition.PLACE_PORTAL_TICKET`).
             let (at, _) = self.arrival(plan, exit);

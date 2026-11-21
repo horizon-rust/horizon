@@ -211,6 +211,10 @@ impl Game<'_> {
                         let state = g.world.block(a.pos[0], a.pos[1], a.pos[2]);
                         let mut canceled = false;
                         g.native_left_click_block(a.pos, face, state, &mut canceled);
+                        // Only a guest's click names a clicking player.
+                        if let Some(player) = g.lan_acting_uuid {
+                            g.native_left_click_block_player(a.pos, face, state, player, &mut canceled);
+                        }
                         canceled
                     });
                     if canceled == Some(true) {

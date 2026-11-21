@@ -5,6 +5,8 @@ use super::{Dim, Game};
 mod icons;
 
 #[cfg(test)]
+mod award_cancel_tests;
+#[cfg(test)]
 #[path = "inventory_changed_tests.rs"]
 mod inventory_changed_tests;
 use horizon_client::actions::Action;
@@ -1164,6 +1166,14 @@ impl Game<'_> {
         }
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_advancement_done(player, &name, &a.id);
+        }
+        // The mods hear the completion; a cancel withholds its toast, announcement and rewards.
+        let mut cancel = false;
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            self.native_player_advancement_done_cancel(player, &name, &a.id, &mut cancel);
+        }
+        if cancel {
+            return;
         }
         let rewards = self.grant_rewards(a);
         if let Some(d) = &a.display {

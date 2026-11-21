@@ -205,6 +205,18 @@ impl GameLevel<'_> {
         self.fire_block_burn(dimension, pos, cancel);
     }
 
+    /// `native_block_burn` with `igniting`, the fire block that burns it. Heard right after it.
+    #[inline(always)]
+    pub(in crate::game) fn native_block_burn_detail(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        igniting: Option<BlockPos>,
+        cancel: &mut bool,
+    ) {
+        self.fire_block_burn_detail(dimension, pos, igniting, cancel);
+    }
+
     /// On an authoritative server, a bell at `pos` is about to ring. Set
     /// `cancel` to stop the ring and its raider reveal.
     #[inline(always)]
@@ -782,6 +794,18 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_left_click_block(pos, face, state, canceled);
+    }
+    /// `native_left_click_block` with `player`, the clicking guest's uuid. Heard right after it,
+    /// with the same `canceled`. Server-side.
+    pub(in crate::game) fn native_left_click_block_player(
+        &mut self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        state: BlockStateId,
+        player: u128,
+        canceled: &mut bool,
+    ) {
+        self.fire_left_click_block_player(pos, face, state, player, canceled);
     }
     /// NeoForge's non-cancellable PlayerTickEvent.Pre on either logical side.
     pub(in crate::game) fn native_player_tick_pre(
@@ -1720,6 +1744,14 @@ impl Game<'_> {
     ) {
         self.fire_ender_pearl_teleport(call);
     }
+    /// The same pearl landing as `native_ender_pearl_teleport`, heard after it: the fall damage
+    /// may be skipped (`None`). Server-side.
+    pub(in crate::game) fn native_ender_pearl_teleport_damage(
+        &mut self,
+        call: mod_api::__private::EnderPearlTeleportDamageCall<'_>,
+    ) {
+        self.fire_ender_pearl_teleport_damage(call);
+    }
     /// A server player or fox that ate chorus fruit (or another item with the
     /// `teleport_randomly` consume effect) is about to try a random spot
     /// (NeoForge's `EntityTeleportEvent.ItemConsumption`, vanilla's
@@ -2010,6 +2042,17 @@ impl Game<'_> {
     ) {
         self.fire_player_advancement_done(player, name, advancement);
     }
+    /// A server player completed an advancement, after progress was recorded. Set `cancel` to
+    /// withhold its toast, announcement and rewards; the advancement stays done in the progress.
+    pub(in crate::game) fn native_player_advancement_done_cancel(
+        &mut self,
+        player: u128,
+        name: &str,
+        advancement: &str,
+        cancel: &mut bool,
+    ) {
+        self.fire_player_advancement_done_cancel(player, name, advancement, cancel);
+    }
     /// A criterion of a server player's advancement was granted or revoked, after its progress changed
     /// and before any completion rewards. A grant or revoke that changes nothing is not heard.
     /// The call carries a snapshot of all criterion dates and requirement results at this mutation;
@@ -2085,6 +2128,18 @@ impl Game<'_> {
         cancel: &mut bool,
     ) {
         self.fire_player_fish(player, name, state, cancel);
+    }
+    /// `native_player_fish` with `caught`, the entity id the bobber holds on a state-4 reel-in
+    /// (`None` otherwise). Heard right after it, with the same `cancel`.
+    pub(in crate::game) fn native_player_fish_detail(
+        &mut self,
+        player: u128,
+        name: &str,
+        state: i32,
+        caught: Option<u32>,
+        cancel: &mut bool,
+    ) {
+        self.fire_player_fish_detail(player, name, state, caught, cancel);
     }
     /// A sculk sensor or shrieker received a vibration for `event` at `pos`.
     /// Set `cancel` to suppress its response. Server-side.
@@ -2296,6 +2351,16 @@ impl Game<'_> {
     pub(in crate::game) fn native_player_elytra_boost(&mut self, player: u128, name: &str) {
         self.fire_player_elytra_boost(player, name);
     }
+    /// A server player is about to use a firework rocket to boost while gliding, before the rocket
+    /// is launched or consumed. Set `cancel` and nothing is launched. Server-side.
+    pub(in crate::game) fn native_player_elytra_boost_cancel(
+        &mut self,
+        player: u128,
+        name: &str,
+        cancel: &mut bool,
+    ) {
+        self.fire_player_elytra_boost_cancel(player, name, cancel);
+    }
     /// A server player put a plant into a flower pot, after the potted block state was stored and the
     /// item consumed. `plant` is the item id and `pos` the pot position. Server-side.
     pub(in crate::game) fn native_player_flower_pot_manipulate(
@@ -2328,6 +2393,18 @@ impl Game<'_> {
         book: &str,
     ) {
         self.fire_player_take_lectern_book(player, name, pos, book);
+    }
+    /// A server player is about to take the book from a lectern, before the menu and block entity
+    /// change. Set `cancel` to leave the book on the lectern. Server-side.
+    pub(in crate::game) fn native_player_take_lectern_book_cancel(
+        &mut self,
+        player: u128,
+        name: &str,
+        pos: [i32; 3],
+        book: &str,
+        cancel: &mut bool,
+    ) {
+        self.fire_player_take_lectern_book_cancel(player, name, pos, book, cancel);
     }
     /// A server player changed the page of a lectern, after its page and redstone pulse changed.
     /// `page` is the zero-based new page. Server-side.
@@ -2438,6 +2515,18 @@ impl Game<'_> {
     ) {
         self.fire_player_open_sign(player, name, pos, front);
     }
+    /// A server player is about to open a sign for editing, before the editor state is made. Set
+    /// `cancel` to keep the editor closed. Server-side.
+    pub(in crate::game) fn native_player_open_sign_cancel(
+        &mut self,
+        player: u128,
+        name: &str,
+        pos: [i32; 3],
+        front: bool,
+        cancel: &mut bool,
+    ) {
+        self.fire_player_open_sign_cancel(player, name, pos, front, cancel);
+    }
     /// A server player picked up an arrow after it was removed and its pickup was applied. `item` is
     /// the arrow's pickup item id. Server-side.
     pub(in crate::game) fn native_player_pickup_arrow(
@@ -2527,6 +2616,17 @@ impl Game<'_> {
         cancel: &mut bool,
     ) {
         self.fire_player_teleport_end_gateway(player, name, gateway, cancel);
+    }
+    /// `native_player_teleport_end_gateway` with `to`, where the player would land. Server-side.
+    pub(in crate::game) fn native_player_teleport_end_gateway_to(
+        &mut self,
+        player: u128,
+        name: &str,
+        gateway: [i32; 3],
+        to: [f64; 3],
+        cancel: &mut bool,
+    ) {
+        self.fire_player_teleport_end_gateway_to(player, name, gateway, to, cancel);
     }
     /// A server player's recipe book requested a known recipe be placed in
     /// their crafting grid. `recipe` is the recipe id; `all` is the shift
@@ -2853,6 +2953,17 @@ impl Game<'_> {
         self.fire_portal_create(dimension, pos);
     }
 
+    /// `native_portal_create` with `created`, the Nether portal blocks a travel built, in order
+    /// (empty for an End platform). Heard right after it.
+    pub(in crate::game) fn native_portal_create_detail(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        created: &[[i32; 3]],
+    ) {
+        self.fire_portal_create_detail(dimension, pos, created);
+    }
+
     /// A raid wave has been spawned at `pos`; `wave` is its one-based wave
     /// number and `raiders` counts the raiders, not the mobs they ride.
     pub(in crate::game) fn native_raid_spawn_wave(
@@ -3061,6 +3172,15 @@ impl Game<'_> {
     /// Server-side, including the single-player server.
     pub(in crate::game) fn native_prepare_hopper_transfer(&mut self, pos: [i32; 3]) {
         self.fire_prepare_hopper_transfer(pos);
+    }
+    /// A hopper at `pos` began an item transfer attempt, before pushing or pulling any items. Set
+    /// `cancel` to skip this attempt. Server-side, including the single-player server.
+    pub(in crate::game) fn native_prepare_hopper_transfer_cancel(
+        &mut self,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        self.fire_prepare_hopper_transfer_cancel(pos, cancel);
     }
     /// A hopper is about to move one item between containers, a composter's
     /// bone meal included. Set `cancel` to leave it in its source slot. A chest
@@ -3517,6 +3637,19 @@ impl Game<'_> {
         self.fire_break_block(pos, state, canceled, exp_to_drop);
         *exp_to_drop = exp_to_drop.or(initial);
     }
+    /// `native_break_block` with `player`, the acting guest's uuid (`None` when the game's own
+    /// player breaks the block). Heard right after it, with the same `canceled` and
+    /// `exp_to_drop`. Server-side.
+    pub(in crate::game) fn native_break_block_player(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        player: Option<u128>,
+        canceled: &mut bool,
+        exp_to_drop: &mut Option<u32>,
+    ) {
+        self.fire_break_block_player(pos, state, player, canceled, exp_to_drop);
+    }
     /// A player right clicks a block (NeoForge's
     /// `PlayerInteractEvent.RightClickBlock`): once per hand, where
     /// `useItemOn` starts, on the clicking client and on the server (`click`
@@ -3903,6 +4036,14 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_entity_join_level(dimension, entity, kind, pos, loaded_from_disk, canceled);
+    }
+    /// `native_entity_join_level` with `reason`, the spawn reason of a mob a spawn site finalized
+    /// (`None` for every other kind). Heard right after it, with the same `canceled`.
+    pub(in crate::game) fn native_entity_join_level_reason(
+        &mut self,
+        call: mod_api::__private::EntityJoinLevelReasonCall<'_>,
+    ) {
+        self.fire_entity_join_level_reason(call);
     }
     /// An entity mounts or dismounts a vehicle (NeoForge's `EntityMountEvent`, posted from
     /// `Entity.startRiding` and `removeVehicle`): `entity` of type `kind` (`minecraft:player`,

@@ -211,8 +211,8 @@ impl LevelAccess for GameLevel<'_> {
             self.native_crop_grow_post(self.dimension, pos, original, state);
         }
     }
-    fn allow_block_burn(&self, pos: BlockPos) -> bool {
-        self.block_burn_allowed(pos)
+    fn allow_block_burn(&self, pos: BlockPos, igniting: Option<BlockPos>) -> bool {
+        self.block_burn_allowed(pos, igniting)
     }
     fn allow_leaves_decay(&self, pos: BlockPos) -> bool {
         let mut cancel = false;

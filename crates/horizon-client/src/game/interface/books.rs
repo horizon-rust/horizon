@@ -1087,6 +1087,24 @@ impl Game<'_> {
             Some(BlockEntity::Lectern(l)) => l.book.clone(),
             _ => None,
         };
+        // Native mods, before the book leaves: a canceled take leaves it on the lectern.
+        if let (Some(book), Some(player), Some(name)) = (
+            before.as_ref(),
+            self.lan_acting_uuid,
+            self.lan_acting_name.clone(),
+        ) {
+            let mut cancel = false;
+            self.native_player_take_lectern_book_cancel(
+                player,
+                &name,
+                [key.0, key.1, key.2],
+                &book.item,
+                &mut cancel,
+            );
+            if cancel {
+                return;
+            }
+        }
         self.lectern_button(key, 3);
         if let (Some(book), Some(player), Some(name)) = (
             before.filter(|_| {

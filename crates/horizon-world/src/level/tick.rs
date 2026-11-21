@@ -832,7 +832,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if self.rand_int(age + 10) < 5 && !self.level.is_raining_at(pos) {
                 let new_age = (age + self.rand_int(5) / 4).min(15);
                 if allowed
-                    && self.level.allow_block_burn(pos)
+                    && self.level.allow_block_burn(pos, Some(fire))
                     && self.level.allow_block_ignite(pos, "spread")
                 {
                     let next = self.fire_state_with_age(pos, new_age);
@@ -840,7 +840,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     self.set_block_and_update(pos, next);
                     burned = true;
                 }
-            } else if allowed && self.level.allow_block_burn(pos) {
+            } else if allowed && self.level.allow_block_burn(pos, Some(fire)) {
                 self.level.on_caught_fire(self.ticks, old, pos, face);
                 self.remove_block(pos, false);
                 burned = true;

@@ -1,7 +1,7 @@
 //! One block entity's or entity's saved data upgraded on its own, for callers that hold it outside a chunk (a mod
 //! reading a schematic or an old structure): the fixes the chunk loaders run on it, between a depth check of the
 //! input and one of the result.
-use super::{CURRENT, Ty, key, schema, update};
+use super::{CURRENT, FLATTENING, Ty, block_state_data, key, schema, update};
 use horizon_core::nbt::{Compound, JavaString, Tag};
 
 /// The deepest nesting accepted: a list or compound at depth `MAX_DEPTH` (the root compound is at 0) is refused.
@@ -65,6 +65,25 @@ pub fn upgrade_block_entity(data_version: i32, tag: Compound) -> Result<Compound
         upgraded(Ty::BlockEntity, tag, data_version)
     } else {
         Ok(tag)
+    }
+}
+
+/// One block state's NBT (`Name`, `Properties`) saved at `data_version`, upgraded as the datafixers upgrade a block
+/// state of a chunk of that version: a state from before the flattening ([`FLATTENING`]) takes its 1.13 name and
+/// properties from `BlockStateData`; any other, or one the table doesn't know, comes back as it was saved. Data of the
+/// current version comes back as it is. Refused as [`upgrade_block_entity`] refuses a version or a depth.
+pub fn upgrade_block_state(data_version: i32, tag: Compound) -> Result<Compound, UpgradeError> {
+    let tag = checked(data_version, tag)?;
+    if data_version >= FLATTENING {
+        return Ok(tag);
+    }
+    let saved = tag.clone();
+    let upgraded = std::panic::catch_unwind(|| {
+        block_state_data::upgrade_block_state_tag(&Tag::Compound(tag))
+    });
+    match upgraded {
+        Ok(Tag::Compound(upgraded)) => Ok(upgraded),
+        _ => Ok(saved),
     }
 }
 
@@ -174,5 +193,42 @@ fn dismantle(tag: Tag) {
             Tag::Compound(entries) => pending.extend(entries.into_values()),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod block_state_guard_tests {
+    //! The version and depth refusals of `upgrade_block_state`, with literal values. The mapping of a pre-1.13 state
+    //! needs the fixers' resources and is not covered here.
+    use super::{UpgradeError, upgrade_block_state};
+    use horizon_core::nbt::{Compound, Tag, parse_snbt};
+
+    fn state() -> Compound {
+        match parse_snbt("{Name: \"minecraft:stone\"}").unwrap().0 {
+            Tag::Compound(c) => c,
+            other => panic!("expected a compound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_negative_version_is_refused_by_name() {
+        assert_eq!(
+            upgrade_block_state(-1, state()),
+            Err(UpgradeError::NegativeVersion(-1))
+        );
+    }
+
+    #[test]
+    fn a_future_version_is_refused_by_name() {
+        assert_eq!(
+            upgrade_block_state(5024, state()),
+            Err(UpgradeError::FutureVersion(5024))
+        );
+    }
+
+    #[test]
+    fn the_current_version_and_flattened_states_come_back_unchanged() {
+        assert_eq!(upgrade_block_state(5023, state()), Ok(state()));
+        assert_eq!(upgrade_block_state(1519, state()), Ok(state()));
     }
 }

@@ -1172,6 +1172,11 @@ impl Game<'_> {
         if self.hoppers.get(&pos).is_some_and(|h| h.cooldown > 0) || !enabled {
             return;
         }
+        let mut cancel = false;
+        self.native_prepare_hopper_transfer_cancel([pos.0, pos.1, pos.2], &mut cancel);
+        if cancel {
+            return;
+        }
         self.native_prepare_hopper_transfer([pos.0, pos.1, pos.2]);
         self.unpack_loot(super::container_loot::LootTarget::Block(pos), None);
         let c = self.containers();

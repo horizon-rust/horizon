@@ -1584,6 +1584,7 @@ impl Game<'_> {
     /// Forget an entity that left the world (its UUID and loaded compound).
     pub(super) fn forget_entity(&mut self, id: u32) {
         self.persist.uuids.remove(&id);
+        self.native_lifecycle.spawn_reasons.remove(&id);
         self.persist.score_destroyed.remove(&id);
         self.forget_entity_initialization(mod_api::Holder::Entity(id));
         self.entity_attachments.remove(&id);

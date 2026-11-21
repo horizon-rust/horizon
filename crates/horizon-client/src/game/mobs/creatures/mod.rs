@@ -1058,6 +1058,7 @@ impl Game<'_> {
         spawner: Option<mod_api::SpawnSource>,
     ) -> Finalized {
         let mut group = None;
+        self.native_lifecycle.spawn_reasons.insert(mob.id, reason);
         let (outcome, difficulty) = self.finalize_spawn_event(mob, reason, spawner, &mut group);
         if outcome == Finalized::Done {
             self.finalize_grouped(mob, &difficulty, reason, group);
@@ -5901,7 +5902,7 @@ impl Game<'_> {
                 }
                 // To where the pearl started its last tick (oldPosition).
                 let mut to = p.previous;
-                let mut damage = 5.0;
+                let mut damage = Some(5.0);
                 let mut cancel = false;
                 // EntityTeleportEvent.EnderPearl: a server player's pearl.
                 if p.owner == Some(Who::Player)
@@ -5911,7 +5912,7 @@ impl Game<'_> {
                     let dimension = self.dim;
                     let target;
                     (target, damage, cancel) =
-                        self.native_pearl_teleport(owner, p.id, from, to, damage, hit);
+                        self.native_pearl_teleport(owner, p.id, from, to, 5.0, hit);
                     cancel |= self.dim != dimension
                         || self.player.as_ref().is_none_or(|pl| pl.position != from)
                         || self.native_acting_player().map(|player| player.entity()) != Some(owner);
@@ -5945,7 +5946,10 @@ impl Game<'_> {
                     }
                     // ServerPlayer.teleport: removeVehicle before the placement.
                     section_steps::teleport_player(self, to);
-                    self.hurt_player_by("minecraft:ender_pearl", damage);
+                    // `damage` None: a listener skipped the hurt call.
+                    if let Some(damage) = damage {
+                        self.hurt_player_by("minecraft:ender_pearl", damage);
+                    }
                     self.audio.play(
                         "minecraft:entity.player.teleport",
                         Some([to.x, to.y, to.z]),

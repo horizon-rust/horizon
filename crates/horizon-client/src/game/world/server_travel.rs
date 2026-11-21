@@ -762,6 +762,14 @@ impl Game<'_> {
                 let (id, name) = (player.uuid, player.name.clone());
                 let mut cancel = false;
                 self.native_player_teleport_end_gateway(id, &name, g, &mut cancel);
+                let to = self.gateway_destination(g);
+                self.native_player_teleport_end_gateway_to(
+                    id,
+                    &name,
+                    g,
+                    [to.x, to.y, to.z],
+                    &mut cancel,
+                );
                 if cancel {
                     return;
                 }

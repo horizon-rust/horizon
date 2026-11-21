@@ -250,6 +250,16 @@ impl Game<'_> {
                 loaded_from_disk,
                 &mut canceled,
             );
+            let reason = self.native_lifecycle.spawn_reasons.remove(&id);
+            self.native_entity_join_level_reason(mod_api::__private::EntityJoinLevelReasonCall {
+                dimension,
+                entity: id,
+                kind: &kind,
+                pos: [at.x, at.y, at.z],
+                loaded_from_disk,
+                reason,
+                canceled: &mut canceled,
+            });
             let spawn = self
                 .native_lifecycle
                 .pending_item_spawns

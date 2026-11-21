@@ -3958,6 +3958,13 @@ impl Game<'_> {
         let mut canceled = false;
         let mut exp_to_drop = None;
         self.native_break_block(pos, state, &mut canceled, &mut exp_to_drop);
+        self.native_break_block_player(
+            pos,
+            state,
+            self.lan_acting_uuid,
+            &mut canceled,
+            &mut exp_to_drop,
+        );
         if canceled {
             return Ok(false);
         }

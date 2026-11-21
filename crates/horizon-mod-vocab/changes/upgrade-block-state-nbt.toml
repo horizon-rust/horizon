@@ -1,0 +1,2 @@
+ids = ["method:prelude::ServerHost::upgrade_block_state_nbt"]
+why = "Additive server host method upgrade_block_state_nbt(data_version, nbt) runs the game's block state datafixers on one saved block state, refusing by name as upgrade_block_entity_nbt does. Available to native and WebAssembly mods."

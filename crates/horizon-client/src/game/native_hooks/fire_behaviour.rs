@@ -13,11 +13,17 @@ impl GameLevel<'_> {
         !cancel
     }
 
-    /// `allow_block_burn`: the `block_burn` hook's cancel.
-    pub(in crate::game) fn block_burn_allowed(&self, pos: BlockPos) -> bool {
+    /// `allow_block_burn`: the `block_burn` and `block_burn_detail` hooks' cancel. `igniting` is
+    /// the fire that burns the block.
+    pub(in crate::game) fn block_burn_allowed(
+        &self,
+        pos: BlockPos,
+        igniting: Option<BlockPos>,
+    ) -> bool {
         let mut cancel = false;
         if self.native_authoritative {
             self.native_block_burn(self.dimension, pos, &mut cancel);
+            self.native_block_burn_detail(self.dimension, pos, igniting, &mut cancel);
         }
         !cancel
     }
