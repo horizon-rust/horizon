@@ -5,6 +5,10 @@ pub trait Hooks {
     /// the pause menu's Disconnect, or another replay opening over it. Heard once, after
     /// the replay is gone (`host.replay_state()` is none, or already the next replay's
     /// only after its `replay_opened`) and before a standalone replay's world is left.
+    ///
+    /// Its event's fields are fixed: on the wire every field is encoded and its layout hashed,
+    /// so adding one later breaks wasm mods built against this one; `#[non_exhaustive]` is for
+    /// Rust callers only (docs/modding/src/concepts/wire-types.md).
     #[hook(
         side = "client",
         contract = "listen",

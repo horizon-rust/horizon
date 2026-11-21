@@ -215,7 +215,7 @@ pub(super) enum PendingWorldEntry {
     /// A mod's replay, already read (`replay_open`): it is carried, never reopened by name.
     PreparedReplay {
         driver: Box<horizon_client::studio::ReplayDriver>,
-        recording: String,
+        origin: super::native_replay::ReplayOrigin,
     },
 }
 

@@ -2,6 +2,9 @@
 
 /// The replay this window plays, as `replay_state` reads it this frame.
 /// Mods receive this snapshot from the game; they do not construct it.
+/// `#[non_exhaustive]` is for Rust callers only: on the wire every field and variant is
+/// encoded and its layout hashed, so adding one later breaks wasm mods built against this one
+/// (docs/modding/src/concepts/wire-types.md).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 #[derive(horizon_mod_api_macros::Wire)]
@@ -36,6 +39,9 @@ pub const REPLAY_MAX_SPEED: f64 = 20.0;
 
 /// Why a replay call changed nothing, or why an accepted `replay_open` opened nothing
 /// (`replay_open_failed`).
+/// `#[non_exhaustive]` is for Rust callers only: on the wire every field and variant is
+/// encoded and its layout hashed, so adding one later breaks wasm mods built against this one
+/// (docs/modding/src/concepts/wire-types.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(horizon_mod_api_macros::Wire)]
@@ -61,8 +67,12 @@ pub enum ReplayError {
     /// is closing. Also why an accepted `replay_open` fails when its session can't start or
     /// the person cancels the wait for it.
     Unavailable,
-    /// A world is being joined, or this client is connected to a multiplayer server: a replay
-    /// would end that session. Leave it first (`disconnect`). Also why an accepted
+    /// A world is being joined, this client is connected to a multiplayer server, or its
+    /// single-player world is open to LAN or has splitscreen players: a replay would end that
+    /// session. Leave it first (`disconnect`). Also why an accepted
     /// `replay_open` fails when such a session starts before the replay is ready.
     WorldBusy,
+    /// An accepted `replay_open` was replaced by a later one before its recording was ready
+    /// (`replay_open_failed` only).
+    Superseded,
 }

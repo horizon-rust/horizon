@@ -4,3 +4,5 @@ horizon-client game::native_replay_tests::a_client_mod_drives_the_replay_and_hea
 horizon-client game::native_replay_tests::a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel lib daily resources
 horizon-client game::native_replay_tests::a_client_mod_opens_recordings_by_id_at_the_frames_end lib daily resources
 horizon-client game::native_replay_tests::a_replay_open_never_displaces_a_joining_or_multiplayer_session lib daily resources
+horizon-client game::native_replay_tests::the_editor_saves_a_mods_replay_only_into_the_archive_it_opened lib daily resources
+horizon-client game::native_replay_tests::a_control_socket_seek_to_the_end_rebuilds_the_world_there lib daily resources

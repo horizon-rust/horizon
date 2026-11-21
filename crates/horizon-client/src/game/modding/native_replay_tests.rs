@@ -1,6 +1,8 @@
 //! A client mod reads and drives replay playback, and the person's gameplay input stays off the
 //! recording while it plays (#19247).
-use super::native_replay::{open_recording, recording_path};
+use super::native_replay::{
+    FileIdentity, open_in_folder, open_recording, recording_path, recordings_folder,
+};
 use horizon_client::packet_source::PacketSource;
 use horizon_client::studio::ReplayDriver;
 use horizon_client::studio::mcpr::TimestampedPacket;
@@ -194,7 +196,8 @@ fn an_accepted_recording_is_read_from_the_file_opened_at_the_call() {
         Some(ReplayError::Unreadable)
     );
 
-    let (path, file) = open_recording(root.path(), "trip").unwrap();
+    let (path, file, identity) = open_recording(root.path(), "trip").unwrap();
+    assert_eq!(FileIdentity::of(&file).unwrap(), identity);
     std::fs::rename(&path, root.path().join("moved.mcpr")).unwrap();
     std::fs::write(&path, b"swapped in after the check").unwrap();
     let driver = ReplayDriver::from_file(file, &path).unwrap();
@@ -205,6 +208,54 @@ fn an_accepted_recording_is_read_from_the_file_opened_at_the_call() {
         .read_to_string(&mut swapped)
         .unwrap();
     assert_eq!(swapped, "swapped in after the check");
+}
+
+/// The recording is opened relative to the recordings folder's handle, not by its path. Where a
+/// folder held open can be moved (not Windows), one moved away after it was opened, with a decoy
+/// put at its old path, still yields the original; Windows refuses to move it at all while the
+/// handle is held, so its path can't be redirected in the meantime.
+#[test]
+fn a_recording_is_opened_through_the_recordings_folders_handle() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("recordings");
+    std::fs::create_dir(&dir).unwrap();
+    write_recording(&dir.join("trip.mcpr"), 1_000, &[]);
+    let original = FileIdentity::of(&std::fs::File::open(dir.join("trip.mcpr")).unwrap()).unwrap();
+
+    let folder = recordings_folder(&dir).unwrap();
+    let moved = root.path().join("moved");
+    let renamed = std::fs::rename(&dir, &moved);
+    #[cfg(windows)]
+    assert!(
+        renamed.is_err(),
+        "Windows keeps a folder held open in place"
+    );
+    #[cfg(not(windows))]
+    {
+        renamed.expect("a folder held open can be moved");
+        std::fs::create_dir(&dir).unwrap();
+        write_hollow_zip(&dir.join("trip.mcpr"));
+    }
+
+    let (file, identity) = open_in_folder(&folder, "trip").unwrap();
+    assert_eq!(
+        identity, original,
+        "the file in the folder opened, not the decoy"
+    );
+    assert_eq!(
+        ReplayDriver::from_file(file, &dir.join("trip.mcpr"))
+            .unwrap()
+            .duration_ms(),
+        1_000
+    );
+    assert_eq!(
+        open_in_folder(&folder, "../x").err(),
+        Some(ReplayError::InvalidId)
+    );
+    assert_eq!(
+        open_in_folder(&folder, "nothing").err(),
+        Some(ReplayError::NotFound)
+    );
 }
 
 /// The clock ends at the recording's end, a packet past the recorded duration included; it never
@@ -346,8 +397,8 @@ struct Heard(Arc<Mutex<Vec<String>>>);
 impl Hooks for Heard {
     fn replay_opened(&self, _: &mut dyn ClientHost, event: &mut mod_api::ReplayOpenedEvent<'_>) {
         let line = format!(
-            "opened {} {} {}",
-            event.recording, event.duration_ms, event.standalone
+            "opened {} {} {} #{}",
+            event.recording, event.duration_ms, event.standalone, event.request
         );
         self.0.lock().unwrap().push(line);
     }
@@ -356,7 +407,10 @@ impl Hooks for Heard {
         _: &mut dyn ClientHost,
         event: &mut mod_api::ReplayOpenFailedEvent<'_>,
     ) {
-        let line = format!("failed {} {:?}", event.recording, event.error);
+        let line = format!(
+            "failed {} {:?} #{}",
+            event.recording, event.error, event.request
+        );
         self.0.lock().unwrap().push(line);
     }
     fn replay_advanced(&self, _: &mut dyn ClientHost, event: &mut mod_api::ReplayAdvancedEvent) {
@@ -405,7 +459,7 @@ fn frame(game: &mut crate::game::Game<'_>, ms: u64) {
 /// Frame ends until the accepted open's recording is read and taken up.
 fn finish_opening(game: &mut crate::game::Game<'_>) {
     let started = std::time::Instant::now();
-    while game.replay.opening.is_some() {
+    while game.replay.opening.is_some() || game.replay.queued.is_some() {
         assert!(
             started.elapsed() < Duration::from_secs(20),
             "reading never ended"
@@ -480,8 +534,17 @@ fn a_client_mod_drives_the_replay_and_hears_its_clock_once_a_move() {
         game.native_replay_requests();
         assert!(game.replay.playing());
 
+        // A recorded dimension change renews the world's epoch, not the replay: a seek and a
+        // close asked before it still run.
+        game.replay_seek(6_000).unwrap();
+        game.native_lifecycle
+            .begin_open(mod_api::Authority::IntegratedServer);
+        game.native_replay_requests();
+        assert_eq!(game.replay_state().unwrap().position_ms, 6_000);
         game.replay_close().unwrap();
         assert!(game.replay.playing(), "open until the frame ends");
+        game.native_lifecycle
+            .begin_open(mod_api::Authority::IntegratedServer);
         game.native_replay_requests();
         assert_eq!(game.replay_state(), None);
     });
@@ -565,9 +628,11 @@ fn a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel() {
     assert_eq!(heard, ["wheel", "wheel", "wheel"]);
 }
 
-/// A mod opens recordings by id from the title: the call accepts, the recording is read off the
-/// game's thread and opened at a frame's end, a second one over it is heard after the first
-/// one's close, and an archive that fails once read is told as failed with nothing opened.
+/// A mod opens recordings by id from the title: the call accepts with a request id, the
+/// recording is read off the game's thread and opened at a frame's end, and every accepted
+/// request ends in exactly one `replay_opened` or `replay_open_failed` with its id. One thread
+/// reads at a time: an open asked while another waits supersedes it, and only the later one
+/// opens. A replay opened any other way is heard with request 0.
 #[test]
 #[ignore = "daily"]
 fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
@@ -576,16 +641,17 @@ fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
     write_recording(&root.path().join("trip2.mcpr"), 2_000, &[]);
     std::fs::write(root.path().join("damaged.mcpr"), b"not a zip").unwrap();
     write_hollow_zip(&root.path().join("hollow.mcpr"));
+    let mut ids = Vec::new();
     let heard = with_heard(|game| {
         game.replay.recordings_dir = Some(root.path().to_path_buf());
         let host: &mut dyn ClientHost = game;
         assert_eq!(host.replay_open("damaged"), Err(ReplayError::Unreadable));
         assert_eq!(host.replay_open("missing"), Err(ReplayError::NotFound));
-        assert_eq!(host.replay_open("hollow"), Ok(()));
+        let hollow = host.replay_open("hollow").unwrap();
         finish_opening(game);
         assert_eq!(game.replay_state(), None);
 
-        assert_eq!(game.replay_open("trip"), Ok(()));
+        let trip = game.replay_open("trip").unwrap();
         assert_eq!(game.replay_state(), None, "opens at a frame's end");
         finish_opening(game);
         let state = game.replay_state().expect("open");
@@ -598,33 +664,101 @@ fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
             ("trip", 1_000, true)
         );
 
-        assert_eq!(game.replay_open("trip2"), Ok(()));
+        // Two opens before the frame's end: one reading thread at most, the first superseded.
+        let first = game.replay_open("trip2").unwrap();
+        let second = game.replay_open("trip2").unwrap();
+        assert!(game.replay.opening.is_some() && game.replay.queued.is_some());
+        // A recorded dimension change renews the world's epoch: the open asked of this replay
+        // still stands.
+        game.native_lifecycle
+            .begin_open(mod_api::Authority::IntegratedServer);
         finish_opening(game);
         assert_eq!(game.replay_state().unwrap().recording, "trip2");
         game.replay_close().unwrap();
         game.native_replay_requests();
         assert_eq!(game.replay_state(), None);
+
+        let path = root.path().join("trip.mcpr");
+        let answer = game
+            .open_studio_replay(&path.display().to_string())
+            .unwrap();
+        assert_eq!(answer["ok"], true);
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+        ids = vec![hollow, trip, first, second];
     });
+    let [hollow, trip, first, second] = ids[..] else {
+        panic!("the test ended early");
+    };
+    assert!(hollow != 0 && trip != 0 && first != 0 && second != 0);
+    assert!(
+        hollow < trip && trip < first && first < second,
+        "never given twice"
+    );
     assert_eq!(
         heard,
         [
-            "failed hollow Unreadable",
-            "opened trip 1000 true",
-            "closed trip",
-            "opened trip2 2000 true",
-            "closed trip2",
+            format!("failed hollow Unreadable #{hollow}"),
+            format!("opened trip 1000 true #{trip}"),
+            format!("failed trip2 Superseded #{first}"),
+            "closed trip".into(),
+            format!("opened trip2 2000 true #{second}"),
+            "closed trip2".into(),
+            "opened trip 1000 true #0".into(),
+            "closed trip".into(),
         ]
     );
 }
 
-/// A replay never displaces a session being joined or a multiplayer one: refused at the call,
-/// and an accepted request whose session changed before it was ready, or whose read replay
-/// lost its place as the world entry, fails, opening nothing.
+/// The editor saves a mod's replay into the very archive it opened: two saves in a row both
+/// land, and once another file is put at its path, the save is refused and that file untouched.
+#[test]
+#[ignore = "daily"]
+fn the_editor_saves_a_mods_replay_only_into_the_archive_it_opened() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trip.mcpr");
+    write_recording(&path, 1_000, &[]);
+    with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        game.replay_open("trip").unwrap();
+        finish_opening(game);
+        let markers = |game: &mut crate::game::Game<'_>| {
+            game.replay
+                .driver
+                .as_mut()
+                .and_then(|driver| driver.as_any_mut().downcast_mut::<ReplayDriver>())
+                .map(|driver| driver.markers().len())
+        };
+        game.add_studio_marker();
+        game.add_studio_marker();
+        assert_eq!(markers(game), Some(2), "a save, then one after it");
+        assert_eq!(
+            ReplayDriver::open(&path).unwrap().markers().len(),
+            2,
+            "both in the archive"
+        );
+
+        std::fs::rename(&path, root.path().join("kept.mcpr")).unwrap();
+        write_recording(&path, 3_000, &[]);
+        game.add_studio_marker();
+        assert_eq!(markers(game), Some(2), "refused");
+        let other = ReplayDriver::open(&path).unwrap();
+        assert_eq!((other.duration_ms(), other.markers().len()), (3_000, 0));
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+    });
+}
+
+/// A replay never displaces a session others share or one being joined: refused at the call
+/// (a world entry waiting, a world open to LAN, splitscreen), and an accepted request whose
+/// session changed before it was ready, or whose read replay lost its place as the world entry,
+/// fails, opening nothing.
 #[test]
 #[ignore = "daily"]
 fn a_replay_open_never_displaces_a_joining_or_multiplayer_session() {
     let root = tempfile::tempdir().unwrap();
     write_recording(&root.path().join("trip.mcpr"), 1_000, &[]);
+    let mut ids = Vec::new();
     let heard = with_heard(|game| {
         game.replay.recordings_dir = Some(root.path().to_path_buf());
         game.pending_entry = Some(crate::game::PendingWorldEntry::StudioReplay(
@@ -641,20 +775,83 @@ fn a_replay_open_never_displaces_a_joining_or_multiplayer_session() {
         let driver = ReplayDriver::open(&root.path().join("trip.mcpr")).unwrap();
         game.pending_entry = Some(crate::game::PendingWorldEntry::PreparedReplay {
             driver: Box::new(driver),
-            recording: "trip".into(),
+            origin: super::native_replay::ReplayOrigin {
+                recording: "trip".into(),
+                request: 7,
+                archive: None,
+            },
         });
         game.displace_pending_replay(ReplayError::Unavailable);
         assert!(game.pending_entry.is_none());
 
+        game.split_window = true;
+        assert_eq!(
+            game.replay_open("trip"),
+            Err(ReplayError::WorldBusy),
+            "splitscreen"
+        );
+        game.split_window = false;
+
+        // A world open to LAN, with nothing else that would refuse the open.
+        crate::game::native_item_places::tests::open_to_lan(game);
+        game.options.dedicated = None;
+        assert!(game.remote.is_none() && game.integrated.is_none() && game.pending_entry.is_none());
+        assert!(game.is_published());
+        assert_eq!(game.replay_open("trip"), Err(ReplayError::WorldBusy), "LAN");
+        game.lan = None;
+
         // Accepted on the title, then a server is joined before the recording is ready.
-        assert_eq!(game.replay_open("trip"), Ok(()));
+        ids.push(game.replay_open("trip").unwrap());
         let (pipe, _server) = horizon_protocol::connection::Pipe::pair();
         game.connect_local(pipe, "Steve").unwrap();
         finish_opening(game);
         assert!(game.remote.is_some(), "the joined session stays");
         assert_eq!(game.replay_state(), None);
-
         assert_eq!(game.replay_open("trip"), Err(ReplayError::WorldBusy));
     });
-    assert_eq!(heard, ["failed trip Unavailable", "failed trip WorldBusy"]);
+    let [joined] = ids[..] else {
+        panic!("the test ended early");
+    };
+    assert_eq!(
+        heard,
+        [
+            "failed trip Unavailable #7".to_owned(),
+            format!("failed trip WorldBusy #{joined}"),
+        ]
+    );
+}
+
+/// The control socket's seek goes the way chat's, Studio's and mods' do: to the end, the world
+/// is rebuilt there and the clock reports exactly that, ended.
+#[test]
+#[ignore = "daily"]
+fn a_control_socket_seek_to_the_end_rebuilds_the_world_there() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trip.mcpr");
+    write_recording(&path, 1_000, &[400]);
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        let answer = game
+            .open_studio_replay(&path.display().to_string())
+            .unwrap();
+        assert_eq!(answer["ok"], true);
+        let answer = game
+            .studio_control(&["studio", "replay", "seek", "1000"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer["position_ms"], 1_000);
+        let state = game.replay_state().unwrap();
+        assert_eq!((state.position_ms, state.ended), (1_000, true));
+        assert!(
+            game.replay.seek_report,
+            "reported as a seek, on the next frame"
+        );
+        frame(game, 100);
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+    });
+    assert_eq!(
+        heard,
+        ["opened trip 1000 true #0", "advanced 1000", "closed trip"]
+    );
 }

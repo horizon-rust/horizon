@@ -4,12 +4,17 @@
 //! packets, so they too run at the end of the frame, outside every hook, as `disconnect` does.
 //! Pause, resume and speed only set the clock and apply at once.
 use super::{ClientQuit, Game, PendingWorldEntry};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, OpenOptions};
 use horizon_client::studio::ReplayDriver;
-use mod_api::{REPLAY_MAX_SPEED, REPLAY_MIN_SPEED, ReplayError, ReplayState, WorldEpoch};
+use mod_api::{REPLAY_MAX_SPEED, REPLAY_MIN_SPEED, ReplayError, ReplayState};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::thread::JoinHandle;
 
 /// The longest recording id, in bytes: a file name most file systems still take with `.mcpr`.
 const MAX_RECORDING_ID: usize = 250;
@@ -21,6 +26,12 @@ const DEVICE_NAMES: [&str; 30] = [
     "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
 ];
 
+/// A fresh request id for `replay_open`: never zero, never given twice while the game runs.
+fn next_request() -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// A mod's close or seek, carried out at the end of the frame. One a frame: a later request
 /// replaces an earlier one.
 pub(super) enum ReplayRequest {
@@ -30,19 +41,69 @@ pub(super) enum ReplayRequest {
     Seek { generation: u64, ms: u32 },
 }
 
-/// The sessions a request was made in: the world's lifecycle and the replay playing. A request
-/// that meets other ones when it is carried out is dropped.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct ReplayScope {
-    epoch: Option<WorldEpoch>,
-    generation: u64,
+/// The session an open was accepted in. A request that meets another one when its recording is
+/// ready fails (`WorldBusy`). Neither is a world's epoch, which a dimension change renews.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ReplayScope {
+    /// A replay plays: this one (its generation).
+    Replay(u64),
+    /// No replay plays: the connections this window had made by then, so one made (and maybe
+    /// left) since counts as a change.
+    Session(u64),
 }
 
-/// A mod's accepted `replay_open`: its recording read and indexed on a thread of its own.
-pub(super) struct ReplayOpening {
-    recording: String,
+/// A file as the system knows it (its volume or device, and its index or inode), whatever path
+/// names it now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::game) struct FileIdentity {
+    device: u64,
+    index: u64,
+}
+
+impl FileIdentity {
+    /// `file`'s identity, read from its open handle.
+    pub(in crate::game) fn of(file: &File) -> io::Result<Self> {
+        use cap_fs_ext::MetadataExt;
+        let metadata = cap_std::fs::File::from_std(file.try_clone()?).metadata()?;
+        Ok(Self {
+            device: metadata.dev(),
+            index: metadata.ino(),
+        })
+    }
+}
+
+/// Who a replay was opened for: its id, the mod request that asked for it (0 for none: the
+/// replays list, `/studio replay`, the control socket), and for a mod's, the archive it opened.
+pub(in crate::game) struct ReplayOrigin {
+    pub(in crate::game) recording: String,
+    pub(in crate::game) request: u32,
+    pub(in crate::game) archive: Option<FileIdentity>,
+}
+
+/// A mod's accepted open waiting for the reading thread: the file opened at the call.
+pub(super) struct QueuedOpen {
+    origin: ReplayOrigin,
     scope: ReplayScope,
+    file: File,
+    path: PathBuf,
+}
+
+/// The one thread reading a mod's recording. `origin` is none once a later open superseded it:
+/// its work is cancelled and whatever it answers is dropped.
+pub(super) struct ReplayOpening {
+    origin: Option<ReplayOrigin>,
+    scope: ReplayScope,
+    cancel: Arc<AtomicBool>,
     prepared: Receiver<io::Result<ReplayDriver>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for ReplayOpening {
+    /// A game closing (or a superseded open) stops the reading; its temporary stream goes with
+    /// its handle.
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Whether `id` can name a recording, judged as text alone: one plain file name, 1 to 250 bytes,
@@ -97,16 +158,57 @@ pub(super) fn recording_path(dir: &Path, id: &str) -> Result<PathBuf, ReplayErro
     Ok(file)
 }
 
-/// The recording `id` names in `dir`, opened once (`recording_path`'s checks), without following
-/// a link the file may have become since, and checked again once open. The file starts as a zip
-/// archive does, or it is `Unreadable`; it comes back rewound. Nothing later opens it by name.
-pub(super) fn open_recording(dir: &Path, id: &str) -> Result<(PathBuf, File), ReplayError> {
-    let path = recording_path(dir, id)?;
-    let mut file = open_no_follow(&path).map_err(|_| ReplayError::NotFound)?;
-    let metadata = file.metadata().map_err(|_| ReplayError::NotFound)?;
-    if !metadata.is_file() || reparse_point(&metadata) || recording_path(dir, id).is_err() {
+/// The recordings folder `dir`, opened as a folder handle: `dir`'s parent is opened as the game
+/// names it, and `dir` in it without following a link. Every recording is opened through this
+/// handle, so a folder renamed or replaced by a link afterwards can't redirect the open.
+pub(super) fn recordings_folder(dir: &Path) -> Result<Dir, ReplayError> {
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Err(ReplayError::NotFound);
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let parent = Dir::open_ambient_dir(parent, cap_std::ambient_authority())
+        .map_err(|_| ReplayError::NotFound)?;
+    let metadata = parent
+        .symlink_metadata(name)
+        .map_err(|_| ReplayError::NotFound)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(ReplayError::NotFound);
     }
+    parent
+        .open_dir_nofollow(name)
+        .map_err(|_| ReplayError::NotFound)
+}
+
+/// The recording `id` names in the recordings folder `folder`, opened once relative to that
+/// handle without following a link, and checked again once open: a regular file, not a reparse
+/// point, starting as a zip archive does (else `Unreadable`). It comes back rewound with its
+/// identity. Nothing later opens it by name.
+pub(super) fn open_in_folder(folder: &Dir, id: &str) -> Result<(File, FileIdentity), ReplayError> {
+    if !valid_id(id) {
+        return Err(ReplayError::InvalidId);
+    }
+    let name = format!("{id}.mcpr");
+    let metadata = folder
+        .symlink_metadata(&name)
+        .map_err(|_| ReplayError::NotFound)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(ReplayError::NotFound);
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let opened = folder
+        .open_with(&name, &options)
+        .map_err(|_| ReplayError::NotFound)?;
+    let mut file = opened.into_std();
+    let metadata = file.metadata().map_err(|_| ReplayError::NotFound)?;
+    if !metadata.is_file() || reparse_point(&metadata) {
+        return Err(ReplayError::NotFound);
+    }
+    let identity = FileIdentity::of(&file).map_err(|_| ReplayError::NotFound)?;
     let mut magic = [0; 4];
     if file.read_exact(&mut magic).is_err()
         || magic != *b"PK\x03\x04"
@@ -114,32 +216,24 @@ pub(super) fn open_recording(dir: &Path, id: &str) -> Result<(PathBuf, File), Re
     {
         return Err(ReplayError::Unreadable);
     }
-    Ok((path, file))
+    Ok((file, identity))
 }
 
-/// Opens `path` for reading; a link at its last component is opened as itself, not followed.
-#[cfg(windows)]
-fn open_no_follow(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-}
-
-#[cfg(unix)]
-fn open_no_follow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(path)
-}
-
-#[cfg(not(any(windows, unix)))]
-fn open_no_follow(path: &Path) -> io::Result<File> {
-    File::open(path)
+/// The recording `id` names in `dir`, opened once through the folder's handle
+/// (`recordings_folder`, `open_in_folder`); its path only names it to the editor and the log.
+pub(super) fn open_recording(
+    dir: &Path,
+    id: &str,
+) -> Result<(PathBuf, File, FileIdentity), ReplayError> {
+    if !valid_id(id) {
+        return Err(ReplayError::InvalidId);
+    }
+    let folder = std::fs::symlink_metadata(dir).map_err(|_| ReplayError::NotFound)?;
+    if !folder.is_dir() || reparse_point(&folder) {
+        return Err(ReplayError::NotFound);
+    }
+    let (file, identity) = open_in_folder(&recordings_folder(dir)?, id)?;
+    Ok((dir.join(format!("{id}.mcpr")), file, identity))
 }
 
 /// A Windows reparse point (a link, a junction, a cloud placeholder) that `is_file` may not show.
@@ -192,17 +286,23 @@ impl Game<'_> {
     }
 
     /// A session a replay must not displace: a world entry waiting, a single-player world
-    /// starting, or a server joined or being joined (a replay's own stand-in excepted).
+    /// starting, a server joined or being joined (a replay's own stand-in excepted), or a world
+    /// others play in too (open to LAN, or with splitscreen players).
     fn replay_world_busy(&self) -> bool {
         self.pending_entry.is_some()
             || self.integrated_starting.is_some()
             || (!self.replay.playing() && self.integrated.is_none() && self.remote.is_some())
+            || self.is_published()
+            || self.has_split_players()
+            || self.split_window
     }
 
+    /// The session an open is accepted in (`ReplayScope`).
     fn replay_scope(&self) -> ReplayScope {
-        ReplayScope {
-            epoch: self.native_lifecycle.epoch(),
-            generation: self.replay.generation,
+        if self.replay.playing() {
+            ReplayScope::Replay(self.replay.generation)
+        } else {
+            ReplayScope::Session(self.replay.connections)
         }
     }
 
@@ -220,30 +320,88 @@ impl Game<'_> {
         ))
     }
 
-    /// Accepts a mod's request to open a recording by id: checks it, opens its file once and
-    /// reads it on a thread of its own; the frame's end that finds it ready installs it.
-    pub(super) fn replay_open(&mut self, recording: &str) -> Result<(), ReplayError> {
+    /// Accepts a mod's request to open a recording by id: checks it and opens its file once,
+    /// through the recordings folder's handle. One thread reads recordings at a time: the
+    /// request waits for it, and a later request takes the place of one not yet ready, which
+    /// is told `Superseded` at the frame's end.
+    pub(super) fn replay_open(&mut self, recording: &str) -> Result<u32, ReplayError> {
         if !self.replay_available() {
             return Err(ReplayError::Unavailable);
         }
         if self.replay_world_busy() {
             return Err(ReplayError::WorldBusy);
         }
-        let (path, file) = open_recording(&self.recordings_dir(), recording)?;
+        let (path, file, archive) = open_recording(&self.recordings_dir(), recording)?;
+        let request = next_request();
+        let queued = QueuedOpen {
+            origin: ReplayOrigin {
+                recording: recording.to_owned(),
+                request,
+                archive: Some(archive),
+            },
+            scope: self.replay_scope(),
+            file,
+            path,
+        };
+        if let Some(earlier) = self.replay.queued.replace(queued) {
+            self.replay
+                .open_failures
+                .push((earlier.origin, ReplayError::Superseded));
+        }
+        if let Some(opening) = &mut self.replay.opening
+            && let Some(earlier) = opening.origin.take()
+        {
+            opening.cancel.store(true, Ordering::Relaxed);
+            self.replay
+                .open_failures
+                .push((earlier, ReplayError::Superseded));
+        }
+        self.start_queued_open();
+        Ok(request)
+    }
+
+    /// Hands the waiting request to a reading thread, once no other one runs.
+    fn start_queued_open(&mut self) {
+        if self.replay.opening.is_some() {
+            return;
+        }
+        let Some(QueuedOpen {
+            origin,
+            scope,
+            file,
+            path,
+        }) = self.replay.queued.take()
+        else {
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
         let (send, prepared) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
+        let reading = cancel.clone();
+        let spawned = std::thread::Builder::new()
             .name("replay-prepare".into())
             .spawn(move || {
-                let _ = send.send(ReplayDriver::from_file(file, &path));
-            })
-            .map_err(|_| ReplayError::Unavailable)?;
-        // An earlier request still being read is dropped with its thread's answer.
-        self.replay.opening = Some(ReplayOpening {
-            recording: recording.to_owned(),
-            scope: self.replay_scope(),
-            prepared,
-        });
-        Ok(())
+                let _ = send.send(ReplayDriver::from_file_cancellable(file, &path, &reading));
+            });
+        match spawned {
+            Ok(thread) => {
+                self.replay.opening = Some(ReplayOpening {
+                    origin: Some(origin),
+                    scope,
+                    cancel,
+                    prepared,
+                    thread: Some(thread),
+                });
+            }
+            Err(error) => {
+                log::error!(
+                    "Replay {:?}: no thread to read it: {error}",
+                    origin.recording
+                );
+                self.replay
+                    .open_failures
+                    .push((origin, ReplayError::Unavailable));
+            }
+        }
     }
 
     /// Asks to close the replay at the end of this frame.
@@ -296,7 +454,8 @@ impl Game<'_> {
     }
 
     /// The end of the frame: a mod's close or seek runs now, outside every hook, then an open
-    /// whose recording is ready. A close or seek of a replay closed or replaced since is dropped.
+    /// whose recording is ready, then the next waiting one starts reading, and the requests that
+    /// failed since are told. A close or seek of a replay closed or replaced since is dropped.
     pub(in crate::game) fn native_replay_requests(&mut self) {
         if let Some(request) = self.replay.request.take()
             && self.replay_available()
@@ -319,23 +478,52 @@ impl Game<'_> {
                 }
             }
         }
+        // Superseded requests hear so before a later one's outcome.
+        self.tell_replay_open_failures();
         self.poll_replay_opening();
+        self.start_queued_open();
+        self.tell_replay_open_failures();
         // A request a hook made while these ran (a seek from `replay_opened`) waits for the
         // next frame's end; its generation keeps it from reaching another replay.
     }
 
-    /// An accepted open whose recording is read: installed if the sessions it was asked in are
-    /// still the ones here, else told as failed.
+    fn tell_replay_open_failures(&mut self) {
+        for (origin, error) in std::mem::take(&mut self.replay.open_failures) {
+            self.replay_open_failed(&origin, error);
+        }
+    }
+
+    fn replay_open_failed(&mut self, origin: &ReplayOrigin, error: ReplayError) {
+        self.native_replay_open_failed(origin.request, &origin.recording, error);
+    }
+
+    /// The reading thread's answer: installed if the session it was asked in is still the one
+    /// here, else told as failed. A superseded thread's answer, whatever it is, is dropped once
+    /// the thread has ended; the next request starts reading only then.
     fn poll_replay_opening(&mut self) {
-        let Some(opening) = &self.replay.opening else {
+        let Some(opening) = &mut self.replay.opening else {
             return;
         };
+        if opening.origin.is_none() {
+            if opening.thread.as_ref().is_none_or(JoinHandle::is_finished) {
+                if let Some(thread) = opening.thread.take() {
+                    let _ = thread.join();
+                }
+                self.replay.opening = None;
+            }
+            return;
+        }
         let prepared = match opening.prepared.try_recv() {
             Ok(prepared) => prepared,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(io::Error::other("the reading thread ended")),
         };
-        let opening = self.replay.opening.take().expect("checked above");
+        let mut opening = self.replay.opening.take().expect("checked above");
+        if let Some(thread) = opening.thread.take() {
+            // It has answered: only its return is left.
+            let _ = thread.join();
+        }
+        let origin = opening.origin.take().expect("checked above");
         let refused = if !self.replay_available() {
             Some(ReplayError::Unavailable)
         } else if self.replay_world_busy() || self.replay_scope() != opening.scope {
@@ -344,14 +532,13 @@ impl Game<'_> {
             None
         };
         if let Some(error) = refused {
-            self.native_replay_open_failed(&opening.recording, error);
-            return;
+            return self.replay_open_failed(&origin, error);
         }
         match prepared {
-            Ok(driver) => self.open_prepared_replay(driver, opening.recording),
+            Ok(driver) => self.open_prepared_replay(driver, origin),
             Err(error) => {
-                log::warn!("Replay {:?} could not be read: {error}", opening.recording);
-                self.native_replay_open_failed(&opening.recording, ReplayError::Unreadable);
+                log::warn!("Replay {:?} could not be read: {error}", origin.recording);
+                self.replay_open_failed(&origin, ReplayError::Unreadable);
             }
         }
     }
@@ -360,72 +547,75 @@ impl Game<'_> {
     /// mod it opened nothing: another entry takes its place (`WorldBusy`) or the person cancels
     /// the wait (`Unavailable`). Every accepted `replay_open` ends in opened or failed.
     pub(in crate::game) fn displace_pending_replay(&mut self, error: ReplayError) {
-        if let Some(PendingWorldEntry::PreparedReplay { recording, .. }) = self
+        if let Some(PendingWorldEntry::PreparedReplay { origin, .. }) = self
             .pending_entry
             .take_if(|entry| matches!(entry, PendingWorldEntry::PreparedReplay { .. }))
         {
-            self.native_replay_open_failed(&recording, error);
+            self.replay_open_failed(&origin, error);
+        }
+    }
+
+    /// A world entry an error dropped: a mod's read replay it carried is told as failed.
+    pub(in crate::game) fn drop_world_entry(&mut self, entry: PendingWorldEntry) {
+        if let PendingWorldEntry::PreparedReplay { origin, .. } = entry {
+            self.replay_open_failed(&origin, ReplayError::Unavailable);
         }
     }
 
     /// Opens a recording already read for a mod. From a single-player world, the world is
     /// saved and left first and the replay opens on the title (`PendingWorldEntry`), carrying
     /// the read recording, never its name.
-    pub(super) fn open_prepared_replay(&mut self, driver: ReplayDriver, recording: String) {
+    pub(super) fn open_prepared_replay(&mut self, driver: ReplayDriver, origin: ReplayOrigin) {
         if let Err(error) = self.save_studio_camera_track() {
             log::warn!("Studio: could not save camera path: {error}");
         }
-        let entry = |driver| PendingWorldEntry::PreparedReplay {
-            driver: Box::new(driver),
-            recording: recording.clone(),
-        };
         if self.replay.driver.is_none() && (self.remote.is_some() || self.integrated.is_some()) {
-            self.pending_entry = Some(entry(driver));
+            let recording = origin.recording.clone();
+            self.pending_entry = Some(PendingWorldEntry::PreparedReplay {
+                driver: Box::new(driver),
+                origin,
+            });
             if let Err(error) = self.close_world() {
                 log::error!("Replay {recording:?}: could not leave the world: {error}");
-                self.pending_entry = None;
-                self.native_replay_open_failed(&recording, ReplayError::Unavailable);
+                self.displace_pending_replay(ReplayError::Unavailable);
             }
             return;
         }
         // Replay setup builds the client registries, which need the world tables.
         if self.remote.is_none() && self.res.rest.get().is_none() {
-            let driver = match self.try_defer_world_entry(entry(driver)) {
+            let entry = PendingWorldEntry::PreparedReplay {
+                driver: Box::new(driver),
+                origin,
+            };
+            let (driver, origin) = match self.try_defer_world_entry(entry) {
                 Ok(None) => return,
-                Ok(Some(PendingWorldEntry::PreparedReplay { driver, .. })) => *driver,
+                Ok(Some(PendingWorldEntry::PreparedReplay { driver, origin })) => (*driver, origin),
                 Ok(Some(_)) => unreachable!("the entry handed back is the one given"),
                 Err(error) => {
-                    log::error!("Replay {recording:?}: {error}");
-                    self.native_replay_open_failed(&recording, ReplayError::Unavailable);
+                    // The request was told as failed with the entry (`drop_world_entry`).
+                    log::error!("Replay: the world tables could not load: {error}");
                     return;
                 }
             };
             if let Err(error) = self.join_world_rest() {
-                log::error!("Replay {recording:?}: {error}");
-                self.native_replay_open_failed(&recording, ReplayError::Unavailable);
-                return;
+                log::error!("Replay {:?}: {error}", origin.recording);
+                return self.replay_open_failed(&origin, ReplayError::Unavailable);
             }
-            return self.start_prepared_replay(driver, recording);
+            return self.start_prepared_replay(driver, origin);
         }
-        self.start_prepared_replay(driver, recording);
+        self.start_prepared_replay(driver, origin);
     }
 
-    fn start_prepared_replay(&mut self, driver: ReplayDriver, recording: String) {
+    fn start_prepared_replay(&mut self, driver: ReplayDriver, origin: ReplayOrigin) {
         let path = driver.path().display().to_string();
-        match self.start_studio_replay(driver, recording.clone(), &path) {
-            Ok(answer) if answer["ok"].as_bool() == Some(true) => {}
-            Ok(answer) => {
-                log::warn!(
-                    "Replay {recording:?} could not be opened: {}",
-                    answer["error"].as_str().unwrap_or_default()
-                );
-                self.native_replay_open_failed(&recording, ReplayError::Unavailable);
-            }
-            Err(error) => {
-                log::error!("Replay {recording:?} could not be opened: {error}");
-                self.native_replay_open_failed(&recording, ReplayError::Unavailable);
-            }
-        }
+        let (request, recording) = (origin.request, origin.recording.clone());
+        let failed = match self.start_studio_replay(driver, origin, &path) {
+            Ok(answer) if answer["ok"].as_bool() == Some(true) => return,
+            Ok(answer) => answer["error"].as_str().unwrap_or_default().to_owned(),
+            Err(error) => error.to_string(),
+        };
+        log::warn!("Replay {recording:?} could not be opened: {failed}");
+        self.native_replay_open_failed(request, &recording, ReplayError::Unavailable);
     }
 
     /// Tells mods the replay's clock moved: at most once a frame, only when its position differs

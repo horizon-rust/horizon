@@ -13,19 +13,26 @@ pub trait ReplayClientHost {
     /// Asks to open the recording `recording` for playback. The id is the recording's file
     /// name in the recordings folder without `.mcpr`, never a path: what an id may hold is in
     /// [`ReplayError::InvalidId`], and an id naming no regular file directly in the folder is
-    /// `NotFound`. The call opens the file once and checks it is a zip archive; the file is then
-    /// read and indexed off the game's thread, never reopened by name. `Ok` means the request is
-    /// accepted: exactly one of `replay_opened` or `replay_open_failed` follows for it, unless a
-    /// later `replay_open` replaces it before it is ready (only the later one is then told of).
-    /// A replay is never played over a live world: from a single-player world, the world is
-    /// saved and left as Save and Quit does once the recording is ready, and the replay opens
-    /// on the title; a replay already playing is closed first (`replay_closed`). `WorldBusy`
-    /// while a world is being joined or a multiplayer server is connected; a request whose
-    /// session changes before the replay is ready (a world joined, left or opened meanwhile)
-    /// fails with `WorldBusy` too. `Unavailable` for a splitscreen guest, a server, or while
-    /// the game is closing.
+    /// `NotFound`. The call opens the file once, through the folder it checked, and checks it
+    /// is a zip archive; the file is then read and indexed off the game's thread, never
+    /// reopened by name.
+    ///
+    /// `Ok(request)` means the request is accepted: `request` is a non-zero id, never given
+    /// twice while the game runs. Exactly one of `replay_opened` or `replay_open_failed`
+    /// follows with that id, whatever happens, except when the game closes first (then no
+    /// event is promised). A later `replay_open` replaces a request not yet ready, which then
+    /// fails with `Superseded`.
+    ///
+    /// A replay is never played over a live session it would end: from a plain single-player
+    /// world, the world is saved and left as Save and Quit does once the recording is ready,
+    /// and the replay opens on the title; a replay already playing is closed first
+    /// (`replay_closed`). `WorldBusy` while a world is being joined, a multiplayer server is
+    /// connected, or the single-player world is open to LAN or has splitscreen players; an
+    /// accepted request whose session changes before it is ready (a world joined, left or
+    /// opened, or the replay playing closed or replaced) fails with `WorldBusy` too.
+    /// `Unavailable` for a splitscreen guest, a server, or while the game is closing.
     #[access(WorldOnly)]
-    fn replay_open(&mut self, recording: &str) -> Result<(), ReplayError>;
+    fn replay_open(&mut self, recording: &str) -> Result<u32, ReplayError>;
     /// Side: client.
     /// Closes the replay at the end of this frame, as Escape does: a replay opened from the
     /// title screen goes back there. `replay_closed` tells when it is closed. A later

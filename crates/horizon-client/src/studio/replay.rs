@@ -6,8 +6,10 @@
 use super::mcpr::{Marker, McprReader, McprWriter, Metadata, TimestampedPacket};
 use crate::packet_source::PacketSource;
 use std::{
+    fs::File,
     io,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
     time::Duration,
 };
 
@@ -25,6 +27,8 @@ pub struct ReplayDriver {
     looping: bool,
     finished: bool,
     next_packet_cache: Option<TimestampedPacket>,
+    /// The archive the editor's last save wrote, still open (`take_written`).
+    written: Option<File>,
 }
 
 impl ReplayDriver {
@@ -35,8 +39,14 @@ impl ReplayDriver {
 
     /// As [`ReplayDriver::open`], from the archive already open as `file`; `path` is only where
     /// the editor later saves its markers and camera path.
-    pub fn from_file(file: std::fs::File, path: &Path) -> io::Result<Self> {
-        let mut reader = McprReader::from_file(file)?;
+    pub fn from_file(file: File, path: &Path) -> io::Result<Self> {
+        Self::from_file_cancellable(file, path, &AtomicBool::new(false))
+    }
+
+    /// As [`ReplayDriver::from_file`], giving up with `Interrupted` soon after `cancel` is set
+    /// ([`McprReader::from_file_cancellable`]).
+    pub fn from_file_cancellable(file: File, path: &Path, cancel: &AtomicBool) -> io::Result<Self> {
+        let mut reader = McprReader::from_file_cancellable(file, cancel)?;
         validate_metadata(&reader.metadata)?;
         let metadata = reader.metadata.clone();
         let next_packet_cache = reader.next_packet()?;
@@ -57,7 +67,14 @@ impl ReplayDriver {
             looping: false,
             finished: false,
             next_packet_cache,
+            written: None,
         })
+    }
+
+    /// The archive the editor's last save (`add_marker`, `save_camera_path`) wrote, still open,
+    /// once: what is at [`ReplayDriver::path`] now unless something replaced it since.
+    pub fn take_written(&mut self) -> Option<File> {
+        self.written.take()
     }
 
     /// The archive this replay reads, where the editor saves its markers and camera path.
@@ -85,7 +102,7 @@ impl ReplayDriver {
         let mut markers = self.reader.markers.clone();
         markers.push(marker.clone());
         markers.sort_by_key(|entry| entry.time_ms);
-        McprWriter::replace_markers(&self.path, &markers)?;
+        self.written = Some(McprWriter::replace_markers(&self.path, &markers)?);
         self.reader.markers = markers;
         Ok(marker)
     }
@@ -93,7 +110,10 @@ impl ReplayDriver {
     /// Save the editor's camera path in the recording archive; `None`
     /// removes it.
     pub fn save_camera_path(&mut self, json: Option<Vec<u8>>) -> io::Result<()> {
-        McprWriter::replace_camera_path(&self.path, json.as_deref())?;
+        self.written = Some(McprWriter::replace_camera_path(
+            &self.path,
+            json.as_deref(),
+        )?);
         self.reader.camera_path = json;
         Ok(())
     }

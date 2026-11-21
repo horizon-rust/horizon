@@ -8,6 +8,10 @@ pub trait Hooks {
     /// the next one is heard on the frame the seek is first drawn, with exactly the position
     /// the seek applied, even when that is where the clock already was; the clock runs on from
     /// there on the frame after. For a timeline or a camera path that follows playback.
+    ///
+    /// Its event's fields are fixed: on the wire every field is encoded and its layout hashed,
+    /// so adding one later breaks wasm mods built against this one; `#[non_exhaustive]` is for
+    /// Rust callers only (docs/modding/src/concepts/wire-types.md).
     #[hook(
         side = "client",
         contract = "listen",

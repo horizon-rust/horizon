@@ -15,6 +15,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 /// The most `metaData.json` may inflate to: real files are a few hundred bytes.
@@ -377,12 +378,15 @@ impl McprWriter {
 
     /// Atomically replace the editor's camera path (`camera.json`) without
     /// touching the packet stream, metadata or other entries. `None` removes it.
-    pub fn replace_camera_path(path: &Path, json: Option<&[u8]>) -> io::Result<()> {
+    /// Returns the archive written, still open, so a caller can tell it from
+    /// one put in its place later.
+    pub fn replace_camera_path(path: &Path, json: Option<&[u8]>) -> io::Result<File> {
         replace_entry(path, CAMERA_PATH_ENTRY, "camera.part", json)
     }
 
     /// Atomically replace the optional editor markers without touching packet data.
-    pub fn replace_markers(path: &Path, markers: &[Marker]) -> io::Result<()> {
+    /// Returns the archive written, still open, as `replace_camera_path` does.
+    pub fn replace_markers(path: &Path, markers: &[Marker]) -> io::Result<File> {
         let json = if markers.is_empty() {
             None
         } else {
@@ -539,8 +543,11 @@ struct SparseIndexEntry {
     group_start: u64,
 }
 
-/// Disk-backed inflated stream removed when the reader closes.
+/// Disk-backed inflated stream. The system removes it once its handle closes
+/// (deleted on close on Windows, unlinked at once elsewhere), so it never
+/// outlives the reader, not even a process that ends without unwinding.
 struct TemporaryStream {
+    #[cfg(test)]
     path: PathBuf,
     reader: BufReader<File>,
 }
@@ -556,9 +563,10 @@ impl TemporaryStream {
                 "horizon-mcpr-{}-{nanos}-{attempt}.tmcpr",
                 std::process::id()
             ));
-            match create_private_file(&path) {
+            match create_temporary_file(&path) {
                 Ok(file) => {
                     return Ok(Self {
+                        #[cfg(test)]
                         path,
                         reader: BufReader::with_capacity(64 * 1024, file),
                     });
@@ -573,10 +581,34 @@ impl TemporaryStream {
     }
 }
 
-impl Drop for TemporaryStream {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
+/// A new private file the system deletes when its last handle closes.
+#[cfg(windows)]
+fn create_temporary_file(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x100;
+    const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .attributes(FILE_ATTRIBUTE_TEMPORARY)
+        .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn create_temporary_file(path: &Path) -> io::Result<File> {
+    let file = create_private_file(path)?;
+    fs::remove_file(path)?;
+    Ok(file)
+}
+
+/// The error a reader gives up with once its `cancel` flag is set.
+fn cancelled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "reading the recording was cancelled",
+    )
 }
 
 /// Reader for opening and streaming `.mcpr` replay files.
@@ -602,8 +634,9 @@ pub struct McprReader {
 const CAMERA_PATH_ENTRY: &str = "camera.json";
 
 /// Rewrite the archive at `path` with entry `name` replaced by `contents`
-/// (removed when `None`), through a sibling `part` file renamed over it.
-fn replace_entry(path: &Path, name: &str, part: &str, contents: Option<&[u8]>) -> io::Result<()> {
+/// (removed when `None`), through a sibling `part` file renamed over it. The
+/// written file comes back open: the file now at `path` unless it was replaced.
+fn replace_entry(path: &Path, name: &str, part: &str, contents: Option<&[u8]>) -> io::Result<File> {
     let part = sibling(path, part);
     let result = (|| {
         let file = File::open(path)?;
@@ -645,8 +678,8 @@ fn replace_entry(path: &Path, name: &str, part: &str, contents: Option<&[u8]>) -
         }
         let file = output.finish().map_err(io::Error::other)?;
         file.sync_all()?;
-        drop(file);
-        fs::rename(&part, path)
+        fs::rename(&part, path)?;
+        Ok(file)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&part);
@@ -713,6 +746,12 @@ impl McprReader {
     /// Read an `.mcpr` replay archive from a file already open, as a caller that checked where
     /// the file is opened it: nothing is looked up by path again.
     pub fn from_file(file: File) -> io::Result<Self> {
+        Self::from_file_cancellable(file, &AtomicBool::new(false))
+    }
+
+    /// As [`McprReader::from_file`], giving up with `Interrupted` soon after `cancel` is set:
+    /// inflating the stream and indexing it both check it as they go.
+    pub fn from_file_cancellable(file: File, cancel: &AtomicBool) -> io::Result<Self> {
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -743,6 +782,9 @@ impl McprReader {
         let mut stream_crc = crc32fast::Hasher::new();
         let mut buffer = [0; 64 * 1024];
         loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
             let count = stream_entry.read(&mut buffer)?;
             if count == 0 {
                 break;
@@ -785,6 +827,9 @@ impl McprReader {
         let mut group_start = 0u64;
         let mut total_packets = 0usize;
         while let Some(frame) = frame_at(&mut stream.reader, offset, stream_size)? {
+            if total_packets.is_multiple_of(STREAM_INDEX_STRIDE) && cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
             if total_packets == 0 || frame.timestamp_ms > latest {
                 latest = frame.timestamp_ms;
                 group_start = offset;
@@ -1365,6 +1410,36 @@ mod tests {
 
         drop(reader);
         assert!(!temp_path.exists(), "temporary stream is removed on close");
+    }
+
+    /// The inflated stream lives only as long as its handle, which the system closes even for
+    /// a process that never unwinds; a reader whose cancel flag is set gives up before reading.
+    #[test]
+    fn the_temporary_stream_goes_with_its_handle_and_a_cancelled_read_stops() {
+        let stream = TemporaryStream::create().unwrap();
+        let path = stream.path.clone();
+        // Elsewhere than Windows the name is gone at once; on Windows, once the handle closes.
+        #[cfg(not(windows))]
+        assert!(!path.exists());
+        let TemporaryStream { reader, .. } = stream;
+        drop(reader);
+        assert!(!path.exists(), "nothing of the stream is left by name");
+
+        let scratch = Scratch::new("cancel");
+        let mut tmcpr = Vec::new();
+        frame(&mut tmcpr, 0, 2, &[0x01, 1]);
+        let path = scratch.0.join("r.mcpr");
+        archive(
+            &path,
+            &serde_json::to_vec(&Metadata::default()).unwrap(),
+            &tmcpr,
+        );
+        let cancel = AtomicBool::new(true);
+        let Err(error) = McprReader::from_file_cancellable(File::open(&path).unwrap(), &cancel)
+        else {
+            panic!("a cancelled read gives up");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     }
 
     #[test]

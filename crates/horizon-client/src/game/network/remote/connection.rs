@@ -304,6 +304,7 @@ impl Game<'_> {
                 };
             });
         self.ui.registries.selector_tokens.clear();
+        self.replay.connections += 1;
         self.remote = Some(Remote {
             selector_metadata_supported: true,
             professions: self.client_professions()?,
@@ -549,6 +550,7 @@ impl Game<'_> {
         let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Ready(Vec::new())));
 
         self.ui.registries.selector_tokens.clear();
+        self.replay.connections += 1;
         self.remote = Some(Remote {
             selector_metadata_supported: true,
             professions: self.client_professions()?,

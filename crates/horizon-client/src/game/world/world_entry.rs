@@ -21,14 +21,25 @@ impl Game<'_> {
         &mut self,
         entry: PendingWorldEntry,
     ) -> Result<Option<PendingWorldEntry>> {
-        self.poll_world_rest()?;
+        // An entry dropped by an error still tells a mod waiting on it (`drop_world_entry`).
+        if let Err(error) = self.poll_world_rest() {
+            self.drop_world_entry(entry);
+            return Err(error);
+        }
         if self.rest_loader.is_none() {
             return Ok(Some(entry));
         }
         self.perf.world_opening();
         if self.title.is_none() {
+            let saves = match std::env::current_dir() {
+                Ok(dir) => dir.join("saves"),
+                Err(error) => {
+                    self.drop_world_entry(entry);
+                    return Err(error.into());
+                }
+            };
             let title = self
-                .new_title(std::env::current_dir()?.join("saves"))
+                .new_title(saves)
                 .with_user(|| self.options.player_name());
             self.show_title(title);
         }
@@ -94,8 +105,8 @@ impl Game<'_> {
                     log::warn!("Horizon Studio: could not open {path_str}: {e}");
                 }
             }
-            Some(PendingWorldEntry::PreparedReplay { driver, recording }) => {
-                self.open_prepared_replay(*driver, recording);
+            Some(PendingWorldEntry::PreparedReplay { driver, origin }) => {
+                self.open_prepared_replay(*driver, origin);
             }
             None => {}
         }

@@ -1,15 +1,22 @@
 //! The `replay_open_failed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// A `replay_open` the game accepted opened nothing: `recording` is the id it was asked
-    /// for, `error` why. `Unreadable` when the recording turned out damaged or of another
-    /// version once read; `WorldBusy` when a world was joined, left or opened before the replay
-    /// was ready, or another world entry took the replay's place while it waited; `Unavailable`
-    /// when the game began closing, the replay's session couldn't start, or the person
-    /// cancelled the wait for it (Escape while the world loads). Heard once for each accepted
-    /// request that doesn't reach `replay_opened`, except one replaced by a later `replay_open`
-    /// before it was ready. A single-player world already left for the replay stays left;
-    /// anything else stays as it was.
+    /// A `replay_open` the game accepted opened nothing: `request` is the id the call
+    /// returned, `recording` the id it was asked for, `error` why:
+    /// - `Superseded`: a later `replay_open` replaced it before its recording was ready;
+    /// - `Unreadable`: the recording turned out damaged or of another version once read;
+    /// - `WorldBusy`: a world was joined, left or opened, or the replay playing closed or
+    ///   replaced, before it was ready, or another world entry took its place while it waited;
+    /// - `Unavailable`: the replay's session couldn't start, the game began closing, or the
+    ///   person cancelled the wait for it (Escape while the world loads).
+    ///
+    /// Every accepted request ends in exactly one `replay_opened` or `replay_open_failed` with
+    /// its id; only a game closing first promises neither. A single-player world already left
+    /// for the replay stays left; anything else stays as it was.
+    ///
+    /// Its event's fields are fixed: on the wire every field is encoded and its layout hashed,
+    /// so adding one later breaks wasm mods built against this one; `#[non_exhaustive]` is for
+    /// Rust callers only (docs/modding/src/concepts/wire-types.md).
     #[hook(
         side = "client",
         contract = "listen",

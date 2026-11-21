@@ -36,8 +36,18 @@ pub(super) struct Replay {
     pub(super) reported_ms: Option<u32>,
     /// A mod's close or seek, run at the end of the frame (`native_replay_requests`).
     pub(super) request: Option<super::native_replay::ReplayRequest>,
-    /// A mod's accepted open, its recording being read (`replay_open`).
+    /// The one thread reading a mod's recording (`replay_open`).
     pub(super) opening: Option<super::native_replay::ReplayOpening>,
+    /// A mod's accepted open waiting for that thread; a later one takes its place.
+    pub(super) queued: Option<super::native_replay::QueuedOpen>,
+    /// Mods' accepted opens that ended without a replay, told at the frame's end.
+    pub(super) open_failures: Vec<(super::native_replay::ReplayOrigin, mod_api::ReplayError)>,
+    /// The connections this window has made: an open asked for before one was made (and maybe
+    /// left) is no longer for the session it was asked in.
+    pub(super) connections: u64,
+    /// The archive a mod's replay was opened from (`replay_open`): the editor saves its markers
+    /// and camera path only into that very file, never into one put in its place since.
+    pub(super) archive: Option<super::native_replay::FileIdentity>,
     /// A seek was applied: the next frame reports its position (`replay_advanced`) and holds the
     /// clock there, so the frame drawn shows exactly where the seek went.
     pub(super) seek_report: bool,
@@ -584,18 +594,16 @@ impl Game<'_> {
                 Some("seek") => {
                     let ms_str = words.get(3).ok_or("missing seek timestamp")?;
                     let ms: u32 = ms_str.parse().map_err(|_| "invalid timestamp")?;
-                    let pos = if let Some(r) = self.replay.driver.as_mut() {
-                        r.seek(ms).map_err(|e| format!("{e}"))?;
-                        Some(r.position_ms())
-                    } else {
-                        None
-                    };
-                    if let Some(pos) = pos {
-                        self.reset_studio_playback_ticks();
-                        Ok(Some(json!({ "ok": true, "position_ms": pos })))
-                    } else {
-                        Ok(Some(json!({ "error": "no active replay" })))
+                    if self.replay.driver.is_none() {
+                        return Ok(Some(json!({ "error": "no active replay" })));
                     }
+                    // As chat, Studio and mods seek: the world rebuilt at the position, which the
+                    // next frame reports exactly.
+                    if let Err(error) = self.seek_studio_replay(ms) {
+                        return Ok(Some(json!({ "error": error.to_string() })));
+                    }
+                    let pos = self.replay.driver.as_ref().map(|r| r.position_ms());
+                    Ok(Some(json!({ "ok": true, "position_ms": pos })))
                 }
                 Some("status") => {
                     if let Some(r) = self.replay.driver.as_ref() {
@@ -735,19 +743,28 @@ impl Game<'_> {
             }
         };
 
-        let recording = self.recording_id(path);
-        self.start_studio_replay(driver, recording, path)
+        let origin = super::native_replay::ReplayOrigin {
+            recording: self.recording_id(path),
+            request: 0,
+            archive: None,
+        };
+        self.start_studio_replay(driver, origin, path)
     }
 
     /// Plays `driver`, a recording already read, from where the game is (the title, or a replay
-    /// it replaces): its session, the first frame, then `replay_opened`. `recording` is its id
-    /// (empty when no id names it), `path` only names it in the log.
+    /// it replaces): its session, the first frame, then `replay_opened`. `origin` says who asked
+    /// for it, `path` only names it in the log.
     pub(super) fn start_studio_replay(
         &mut self,
         driver: ReplayDriver,
-        recording: String,
+        origin: super::native_replay::ReplayOrigin,
         path: &str,
     ) -> Result<Value> {
+        let super::native_replay::ReplayOrigin {
+            recording,
+            request,
+            archive,
+        } = origin;
         let standalone = self.replay.driver.is_none() && self.remote.is_none();
         if self.remote.is_none()
             && let Err(error) = self.init_remote_for_replay()
@@ -770,6 +787,7 @@ impl Game<'_> {
             self.native_replay_closed(&previous);
         }
         self.replay.recording = recording.clone();
+        self.replay.archive = archive;
         self.replay.generation += 1;
         self.replay.reported_ms = None;
         self.replay.seek_report = false;
@@ -788,7 +806,7 @@ impl Game<'_> {
         log::info!("Studio: Opened replay '{path}' ({duration_ms} ms, {packets} packets)");
         // Mods hear of the clock's moves from here on, starting where this first frame left it.
         self.replay.reported_ms = self.replay.driver.as_ref().map(|r| r.position_ms());
-        self.native_replay_opened(&recording, duration_ms, self.replay.standalone);
+        self.native_replay_opened(&recording, duration_ms, self.replay.standalone, request);
         Ok(json!({
             "ok": true,
             "duration_ms": duration_ms,
@@ -820,6 +838,7 @@ impl Game<'_> {
         self.replay.seek_report = false;
         // A part step of the wheel in the replay doesn't carry into the next session.
         self.mouse.scroll = Default::default();
+        self.replay.archive = None;
         let recording = std::mem::take(&mut self.replay.recording);
         self.native_replay_closed(&recording);
         self.replay.virtual_tick_ms = 0.0;
