@@ -891,7 +891,7 @@ impl Game<'_> {
         if let Some(t) = self
             .mob_index
             .get(&self.mobs, id)
-            .and_then(|m| m.last_damage.map(|(_, t)| t))
+            .and_then(|m| m.combat.last_damage_tick().map(i64::from))
         {
             self.sculk.damaged.insert(id, t);
         }
@@ -2233,7 +2233,7 @@ impl Game<'_> {
         }))
     }
 
-    fn tick_mob_sculk_events(&mut self) {
+    pub(super) fn tick_mob_sculk_events(&mut self) {
         let snapshot: Vec<(
             u32,
             [f64; 3],
@@ -2255,7 +2255,7 @@ impl Game<'_> {
                     m.on_ground,
                     m.fluids.in_water,
                     m.species(),
-                    m.last_damage.map(|(_, t)| t),
+                    m.combat.last_damage_tick().map(i64::from),
                     m.extra.mount,
                     m.age,
                     m.species() == Species::Bat && horizon_client::mobs::bat::resting(m),
