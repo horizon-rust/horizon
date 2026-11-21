@@ -490,7 +490,7 @@ def anchored_diffs(v, h, spec, problems, names=('vanilla', 'Horizon')):
     anchor = spec.get('anchor') or spec.get('phase')
     if not anchor:
         return wire_stream.compare(v, h, ticks)
-    av, ah = wire_stream.first_frame(v, anchor), wire_stream.first_frame(h, anchor)
+    av, ah = wire_stream.first_frame(v[:ticks + 1], anchor), wire_stream.first_frame(h[:ticks + 1], anchor)
     if av is None or ah is None:
         problems.append(f'  no {anchor}: {names[0]} at tick {av}, {names[1]} at tick {ah}')
         return wire_stream.compare(v, h, ticks)
@@ -541,7 +541,7 @@ def compare(captures, scenarios):
             problems.append(f'  {ref_name} never sent {spec["expect"]}')
         # A fall from the teleport: each client's moves from its own answer on leave the ground and land.
         for who, run in ((ref_name, v), (new_name, h)) if spec.get('falls') else ():
-            start = wire_stream.first_frame(run, spec['phase'])
+            start = wire_stream.first_frame(run[:ticks + 1], spec['phase'])
             if start is None or not wire_stream.fell_and_landed(run, start, ticks):
                 problems.append(f'  {who} did not fall and land after the teleport (answered at tick {start})')
         # The last on-ground flag: a player still in the air when the next reset comes ends it differently.
