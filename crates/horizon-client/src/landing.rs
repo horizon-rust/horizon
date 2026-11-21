@@ -24,7 +24,29 @@ use horizon_world::{
     movement_properties::MovementProperties,
     registry::BlockStateId,
 };
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{cell::Cell, collections::BTreeMap, fs, path::Path};
+
+thread_local! {
+    /// `DedicatedServer.isUnderSpawnProtection` for the player whose landings
+    /// this thread runs: the radius and the world spawn it measures from. A
+    /// guest's turn sets it (`guest_body::guest_server_tick`); a client's own
+    /// landings and the host's have none.
+    static SPAWN_PROTECTION: Cell<Option<(i32, [i32; 3])>> = const { Cell::new(None) };
+}
+
+/// Scope the spawn protection the landings on this thread obey, restored on
+/// drop as `block_contact::in_level` restores its level.
+#[must_use]
+pub fn spawn_protection(value: Option<(i32, [i32; 3])>) -> SpawnProtectionScope {
+    SpawnProtectionScope(SPAWN_PROTECTION.replace(value))
+}
+
+pub struct SpawnProtectionScope(Option<(i32, [i32; 3])>);
+impl Drop for SpawnProtectionScope {
+    fn drop(&mut self) {
+        SPAWN_PROTECTION.set(self.0);
+    }
+}
 
 /// Called on the server before a landing converts farmland to its base block.
 #[inline(never)]
@@ -543,8 +565,14 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
     fn random_int(&mut self, bound: i32) -> Result<i32> {
         Ok(self.scene.random.next_int_bound(bound)?)
     }
-    fn under_spawn_protection(&mut self, _: BlockPos) -> Result<bool> {
-        Ok(false)
+    fn under_spawn_protection(&mut self, position: BlockPos) -> Result<bool> {
+        Ok(SPAWN_PROTECTION.get().is_some_and(|(radius, spawn)| {
+            position
+                .x
+                .abs_diff(spawn[0])
+                .max(position.z.abs_diff(spawn[2]))
+                <= radius as u32
+        }))
     }
     fn mob_griefing(&mut self) -> Result<bool> {
         Ok(true)

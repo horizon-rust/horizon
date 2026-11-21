@@ -398,6 +398,13 @@ pub struct ArrowScene<'a, 'r> {
 pub trait OwnerLookup {
     /// A loaded entity other than a player has this UUID.
     fn non_player_entity(&self, uuid: [i32; 4]) -> bool;
+    /// `ServerLevel.mayInteract` for the player who shot the projectile
+    /// (`Projectile.mayInteract`), known by the guest it acts for: the world
+    /// border, and a non-operator's spawn protection radius. Nothing a client
+    /// or a probe can be inside, so it allows.
+    fn player_may_interact(&self, _guest: Option<u32>, _pos: BlockPos) -> bool {
+        true
+    }
 }
 impl OwnerLookup for () {
     fn non_player_entity(&self, _: [i32; 4]) -> bool {
@@ -1126,7 +1133,7 @@ impl Ticker<'_, '_, '_, '_> {
         // Projectile.onHitBlock: BlockState.onProjectileHit.
         if !self.client
             && self.st.on_fire()
-            && let Some(reaction) = self.block_reaction(state)
+            && let Some(reaction) = self.block_reaction(state, pos)
         {
             self.st.events.push(ArrowEvent::Block {
                 pos,
@@ -1151,9 +1158,17 @@ impl Ticker<'_, '_, '_, '_> {
         self.st.pierce = 0;
         self.st.pierced.clear();
     }
-    /// `Projectile.mayInteract`: a mob's arrows need `mob_griefing`, or a
-    /// mod's yes for the owner (NeoForge's `canEntityGrief(level, owner)`).
-    fn may_interact(&self) -> bool {
+    /// `Projectile.mayInteract`: a player's arrow asks the shooter's
+    /// `mayInteract` in the arrow's level (world border and spawn protection).
+    /// A guest's arrow is a player's even
+    /// once its owner became their entity for pvp (`Projectile.getOwner` still
+    /// answers the player), which is why the guest is what decides it.
+    fn may_interact(&self, pos: BlockPos) -> bool {
+        if self.p.guest.is_some() || self.p.owner == Some(Who::Player) {
+            return self.scene.owners.player_may_interact(self.p.guest, pos);
+        }
+        // A mob's arrows need `mob_griefing`, or a mod's yes for the owner
+        // (NeoForge's `canEntityGrief(level, owner)`).
         match self.p.owner {
             Some(Who::Mob(owner)) => match self.scene.mob_hooks {
                 Some(hooks) => hooks.can_grief(owner, self.scene.mob_griefing),
@@ -1170,7 +1185,7 @@ impl Ticker<'_, '_, '_, '_> {
         }
     }
     /// `onProjectileHit` of the blocks a burning projectile lights.
-    fn block_reaction(&self, state: BlockStateId) -> Option<BlockReaction> {
+    fn block_reaction(&self, state: BlockStateId, pos: BlockPos) -> Option<BlockReaction> {
         let name = self.scene.registry.state(state)?.name.as_str();
         let flag = |key: &str| self.scene.property(state, key) == Some("true");
         let lit = || {
@@ -1179,11 +1194,11 @@ impl Ticker<'_, '_, '_, '_> {
             self.scene.registry.id(&definition)
         };
         match name {
-            "minecraft:tnt" if self.may_interact() && self.scene.tnt_explodes => {
+            "minecraft:tnt" if self.may_interact(pos) && self.scene.tnt_explodes => {
                 Some(BlockReaction::PrimeTnt)
             }
             "minecraft:campfire" | "minecraft:soul_campfire"
-                if self.may_interact() && !flag("lit") && !flag("waterlogged") =>
+                if self.may_interact(pos) && !flag("lit") && !flag("waterlogged") =>
             {
                 lit().map(BlockReaction::Light)
             }

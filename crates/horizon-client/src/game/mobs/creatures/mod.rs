@@ -9684,16 +9684,6 @@ mod dye_mix_tests {
     }
 }
 
-impl horizon_client::arrows::OwnerLookup for Game<'_> {
-    fn non_player_entity(&self, uuid: [i32; 4]) -> bool {
-        let found = self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(uuid));
-        !matches!(
-            found,
-            None | Some(super::commands::Target::Player | super::commands::Target::Guest(_))
-        )
-    }
-}
-
 #[cfg(test)]
 mod conversion_subscriber_tests {
     use super::*;
