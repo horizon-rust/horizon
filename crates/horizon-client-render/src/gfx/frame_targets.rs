@@ -42,16 +42,34 @@ static WARNED: AtomicU32 = AtomicU32::new(0);
 /// A window frame raised an error none of its own fallbacks caught (warned of once).
 static FRAME_WARNED: AtomicBool = AtomicBool::new(false);
 
+thread_local! {
+    /// A scaled screenshot's frame is being drawn (`in_screenshot`).
+    static SCREENSHOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[cfg(test)]
 thread_local! {
     /// Tests: the next this many `made` report no room, as a device out of video memory would.
     pub(crate) static NO_ROOM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// Draws a scaled screenshot's frame (`draw`), in which `made` makes what it is given without
+/// scopes of its own: the frame's own scopes see a failure and take the screenshot again at
+/// half the size, which a target left out would not.
+pub(crate) fn in_screenshot<T>(draw: impl FnOnce() -> T) -> T {
+    let was = SCREENSHOT.replace(true);
+    let drawn = draw();
+    SCREENSHOT.set(was);
+    drawn
+}
+
 /// What `make` makes, or `None` where it raised an out-of-memory or validation error (warned of
 /// once per `kind`); what it made is dropped then. Native error scopes resolve at once, so the
 /// wait for them costs nothing.
 pub(crate) fn made<T>(device: &wgpu::Device, kind: Kind, make: impl FnOnce() -> T) -> Option<T> {
+    if SCREENSHOT.get() {
+        return Some(make());
+    }
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let value = make();

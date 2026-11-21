@@ -7407,7 +7407,9 @@ impl Renderer {
         let offscreen = std::mem::replace(&mut self.offscreen, target);
         let window_depth = std::mem::replace(&mut self.depth, depth);
         // The frame's own targets at `size` can run out of memory too.
-        let drawn = self.draw_frame(frame, Some(GpuChecks::push(&self.device)), output);
+        let drawn = frame_targets::in_screenshot(|| {
+            self.draw_frame(frame, Some(GpuChecks::push(&self.device)), output)
+        });
         self.depth = window_depth;
         self.offscreen = offscreen;
         match hdr {
