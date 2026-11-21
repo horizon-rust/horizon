@@ -55,16 +55,20 @@ fn horizon_shadow_terrain(c: HorizonCorner, origin: vec4<f32>, slot: u32, corner
 }
 @vertex fn horizon_shadow_vs(@builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>,
     @location(5) origin: vec4<f32>) -> HorizonShadowOut {
+    let layer = layer_light & 0xffffu;
+    let light = vec2<u32>((layer_light >> 16u) & 0xffu, (layer_light >> 24u) & 0xffu);
     return horizon_shadow_terrain(HorizonCorner(position, uv, layer, color, light), origin, vertex,
         vertex & 3u);
 }
 @vertex fn horizon_shadow_vs_flat(
     @builtin(vertex_index) index: u32,
-    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>, @location(2) layer: u32,
-    @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer_light: u32, @location(3) color: vec4<f32>
 ) -> HorizonShadowOut {
+    let layer = layer_light & 0xffffu;
+    let light = vec2<u32>((layer_light >> 16u) & 0xffu, (layer_light >> 24u) & 0xffu);
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[index >> 8u]];
     return horizon_shadow_terrain(HorizonCorner(position, uv, layer, color, light), origin, index,
         index & 3u);

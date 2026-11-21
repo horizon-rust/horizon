@@ -273,8 +273,8 @@ fn vis_rows(a: vec3<f32>, b: vec3<f32>, c: vec3<f32>) -> mat3x3<f32> {
 }
 
 // A corner's `terrain_vertex` from its six words: position, UV, layer and light, colour (the
-// vertex attributes `TERRAIN_ATTRIBUTES` in gfx.rs give: Float32x3, Uint16x2, Uint16, Uint8x2
-// with sky in the low byte, Unorm8x4).
+// vertex attributes `TERRAIN_ATTRIBUTES` in gfx.rs give: Float32x3, Uint16x2, Uint32 with the
+// layer in the low 16 bits and light above it (sky, then block), Unorm8x4).
 fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> TerrainOut {
     let uv = vec2(rest.x & 0xffffu, rest.x >> 16u);
     let light = vec2((rest.y >> 16u) & 0xffu, rest.y >> 24u);
