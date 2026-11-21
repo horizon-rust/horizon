@@ -8,7 +8,7 @@ pub fn routes(home: &Path, base: Option<&str>) -> Result<Routes, Failed> {
     let Some(folder) = stage_installed(home, root().join(CHECKED))? else {
         return Ok(Routes::default());
     };
-    classify(&folder, base, &|| false)
+    classify(&folder, base)
 }
 
 /// Where the checks stage the installed mods. Not `installed.routes`, which an older launcher
@@ -24,13 +24,20 @@ fn check_turn() -> Result<crate::native_cache::Locked, Failed> {
         .map_err(|error| cache_error(error).into())
 }
 
-/// Classification, shared by the checks and a build (under its lease). It reads and keeps the
-/// SDK's index, surface and build data, which need no build lease. `stop` ends a wait for the
-/// SDK's build data another fetch is unpacking: a build's Stop; a check never stops.
-pub(super) fn classify(
+/// Classification for the checks, which never stop. A build classifies with
+/// [`classify_until`], under its lease; the SDK's index, surface and build data it reads and
+/// keeps need no build lease.
+pub(super) fn classify(folder: &Path, base: Option<&str>) -> Result<Routes, Failed> {
+    classify_until(folder, base, &|| Ok(()))
+}
+
+/// [`classify`] for a build: `stop` (its [`check_cancelled`]) is asked while the build data
+/// downloads and while it waits for another fetch unpacking it, and a stop ends the
+/// classification as [`CANCELLED`] rather than as a mod's route.
+pub(super) fn classify_until(
     folder: &Path,
     base: Option<&str>,
-    stop: &dyn Fn() -> bool,
+    stop: &dyn Fn() -> Result<(), String>,
 ) -> Result<Routes, Failed> {
     let found = scan_bundles(folder)?;
     let mut result = Routes::default();
@@ -87,6 +94,7 @@ pub(super) fn classify(
         }
     };
     match judge_all(&projects, &sdk, &sdk_base, stop) {
+        Err(sdk_cache::Refusal::Cancelled) => return Err(Failed::Other(CANCELLED.into())),
         Ok(verdicts) => {
             for (id, verdict) in verdicts {
                 let route = match &verdict {
@@ -103,8 +111,6 @@ pub(super) fn classify(
                 said(id.as_str(), route);
             }
         }
-        // Stop while a build waited for the SDK's build data ends the build as cancelled.
-        Err(sdk_cache::Refusal::Cancelled) => return Err(CANCELLED.to_owned().into()),
         // Nothing is guessed: without the build's files, no mod made for another build "fits".
         Err(refusal) => {
             for project in &projects {
@@ -164,7 +170,7 @@ pub fn update_check(home: &Path, to: &str) -> Result<UpdateCheck, Failed> {
     let sdk_base = sdk_cache::Base::from_env();
     let keys = horizon_release_sign::sdk_keys_for(backend::REPO);
     let sdk = sdk_cache::index(&sdk_base, &revision, &keys).map_err(|r| r.to_string())?;
-    let verdicts = judge_all(&projects, &sdk, &sdk_base, &|| false).map_err(|r| r.to_string())?;
+    let verdicts = judge_all(&projects, &sdk, &sdk_base, &|| Ok(())).map_err(|r| r.to_string())?;
     let shown = sdk.shown();
     let unfit: Vec<LeftOut> = verdicts
         .iter()
