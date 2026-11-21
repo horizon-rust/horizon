@@ -29,6 +29,9 @@ mod section_steps;
 #[path = "../../creatures/spawn_egg_mob_tests.rs"]
 mod spawn_egg_mob_tests;
 #[cfg(test)]
+#[path = "../../creatures/spawn_eggs_tests.rs"]
+mod spawn_eggs_tests;
+#[cfg(test)]
 #[path = "../../creatures/spectator_view_tests.rs"]
 mod spectator_view_tests;
 mod world_view;
@@ -7466,8 +7469,9 @@ impl Game<'_> {
     }
     /// `Mob.checkAndHandleImportantInteractions` with a spawn egg of mob
     /// `index`'s own kind (`SpawnEggItem.spawnOffspringFromSpawnEgg`): a baby
-    /// at the mob's feet, taking the parent's variant as `getBreedOffspring`
-    /// does, and one egg used. False (PASS) when the mob has no baby form.
+    /// at the mob's feet, with the variant, colour, tameness and owner that
+    /// `getBreedOffspring` gives it, and one egg used. False (PASS) when the
+    /// mob has no baby form.
     fn spawn_egg_offspring(&mut self, index: usize) -> bool {
         let Some(stack) = self.held().cloned() else {
             return false;
@@ -7488,6 +7492,7 @@ impl Game<'_> {
         );
         let (species, variant, color) =
             (parent.species(), parent.extra.variant, parent.extra.color);
+        let (parent_id, tame, owner) = (parent.id, parent.extra.tame, parent.extra.owner);
         // `MushroomCow.getBreedOffspring(level, this)`: the egg's mate is the
         // parent itself, so the colour always rolls `nextInt(1024) == 0` to
         // flip, and every other roll spends the coin flip that can only pick
@@ -7516,6 +7521,49 @@ impl Game<'_> {
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
+        }
+        // `getBreedOffspring(level, this)`: the parent is its own partner, so
+        // the coat coin is its own first draw (the coat is the same either
+        // way, but vanilla takes the draw).
+        if horizon_client::mobs::draws_parent_variant(species)
+            && let Some(parent) = self.mobs.iter_mut().find(|m| m.id == parent_id)
+        {
+            let _ = parent.random.next_boolean();
+        }
+        // `Wolf`/`Cat.getBreedOffspring`: a tame parent's baby is tame and
+        // belongs to the same player, before the collar colour mixes.
+        if tame
+            && matches!(species, Species::Wolf | Species::Cat)
+            && let Some(child) = self.mobs.iter_mut().find(|m| m.id == id)
+        {
+            child.extra.owner = owner;
+            if species == Species::Wolf {
+                horizon_client::mobs::tame::set_tame(child, true);
+            } else {
+                child.extra.tame = true;
+            }
+        }
+        // `DyeColor.getMixedColor(level, c, c)` for a lamb's wool or a tame
+        // wolf's or cat's collar: a colour mixed with itself, but the level's
+        // random still answers the recipe miss.
+        if species == Species::Sheep || (tame && matches!(species, Species::Wolf | Species::Cat)) {
+            let mixed = dye_mix(
+                &self.loop_context,
+                world_recipes!(self),
+                &mut self.world.random,
+                color,
+                color,
+            );
+            if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
+                child.extra.color = mixed;
+            }
+        }
+        // `Wolf.getBreedOffspring`'s last draw, a voice for any pup.
+        if species == Species::Wolf {
+            let voice = self.bred_wolf_voice(parent_id);
+            if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
+                child.extra.sound_variant = voice;
+            }
         }
         // SpawnEggItem.spawnOffspringFromSpawnEgg: applyComponentsFromItemStack
         // (the egg's name, custom data and variants), no entity data.
@@ -7582,6 +7630,8 @@ impl Game<'_> {
             self.use_failed = true;
             return Ok(true);
         }
+        // `SpawnEggItem.use` (a fluid source) asks `Player.mayUseItemAt` after
+        // `canSpawn`, and answers FAIL instead.
         if fluid
             && !self.may_build()
             && !self.can_place_on_in_adventure([
@@ -7633,10 +7683,14 @@ impl Game<'_> {
             horizon_client::entity_nbt::apply_item_components(m, stack);
         }
         self.apply_spawn_egg_entity_data(id, stack, true);
+        // `EntityType.spawn`: the mob is in the level, so it calls out
+        // (`Mob.playAmbientSound`), before the egg is used up and the place
+        // is announced.
+        self.mob_ambient(id)?;
+        self.consume_held();
         self.post_block_game_event("minecraft:entity_place", p, Some(Who::Player), None);
         self.award_stat("used", &stack.item, 1);
         self.swing_arm();
-        self.consume_held();
         Ok(true)
     }
     /// `MobBucketItem.spawn`: the bucket's components, then
