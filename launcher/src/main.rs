@@ -211,6 +211,17 @@ struct Crash {
     /// One line on what went wrong: the report's error, else how the process ended.
     summary: String,
     copied: bool,
+    /// The game refused its folder leases before it started (exit 78): no game log exists.
+    leases_refused: bool,
+}
+
+/// What the Prepare error's notice offers to do about it.
+#[derive(Clone, Debug, PartialEq)]
+enum PrepareFix {
+    /// The version was deleted while the window was open: install it again.
+    Reinstall(String),
+    /// The Minecraft folders lack a library of the game: download the version's from Mojang.
+    Mojang(String),
 }
 
 /// The opening: the wordmark holds at least `OPENING_HOLD` (until the release
@@ -432,6 +443,8 @@ struct Launcher {
     /// so it moves when a line arrives even while `prepare_log` is full and its length stays.
     log_revision: u64,
     prepare_error: Option<String>,
+    /// What `prepare_error`'s notice offers, when something can be done about it.
+    prepare_fix: Option<PrepareFix>,
     client: Option<Running>,
     client_error: Option<String>,
     /// When the running client started, to tell its crash report from older ones.
