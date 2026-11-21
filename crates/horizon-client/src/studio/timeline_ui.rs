@@ -278,13 +278,7 @@ impl TimelineUi {
             let x = layout.transport_x[index];
             let rect = [x, y, btn_w, btn_h];
             let hover = ui::hovered(cursor, x, y, btn_w, btn_h);
-            style::button(
-                batch,
-                atlas,
-                rect,
-                &Text::literal(label),
-                (hover, true, false),
-            );
+            style::button(batch, atlas, rect, &Text::literal(label), (hover, true));
         }
 
         // Time Readout: 00:00.00 / 00:30.00
@@ -323,7 +317,7 @@ impl TimelineUi {
                 atlas,
                 [x, y, 32.0, btn_h],
                 &Text::literal(&speed_str),
-                (speed_hover, true, false),
+                (speed_hover, true),
             );
         }
 
@@ -348,7 +342,7 @@ impl TimelineUi {
                 atlas,
                 [x, y, layout.freecam_width, btn_h],
                 &freecam_label,
-                (freecam_hover, true, freecam.active),
+                (freecam_hover, true),
             );
         }
 
@@ -360,7 +354,7 @@ impl TimelineUi {
                 atlas,
                 [x, y, add_w, btn_h],
                 &Text::translate("horizon.studio.timeline.add_keyframe_short", &[]),
-                (add_hover, true, false),
+                (add_hover, true),
             );
             x += add_w + 3.0;
             let has_sel = self.selected_keyframe.is_some();
@@ -371,7 +365,7 @@ impl TimelineUi {
                 atlas,
                 [x, y, del_w, btn_h],
                 &Text::translate("horizon.studio.timeline.delete_keyframe_short", &[]),
-                (del_hover, has_sel, has_sel),
+                (del_hover, has_sel),
             );
             x += del_w + 3.0;
             let split_w = 38.0;
@@ -381,7 +375,7 @@ impl TimelineUi {
                 atlas,
                 [x, y, split_w, btn_h],
                 &Text::translate("horizon.studio.timeline.split", &[]),
-                (split_hover, true, false),
+                (split_hover, true),
             );
         }
     }

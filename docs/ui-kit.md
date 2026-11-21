@@ -395,24 +395,17 @@ Each overlay's captions now fit their room:
 
 ### Its look
 
-The shell paints through `graphics_style`, which follows the menu style the layer above gives
-(`menu_style::install`). Its `surfaces` picks one of two looks, with the same layout:
+The shell paints through `graphics_style` in vanilla's look, with the same layout as before: what
+vanilla's Options screens draw, from the player's resource packs. Panels are the list background between
+its header and footer separators, and the open page is a selection list's entry (a grey edge round black,
+white with the focus). Controls are the `widget/*` sprites: a value a press steps through is a
+`CycleButton`-style button, and sliders always show their track. A row the cursor or the focus is on gets
+the grey edge, and its control lights. Text colours come from `menu_style`; the official game gives no
+style, so it draws in `NEUTRAL` (vanilla's greys and chat colours, the pack's font).
 
-- `Surfaces::Flat`: see-through glass panels and flat controls in the style's colours. The official game
-  gives this with Horizon's Blocks palette (`horizon_look.rs`).
-- `Surfaces::Vanilla`: what vanilla's Options screens draw, from the player's resource packs. Panels are
-  the list background between its header and footer separators, and the open page is a selection
-  list's entry (a grey edge round black, white with the focus). Controls are the `widget/*` sprites: a
-  value a press steps through is a `CycleButton`-style button, and sliders always show their track.
-  A row the cursor or the focus is on gets the grey edge, and its control lights. `NEUTRAL`, the look
-  with no style given, uses it, so the engine built alone looks vanilla.
-
-Two of vanilla's pieces draw in any look, for overlays that use them: `graphics_style::vanilla_tab`
+Two of vanilla's pieces are shared with overlays that use them: `graphics_style::vanilla_tab`
 (a Create World tab, `MenuTabBar.MenuTabButton`) and `ui::tooltip_panel` (a tooltip's background and
 frame round any content).
-
-`HORIZON_MENU_STYLE=vanilla` starts the official game with no style given, so it draws in `NEUTRAL`.
-Use it to see and test the vanilla look; `pad_menu_e2e.py` passes the variable on to the game.
 
 ### Moving a screen onto the shell
 

@@ -383,14 +383,14 @@ impl StudioUi {
         let f_hover = ui::hovered(cursor, f_btn[0], f_btn[1], f_btn[2], f_btn[3]);
         let label = Text::tr("horizon.studio.open_folder", &[]);
         crate::widgets::record(&label.plain(), f_btn, true);
-        style::button(batch, atlas, f_btn, &label, (f_hover, true, false));
+        style::button(batch, atlas, f_btn, &label, (f_hover, true));
 
         // Button 2: Refresh (Center-Left)
         let r_btn = [panel_x + 136.0, btn_y, 65.0, btn_h];
         let r_hover = ui::hovered(cursor, r_btn[0], r_btn[1], r_btn[2], r_btn[3]);
         let label = Text::tr("horizon.studio.refresh", &[]);
         crate::widgets::record(&label.plain(), r_btn, true);
-        style::button(batch, atlas, r_btn, &label, (r_hover, true, false));
+        style::button(batch, atlas, r_btn, &label, (r_hover, true));
 
         // Button 3: Open the selected recording for playback.
         let e_btn = [panel_x + panel_w - 180.0, btn_y, 110.0, btn_h];
@@ -400,7 +400,7 @@ impl StudioUi {
             atlas,
             e_btn,
             &Text::tr("horizon.studio.open_replay", &[]),
-            (e_hover, true, false),
+            (e_hover, true),
         );
 
         // Button 3: Done / Back (Right)
@@ -408,7 +408,7 @@ impl StudioUi {
         let d_hover = ui::hovered(cursor, d_btn[0], d_btn[1], d_btn[2], d_btn[3]);
         let label = Text::tr("gui.done", &[]);
         crate::widgets::record(&label.plain(), d_btn, true);
-        style::button(batch, atlas, d_btn, &label, (d_hover, true, false));
+        style::button(batch, atlas, d_btn, &label, (d_hover, true));
         crate::widgets::declare_action(crate::widgets::Action::Done, d_btn, true);
     }
 

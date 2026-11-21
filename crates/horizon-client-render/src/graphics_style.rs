@@ -2,10 +2,10 @@
 //! colours and the controls it draws with. The screen (`graphics_ui`) only
 //! lays out rows and handles input; a menu theme replaces this module.
 //!
-//! Its colours come from `menu_style`, given at startup (in the official game the design
-//! system's Blocks palette, `docs/design-system.md`), in a lighter form: square panels of
-//! dark glass with a thin edge, so the world shows through, flat controls, and the face on
-//! the one main button, in vanilla's font.
+//! The pages draw on vanilla's own surfaces (`vanilla`): the list background and its
+//! separators, a selection list's outline, and the `widget/*` sprites from the player's resource
+//! packs, in vanilla's font. Text colours come from `menu_style` (vanilla's greys and chat
+//! colours unless the layer above gives others).
 use crate::menu_style::{self, SettingsColours};
 use crate::{
     hud::{HudAtlas, HudBatch},
@@ -17,11 +17,7 @@ use crate::{
 fn b() -> &'static SettingsColours {
     &menu_style::get().settings
 }
-/// The pages drawn on vanilla's own surfaces (`menu_style::Surfaces::Vanilla`).
 mod vanilla;
-pub fn vanilla_surfaces() -> bool {
-    menu_style::surfaces() == menu_style::Surfaces::Vanilla
-}
 thread_local! {
     /// Whether a world is behind the screen, as its backdrop was last drawn ([`veil_over`]): vanilla's
     /// list background is see-through over a world and solid over the menu's.
@@ -68,10 +64,6 @@ fn glass() -> u32 {
 pub fn edge() -> u32 {
     hex(b().ink, 26)
 }
-/// A group's panel, a little lighter than the plate it sits on.
-fn group_fill() -> u32 {
-    hex(b().ink, 11)
-}
 /// A hovered or focused row, lit on its group's panel.
 pub fn hover() -> u32 {
     hex(b().ink, 18)
@@ -86,37 +78,6 @@ pub fn head_rule() -> u32 {
 }
 pub fn row_rule() -> u32 {
     hex(b().ink, 15)
-}
-/// Fields, boxes and the value stepper: sunk, see-through.
-fn well_fill() -> u32 {
-    hex(b().outline, 102)
-}
-/// A button, a slider's track, the scroller's thumb.
-fn button_fill() -> u32 {
-    hex(b().ink, 20)
-}
-fn button_hover() -> u32 {
-    hex(b().ink, 41)
-}
-fn track_fill() -> u32 {
-    hex(b().ink, 64)
-}
-fn handle_fill() -> u32 {
-    hex(b().ink, 255)
-}
-/// The one main button.
-pub fn face() -> u32 {
-    hex(b().face, 255)
-}
-fn face_hover() -> u32 {
-    hex(b().face_hover, 255)
-}
-/// A tick box's edge when off.
-fn box_edge() -> u32 {
-    hex(b().ink_soft, 89)
-}
-fn outline() -> u32 {
-    hex(b().outline, 255)
 }
 pub fn accent() -> u32 {
     hex(b().accent, 255)
@@ -136,10 +97,6 @@ pub fn soft() -> u32 {
 }
 /// Vanilla's grey for a tooltip's lines under its first (`ChatFormatting.GRAY`).
 pub const GREY: u32 = hex(0xaaaaaa, 255);
-/// A light veil over the backdrop, under the panels.
-pub fn veil() -> u32 {
-    hex(b().page, 77)
-}
 
 /// Sizes in GUI pixels.
 /// Shorter screens than this (a 720p window at scale 3) keep a narrower margin on top.
@@ -179,94 +136,57 @@ pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
     fill(batch, atlas, rect, glass());
     ring(batch, atlas, rect, edge());
 }
-/// A group's panel on the plate, its rows on it. Vanilla's lists have none.
-pub fn group(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    if !vanilla_surfaces() {
-        fill(batch, atlas, rect, group_fill());
-    }
-}
-/// The veil over the backdrop, under the panels; none on vanilla's surfaces, whose list
-/// backgrounds darken what they cover. `in_world`: a world is behind the screen.
-pub fn veil_over(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4], in_world: bool) {
+/// The backdrop under the settings pages: vanilla's list backgrounds darken what they cover,
+/// so it draws nothing, but remembers whether a world is behind the screen (`in_world`).
+pub fn veil_over(_batch: &mut HudBatch, _atlas: &HudAtlas, _rect: [f32; 4], in_world: bool) {
     IN_WORLD.set(in_world);
-    if !vanilla_surfaces() {
-        fill(batch, atlas, rect, veil());
-    }
 }
-/// The settings pages' plate and strip: a [`panel`], or vanilla's list background between its
-/// separators.
+/// The settings pages' plate and strip: vanilla's list background between its separators.
 pub fn sheet(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    if vanilla_surfaces() {
-        return vanilla::sheet(batch, atlas, rect, IN_WORLD.get());
-    }
-    panel(batch, atlas, rect);
+    vanilla::sheet(batch, atlas, rect, IN_WORLD.get());
 }
-/// The rule under the plate's heading: vanilla's header separator on its surfaces.
+/// The rule under the plate's heading: vanilla's header separator.
 pub fn heading_rule(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    if vanilla_surfaces() {
-        return vanilla::separator(batch, atlas, rect, IN_WORLD.get());
-    }
-    fill(batch, atlas, rect, head_rule());
+    vanilla::separator(batch, atlas, rect, IN_WORLD.get());
 }
-/// The rule between two rows of a group; vanilla's lists have none.
-pub fn rule(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    if !vanilla_surfaces() {
-        fill(batch, atlas, rect, row_rule());
-    }
-}
-/// A row's light while it is pointed at or focused: on vanilla's surfaces, a selection list's
-/// grey edge round it, its control lit too.
+/// A row's light while it is pointed at or focused: a selection list's grey edge round it, its
+/// control lit too.
 pub fn lit(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    if vanilla_surfaces() {
-        return vanilla::outline(batch, atlas, rect);
-    }
-    fill(batch, atlas, rect, hover());
+    vanilla::outline(batch, atlas, rect);
 }
-/// The open page in the page list: a plate with the accent's bar beside it, or vanilla's
-/// selection-list entry (a grey outline round black; the focus ring makes it white).
+/// The open page in the page list: vanilla's selection-list entry (a grey outline round black;
+/// the focus ring makes it white).
 pub fn open_page(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    if vanilla_surfaces() {
-        return vanilla::selected(batch, atlas, rect);
-    }
-    fill(batch, atlas, rect, open());
-    fill(batch, atlas, [rect[0], rect[1], 2.0, rect[3]], accent());
+    vanilla::selected(batch, atlas, rect);
 }
-/// The width of a value's control (a cycler, a key) from the row's right edge: the value
-/// between its arrows, or a vanilla button at least a control wide.
+/// The width of a value's control (a cycler, a key) from the row's right edge: a vanilla button
+/// at least a control wide.
 pub fn value_w(atlas: &HudAtlas, value: &str) -> f32 {
-    let w = atlas.font.width(value);
-    if vanilla_surfaces() {
-        (w + vanilla::LABEL_PAD).max(CONTROL_W)
-    } else {
-        w + 18.0
-    }
+    (atlas.font.width(value) + vanilla::LABEL_PAD).max(CONTROL_W)
 }
-/// Where a value's control sits in the row at `y`, from `x` to `right`: a well 14 high, or a
-/// vanilla button as tall as the row's other controls.
+/// Where a value's control sits in the row at `y`, from `x` to `right`: a vanilla button as tall
+/// as the row's other controls.
 pub fn value_rect(x: f32, right: f32, y: f32) -> [f32; 4] {
-    let h = if vanilla_surfaces() { CONTROL_H } else { 14.0 };
-    [x, y + ((ROW - h) / 2.0).floor(), right - x, h]
+    [
+        x,
+        y + ((ROW - CONTROL_H) / 2.0).floor(),
+        right - x,
+        CONTROL_H,
+    ]
 }
 /// A sunk well: the search field, the value stepper.
 pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    if vanilla_surfaces() {
-        return vanilla::well(batch, atlas, rect);
-    }
-    fill(batch, atlas, rect, well_fill());
+    vanilla::well(batch, atlas, rect);
 }
-/// The scroller: a faint track and its thumb, or vanilla's.
+/// Vanilla's scroller: its track and thumb.
 pub fn scroller(batch: &mut HudBatch, atlas: &HudAtlas, track: [f32; 4], thumb: [f32; 4]) {
-    if vanilla_surfaces() {
-        return vanilla::scroller(batch, atlas, track, thumb);
-    }
-    fill(batch, atlas, track, row_rule());
-    fill(batch, atlas, thumb, track_fill());
+    vanilla::scroller(batch, atlas, track, thumb);
 }
 /// `text` cut to `width` with an ellipsis, as a long name gives way to its control: the HUD
 /// kit's `fit::ellipsize`.
 pub use crate::hud_kit::fit::ellipsize as fit;
-/// A 12 px tick box ending at `right`, centred in the row at `y`: its edge in the accent when on.
-/// `lit`: pointed at or held; vanilla's box lights then.
+/// Vanilla's tick box ending at `right`, centred in the row at `y`. `lit`: pointed at or held;
+/// the box lights then.
 pub fn checkbox(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -275,90 +195,50 @@ pub fn checkbox(
     on: bool,
     (lit, live): (bool, bool),
 ) {
-    if vanilla_surfaces() {
-        return vanilla::checkbox(batch, atlas, [right, y], on, (lit, live));
-    }
-    let rect = [right - 12.0, y + 4.0, 12.0, 12.0];
-    fill(batch, atlas, rect, well_fill());
-    let edge = match (on, live) {
-        (true, true) => accent(),
-        (true, false) => muted(),
-        (false, _) => box_edge(),
-    };
-    ring(batch, atlas, rect, edge);
-    if on {
-        tick(batch, atlas, rect[0] + 1.0, rect[1] + 2.0, edge);
-    }
+    vanilla::checkbox(batch, atlas, [right, y], on, (lit, live));
 }
-/// A pixel tick, 10 by 8, over its own shadow.
-fn tick(batch: &mut HudBatch, atlas: &HudAtlas, x: f32, y: f32, color: u32) {
-    const TICK: [&str; 8] = [
-        "         #",
-        "        ##",
-        "       ## ",
-        "#     ##  ",
-        "##   ##   ",
-        " ## ##    ",
-        "  ###     ",
-        "   #      ",
-    ];
-    for (j, row) in TICK.iter().enumerate() {
-        for (i, c) in row.chars().enumerate() {
-            if c == '#' {
-                let (px, py) = (x + i as f32, y + j as f32);
-                fill(batch, atlas, [px + 1.0, py + 1.0, 1.0, 1.0], outline());
-                fill(batch, atlas, [px, py, 1.0, 1.0], color);
-            }
-        }
-    }
-}
-/// A flat button with its label centred: Undo, Calibrate..., and Done in the
-/// violet (`primary`). Pointed at or focused, vanilla's white edge.
+/// Vanilla's button with its label centred: Undo, Calibrate..., Done.
 pub fn button(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
-    flags: (bool, bool, bool),
+    flags: (bool, bool),
 ) {
     button_with_room(batch, atlas, rect, label, flags, 0.0);
 }
 /// A button whose label leaves `room` at its left, for a controller's glyph drawn there
-/// (`widgets::action_glyph_room`).
+/// (`widgets::action_glyph_room`). `(hover, live)`: pointed at or focused; usable.
 pub fn button_with_room(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
-    (hover, live, primary): (bool, bool, bool),
+    (hover, live): (bool, bool),
     room: f32,
 ) {
-    if vanilla_surfaces() {
-        return vanilla::button(batch, atlas, rect, label, (hover, live), room);
-    }
-    let [x, y, w, h] = rect;
-    let face = match (live, primary, hover) {
-        (false, _, _) => well_fill(),
-        (true, true, false) => face(),
-        (true, true, true) => face_hover(),
-        (true, false, false) => button_fill(),
-        (true, false, true) => button_hover(),
-    };
-    fill(batch, atlas, rect, face);
-    if hover && live {
-        ring(batch, atlas, rect, WHITE);
-    }
-    let color = if live { WHITE } else { muted() };
-    let ty = y + ((h - 8.0) / 2.0).floor();
-    let left = x + 2.0 + room;
-    scrolling_label(
-        batch,
-        atlas,
-        label,
-        [left, ty, w - 4.0 - room],
-        (y, h),
-        color,
-    );
+    vanilla::button(batch, atlas, rect, label, (hover, live), room);
+}
+/// Vanilla's slider: its value on the track, the handle at `position`.
+pub fn slider(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    value: &Text,
+    position: f32,
+    (hover, live): (bool, bool),
+) {
+    vanilla::slider(batch, atlas, rect, value, position, (hover, live));
+}
+/// A value that a press steps through: vanilla's cycling button.
+pub fn cycler(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    value: &Text,
+    (hover, live): (bool, bool),
+) {
+    vanilla::cycler(batch, atlas, rect, value, (hover, live));
 }
 /// A widget label of `[left, y, width]` inside the widget's `(top, height)`: centred when it fits,
 /// else slid (vanilla `AbstractWidget.extractScrollingStringOverContents`) and clipped to the box.
@@ -381,75 +261,6 @@ fn scrolling_label(
         y,
         color,
     );
-}
-/// A slider: its value over a thin track filled in the accent up to the handle at `position`.
-pub fn slider(
-    batch: &mut HudBatch,
-    atlas: &HudAtlas,
-    rect: [f32; 4],
-    value: &Text,
-    position: f32,
-    (hover, live): (bool, bool),
-) {
-    if vanilla_surfaces() {
-        return vanilla::slider(batch, atlas, rect, value, position, (hover, live));
-    }
-    let [x, y, w, h] = rect;
-    let color = if live { WHITE } else { muted() };
-    scrolling_label(
-        batch,
-        atlas,
-        value,
-        [x + 2.0, y + 1.0, w - 4.0],
-        (y, h),
-        color,
-    );
-    let line = y + h - 3.0;
-    let at = x + (position.clamp(0.0, 1.0) * (w - 4.0)).round();
-    fill(batch, atlas, [x, line, w, 2.0], track_fill());
-    fill(
-        batch,
-        atlas,
-        [x, line, at - x, 2.0],
-        if live { accent() } else { muted() },
-    );
-    let handle = [at, line - 3.0, 4.0, 8.0];
-    fill(
-        batch,
-        atlas,
-        handle,
-        if live { handle_fill() } else { muted() },
-    );
-    if hover && live {
-        ring(batch, atlas, [at - 1.0, line - 4.0, 6.0, 10.0], accent());
-    }
-}
-/// A value that a press steps through: in a well, between the arrows that say so.
-pub fn cycler(
-    batch: &mut HudBatch,
-    atlas: &HudAtlas,
-    rect: [f32; 4],
-    value: &Text,
-    (hover, live): (bool, bool),
-) {
-    if vanilla_surfaces() {
-        return vanilla::cycler(batch, atlas, rect, value, (hover, live));
-    }
-    let [x, y, w, h] = rect;
-    well(batch, atlas, rect);
-    if hover && live {
-        ring(batch, atlas, rect, WHITE);
-    }
-    let ty = y + ((h - 8.0) / 2.0).floor();
-    let arrows = if hover && live { WHITE } else { muted() };
-    batch.text_styled(atlas, &Text::literal("<"), x + 3.0, ty, arrows, true);
-    batch.text_styled(atlas, &Text::literal(">"), x + w - 8.0, ty, arrows, true);
-    let color = match (live, hover) {
-        (false, _) => muted(),
-        (true, true) => WHITE,
-        (true, false) => soft(),
-    };
-    scrolling_label(batch, atlas, value, [x + 9.0, ty, w - 18.0], (y, h), color);
 }
 /// A tab as vanilla's Create World screen draws it (`MenuTabBar.MenuTabButton`), in any look:
 /// the tab sprite, and on the open tab the menu background inside it and an underline under the
@@ -511,9 +322,7 @@ mod tests {
         let short = Text::literal("Done");
         let short_w = atlas.font.width_text(&short.resolved());
         let draws: [(&str, fn(&mut HudBatch, &HudAtlas, [f32; 4], &Text)); 5] = [
-            ("button", |b, a, r, t| {
-                button(b, a, r, t, (false, true, false))
-            }),
+            ("button", |b, a, r, t| button(b, a, r, t, (false, true))),
             ("slider", |b, a, r, t| {
                 slider(b, a, r, t, 0.5, (false, true))
             }),
@@ -525,12 +334,8 @@ mod tests {
                 vanilla_tab(b, a, r, t, (false, true, true))
             }),
         ];
-        let looks = [menu_style::Surfaces::Flat, menu_style::Surfaces::Vanilla];
-        for (surfaces, (name, draw)) in looks.into_iter().flat_map(|l| draws.map(|d| (l, d))) {
-            let name = format!("{name} on {surfaces:?}");
-            let draw = |batch: &mut HudBatch, text: &Text| {
-                menu_style::with_surfaces(surfaces, || draw(batch, &atlas, rect, text))
-            };
+        for (name, draw) in draws {
+            let draw = |batch: &mut HudBatch, text: &Text| draw(batch, &atlas, rect, text);
             let mut plain = HudBatch::scratch([640, 480]);
             draw(&mut plain, &Text::empty());
             let base = plain.vertices.len();

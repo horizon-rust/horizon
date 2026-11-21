@@ -137,9 +137,14 @@ impl Loading {
         // redraw the same design when they start. GDI is unsafe:
         // horizon-threads holds it (this crate forbids unsafe code).
         #[cfg(target_os = "windows")]
-        // In the fonts given to `menu_style`; with none, the window stays as it is.
+        // In the fonts given to `menu_style`, else its bundled ones; with none, the window stays
+        // as it is.
         let boot_paint_stop = hwnd(&window)
-            .zip(horizon_client::menu_style::get().fonts)
+            .zip(
+                horizon_client::menu_style::get()
+                    .fonts
+                    .or_else(horizon_client::menu_style::bundled_fonts),
+            )
             .map(|(hwnd, fonts)| {
                 let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let repaint_stop = stop.clone();

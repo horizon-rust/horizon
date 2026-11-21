@@ -164,7 +164,7 @@ impl Columns {
 pub(crate) struct Line<P, S> {
     pub(crate) y: f32,
     pub(crate) page: P,
-    pub(crate) group: Option<(&'static str, f32)>,
+    pub(crate) group: Option<&'static str>,
     pub(crate) setting: Option<S>,
 }
 impl<P, S> Line<P, S> {
@@ -207,7 +207,7 @@ impl<P: Copy, S: Copy> Lines<P, S> {
         self.lines.push(Line {
             y: self.y,
             page,
-            group: Some((name, rows.len() as f32 * style::ROW)),
+            group: Some(name),
             setting: None,
         });
         self.y += style::GROUP_ROW;
@@ -365,34 +365,18 @@ pub(crate) fn list<P: Copy, S: Copy>(
     let shows = |y: f32, h: f32| y + h > cols.top && y < cols.bottom;
     for line in lines {
         let y = row_y(line);
-        if let Some((_, panel)) = line.group
-            && shows(y + style::GROUP_ROW, panel)
-        {
-            let rect = [cols.list_x, y + style::GROUP_ROW, cols.list_w, panel];
-            style::group(batch, atlas, rect);
-        }
-    }
-    // A group's first row, which has no rule over it.
-    let mut first = false;
-    for line in lines {
-        let y = row_y(line);
-        let after_name = std::mem::replace(&mut first, line.group.is_some());
         if !shows(y, line.h()) {
             continue;
         }
         let Some(setting) = line.setting else {
             let (name, color, dy) = match line.group {
-                Some((name, _)) => (lang::get(name), style::muted(), 3.0),
+                Some(name) => (lang::get(name), style::muted(), 3.0),
                 None => (page_name(line.page), style::accent(), 4.0),
             };
             let name = Text::literal(name);
             batch.text_styled(atlas, &name, cols.list_x + 2.0, y + dy, color, true);
             continue;
         };
-        if !after_name {
-            let rule = [cols.list_x + 8.0, y, cols.list_w - 16.0, 1.0];
-            style::rule(batch, atlas, rule);
-        }
         row(batch, setting, y);
     }
     if lines.is_empty() {
@@ -530,37 +514,29 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
         crate::widgets::target_as(rect, kind);
     }
     let color = if live { style::WHITE } else { style::muted() };
-    let soft = if live { style::soft() } else { style::muted() };
     let ty = y + ((style::ROW - 8.0) / 2.0).floor();
     let lit = live && (hover || held);
     let left = rect[0] + style::INSET;
     // An action (Calibrate...) is a button across the row, as vanilla's lists have them.
     if switch.is_none() && slider.is_none() && value.is_none() {
         let wide = [left, control[1], right - left, style::CONTROL_H];
-        style::button(batch, atlas, wide, &Text::literal(name), (lit, live, false));
+        style::button(batch, atlas, wide, &Text::literal(name), (lit, live));
     } else {
         let value = value.unwrap_or_default();
-        let vw = atlas.font.width(value);
         // A warning tag takes its room from the name, before the control.
         let tag = tag.filter(|_| live);
         let tag_w = tag.map_or(0.0, |tag| atlas.font.width(tag) + 6.0);
-        // Where the control starts, and the value's text for a slider at rest.
+        // Where the control starts.
         let start = match (switch, slider) {
             (Some(_), _) => right - style::CONTROL_H,
-            (None, Some(_)) if active || style::vanilla_surfaces() => tx,
-            (None, Some(_)) => right - vw,
+            (None, Some(_)) => tx,
             (None, None) => right - style::value_w(atlas, value),
         };
         match (switch, slider) {
             (Some(on), _) => style::checkbox(batch, atlas, right, y, on, (lit, live)),
-            // A slider shows its track, the value on it, while it is pointed at, focused or held.
             (None, Some(position)) => {
                 let value = Text::literal(value);
-                if active || style::vanilla_surfaces() {
-                    style::slider(batch, atlas, control, &value, position, (lit, live));
-                } else {
-                    batch.text_styled(atlas, &value, start, ty, soft, true);
-                }
+                style::slider(batch, atlas, control, &value, position, (lit, live));
             }
             (None, None) if key.is_some() => {
                 let value = Text::literal(value);
@@ -569,7 +545,7 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
                     _ => value,
                 };
                 let chip = style::value_rect(start, right, y);
-                style::button(batch, atlas, chip, &value, (lit, live, false));
+                style::button(batch, atlas, chip, &value, (lit, live));
             }
             (None, None) => {
                 let value = Text::literal(value);
@@ -750,7 +726,7 @@ fn pad_row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32, view:
         (None, Some(_)) => Text::literal(text).with_color(crate::text::YELLOW),
         (None, None) => Text::literal(text),
     };
-    style::button(batch, atlas, chip, &face, (live && hover, live, false));
+    style::button(batch, atlas, chip, &face, (live && hover, live));
     let ty = y + ((style::ROW - 8.0) / 2.0).floor();
     let middle = chip[0] + chip[2] / 2.0;
     if let Some(g) = art {
@@ -790,7 +766,7 @@ fn pad_row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32, view:
         crate::widgets::target(reset);
     }
     let shown = Text::literal(reset_label);
-    style::button(batch, atlas, reset, &shown, (reset_hover, resets, false));
+    style::button(batch, atlas, reset, &shown, (reset_hover, resets));
     if reset_focused {
         style::ring(batch, atlas, reset, style::WHITE);
     }
@@ -983,7 +959,7 @@ pub(crate) fn foot_button(
     rect: [f32; 4],
     label: &Text,
     cursor: (f32, f32),
-    (focused, primary): (bool, bool),
+    focused: bool,
     room: f32,
 ) {
     let [x, y, w, h] = rect;
@@ -997,7 +973,7 @@ pub(crate) fn foot_button(
     });
     crate::widgets::widget_cursor(hovered, true);
     crate::widgets::target(rect);
-    style::button_with_room(batch, atlas, rect, label, (hover, true, primary), room);
+    style::button_with_room(batch, atlas, rect, label, (hover, true), room);
 }
 
 /// Of the rows (their target, `y` and whether they can take the focus), those the keys reach.
@@ -2469,13 +2445,13 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         // X presses Apply where there is one, else Undo.
         for (target, rect) in self.foot(&cols) {
             use crate::widgets::Action as Declared;
-            let (label, declared, primary) = match target {
-                Target::Undo => (UNDO, (!self.pending).then_some(Declared::Apply), false),
-                Target::Apply => (APPLY, Some(Declared::Apply), true),
-                _ => (DONE, Some(Declared::Done), true),
+            let (label, declared) = match target {
+                Target::Undo => (UNDO, (!self.pending).then_some(Declared::Apply)),
+                Target::Apply => (APPLY, Some(Declared::Apply)),
+                _ => (DONE, Some(Declared::Done)),
             };
             let label = Text::literal(lang::get(label));
-            let flags = (self.shows_focus(target), primary);
+            let focused = self.shows_focus(target);
             let room = match declared {
                 Some(declared) => {
                     crate::widgets::declare_action(declared, rect, true);
@@ -2483,7 +2459,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 }
                 None => 0.0,
             };
-            foot_button(batch, atlas, rect, &label, cursor, flags, room);
+            foot_button(batch, atlas, rect, &label, cursor, focused, room);
         }
     }
     fn click(

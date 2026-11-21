@@ -3,11 +3,11 @@
 //! on-screen keyboard, the boot screen, the missing-resources window). Vanilla's screens never
 //! read it.
 //!
-//! The layer above gives it once at startup ([`install`]), before the first frame; the
-//! official game gives Horizon's design system (`docs/design-system.md`). With none given, the
-//! screens draw in [`NEUTRAL`]: vanilla's own surfaces (its widget sprites and list backgrounds),
-//! its greys and chat colours, and the resource pack's font where they would use their own. A
-//! read is one atomic load, and only those screens make it.
+//! The layer above may give it once at startup ([`install`]), before the first frame; the
+//! official game gives none. With none given, the screens draw in [`NEUTRAL`]: vanilla's greys
+//! and chat colours, and the resource pack's font where they would use their own. The settings
+//! pages always draw on vanilla's own surfaces (its widget sprites and list backgrounds). A read
+//! is one atomic load, and only those screens make it.
 use std::sync::OnceLock;
 
 /// Colours as `0xRRGGBB`, sizes in dp (the launcher's logical pixels).
@@ -18,39 +18,21 @@ pub struct MenuStyle {
     pub sizes: Sizes,
     /// The overlays' TrueType faces; none: they draw their text in the resource pack's font.
     pub fonts: Option<Fonts>,
-    /// What the settings pages are drawn with: their panels, lists and controls.
-    pub surfaces: Surfaces,
 }
 
-/// The settings pages' surfaces: panels, page list, rules, buttons, tick boxes, sliders, fields.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Surfaces {
-    /// Flat fills in the settings colours: panels of see-through glass, flat controls.
-    Flat,
-    /// What vanilla's Options screens draw, from the player's resource packs: the list background
-    /// and its separators for panels, a selection list's outline for the open page, and the
-    /// `widget/*` sprites for controls. A pack that restyles vanilla's menus restyles these too.
-    Vanilla,
-}
-
-/// The settings pages: square panels of dark glass over the world, flat controls, one face.
+/// The settings pages' colours: their text, values, marks and warnings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SettingsColours {
     /// The plate behind everything, drawn see-through.
     pub page: u32,
-    /// Text, and the light the panels, rules, hovers and controls are drawn in.
+    /// Text, and the light the studio's panels, rules and hovers are drawn in.
     pub ink: u32,
     /// Secondary text and values.
     pub ink_soft: u32,
     /// Labels, descriptions, what can't be used.
     pub muted: u32,
-    /// Wells and the dark edge of small marks.
-    pub outline: u32,
-    /// Focus, a checked box, a slider's fill.
+    /// Highlights: a page's name over its groups, marks.
     pub accent: u32,
-    /// The one main button, and while hovered.
-    pub face: u32,
-    pub face_hover: u32,
     pub success: u32,
     pub warn: u32,
     pub danger: u32,
@@ -103,17 +85,14 @@ pub struct Fonts {
     pub mono: &'static [u8],
 }
 
-/// The look with nothing given: vanilla's own surfaces, greys and chat colours.
+/// The look with nothing given: vanilla's greys and chat colours.
 pub const NEUTRAL: MenuStyle = MenuStyle {
     settings: SettingsColours {
         page: 0x101010,
         ink: 0xffffff,
         ink_soft: 0xe0e0e0,
         muted: 0xa0a0a0,
-        outline: 0x000000,
         accent: 0xffffff,
-        face: 0x555555,
-        face_hover: 0x6f6f6f,
         success: 0x55ff55,
         warn: 0xffff55,
         danger: 0xff5555,
@@ -142,7 +121,6 @@ pub const NEUTRAL: MenuStyle = MenuStyle {
         control_large: 40.0,
     },
     fonts: None,
-    surfaces: Surfaces::Vanilla,
 };
 
 static STYLE: OnceLock<MenuStyle> = OnceLock::new();
@@ -153,28 +131,18 @@ pub fn install(style: MenuStyle) -> bool {
     STYLE.set(style).is_ok()
 }
 
-/// The surfaces the settings pages draw on: the style's, or in this crate's tests the ones
-/// [`with_surfaces`] pinned, so a test doesn't depend on what [`NEUTRAL`] uses.
-pub fn surfaces() -> Surfaces {
-    #[cfg(test)]
-    if let Some(pinned) = PINNED.get() {
-        return pinned;
-    }
-    get().surfaces
+static BUNDLED: OnceLock<Fonts> = OnceLock::new();
+
+/// Give the faces text is drawn in where no resource pack has a font yet: the boot screen, and
+/// the window that says the prepared resources are missing. Separate from the look, which gives
+/// no fonts in vanilla's. Call it once at startup; a second call keeps the first and returns false.
+pub fn install_bundled_fonts(fonts: Fonts) -> bool {
+    BUNDLED.set(fonts).is_ok()
 }
 
-#[cfg(test)]
-thread_local! {
-    static PINNED: std::cell::Cell<Option<Surfaces>> = const { std::cell::Cell::new(None) };
-}
-
-/// Run `f` with the settings pages on `surfaces`, on this thread (tests only).
-#[cfg(test)]
-pub fn with_surfaces<R>(surfaces: Surfaces, f: impl FnOnce() -> R) -> R {
-    let before = PINNED.replace(Some(surfaces));
-    let out = f();
-    PINNED.set(before);
-    out
+/// The faces given to [`install_bundled_fonts`], if any.
+pub fn bundled_fonts() -> Option<Fonts> {
+    BUNDLED.get().copied()
 }
 
 /// The look given to [`install`], or [`NEUTRAL`].
