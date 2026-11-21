@@ -44,6 +44,7 @@ COMPONENTS = [
     '{"nbt":"foo","storage":"a:b","interpret":true}', '{"keybind":"key.jump"}', "'single'", '{text:"snbt"}', '{text:"a",extra:["b",{text:"c"}]}',
     '{"text":"x","hover_event":{"action":"show_text","value":"y"}}', '{"text":"x","click_event":{"action":"open_url","url":"https://a.b"}}',
     '{"text":"x","click_event":{"action":"run_command","command":"/help"}}', '{"text":"x","font":"minecraft:uniform"}',
+    '{"text":"x","click_event":{"action":"change_page","page":2}}', '{"text":"x","click_event":{"action":"open_url","url":"HTTPS://a.b"}}',
     '{"text":"x","color":"#ff00ff"}', '{"text":"x","shadow_color":-1}', '{"text":"x","insertion":"y"}', '[]', '[1,2]', '""', '{}',
     '{"type":"text","text":"x"}', '{"type":"translatable","translate":"x"}', '{"translate":"x","fallback":"y"}',
     '{"object":"atlas","sprite":"item/porkchop"}', '{"object":"player","player":{"name":"Notch"}}',
@@ -55,6 +56,9 @@ BAD_COMPONENTS = [
     '{"score":{"name":"@s"}}', '{"keybind":5}', '{"text":"x","click_event":{"action":"nope"}}', '{"text":"x","bold":"maybe"}',
     '{"translate":"x","with":5}', '{"text":"x","color":"#gggggg"}', '{"text":"x","hover_event":{"action":"show_text"}}', 'nope',
     '{"text":"x","font":"Bad Font"}', '{"nbt":"a","entity":"@x"}', '{"type":"nope"}', '[{"text":"a"},', '{"text":"a"', '}',
+    '{"text":"x","click_event":{"action":"open_file","path":"a"}}', '{"text":"x","click_event":{"action":"open_url","url":"file:///etc/passwd"}}',
+    '{"text":"x","click_event":{"action":"open_url","url":"a.b"}}', '{"text":"x","click_event":{"action":"change_page","page":0}}',
+    '{"text":"x","click_event":{"action":"change_page","page":"2"}}', '{"text":"x","click_event":{"action":"open_url","url":"http://a b"}}',
 ]
 NBT_COMPOUNDS = [
     '{}', '{a:1}', '{a:1b,b:"x",c:[1,2,3]}', '{a:{b:{c:1}}}', '{"quoted key":1}', "{'single':1}", '{a:[I;1,2,3]}', '{a:[B;1b,2b]}',

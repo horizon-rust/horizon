@@ -56,10 +56,34 @@ fn compile_selector(source: &str, reg: &horizon_client::command::Registries) -> 
     }
 }
 
+/// `ComponentUtils.formatList(values, separator, formatter)`: the values
+/// joined by `separator`, empty when there are none.
+fn format_list(values: Vec<Text>, separator: &Text) -> Text {
+    let mut out = Text::empty();
+    for (i, value) in values.into_iter().enumerate() {
+        if i > 0 {
+            out.push(separator.clone());
+        }
+        out.push(value);
+    }
+    out
+}
+
+/// `ComponentUtils.DEFAULT_SEPARATOR`: ", " in gray.
+fn default_separator() -> Text {
+    Text::literal(", ").with_color(horizon_client::text::GRAY)
+}
+
 impl Game<'_> {
-    /// ComponentArgument with selectors resolved for the source
-    /// (ComponentUtils.updateForEntity: names joined by ", ").
+    /// `ComponentArgument.getResolvedComponent` for the source
+    /// (`ResolutionContext.create(source)`), selectors joined by
+    /// ComponentUtils.DEFAULT_SEPARATOR.
     pub(in crate::game) fn component_arg(&mut self, ctx: &Context, name: &str) -> R<Text> {
+        self.component_arg_for(ctx, name, None)
+    }
+    /// `component_arg` with `ResolutionContext.withEntityOverride`: `*` in a
+    /// `score` is `target` (TitleCommand.showTitle resolves for each player).
+    fn component_arg_for(&mut self, ctx: &Context, name: &str, target: Option<Target>) -> R<Text> {
         let Some(Arg::Str(json)) = ctx.get(name) else {
             return Ok(Text::empty());
         };
@@ -68,61 +92,9 @@ impl Game<'_> {
         if let Some(message) = invalid_selector(&value, &self.ui.registries) {
             return Err(err("argument.component.invalid", &[&message]));
         }
-        // NbtContents.resolve: the path's values in the entity, block or
-        // storage data, rich-styled (or plain, or interpreted), ", "-joined.
-        // ScoreContents.resolve: the holder's score in the objective.
-        let nbt_values = std::cell::RefCell::new(Vec::new());
-        {
-            let mut collect = |o: &serde_json::Map<String, serde_json::Value>| {
-                if o.contains_key("nbt") || o.contains_key("score") {
-                    nbt_values.borrow_mut().push(o.clone());
-                }
-            };
-            fn walk(
-                v: &serde_json::Value,
-                f: &mut dyn FnMut(&serde_json::Map<String, serde_json::Value>),
-            ) {
-                match v {
-                    serde_json::Value::Object(o) => {
-                        f(o);
-                        for (_, x) in o {
-                            walk(x, f);
-                        }
-                    }
-                    serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, f)),
-                    _ => {}
-                }
-            }
-            walk(&value, &mut collect);
-        }
         let mut resolved: Vec<(serde_json::Map<String, serde_json::Value>, Text)> = Vec::new();
-        for o in nbt_values.into_inner() {
-            let t = if o.contains_key("score") {
-                self.resolve_score_component(&o)?
-            } else {
-                self.resolve_nbt_component(&o)
-            };
-            resolved.push((o, t));
-        }
-        let mut resolve = |raw: &str| -> Text {
-            let mut reader = horizon_client::command::Reader::new(raw);
-            let entities = horizon_client::command::args::ArgType::Entity {
-                single: false,
-                players: false,
-            };
-            let Ok(Arg::Entity(sel)) = entities.parse(&mut reader, &self.ui.registries) else {
-                return Text::literal(raw);
-            };
-            let found = self.select(&sel);
-            let mut out = Text::empty();
-            for (i, t) in found.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(Text::literal(", "));
-                }
-                out.push(self.target_name(t));
-            }
-            out
-        };
+        self.resolve_component_contents(&value, target, &mut resolved)?;
+        let mut resolve = |raw: &str| format_list(self.selector_names(raw), &default_separator());
         Ok(horizon_client::component::to_text_with(
             &value,
             &mut resolve,
@@ -134,11 +106,100 @@ impl Game<'_> {
             },
         ))
     }
+    /// NbtContents.resolve (the path's values in the entity, block or storage
+    /// data, rich-styled or plain or interpreted), ScoreContents.resolve (the
+    /// holder's score in the objective) and SelectorContents.resolve, for every
+    /// component object. Children come first, so the components inside a
+    /// `separator` are resolved before the selector that joins with it.
+    fn resolve_component_contents(
+        &mut self,
+        v: &serde_json::Value,
+        target: Option<Target>,
+        out: &mut Vec<(serde_json::Map<String, serde_json::Value>, Text)>,
+    ) -> R<()> {
+        match v {
+            serde_json::Value::Object(o) => {
+                for (_, x) in o {
+                    self.resolve_component_contents(x, target, out)?;
+                }
+                // ComponentSerialization's FuzzyCodec tries the contents codecs
+                // in order, so a `text`, `translate` or `keybind` beside a
+                // `score`, `selector` or `nbt` is the component's contents and
+                // the rest are ignored.
+                if ["text", "translate", "keybind"]
+                    .iter()
+                    .any(|k| o.get(*k).is_some_and(serde_json::Value::is_string))
+                {
+                    return Ok(());
+                }
+                // ComponentSerialization.bootstrap: `score`, then `selector`,
+                // then `nbt`.
+                let text = if o.contains_key("score") {
+                    self.resolve_score_component(o, target)?
+                } else if o.contains_key("selector") {
+                    let mut lookup = |m: &serde_json::Map<String, serde_json::Value>| {
+                        out.iter().find(|(k, _)| k == m).map(|(_, t)| t.clone())
+                    };
+                    self.resolve_selector_component(o, &mut lookup)
+                } else if o.contains_key("nbt") {
+                    self.resolve_nbt_component(o)
+                } else {
+                    return Ok(());
+                };
+                out.push((o.clone(), text));
+            }
+            serde_json::Value::Array(a) => {
+                for x in a {
+                    self.resolve_component_contents(x, target, out)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    /// SelectorContents.resolve: the matched entities' display names joined by
+    /// the object's own `separator` (ComponentUtils.formatList), else
+    /// ComponentUtils.DEFAULT_SEPARATOR.
+    fn resolve_selector_component(
+        &mut self,
+        o: &serde_json::Map<String, serde_json::Value>,
+        contents: &mut dyn FnMut(&serde_json::Map<String, serde_json::Value>) -> Option<Text>,
+    ) -> Text {
+        let Some(raw) = o.get("selector").and_then(|v| v.as_str()) else {
+            return Text::empty();
+        };
+        let names = self.selector_names(raw);
+        let separator = match o.get("separator") {
+            Some(sep) => horizon_client::component::to_text_with(
+                sep,
+                &mut |s| format_list(self.selector_names(s), &default_separator()),
+                contents,
+            ),
+            None => default_separator(),
+        };
+        format_list(names, &separator)
+    }
+    /// `EntitySelector.findEntities` then `Entity.getDisplayName` for each.
+    fn selector_names(&mut self, raw: &str) -> Vec<Text> {
+        let mut reader = horizon_client::command::Reader::new(raw);
+        let entities = horizon_client::command::args::ArgType::Entity {
+            single: false,
+            players: false,
+        };
+        let Ok(Arg::Entity(sel)) = entities.parse(&mut reader, &self.ui.registries) else {
+            return vec![Text::literal(raw)];
+        };
+        self.select(&sel)
+            .into_iter()
+            .map(|t| self.target_name(t))
+            .collect()
+    }
     /// The text of a `score` component (ScoreContents.resolve): the named
-    /// holder's score, `*` being the player the command runs for.
+    /// holder's score, `*` being `target` (the source's player when none).
     fn resolve_score_component(
         &mut self,
         o: &serde_json::Map<String, serde_json::Value>,
+        target: Option<Target>,
     ) -> R<Text> {
         let score = o.get("score");
         let field = |k: &str| score.and_then(|s| s.get(k)).and_then(|v| v.as_str());
@@ -165,8 +226,11 @@ impl Game<'_> {
                 holder = t;
             }
         }
+        // ScoreContents.resolve: `defaultScoreboardEntity` replaces `*`.
         if holder == "*" {
-            holder = self.acting_player_name().to_owned();
+            holder = target
+                .and_then(|t| self.holder_name(t))
+                .unwrap_or_else(|| self.acting_player_name().to_owned());
         }
         let board = &self.score.board;
         let (Some(objective), Some(score)) =
@@ -255,9 +319,10 @@ impl Game<'_> {
     }
     pub(super) fn cmd_tellraw(&mut self, ctx: &Context) -> R<i32> {
         let players = self.player_targets(ctx)?;
-        let message = self.component_arg(ctx, "message")?;
-        // Each player's chat (a guest's through the connection).
+        // Each player's chat (a guest's through the connection), the message
+        // resolved for that player (TellRawCommand).
         for &t in &players {
+            let message = self.component_arg_for(ctx, "message", Some(t))?;
             self.for_player(t, |g| g.system_message(message.clone()));
         }
         Ok(players.len() as i32)
@@ -303,24 +368,15 @@ impl Game<'_> {
             );
             "times"
         } else {
-            let text = self.component_arg(ctx, "title")?;
-            let sent = play::Text {
-                text: component_nbt(&text.component()),
-            };
-            if ctx.has("subtitle") {
-                self.titles_or_packet(&players, |t| t.set_subtitle(text), C::SetSubtitleText(sent));
-                "show.subtitle"
+            let (kind, key) = if ctx.has("subtitle") {
+                ("subtitle", "show.subtitle")
             } else if ctx.has("actionbar") {
-                self.titles_or_packet(
-                    &players,
-                    |t| t.set_overlay(text, false),
-                    C::SetActionBarText(sent),
-                );
-                "show.actionbar"
+                ("actionbar", "show.actionbar")
             } else {
-                self.titles_or_packet(&players, |t| t.set_title(text), C::SetTitleText(sent));
-                "show.title"
-            }
+                ("title", "show.title")
+            };
+            self.show_title(ctx, &players, kind)?;
+            key
         };
         let message = if single {
             Text::translate(&format!("commands.title.{key}.single"), &[name])
@@ -332,6 +388,31 @@ impl Game<'_> {
         };
         self.feedback(message);
         Ok(n as i32)
+    }
+    /// TitleCommand.showTitle: the component is resolved for each target
+    /// (`ResolutionContext.withEntityOverride`) and sent to that target.
+    fn show_title(&mut self, ctx: &Context, players: &[Target], kind: &str) -> R<()> {
+        for &t in players {
+            let text = self.component_arg_for(ctx, "title", Some(t))?;
+            let sent = play::Text {
+                text: component_nbt(&text.component()),
+            };
+            let packet = match kind {
+                "subtitle" => C::SetSubtitleText(sent),
+                "actionbar" => C::SetActionBarText(sent),
+                _ => C::SetTitleText(sent),
+            };
+            self.titles_or_packet(
+                &[t],
+                |titles| match kind {
+                    "subtitle" => titles.set_subtitle(text),
+                    "actionbar" => titles.set_overlay(text, false),
+                    _ => titles.set_title(text),
+                },
+                packet,
+            );
+        }
+        Ok(())
     }
     /// TitleCommand's `connection.send` for each player: a guest is sent the
     /// packet, the window's own player shows it.
@@ -400,3 +481,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "text_commands_tests.rs"]
+mod text_commands_tests;

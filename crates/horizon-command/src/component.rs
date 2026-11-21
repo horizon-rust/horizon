@@ -171,8 +171,8 @@ fn color(t: &Tag) -> R {
     }
 }
 /// A KeyDispatch over an action enum (`Unknown element name:`), with
-/// required fields per action.
-fn action_event(t: &Tag, actions: &[(&str, &[&str])]) -> R {
+/// required fields per action and the action's own payload codec.
+fn action_event(t: &Tag, actions: &[(&str, &[&str])], payload: &dyn Fn(&str, &Compound) -> R) -> R {
     let Tag::Compound(map) = t else {
         return partial(not_map(t));
     };
@@ -185,12 +185,56 @@ fn action_event(t: &Tag, actions: &[(&str, &[&str])]) -> R {
     let Some((_, fields)) = actions.iter().find(|(a, _)| *a == name) else {
         return partial(format!("Unknown element name:{name}"));
     };
+    // The action is decoded (and filtered) before its value codec runs.
+    payload(&name, map)?;
     for f in *fields {
         if get(map, f).is_none() {
             return partial(no_key(f, t));
         }
     }
     Ok(())
+}
+/// `Codec.INT` then `ExtraCodecs.POSITIVE_INT`'s range check.
+fn positive_int(t: &Tag) -> R {
+    let n = match t {
+        Tag::Byte(v) => i64::from(*v),
+        Tag::Short(v) => i64::from(*v),
+        Tag::Int(v) => i64::from(*v),
+        Tag::Long(v) => *v as i32 as i64,
+        Tag::Float(v) => f32::from_bits(*v) as i32 as i64,
+        Tag::Double(v) => f64::from_bits(*v) as i32 as i64,
+        _ => return partial("Not a number"),
+    };
+    if n < 1 {
+        return partial(format!("Value must be positive: {n}"));
+    }
+    Ok(())
+}
+/// `ExtraCodecs.UNTRUSTED_URI`: `Util.parseAndValidateUntrustedUri`, the
+/// `URISyntaxException`'s message as the error.
+fn untrusted_uri(t: &Tag) -> R {
+    let Some(uri) = string_of(t) else {
+        return partial("Not a string");
+    };
+    crate::uri::parse_untrusted_uri(&uri).or_else(partial)
+}
+/// `ClickEvent.Action.CODEC` (`filterForSerialization`) and each action's
+/// value codec, before the field-presence check.
+fn click_payload(action: &str, map: &Compound) -> R {
+    match action {
+        // `OPEN_FILE` is not allowed from a server: the action's own codec
+        // is never reached.
+        "open_file" => partial("Click event type not allowed: OPEN_FILE"),
+        "open_url" => match get(map, "url") {
+            Some(url) => untrusted_uri(url),
+            None => Ok(()),
+        },
+        "change_page" => match get(map, "page") {
+            Some(page) => positive_int(page),
+            None => Ok(()),
+        },
+        _ => Ok(()),
+    }
 }
 const CLICK_ACTIONS: &[(&str, &[&str])] = &[
     ("open_url", &["url"]),
@@ -226,10 +270,10 @@ fn style_fields(map: &Compound) -> R {
         }
     }
     if let Some(v) = get(map, "click_event") {
-        action_event(v, CLICK_ACTIONS)?;
+        action_event(v, CLICK_ACTIONS, &click_payload)?;
     }
     if let Some(v) = get(map, "hover_event") {
-        action_event(v, HOVER_ACTIONS)?;
+        action_event(v, HOVER_ACTIONS, &|_, _| Ok(()))?;
     }
     if let Some(v) = get(map, "insertion")
         && !is_string(v)
@@ -360,5 +404,61 @@ pub fn decode_style(t: &Tag) -> Result<(), String> {
     match t {
         Tag::Compound(map) => style_fields(map).map_err(|e| e.msg),
         _ => Err(not_map(t)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode;
+    use crate::snbt::parse_fully;
+
+    /// The reason the codec refuses `snbt`: the component codec is a nested
+    /// `Codec.either`, so the innermost `Second:` is the click event's own.
+    fn reason(snbt: &str) -> String {
+        let message = decode(&parse_fully(snbt).unwrap()).unwrap_err();
+        message.rsplit("Second: ").next().unwrap().to_owned()
+    }
+
+    /// ClickEvent.Action.CODEC (`filterForSerialization`), ExtraCodecs
+    /// UNTRUSTED_URI and POSITIVE_INT refuse what vanilla refuses, with its
+    /// message; the clicks a server may send still decode.
+    #[test]
+    fn a_click_event_payload_is_validated() {
+        assert_eq!(
+            reason(r#"{text:"x",click_event:{action:"open_file",path:"a"}}"#),
+            "Click event type not allowed: OPEN_FILE"
+        );
+        assert_eq!(
+            reason(r#"{text:"x",click_event:{action:"open_url",url:"file:///etc/passwd"}}"#),
+            "Unsupported protocol in URI: file:///etc/passwd: file:///etc/passwd"
+        );
+        assert_eq!(
+            reason(r#"{text:"x",click_event:{action:"open_url",url:"a.b"}}"#),
+            "Missing protocol in URI: a.b: a.b"
+        );
+        // `new URI(uri)` refuses it before the protocol is checked.
+        assert_eq!(
+            reason(r#"{text:"x",click_event:{action:"open_url",url:"http://a b"}}"#),
+            "Illegal character in authority at index 8: http://a b"
+        );
+        assert_eq!(
+            reason(r#"{text:"x",click_event:{action:"open_url",url:"https://a.b/%zz"}}"#),
+            "Malformed escape pair at index 12: https://a.b/%zz"
+        );
+        assert_eq!(
+            reason(r#"{text:"x",click_event:{action:"change_page",page:0}}"#),
+            "Value must be positive: 0"
+        );
+        assert_eq!(
+            reason(r#"{text:"x",click_event:{action:"change_page",page:"2"}}"#),
+            "Not a number"
+        );
+        assert_eq!(
+            decode(
+                &parse_fully(r#"{text:"x",click_event:{action:"open_url",url:"HTTPS://a.b"}}"#)
+                    .unwrap()
+            ),
+            Ok(())
+        );
     }
 }

@@ -1,0 +1,4 @@
+# Prepared-resource selector separator and per-player title/tellraw resolution tests.
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+horizon-client game::commands::text_commands::text_commands_tests::a_selector_joins_with_its_own_separator_and_a_gray_comma_space_by_default lib daily resources
+horizon-client game::commands::text_commands::text_commands_tests::a_title_score_wildcard_is_the_target_it_is_sent_to lib daily resources
