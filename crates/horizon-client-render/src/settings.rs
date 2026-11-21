@@ -63,6 +63,14 @@ pub fn sound_source(event: &str) -> usize {
     } else if e.starts_with("item.goat_horn.") {
         // InstrumentItem.play: SoundSource.RECORDS.
         index("record")
+    } else if matches!(
+        e,
+        "item.honeycomb.wax_on" | "item.bone_meal.use" | "item.book.put"
+    ) {
+        // Vanilla plays these on SoundSource.BLOCKS at every call site:
+        // HoneycombItem.java:83,88,104, CopperGolem.java:233,
+        // DispenseItemBehavior.java:357, LevelEventHandler.java:285 and LecternBlock.java:137.
+        index("block")
     } else if e.starts_with("music.") {
         index("music")
     } else if e.starts_with("weather.") || e.starts_with("entity.lightning_bolt") {
@@ -968,6 +976,20 @@ mod tests {
             horizon_narrator::Status::Off
         );
     }
+    /// These item id events play on SoundSource.BLOCKS in pinned vanilla 26.3.
+    #[test]
+    fn item_sounds_played_on_blocks_keep_their_category() {
+        for event in [
+            "item.honeycomb.wax_on",
+            "item.bone_meal.use",
+            "item.book.put",
+        ] {
+            assert_eq!(sound_source(event), 4, "{event}");
+        }
+        // An ordinary item event still follows the family rule.
+        assert_eq!(sound_source("item.flintandsteel.use"), 7);
+    }
+
     /// `Monster.getSoundSource`: the verified families and inherited common sounds.
     #[test]
     fn hostile_families_keep_their_sound_category() {
