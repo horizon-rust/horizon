@@ -1123,6 +1123,17 @@ def level_guest_end(host, guest, out):
     level_floor(guest, 700, 80, 0)
     guest('command', command='tp @s 700.5 80 0.5')
     guest.wait(20)
+    # #11319: other kinds take a gateway too (EndGatewayBlock.entityInside, canUsePortal): a hovering
+    # arrow and sand block each go through a gateway beside the guest's and wait at its exit, 3 blocks
+    # south of the guest's, with a dropped item (a kind gateways took before) as the control. One
+    # gateway each: the first entity through cools a gateway down.
+    for x, exit_x, kind, data in ((702, 100, 'falling_block', 'BlockState:{Name:"minecraft:sand"}'),
+                                  (700, 101, 'arrow', 'pickup:0b'),
+                                  (698, 99, 'item', 'Item:{id:"minecraft:diamond",count:1},PickupDelay:32767')):
+        guest('command', command=f'setblock {x} 80 4 minecraft:end_gateway{{exit_portal:[I;{exit_x},50,3],'
+                                 'ExactTeleport:1b}')
+        guest('command', command=f'summon minecraft:{kind} {x}.5 80.2 4.5 {{NoGravity:1b,Tags:["e2e_gw"],{data}}}')
+    guest.wait(10)
     guest('command', command='setblock 702 80 0 minecraft:end_gateway{exit_portal:[I;100,50,0],ExactTeleport:1b}')
     guest('command', command='tp @s 702.5 80 0.5')
     gateway = None
@@ -1135,6 +1146,23 @@ def level_guest_end(host, guest, out):
     assert abs(gateway[0] - 100.5) < 1 and abs(gateway[2] - 0.5) < 1 and 49 <= gateway[1] <= 50, \
         f'the gateway left the guest at {gateway}'
     guest.wait(40)
+    reply = server_reply(guest, 'execute if entity @e[tag=e2e_gw,x=98,y=49,z=2,dx=4,dy=3,dz=3]', 'Test')
+    # Facing the sand at the exit, once the chat has faded: what the guest's window draws there.
+    guest.wait(200)
+    guest.raw('look-at', 100.5, 50.49, 3.5)
+    guest.wait(10)
+    seen = guest('state')['looking_at']
+    known = guest.raw('entities', 16)
+    guest.shot(out, 'gateway-entities')
+    where = []
+    if 'Count: 3' not in reply:
+        since = guest.raw('events')['last']
+        guest('command', command='execute as @e[tag=e2e_gw] run data get entity @s Pos')
+        guest.wait(20)
+        where = [e.get('text', '') for e in guest.raw('events', '--since', since)['events'] if own_reply(e)]
+    guest('command', command='kill @e[tag=e2e_gw]')
+    assert 'Count: 3' in reply, f'the sand, arrow and item at the gateway exits: {reply}; on the server: {where}; ' \
+                                f'the guest aims at {seen}'
     ex, ey, ez = (int(v // 1) for v in pos_of(guest))
     guest('command', command=f'setblock {ex + 2} {ey} {ez} minecraft:end_portal')
     guest('command', command=f'tp @s {ex + 2.5} {ey} {ez + 0.5}')
@@ -1151,7 +1179,9 @@ def level_guest_end(host, guest, out):
     home = wait_dimension(guest, OVERWORLD, 600)
     guest.wait(20)
     assert dims(host, guest) == (OVERWORLD, OVERWORLD), f'host, guest in {dims(host, guest)}'
-    return {'landed': landed, 'gateway': gateway, 'home': home['player']['position']}
+    return {'landed': landed, 'gateway': gateway, 'gateway_entities': reply, 'gateway_seen': seen,
+            'gateway_known': known,
+            'home': home['player']['position']}
 
 
 def level_reload(host, guest, out):
