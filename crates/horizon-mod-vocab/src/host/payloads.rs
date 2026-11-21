@@ -33,4 +33,17 @@ pub trait PayloadsClientHost {
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError>;
+    /// Side: client.
+    /// The same send from a **shared** host: a screen hook receives `&dyn ClientHost`,
+    /// which cannot call `send_payload_to_server`. The bytes are validated against the
+    /// connection's frozen declaration now and staged in queue order; they are published
+    /// on a later client tick, in the same root commit the mutable helper uses. `Queued`
+    /// means staged, not delivered. A disconnected or unnegotiated client returns an error;
+    /// frame refusal and Backpressure write no application bytes.
+    #[access(ClientSetup)]
+    fn queue_payload_to_server(
+        &self,
+        id: &PayloadId,
+        bytes: PayloadBytes,
+    ) -> Result<PayloadAccepted, PayloadSendError>;
 }
