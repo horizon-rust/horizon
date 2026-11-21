@@ -61,6 +61,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -776,70 +777,87 @@ def prebuild(artifacts, jobs):
     packages = target_packages()
     commands = prebuild_commands(artifacts, packages)
     role = os.environ.get("HORIZON_COMPILE_LOCK_ROLE") or "pr"
-    with compile_lock.Turn(role):
-        limit = PREBUILD_LIMIT.get(role)
-        deadline = time.monotonic() + limit if limit else None
-        expired = threading.Event()
-        load, stats = machine_load(), sccache_stats(environment)
-        timings = PrebuildTimings(environment, stats) if os.environ.get(PREBUILD_TIMINGS) == "1" else None
-        for number, command in enumerate(commands, 1):
-            if timings:
-                timings.before_call()
-            started = time.monotonic()
-            # Stderr is read line by line, timed, so the summary can tell lock waits from compiling; stdout, which
-            # Cargo leaves empty here, was discarded before too. Undecodable bytes are replaced: decoding as the
-            # lines arrive must never interrupt the build. The encoding is text mode's default, named so tests can
-            # pin it.
-            # Cargo leads a process group of its own, so the limit or a cancelled job ends rustc and build
-            # scripts with it, and none of them keeps the stderr pipe (and this loop) open.
-            # --timings is added here only: the run's line and the harnesses' records keep the command as selected.
-            cargo = timings.command(command) if timings else command
-            with subprocess.Popen(cargo, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.PIPE, text=True, encoding=locale.getpreferredencoding(False),
-                                  errors="replace", start_new_session=os.name != "nt") as process:
-                # The line loop blocks while Cargo is quiet, so a timer ends a run past the limit.
-                def stop(process=process):
-                    expired.set()
-                    compile_lock.stop_group(process)
-                watchdog = threading.Timer(max(0, deadline - time.monotonic()), stop) if deadline else None
-                if watchdog:
-                    watchdog.daemon = True
-                    watchdog.start()
-                try:
-                    lines = [(time.monotonic(), line) for line in process.stderr]
+    timings = PrebuildTimings(environment) if os.environ.get(PREBUILD_TIMINGS) == "1" else None
+    try:
+        with compile_lock.Turn(role):
+            limit = PREBUILD_LIMIT.get(role)
+            deadline = time.monotonic() + limit if limit else None
+            expired = threading.Event()
+            load, stats = machine_load(), sccache_stats(environment)
+
+            def build(command):
+                """One Cargo run within the limit: its exit code and its timed stderr lines."""
+                # Stderr is read line by line, timed, so the summary can tell lock waits from compiling; stdout,
+                # which Cargo leaves empty here, was discarded before too. Undecodable bytes are replaced: decoding
+                # as the lines arrive must never interrupt the build. The encoding is text mode's default, named so
+                # tests can pin it.
+                # Cargo leads a process group of its own, so the limit or a cancelled job ends rustc and build
+                # scripts with it, and none of them keeps the stderr pipe (and this loop) open.
+                with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.PIPE, text=True, encoding=locale.getpreferredencoding(False),
+                                      errors="replace", start_new_session=os.name != "nt") as process:
+                    # The line loop blocks while Cargo is quiet, so a timer ends a run past the limit.
+                    def stop(process=process):
+                        expired.set()
+                        compile_lock.stop_group(process)
+                    watchdog = threading.Timer(max(0, deadline - time.monotonic()), stop) if deadline else None
                     if watchdog:
-                        # Stderr can close before Cargo exits, so the deadline stays armed until Cargo has exited
-                        # (not reaped yet: its group's id stays its own). Then a watchdog already stopping the group
-                        # (a child that closed stderr outlives Cargo) finishes before Cargo is reaped and the turn
-                        # released.
-                        compile_lock.wait_exited(process)
-                        watchdog.cancel()
-                        watchdog.join()
-                    process.wait()
-                except BaseException:
-                    # A cancelled job's next signal must not cut this short: it only shortens the grace.
-                    with compile_lock.Hurry():
+                        watchdog.daemon = True
+                        watchdog.start()
+                    try:
+                        lines = [(time.monotonic(), line) for line in process.stderr]
                         if watchdog:
+                            # Stderr can close before Cargo exits, so the deadline stays armed until Cargo has
+                            # exited (not reaped yet: its group's id stays its own). Then a watchdog already stopping
+                            # the group (a child that closed stderr outlives Cargo) finishes before Cargo is reaped
+                            # and the turn released.
+                            compile_lock.wait_exited(process)
                             watchdog.cancel()
                             watchdog.join()
-                        compile_lock.stop_group(process)  # its whole group, as subprocess.run kills the process
-                    raise
-            if process.returncode:
-                errors += "".join(line for _, line in lines)
-            summary = report(lambda: f"cargo {number}/{len(commands)}: "
-                                     f"{describe_cargo_build(command, lines, started, time.monotonic())}")
+                        process.wait()
+                    except BaseException:
+                        # A cancelled job's next signal must not cut this short: it only shortens the grace.
+                        with compile_lock.Hurry():
+                            if watchdog:
+                                watchdog.cancel()
+                                watchdog.join()
+                            compile_lock.stop_group(process)  # its whole group, as subprocess.run kills the process
+                        raise
+                return process.returncode, lines
+
             if timings:
-                timings.after_call(number, len(commands), summary)
-            if expired.is_set():
+                timings.stats = stats
+            for number, command in enumerate(commands, 1):
                 if timings:
-                    timings.finish()
-                print(f"::error::The probe prebuild passed its {limit // 60:.0f} min limit at cargo {number}/"
-                      f"{len(commands)} and was stopped there.", flush=True)
-                sys.exit(1)
+                    timings.before_call()
+                started = time.monotonic()
+                # --timings is added here only: the run's line and the harnesses' records keep the command as
+                # selected.
+                returncode, lines = build(timings.command(command) if timings else command)
+                output = lines
+                if returncode and timings and timings.on and not expired.is_set():
+                    # Cargo fails a run whose timing report it could not write even when everything compiled: the
+                    # run is repeated without the report (a real build error fails again, quickly).
+                    print(f"  cargo {number}/{len(commands)}: failed with --timings; run again without it, no "
+                          "timing report for it", flush=True)
+                    returncode, output = build(command)
+                    lines = lines + output
+                if returncode:
+                    errors += "".join(line for _, line in output)
+                summary = report(lambda: f"cargo {number}/{len(commands)}: "
+                                         f"{describe_cargo_build(command, lines, started, time.monotonic())}")
+                if timings:
+                    timings.after_call(number, len(commands), summary)
+                if expired.is_set():
+                    print(f"::error::The probe prebuild passed its {limit // 60:.0f} min limit at cargo {number}/"
+                          f"{len(commands)} and was stopped there.", flush=True)
+                    sys.exit(1)
+            report(lambda: describe_machine(os.cpu_count(), load, machine_load()))
+            report(lambda: describe_sccache(stats, sccache_stats(environment)))
+    finally:
+        # After the turn is released (and the limit's error line): only file work on the collection folder.
         if timings:
             timings.finish()
-        report(lambda: describe_machine(os.cpu_count(), load, machine_load()))
-        report(lambda: describe_sccache(stats, sccache_stats(environment)))
     return not errors, errors
 
 
@@ -956,32 +974,44 @@ PREBUILD_TIMINGS = "HORIZON_PARITY_PREBUILD_TIMINGS"
 PREBUILD_TIMINGS_CAP = 20 << 20
 
 
-def cargo_takes_timings(environment):
-    return "--timings" in subprocess.run(["cargo", "build", "--help"], cwd=ROOT, env=environment, capture_output=True,
-                                         text=True, timeout=60).stdout
+def remove_collection(path):
+    """Removes a collection folder holding only files (or a file or link in its place), never following a link."""
+    if not stat.S_ISDIR(os.lstat(path).st_mode):
+        os.unlink(path)
+        return
+    with os.scandir(path) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                raise ValueError(f"{entry.path} is a folder")
+            os.unlink(entry.path)
+    os.rmdir(path)
 
 
 class PrebuildTimings:
-    """The prebuild's timing reports, collected in STATE_DIR/prebuild-timings-<PARITY_RUN_ID> (the folder
-    parity-main.yml uploads): cargo-NN.html for run NN and prebuild-calls.txt. Only that: Cargo's report holds the
-    unit names, features, profile, host, rustc version and timings, not the command line, paths or environment
-    (cargo 1.100), except a failed build's top error, which can name a path dependency's folder.
+    """The prebuild's timing reports, collected in STATE_DIR/prebuild-timings-<PARITY_RUN_ID>, which parity-main.yml
+    uploads: cargo-NN.html for run NN and prebuild-calls.txt, nothing else, at most PREBUILD_TIMINGS_CAP in all.
+    Cargo's report holds unit names, features, the profile, host, rustc version and timings, not the command line,
+    paths or environment (cargo 1.100).
 
-    Collecting never fails or stops the prebuild: what fails prints one line and is left out."""
+    Collecting never fails or stops the prebuild: what fails prints one line and is left out. During the compile turn
+    it only clears and copies bounded files and reads sccache (within its timeout); finish() does the rest after."""
 
-    def __init__(self, environment, stats):
+    def __init__(self, environment):
         run = os.environ.get("PARITY_RUN_ID")
         self.folder = STATE_DIR / (f"prebuild-timings-{run}" if run else "prebuild-timings")
         # Cargo writes them to <target>/cargo-timings, the probe profiles' shared target folder; it outlives runs.
         self.reports = Path(environment["CARGO_TARGET_DIR"]) / "cargo-timings"
-        self.environment, self.stats, self.on = environment, stats, False
+        self.environment, self.stats, self.on, self.calls = environment, None, False, []
+        self.previous, self.started = None, 0
+        for folder in STATE_DIR.glob("prebuild-timings*"):
+            if folder != self.folder:
+                try:
+                    remove_collection(folder)  # an earlier run's: disk only, the upload names this run's
+                except Exception:
+                    pass
         try:
-            # Earlier runs' folders stay on a self-hosted runner: none of them may be uploaded as this run's.
-            for folder in STATE_DIR.glob("prebuild-timings*"):
-                if folder.is_dir():
-                    shutil.rmtree(folder)
-            if not cargo_takes_timings(environment):
-                raise RuntimeError("cargo build has no --timings")
+            if os.path.lexists(self.folder):
+                remove_collection(self.folder)  # an earlier attempt's with this id, or the plain local name
             self.folder.mkdir(parents=True)
             self.on = True
         except Exception as error:
@@ -993,52 +1023,116 @@ class PrebuildTimings:
     def command(self, command):
         return [*command, "--timings"] if self.on else command
 
+    def report_identity(self):
+        try:
+            info = os.lstat(self.reports / "cargo-timing.html")
+            return info.st_ino, info.st_mtime_ns, info.st_size
+        except OSError:
+            return None
+
     def before_call(self):
-        """An earlier run's report (this run's, or an earlier one's) is never taken for the next run's."""
-        if self.on:
-            try:
-                shutil.rmtree(self.reports, ignore_errors=True)
-            except Exception as error:
-                self.fail("could not clear the old reports", error)
+        """Clears the reports Cargo left and notes the time, so only the next run's own report is taken."""
+        if not self.on:
+            return
+        try:
+            if stat.S_ISDIR(os.lstat(self.reports).st_mode):  # never into a link
+                with os.scandir(self.reports) as entries:
+                    for entry in entries:
+                        if entry.name.startswith("cargo-timing") and entry.name.endswith(".html") \
+                                and entry.is_file(follow_symlinks=False):
+                            os.unlink(entry.path)
+        except FileNotFoundError:
+            pass
+        except Exception as error:
+            self.fail("could not clear the old reports", error)
+        self.previous, self.started = self.report_identity(), time.time()
+
+    def keep_report(self, number):
+        """Copies the report this run wrote, a regular file of at most PREBUILD_TIMINGS_CAP, as cargo-NN.html."""
+        if not stat.S_ISDIR(os.lstat(self.reports).st_mode):
+            raise ValueError(f"{self.reports} is not a folder")
+        source = self.reports / "cargo-timing.html"
+        info = os.lstat(source)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("not a regular file")
+        # Whole seconds: file systems with coarse times.
+        if self.report_identity() == self.previous or info.st_mtime < int(self.started):
+            raise ValueError("not written by this run")
+        if info.st_size > PREBUILD_TIMINGS_CAP:
+            raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        with os.fdopen(descriptor, "rb") as file:
+            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                raise ValueError("not a regular file")
+            data = file.read(PREBUILD_TIMINGS_CAP + 1)
+        if len(data) > PREBUILD_TIMINGS_CAP:
+            raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
+        with open(self.folder / f"cargo-{number:02d}.html", "xb") as copy:
+            copy.write(data)
 
     def after_call(self, number, total, line):
-        """Keeps run `number`'s report, prints its compiler-cache line and writes both lines to prebuild-calls.txt."""
+        """Keeps run `number`'s report and prints its compiler-cache line; both lines go to prebuild-calls.txt."""
         if not self.on:
             return
+        if line:
+            self.calls.append(line)
         try:
-            shutil.copyfile(self.reports / "cargo-timing.html", self.folder / f"cargo-{number:02d}.html")
+            self.keep_report(number)
         except Exception as error:
             self.fail(f"no report kept for cargo {number}/{total}", error)
-        # sccache counts are for the whole server, other builds on the machine included. An unreadable server is not
-        # read again: each read can take its 10 s limit.
+        # An unreadable server is not read again: each read can take its 10 s limit.
         before, self.stats = self.stats, self.stats and sccache_stats(self.environment)
-        cache = report(lambda: f"cargo {number}/{total} compiler cache (whole sccache server): "
-                               f"{describe_call_sccache(before, self.stats)}")
-        try:
-            with open(self.folder / "prebuild-calls.txt", "a", encoding="utf-8") as calls:
-                calls.write("".join(f"{text}\n" for text in (line, cache) if text))
-        except Exception as error:
-            self.fail("could not write prebuild-calls.txt", error)
+        cache = report(lambda: f"cargo {number}/{total} compiler cache, change in the machine's whole sccache server "
+                               f"since the last reading: {describe_call_sccache(before, self.stats)}")
+        if cache:
+            self.calls.append(cache)
+
+    def size(self):
+        with os.scandir(self.folder) as entries:
+            return sum(os.lstat(entry.path).st_size for entry in entries)
+
+    def hold_to_cap(self):
+        """Writes prebuild-calls.txt and leaves out the largest reports until the folder holds at most the cap."""
+        reports = {path: os.lstat(path).st_size for path in self.folder.glob("cargo-*.html")}
+        dropped = []
+        while True:
+            note = [f"timing reports left out to stay under {PREBUILD_TIMINGS_CAP >> 20} MB: cargo "
+                    f"{', '.join(sorted(dropped))}"] if dropped else []
+            text = "".join(f"{line}\n" for line in self.calls + note).encode("utf-8")
+            if not reports or len(text) + sum(reports.values()) <= PREBUILD_TIMINGS_CAP:
+                break
+            largest = max(reports, key=reports.get)
+            largest.unlink()
+            del reports[largest]
+            dropped.append(largest.stem.removeprefix("cargo-"))
+        (self.folder / "prebuild-calls.txt").write_bytes(text)
+        if self.size() > PREBUILD_TIMINGS_CAP:
+            raise ValueError(f"{self.size()} bytes")
 
     def finish(self):
-        """Holds the folder to PREBUILD_TIMINGS_CAP: the largest reports go first, prebuild-calls.txt stays."""
+        """Holds the folder to PREBUILD_TIMINGS_CAP; when that fails, only prebuild-calls.txt stays, or nothing."""
         if not self.on:
             return
         try:
-            sizes = {path: path.stat().st_size for path in self.folder.iterdir() if path.is_file()}
-            total, dropped = sum(sizes.values()), []
-            for path in sorted((path for path in sizes if path.suffix == ".html"), key=sizes.get, reverse=True):
-                if total <= PREBUILD_TIMINGS_CAP:
-                    break
-                path.unlink()
-                total -= sizes[path]
-                dropped.append(path.stem.removeprefix("cargo-"))
-            if dropped:
-                with open(self.folder / "prebuild-calls.txt", "a", encoding="utf-8") as calls:
-                    calls.write(f"timing reports left out to stay under {PREBUILD_TIMINGS_CAP >> 20} MB: cargo "
-                                f"{', '.join(sorted(dropped))}\n")
+            self.hold_to_cap()
+            return
         except Exception as error:
-            self.fail("could not hold the reports to their size cap", error)
+            self.fail("could not hold the reports to their size cap, all left out", error)
+        try:
+            for path in self.folder.glob("cargo-*.html"):
+                path.unlink()
+            self.calls.append("timing reports all left out: they could not be held to the size cap")
+            (self.folder / "prebuild-calls.txt").write_text("".join(f"{line}\n" for line in self.calls),
+                                                             encoding="utf-8")
+            if self.size() > PREBUILD_TIMINGS_CAP:
+                raise ValueError(f"{self.size()} bytes")
+            return
+        except Exception as error:
+            self.fail("could not leave the reports out, nothing uploaded", error)
+        try:
+            remove_collection(self.folder)
+        except Exception as error:
+            self.fail("could not remove the collection folder", error)
 
 
 def describe_call_sccache(before, after):
