@@ -2012,7 +2012,7 @@ impl Game<'_> {
                     }
                 }
                 for (ty, key, count) in known {
-                    self.stats.values.entry(ty).or_default().insert(key, count);
+                    self.stats.set_received(ty, key, count);
                 }
             }
             // ClientPacketListener.setActionBarText, setTitleText,
