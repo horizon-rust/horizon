@@ -132,11 +132,15 @@ impl Game<'_> {
             let on = (0..3).all(|k| (point[k] - inside[k]).abs() < 0.1);
             Some(if on { inside } else { middle })
         };
-        let mob_box = self.mobs.iter().find(|m| m.id as i32 == id).map(|m| {
-            let b = m.bounds();
-            let (mn, mx) = (b.min_position(), b.max_position());
-            ([mn.x, mn.y, mn.z], [mx.x, mx.y, mx.z])
-        });
+        let mob_box = self
+            .mobs
+            .iter()
+            .find(|m| m.id as i32 == id && !m.removed)
+            .map(|m| {
+                let b = m.bounds();
+                let (mn, mx) = (b.min_position(), b.max_position());
+                ([mn.x, mn.y, mn.z], [mx.x, mx.y, mx.z])
+            });
         let centre = match mob_box {
             Some((lo, hi)) => visible_aim_point(eye, lo, hi, |p| self.block_between(eye, p)),
             None if self.object_target(id).is_some() => object()?,
@@ -214,7 +218,9 @@ impl Game<'_> {
         {
             return Some(g.bounds());
         }
-        if let Some(m) = self.mobs.iter().find(|m| m.id as i32 == id) {
+        // A mob discarded earlier this tick waits in the list for the creature pass, but
+        // `ServerLevel.getEntityOrPart` no longer finds it.
+        if let Some(m) = self.mobs.iter().find(|m| m.id as i32 == id && !m.removed) {
             return Some(m.bounds());
         }
         if let Some((lo, hi, _)) = self.object_target(id) {
@@ -618,7 +624,7 @@ impl Game<'_> {
         if let Some(index) = self
             .mobs
             .iter()
-            .position(|m| m.id as i32 == id && m.alive())
+            .position(|m| m.id as i32 == id && !m.removed && m.alive())
             .filter(|_| self.dragon.as_ref().is_none_or(|d| d.id as i32 != id))
         {
             let Some(host) = self.lan.as_ref() else {

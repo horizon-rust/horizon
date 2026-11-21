@@ -3345,6 +3345,10 @@ mod bundle_slot_tests;
 mod crack_feedback_tests;
 
 #[cfg(test)]
+#[path = "tests/discarded_mob_tests.rs"]
+mod discarded_mob_tests;
+
+#[cfg(test)]
 #[path = "tests/menu_still_valid_tests.rs"]
 mod menu_still_valid_tests;
 

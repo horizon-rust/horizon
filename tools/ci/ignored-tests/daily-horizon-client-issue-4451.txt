@@ -829,6 +829,7 @@ horizon-client game::lan_actions::boat_holder_movement_tests::boat_tick_uses_sto
 horizon-client game::lan_actions::boat_holder_movement_tests::empty_markers_preserve_actual_walk_and_still_movement_bookkeeping lib daily resources
 horizon-client game::lan_actions::boat_holder_movement_tests::walking_then_still_tick_end_preserves_the_accepted_displacement lib daily resources
 horizon-client game::lan_actions::crack_feedback_tests::crack_packets_follow_start_clock_and_strict_observer_radius lib daily resources
+horizon-client game::lan_actions::discarded_mob_tests::a_fish_scooped_up_this_tick_is_not_scooped_up_again lib daily resources
 horizon-client game::lan_actions::guest_body::tests::accepted_hit_moves_through_teleport_restore_but_not_respawn lib daily resources
 horizon-client game::lan_actions::guest_body::tests::co_located_guests_own_distinct_streams_and_restore_the_saved_body lib daily resources
 horizon-client game::lan_actions::guest_body::tests::fall_reset::a_guest_move_that_goes_up_ends_its_fall lib daily resources

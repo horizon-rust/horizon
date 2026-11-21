@@ -6346,11 +6346,19 @@ impl Game<'_> {
             // The id the packet named, under the filters the crosshair pick
             // applies (`mob_hit`): a mob in its death animation is not clicked
             // by either path, so naming one in a packet must not reach the
-            // feed, shear, leash or name paths either.
+            // feed, shear, leash or name paths either. Nor does a mob discarded
+            // earlier this tick (a fish in a bucket): it waits in the list for the
+            // creature pass, but `Entity.discard` takes it out of the level at once.
             Some(t) => Self::named_entity(&self.mobs, t.id, |m| m.id)
                 .filter(|&i| {
                     let m = &self.mobs[i];
-                    named_mob_pickable(m.alive(), m.id, self.riding, self.remote_camera_id())
+                    !m.removed
+                        && named_mob_pickable(
+                            m.alive(),
+                            m.id,
+                            self.riding,
+                            self.remote_camera_id(),
+                        )
                 })
                 .map(|i| (i, 0.0, [0.0; 3])),
             None => self.mob_hit(),

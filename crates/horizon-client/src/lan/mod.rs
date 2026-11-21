@@ -600,32 +600,31 @@ impl Shared {
                 return Some(translatable("multiplayer.disconnect.server_full", &[]));
             }
         }
-        if self.is_online(uuid) {
-            let _ = self.events.send(NetEvent::Duplicate(uuid));
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            while self.is_online(uuid) {
-                if std::time::Instant::now() > deadline {
-                    return Some(translatable("multiplayer.disconnect.slow_login", &[]));
+        // Logins run on their own threads: the place is looked at and taken under one
+        // lock, so two logins of one profile never both find it free (vanilla checks
+        // `getPlayer(profile.id())` on the server thread just before the player spawns).
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut kicked = false;
+        loop {
+            {
+                let mut online = self.online.lock().unwrap();
+                if !online.iter().any(|(u, _, _)| *u == uuid) {
+                    online.push((uuid, name.to_owned(), true));
+                    return None;
                 }
-                std::thread::sleep(Duration::from_millis(10));
             }
+            if !kicked {
+                let _ = self.events.send(NetEvent::Duplicate(uuid));
+                kicked = true;
+            } else if std::time::Instant::now() > deadline {
+                return Some(translatable("multiplayer.disconnect.slow_login", &[]));
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        self.online
-            .lock()
-            .unwrap()
-            .push((uuid, name.to_owned(), true));
-        None
     }
     /// A stop has begun: every login from now on is refused as the server's shutdown.
     pub fn refuse_logins(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
-    }
-    fn is_online(&self, uuid: u128) -> bool {
-        self.online
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(u, _, _)| *u == uuid)
     }
     pub fn motd(&self) -> String {
         self.motd.lock().unwrap().clone()
@@ -1388,6 +1387,44 @@ mod tests {
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), dedicated).unwrap();
         assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner").is_none());
         assert!(lan.shared.try_admit(MEMORY_ADDRESS, 2, "oWNER").is_none());
+    }
+
+    /// Logins run on their own threads, and vanilla lets one profile in once
+    /// (`ServerConfigurationPacketListenerImpl.handleConfigurationFinished` checks
+    /// `getPlayer(profile.id())` just before the player spawns): logins of one profile that
+    /// arrive together take its place one after another, never two at a time, or both would
+    /// load the same saved inventory.
+    #[test]
+    fn logins_of_one_profile_take_its_place_one_at_a_time() {
+        const LOGINS: usize = 8;
+        let config = NetConfig {
+            announce: false,
+            listen: false,
+            ..NetConfig::loopback(0, "One profile".into(), 64)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        for _ in 0..10 {
+            let start = Arc::new(std::sync::Barrier::new(LOGINS));
+            let logins: Vec<_> = (0..LOGINS)
+                .map(|_| {
+                    let (shared, start) = (lan.shared.clone(), start.clone());
+                    std::thread::spawn(move || {
+                        start.wait();
+                        assert_eq!(shared.try_admit(MEMORY_ADDRESS, 7, "Player"), None);
+                        let places = shared.online();
+                        shared.release(7);
+                        places
+                    })
+                })
+                .collect();
+            for login in logins {
+                assert_eq!(
+                    login.join().unwrap(),
+                    1,
+                    "two logins of one profile were in at once"
+                );
+            }
+        }
     }
 
     #[test]
