@@ -578,36 +578,66 @@ impl Replay {
             (offset(&self.body), 0)
         } else {
             let mut best: Option<(f64, u8, Box<PlayerMotion>)> = None;
-            for candidate in (0..16u8)
+            let mut scratch: Option<Box<PlayerMotion>> = None;
+            let mut last_won: Option<(f64, u8)> = None;
+            let mut candidates = (0..16u8)
                 .filter(|&c| c == 0 || [1, 2, 4, 8].into_iter().all(|b| c & b == 0 || unknown(b)))
-            {
-                let mut body = self.body.clone();
-                if candidate & 1 != 0 {
-                    body.ground.on_ground = !body.ground.on_ground;
-                }
-                if candidate & 2 != 0 {
-                    body.item_use_speed = used;
-                }
-                if candidate & 4 != 0 {
-                    body.no_jump_delay = i32::from(body.no_jump_delay == 0);
-                }
-                if let Some(met) = meeting.filter(|_| candidate & 8 != 0) {
-                    body.velocity = body.velocity.add_vector(met);
-                }
-                if run(&mut body, keys, sprinting).is_err() {
-                    continue;
-                }
-                let off = offset(&body);
-                if best.as_ref().is_none_or(|b| off < b.0) {
-                    best = Some((off, candidate, body));
-                }
-                if off <= EXACT {
-                    break;
+                .peekable();
+            while let Some(candidate) = candidates.next() {
+                let apply_candidate = |body: &mut PlayerMotion| {
+                    if candidate & 1 != 0 {
+                        body.ground.on_ground = !body.ground.on_ground;
+                    }
+                    if candidate & 2 != 0 {
+                        body.item_use_speed = used;
+                    }
+                    if candidate & 4 != 0 {
+                        body.no_jump_delay = i32::from(body.no_jump_delay == 0);
+                    }
+                    if let Some(met) = meeting.filter(|_| candidate & 8 != 0) {
+                        body.velocity = body.velocity.add_vector(met);
+                    }
+                };
+                if candidates.peek().is_none() {
+                    apply_candidate(&mut self.body);
+                    if run(&mut self.body, keys, sprinting).is_ok() {
+                        let off = offset(&self.body);
+                        if best.as_ref().is_none_or(|b| off < b.0) {
+                            last_won = Some((off, candidate));
+                        }
+                    }
+                } else {
+                    let mut body = match scratch.take() {
+                        Some(mut buf) => {
+                            buf.clone_from(&self.body);
+                            buf
+                        }
+                        None => self.body.clone(),
+                    };
+                    apply_candidate(&mut body);
+                    if run(&mut body, keys, sprinting).is_err() {
+                        scratch = Some(body);
+                        continue;
+                    }
+                    let off = offset(&body);
+                    if best.as_ref().is_none_or(|b| off < b.0) {
+                        scratch = best.replace((off, candidate, body)).map(|(_, _, prev)| prev);
+                    } else {
+                        scratch = Some(body);
+                    }
+                    if off <= EXACT {
+                        break;
+                    }
                 }
             }
-            let (off, candidate, body) = best?;
-            self.body = body;
-            (off, candidate)
+            match last_won {
+                Some((off, candidate)) => (off, candidate),
+                None => {
+                    let (off, candidate, body) = best?;
+                    self.body = body;
+                    (off, candidate)
+                }
+            }
         };
         let body = &mut self.body;
         let end = said.unwrap_or(last);
@@ -1885,5 +1915,103 @@ mod tests {
             }
         }
         assert!(near_blocks > 1_000, "only {near_blocks} blocks were near");
+    }
+
+    #[test]
+    fn replay_play_avoids_last_clone_and_matches_best() {
+        let Some(fixture) = crate::test_fixtures::vanilla() else {
+            return;
+        };
+        let server = PlayerMotion::new(&fixture.motion, Vec3::new(0.0, 64.0, 0.0)).unwrap();
+        let restart = Restart {
+            at: [0.0, 64.0, 0.0],
+            kept_motion: false,
+            ended: 0,
+            changed: 0,
+        };
+        // Baseline brute-force check against all combinations of candidate flags:
+        // candidate bits are 1 (ground), 2 (item_use_speed), 4 (no_jump_delay), 8 (meeting).
+        for (target_ground, target_used, target_jump, target_met) in [
+            (false, None, 0, false),
+            (true, Some(0.2), 1, true),
+            (true, None, 0, true),
+            (false, Some(0.2), 1, false),
+        ] {
+            let mut srv = server.clone();
+            srv.item_use_speed = None;
+            let mut replay = Replay::new(&srv, &restart);
+            replay.using = Some(0.2);
+            replay.used = Some(0.2);
+            replay.use_window = 2;
+            replay.jump_unsure = 2;
+            replay.meeting = Some(Vec3::new(0.0, 0.25, 0.0));
+
+            let tick = ClientTick {
+                input: 16, // jump bit
+                sprinting: false,
+                yaw: 0.0,
+                pitch: 0.0,
+                position: Some([
+                    if target_met { 1.0 } else { 0.0 }
+                        + if target_ground { 0.25 } else { 0.0 }
+                        + if target_used.is_some() { 0.5 } else { 0.0 }
+                        + if target_jump == 1 { 0.125 } else { 0.0 },
+                    64.0,
+                    0.0,
+                ]),
+                flags: Some(0),
+                seen: None,
+            };
+            let played = replay
+                .play(&tick, &srv, &mut |body, _, _| {
+                    let x = if body.velocity.y > 0.1 { 1.0 } else { 0.0 }
+                        + if body.ground.on_ground { 0.25 } else { 0.0 }
+                        + if body.item_use_speed.is_some() { 0.5 } else { 0.0 }
+                        + if body.no_jump_delay == 1 { 0.125 } else { 0.0 };
+                    body.position = Vec3::new(x, 64.0, 0.0);
+                    Ok(())
+                })
+                .expect("matching candidate");
+            assert!(played.offset <= EXACT, "offset={}", played.offset);
+            assert_eq!(played.candidate & 1 != 0, target_ground);
+            assert_eq!(played.candidate & 2 != 0, target_used.is_some());
+            assert_eq!(played.candidate & 4 != 0, target_jump == 1);
+            assert_eq!(played.candidate & 8 != 0, target_met);
+            assert_eq!(replay.body.ground.on_ground, target_ground);
+            assert_eq!(replay.body.no_jump_delay, target_jump);
+        }
+
+        // Non-EXACT winning earlier candidate must not be clobbered when later/last candidates fail or lose.
+        let mut srv = server.clone();
+        srv.item_use_speed = None;
+        let mut replay = Replay::new(&srv, &restart);
+        replay.using = Some(0.2);
+        replay.used = Some(0.2);
+        replay.use_window = 2;
+        replay.jump_unsure = 2;
+        replay.meeting = Some(Vec3::new(0.0, 0.25, 0.0));
+        let tick = ClientTick {
+            input: 16,
+            sprinting: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            position: Some([0.3, 64.0, 0.0]),
+            flags: Some(0),
+            seen: None,
+        };
+        let played = replay
+            .play(&tick, &srv, &mut |body, _, _| {
+                // Only candidate with ground=true succeeds (off = 0.05 > EXACT);
+                // last candidate fails.
+                if !body.ground.on_ground || body.velocity.y > 0.1 || body.no_jump_delay == 1 {
+                    return Err(std::io::Error::other("reject").into());
+                }
+                body.position = Vec3::new(0.25, 64.0, 0.0);
+                Ok(())
+            })
+            .expect("earlier candidate should win");
+        assert!((played.offset - 0.05).abs() < 1e-9);
+        assert!(replay.body.ground.on_ground);
+        assert_eq!(replay.body.no_jump_delay, 0);
     }
 }
