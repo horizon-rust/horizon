@@ -19,7 +19,7 @@ use crate::stages::{
     compose_traced, identifiers, lights_on,
 };
 use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// naga expressions a stage may hold, over all its functions.
@@ -1220,11 +1220,11 @@ fn constructions(module: &naga::Module, own: &Composed) -> Vec<Problem> {
     let horizon_s = |ty: naga::Handle<naga::Type>| {
         (module.types.get_span(ty).to_range()).is_some_and(|r| own.parts[0].1.contains(&r.start))
     };
-    let candidate = |ty| {
-        holds(module, ty, &|t| {
-            module.types[t].name.as_deref() == Some(CANDIDATE) && horizon_s(t)
-        })
+    let is_candidate = |t: naga::Handle<naga::Type>| {
+        module.types[t].name.as_deref() == Some(CANDIDATE) && horizon_s(t)
     };
+    let has_candidate = module.types.iter().any(|(t, _)| is_candidate(t));
+    let mut candidate_cache = HashMap::new();
     let constructs = |name: &str, at| {
         let message = format!(
             "constructs `{name}`: it is Horizon's and may gain fields; read it, don't construct it"
@@ -1242,8 +1242,8 @@ fn constructions(module: &naga::Module, own: &Composed) -> Vec<Problem> {
                 // A zero value (`RayCandidate()`, or a struct/array holding one) is a candidate
                 // no ray crossed, which only `trace_step` makes; the other structs' zero values
                 // stay as 0.2 packs wrote them.
-                naga::Expression::ZeroValue(ty) => {
-                    if candidate(ty) {
+                naga::Expression::ZeroValue(ty) if has_candidate => {
+                    if holds(module, ty, &is_candidate, &mut candidate_cache) {
                         problems.push(constructs(CANDIDATE, at));
                     }
                 }
@@ -1259,29 +1259,34 @@ fn constructions(module: &naga::Module, own: &Composed) -> Vec<Problem> {
             }
         }
     }
-    // A variable without an initializer holds its type's zero value: a `RayCandidate` declared
-    // so, alone or in an array or a struct, is one the pack built. Runtime initializers
-    // (`var copy = c;`) lower to a `Store` carrying the declaration's span, with `v.init == None`.
-    let functions = (module.functions.iter().map(|(_, f)| f))
-        .chain(module.entry_points.iter().map(|e| &e.function));
-    for f in functions {
-        for (h, v) in f.local_variables.iter() {
-            let span = f.local_variables.get_span(h);
+    if has_candidate {
+        // A variable without an initializer holds its type's zero value: a `RayCandidate` declared
+        // so, alone or in an array or a struct, is one the pack built. Runtime initializers
+        // (`var copy = c;`) lower to a `Store` carrying the declaration's span, with `v.init == None`.
+        let functions = (module.functions.iter().map(|(_, f)| f))
+            .chain(module.entry_points.iter().map(|e| &e.function));
+        for f in functions {
+            for (h, v) in f.local_variables.iter() {
+                let span = f.local_variables.get_span(h);
+                let at = span.to_range().map(|r| r.start);
+                if v.init.is_none()
+                    && in_pack(at)
+                    && holds(module, v.ty, &is_candidate, &mut candidate_cache)
+                    && !has_decl_store(&f.body, &f.expressions, h, span)
+                {
+                    problems.push(constructs(CANDIDATE, at));
+                }
+            }
+        }
+        for (h, v) in module.global_variables.iter() {
+            let span = module.global_variables.get_span(h);
             let at = span.to_range().map(|r| r.start);
             if v.init.is_none()
-                && candidate(v.ty)
                 && in_pack(at)
-                && !has_decl_store(&f.body, &f.expressions, h, span)
+                && holds(module, v.ty, &is_candidate, &mut candidate_cache)
             {
                 problems.push(constructs(CANDIDATE, at));
             }
-        }
-    }
-    for (h, v) in module.global_variables.iter() {
-        let span = module.global_variables.get_span(h);
-        let at = span.to_range().map(|r| r.start);
-        if v.init.is_none() && candidate(v.ty) && in_pack(at) {
-            problems.push(constructs(CANDIDATE, at));
         }
     }
     problems
@@ -1296,43 +1301,29 @@ fn has_decl_store(
     decl_span: naga::Span,
 ) -> bool {
     for (stmt, span) in block.span_iter() {
-        match stmt {
-            naga::Statement::Store { pointer, .. }
-                if *span == decl_span
-                    && matches!(expressions[*pointer], naga::Expression::LocalVariable(h) if h == var) =>
-            {
-                return true;
+        let found = match stmt {
+            naga::Statement::Store { pointer, .. } => {
+                *span == decl_span
+                    && matches!(expressions[*pointer], naga::Expression::LocalVariable(h) if h == var)
             }
-            naga::Statement::Block(inner) => {
-                if has_decl_store(inner, expressions, var, decl_span) {
-                    return true;
-                }
-            }
+            naga::Statement::Block(inner) => has_decl_store(inner, expressions, var, decl_span),
             naga::Statement::If { accept, reject, .. } => {
-                if has_decl_store(accept, expressions, var, decl_span)
+                has_decl_store(accept, expressions, var, decl_span)
                     || has_decl_store(reject, expressions, var, decl_span)
-                {
-                    return true;
-                }
             }
-            naga::Statement::Switch { cases, .. } => {
-                if cases
-                    .iter()
-                    .any(|c| has_decl_store(&c.body, expressions, var, decl_span))
-                {
-                    return true;
-                }
-            }
+            naga::Statement::Switch { cases, .. } => cases
+                .iter()
+                .any(|c| has_decl_store(&c.body, expressions, var, decl_span)),
             naga::Statement::Loop {
                 body, continuing, ..
             } => {
-                if has_decl_store(body, expressions, var, decl_span)
+                has_decl_store(body, expressions, var, decl_span)
                     || has_decl_store(continuing, expressions, var, decl_span)
-                {
-                    return true;
-                }
             }
-            _ => {}
+            _ => false,
+        };
+        if found {
+            return true;
         }
     }
     false
@@ -1346,17 +1337,23 @@ fn holds(
     module: &naga::Module,
     ty: naga::Handle<naga::Type>,
     is: &dyn Fn(naga::Handle<naga::Type>) -> bool,
+    cache: &mut HashMap<naga::Handle<naga::Type>, bool>,
 ) -> bool {
-    is(ty)
+    if let Some(&cached) = cache.get(&ty) {
+        return cached;
+    }
+    let answer = is(ty)
         || match &module.types[ty].inner {
             naga::TypeInner::Array { base, .. } | naga::TypeInner::BindingArray { base, .. } => {
-                holds(module, *base, is)
+                holds(module, *base, is, cache)
             }
             naga::TypeInner::Struct { members, .. } => {
-                members.iter().any(|m| holds(module, m.ty, is))
+                members.iter().any(|m| holds(module, m.ty, is, cache))
             }
             _ => false,
-        }
+        };
+    cache.insert(ty, answer);
+    answer
 }
 
 /// The span of the first statement in a block or its nested control flow that matches.
