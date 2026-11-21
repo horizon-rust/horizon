@@ -65,13 +65,16 @@ pub trait ReplayClientHost {
     fn replay_set_speed(&mut self, speed: f64) -> Result<(), ReplayError>;
     /// Side: client.
     /// Moves the replay's clock to `ms` from the recording's start (at most its length) at
-    /// the end of this frame. Then the world shows the recording's state at the position the
-    /// seek applied, and the next `replay_advanced` reports exactly that position, on the frame
-    /// drawn with it; the clock runs on from there only on the frame after. State that came
-    /// only from the client's own simulation between packets (an entity moving between its
-    /// updates, particles) is not promised to survive a seek. How the game gets there, and how
-    /// long it takes, is not part of this contract: today a seek can take time in proportion
-    /// to the position, so an exporter should let the replay advance where it can.
+    /// the end of this frame. Then the recording's packets up to the position the seek applied
+    /// have been applied, in order, and the next `replay_advanced` reports exactly that
+    /// position, on the frame drawn with it; the clock runs on from there only on the frame
+    /// after. A standalone replay sought back starts again from a fresh session; what the game
+    /// keeps outside that session may carry over (today the difficulty shown, and the backing
+    /// state of a screen a packet opened). State that came only from the client's own
+    /// simulation between packets (an entity moving between its updates, particles) is not
+    /// promised either way. How the game gets there, and how long it takes, is not part of this
+    /// contract: today a seek can take time in proportion to the position, so an exporter
+    /// should let the replay advance where it can.
     /// A standalone replay seeks either way; one that doesn't own its session only forward
     /// (`BackwardSeek`). A later `replay_close` or `replay_seek` in the same frame
     /// replaces this request, and a request for a replay closed or replaced since is

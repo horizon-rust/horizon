@@ -11,3 +11,4 @@ horizon-client game::native_replay_tests::a_replacement_keeps_the_replay_whose_c
 horizon-client game::native_replay_tests::save_and_quit_during_a_read_opens_no_replay lib daily resources
 horizon-client game::native_replay_tests::a_screen_the_opening_snapshot_opens_stays_open lib daily resources
 horizon-client game::native_replay_tests::a_reopen_of_the_playing_archive_after_an_editor_save_is_refused lib daily resources
+horizon-client game::native_replay_tests::a_backward_seek_drops_what_later_packets_set_outside_the_session lib daily resources

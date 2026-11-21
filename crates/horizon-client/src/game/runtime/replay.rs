@@ -376,6 +376,7 @@ impl Game<'_> {
                 .seek_and_collect(target_ms)?;
             self.init_remote_for_replay()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            self.reset_replay_world_extras();
             packets
         } else {
             if target_ms < current_ms {
@@ -396,6 +397,27 @@ impl Game<'_> {
         self.replay.last_tick = Some(std::time::Instant::now());
         self.replay.seek_report = true;
         Ok(())
+    }
+
+    /// What the recording's packets set on the game outside the replay's session (which
+    /// `init_remote_for_replay` makes anew), back as a fresh open has it, so the world rebuilt
+    /// from the start shows only what the packets replayed set.
+    fn reset_replay_world_extras(&mut self) {
+        self.border = Default::default();
+        self.tab_list = Default::default();
+        self.score.board = Default::default();
+        self.titles.clear();
+        self.titles.reset_times();
+        self.titles.overlay_time = 0;
+        self.clock.set_rate(20.0);
+        self.clock.set_frozen(false);
+        self.clock.set_frozen_ticks_to_run(0);
+        self.adv = Default::default();
+        self.stats = Default::default();
+        self.post_effects = Vec::new();
+        self.cooldowns = Default::default();
+        self.sleeping = None;
+        self.sleep_timer = 0;
     }
 
     fn dispatch_studio_replay_packets(
@@ -809,8 +831,10 @@ impl Game<'_> {
             // A replay opened over another: mods hear the old one close before the new one opens.
             self.replay.driver = None;
             self.replay.reported_ms = None;
-            // The kept synthetic session isn't rebuilt, so the old recording's chat goes here.
+            // The kept synthetic session isn't made anew, so what the old recording set outside
+            // it goes here.
             self.ui.chat.clear();
+            self.reset_replay_world_extras();
             let previous = std::mem::take(&mut self.replay.recording);
             self.native_replay_closed(&previous);
         }

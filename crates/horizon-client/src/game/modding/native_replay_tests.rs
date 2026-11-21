@@ -971,6 +971,48 @@ fn a_zero_length_recording_plays_its_snapshot_after_a_restart() {
     assert!(driver.is_finished());
 }
 
+/// A seek back in a standalone replay shows the recording's state there, outside its session
+/// too: a world border a later packet set is gone again.
+#[test]
+#[ignore = "daily"]
+fn a_backward_seek_drops_what_later_packets_set_outside_the_session() {
+    use horizon_protocol::packets::play;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("border.mcpr");
+    write_packets(
+        &path,
+        1_000,
+        vec![
+            (0, login_packet()),
+            (
+                500,
+                play::Clientbound::SetBorderSize(play::SetBorderSize { size: 100.0 }),
+            ),
+        ],
+    );
+    with_heard(|game| {
+        let answer = game
+            .open_studio_replay(&path.display().to_string())
+            .unwrap();
+        assert_eq!(answer["ok"], true);
+        let fresh = game.border.clone();
+        game.seek_studio_replay(800).unwrap();
+        assert_eq!(game.border.size(), 100.0, "the border packet was applied");
+        game.seek_studio_replay(200).unwrap();
+        assert_eq!(game.replay_state().unwrap().position_ms, 200);
+        assert_eq!(
+            game.border, fresh,
+            "back before it, the border is as at the open"
+        );
+        assert_eq!(
+            game.border,
+            horizon_client::worldborder::WorldBorder::default()
+        );
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+    });
+}
+
 /// Request ids run out rather than wrap: the last `u32` is given once, then none, never the
 /// reserved 0 nor an id given before.
 #[test]
