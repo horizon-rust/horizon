@@ -711,7 +711,7 @@ handle, an entity the client doesn't track and a level it doesn't show:
   and indexes the installed table, so a ticket call looks up no string. Another mod's controller does nothing.
 - `chunk.set_mod_forced(host, controller, owner, forced, natural_spawning)` (NeoForge's `TicketController.forceChunk`)
   holds or releases a chunk through `controller` and returns whether its tickets changed. `owner` is a
-  `TicketOwner`, `Block([x, y, z])` or `Entity(uuid)`. A ticket is scoped by controller, owner, chunk and
+  `TicketOwner`, `Block([x, y, z])`, `Entity(uuid)` or `Transient(id)`. A ticket is scoped by controller, owner, chunk and
   `natural_spawning`, so two owners in one chunk release separately, one owner holds a plain and a natural-spawning
   ticket on a chunk apart, and two controllers of one mod never touch each other's. The chunk stays loaded, entity
   ticking and saved, and its level keeps ticking, while any ticket or `/forceload` holds it. With `natural_spawning`, the
@@ -719,7 +719,7 @@ handle, an entity the client doesn't track and a level it doesn't show:
   a player): it gets inhabited time, thunder and a spawn attempt. The local mob cap then lets mobs spawn there only
   while a non-spectator player is within 128 blocks of the chunk's centre, as vanilla's
   `LocalMobCapCalculator` decides. `level.mod_forced_chunks(host, controller)` lists the controller's tickets as
-  `(owner, [x, z], natural_spawning)`. Tickets are saved in `data/horizon/mod_chunk_tickets.dat`, never in vanilla's
+  `(owner, [x, z], natural_spawning)`. Block and entity tickets are saved in `data/horizon/mod_chunk_tickets.dat`, never in vanilla's
   `chunk_tickets.dat`, under the controller's id. When a world loads, the tickets of an id no loaded mod registers are
   dropped with a warning in the log, as NeoForge documents for a controller nobody registers; so are tickets from a
   file written before controllers, which are keyed by mod id. Outside a mod's hook, for another mod's controller, and for

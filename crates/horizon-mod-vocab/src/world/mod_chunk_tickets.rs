@@ -2,7 +2,7 @@
 #[allow(unused_imports)]
 use crate::*;
 // no wire: encoded by the existing manual Wire implementation on TicketOwner.
-/// What a ticket belongs to: a block (a machine) or an entity.
+/// What a ticket belongs to: a block, an entity, or a transient operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 // exhaustive: a closed set the game matches without a wildcard
 pub enum TicketOwner {
@@ -10,6 +10,9 @@ pub enum TicketOwner {
     Block([i32; 3]),
     /// The entity with this UUID.
     Entity(u128),
+    /// An operation named by its controller and this identifier. The ticket
+    /// holds the chunk until released or the world closes and is never saved.
+    Transient(u128),
 }
 /// One chunk a mod holds loaded for an owner.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

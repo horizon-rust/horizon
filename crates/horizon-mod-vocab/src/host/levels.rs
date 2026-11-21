@@ -914,7 +914,8 @@ pub trait LevelsBackendMut {
     /// mobs spawn only with a non-spectator within 128 blocks. One
     /// owner holds a plain and a natural-spawning ticket on a chunk apart. Tickets are
     /// scoped by (controller, owner, chunk), so two owners in one chunk, or
-    /// two controllers, release separately. They are saved in
+    /// two controllers, release separately. Transient owners are discarded on world close.
+    /// Block and entity owners are saved in
     /// `data/horizon/mod_chunk_tickets.dat` under the controller's id; when
     /// the world loads, those of a controller no loaded mod registers are
     /// discarded. False outside a mod's hook, for another mod's controller, on
@@ -926,6 +927,18 @@ pub trait LevelsBackendMut {
         chunk: ChunkRef,
         controller: TicketController,
         owner: TicketOwner,
+        forced: bool,
+        natural_spawning: bool,
+    ) -> bool;
+    /// Side: server.
+    /// Hold or release a runtime-only operation ticket on this chunk. The
+    /// controller and identifier scope the ticket. It is discarded on close.
+    #[access(WorldOnly)]
+    fn chunk_set_transient_forced(
+        &mut self,
+        chunk: ChunkRef,
+        controller: TicketController,
+        operation: u128,
         forced: bool,
         natural_spawning: bool,
     ) -> bool;

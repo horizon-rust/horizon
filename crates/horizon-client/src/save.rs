@@ -2331,15 +2331,16 @@ fn intern_saved_fluids(root: &NamedTag) {
     }
 }
 
-fn mod_ticket_to_nbt(ticket: &ModTicket, controller: &str) -> Tag {
+fn mod_ticket_to_nbt(ticket: &ModTicket, controller: &str) -> Option<Tag> {
     let owner = match ticket.owner {
         TicketOwner::Block(pos) => ("block", Tag::IntArray(pos.to_vec())),
         TicketOwner::Entity(uuid) => (
             "entity",
             Tag::IntArray((0..4).map(|i| (uuid >> (96 - 32 * i)) as i32).collect()),
         ),
+        TicketOwner::Transient(_) => return None,
     };
-    Tag::compound([
+    Some(Tag::compound([
         ("controller", Tag::String(controller.into())),
         ("owner", Tag::compound([owner])),
         (
@@ -2350,7 +2351,7 @@ fn mod_ticket_to_nbt(ticket: &ModTicket, controller: &str) -> Tag {
             "natural_spawning",
             Tag::Byte(i8::from(ticket.natural_spawning)),
         ),
-    ])
+    ]))
 }
 /// A saved ticket: the id of the controller that held it, and the ticket without its slot.
 fn mod_ticket_from_nbt(tag: &Tag) -> Option<(String, ModTicket)> {
@@ -2634,7 +2635,7 @@ impl SaveDir {
         let path = self.mod_tickets_path();
         let list: Vec<Tag> = tickets
             .to_save()
-            .filter_map(|t| Some(mod_ticket_to_nbt(t, id_of(t.controller)?)))
+            .filter_map(|t| mod_ticket_to_nbt(t, id_of(t.controller)?))
             .collect();
         if list.is_empty() && !path.exists() {
             return Ok(());
@@ -5182,6 +5183,31 @@ mod tests {
     #[test]
     fn a_bare_file_name_syncs_the_working_directory() {
         super::sync_folder(std::path::Path::new("level-not-written.json")).unwrap();
+    }
+
+    #[test]
+    fn transient_mod_tickets_hold_chunks_without_reopening_them_on_restart() {
+        use super::*;
+        let root = tempfile::tempdir().unwrap();
+        let save = SaveDir::new(root.path().to_path_buf(), LevelShape::OVERWORLD);
+        let mut tickets = ModTickets::default();
+        let transient = ModTicket {
+            controller: 0,
+            owner: TicketOwner::Transient(1),
+            chunk: (4, 5),
+            natural_spawning: false,
+        };
+        let persistent = ModTicket {
+            owner: TicketOwner::Entity(1),
+            chunk: (6, 7),
+            ..transient.clone()
+        };
+        tickets.insert(transient);
+        tickets.insert(persistent.clone());
+        assert!(tickets.holds((4, 5)));
+        save.save_mod_tickets(&tickets, |_| Some("test:teleport"))
+            .unwrap();
+        assert_eq!(save.load_mod_tickets(|_| Some(0)), [persistent]);
     }
 
     #[test]

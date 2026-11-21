@@ -1,0 +1,3 @@
+ids = ["type:TicketOwner"]
+why = "A ticket can belong to an operation such as finding a teleport destination, without persisting across restarts."
+migrate = "Rebuild against the new SDK. In exhaustive TicketOwner matches, handle the new Transient(u128) variant."

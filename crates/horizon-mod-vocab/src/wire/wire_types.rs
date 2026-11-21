@@ -1605,7 +1605,7 @@ impl crate::wire::Wire for crate::AttachmentError {
 }
 #[allow(unreachable_patterns, unused_variables)]
 impl crate::wire::Wire for crate::TicketOwner {
-    layout_fields!("tag" => u32, "0:Block" => [i32;3], "1:Entity" => u128);
+    layout_fields!("tag" => u32, "0:Block" => [i32;3], "1:Entity" => u128, "2:Transient" => u128);
     const LAYOUT_SEED: u64 = crate::wire::layout_name("TicketOwner");
     const MIN: usize = 4;
     fn put(&self, out: &mut crate::wire::Writer) {
@@ -1617,6 +1617,10 @@ impl crate::wire::Wire for crate::TicketOwner {
             Self::Entity(f0) => {
                 out.put(&1u32);
                 out.put(f0);
+            }
+            Self::Transient(id) => {
+                out.put(&2u32);
+                out.put(id);
             }
         }
     }
@@ -1630,6 +1634,10 @@ impl crate::wire::Wire for crate::TicketOwner {
                 out.put_owned(1u32);
                 out.put_owned(f0);
             }
+            Self::Transient(id) => {
+                out.put_owned(2u32);
+                out.put_owned(id);
+            }
         }
     }
     fn take(
@@ -1639,6 +1647,7 @@ impl crate::wire::Wire for crate::TicketOwner {
             Ok(match input.take::<u32>()? {
                 0 => Self::Block(input.take()?),
                 1 => Self::Entity(input.take()?),
+                2 => Self::Transient(input.take()?),
                 tag => return Err(crate::wire::WireError::Tag(tag)),
             })
         })

@@ -520,6 +520,23 @@ impl Game<'_> {
         };
         streaming.set_mod_forced(ticket, forced)
     }
+    pub(super) fn chunk_set_transient_forced(
+        &mut self,
+        chunk: ChunkRef,
+        controller: TicketController,
+        operation: u128,
+        forced: bool,
+        natural_spawning: bool,
+    ) -> bool {
+        self.chunk_set_mod_forced(
+            chunk,
+            controller,
+            mod_api::TicketOwner::Transient(operation),
+            forced,
+            natural_spawning,
+        )
+    }
+
     /// The chunk tickets `controller` holds in the level, as (owner, chunk
     /// position, natural_spawning), in order. None for a stale handle, on a
     /// client, outside a mod's hook and for another mod's controller.
