@@ -601,6 +601,23 @@ fn prepare_fix_after(failed: bool, offers_mojang: bool, tag: Option<&str>) -> Op
         .map(|tag| PrepareFix::Mojang(tag.to_owned()))
 }
 
+/// What Home's Prepare notice says, and the action it offers. The selected instance's pinned
+/// version that is missing (`pin`) comes first: Play refuses it, so an older error about another
+/// version, with that version's action, would point the player the wrong way. Then the last
+/// preparation's `error` with its `fix`; `gone` words the missing version.
+pub(crate) fn prepare_notice_choice(
+    pin: Option<&str>,
+    error: Option<String>,
+    fix: Option<PrepareFix>,
+    gone: impl Fn(&str) -> String,
+) -> Option<(String, Option<PrepareFix>)> {
+    match (pin, error) {
+        (Some(pin), _) => Some((gone(pin), Some(PrepareFix::Reinstall(pin.to_owned())))),
+        (None, Some(error)) => Some((error, fix)),
+        (None, None) => None,
+    }
+}
+
 /// What Home says when a preparation ended without an error but `tag` still isn't prepared: the
 /// game can't start, and the button alone would only offer the same step again.
 fn not_prepared_after(tag: &str) -> String {
@@ -622,6 +639,27 @@ mod tests {
         );
         assert_eq!(prepare_fix_after(true, false, Some("v-a")), None);
         assert_eq!(prepare_fix_after(false, true, Some("v-a")), None);
+    }
+
+    /// Prepare failed for A, then an instance pinned to the missing B was selected: B's notice
+    /// and Reinstall, never A's Mojang retry.
+    #[test]
+    fn a_missing_pin_outranks_an_older_prepare_error() {
+        let gone = |tag: &str| format!("{tag} is gone");
+        let a_failed = || Some("A's files are incomplete".to_string());
+        let a_fix = || Some(PrepareFix::Mojang("v-a".into()));
+        assert_eq!(
+            prepare_notice_choice(Some("v-b"), a_failed(), a_fix(), gone),
+            Some((
+                "v-b is gone".into(),
+                Some(PrepareFix::Reinstall("v-b".into()))
+            ))
+        );
+        assert_eq!(
+            prepare_notice_choice(None, a_failed(), a_fix(), gone),
+            Some(("A's files are incomplete".into(), a_fix()))
+        );
+        assert_eq!(prepare_notice_choice(None, None, None, gone), None);
     }
 
     #[test]

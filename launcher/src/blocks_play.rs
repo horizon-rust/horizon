@@ -451,14 +451,12 @@ impl Launcher {
             .selected_instance()
             .and_then(|i| i.missing_pin(&self.installed))
             .filter(|pin| Some(*pin) != installing);
-        let (error, fix) = match (self.prepare_error.clone(), pin) {
-            (Some(error), _) => (error, self.prepare_fix.clone()),
-            (None, Some(pin)) => (
-                backend::version_gone(&self.version_name(pin)),
-                Some(PrepareFix::Reinstall(pin.to_owned())),
-            ),
-            (None, None) => return None,
-        };
+        let (error, fix) = crate::launcher_messages::prepare_notice_choice(
+            pin,
+            self.prepare_error.clone(),
+            self.prepare_fix.clone(),
+            |pin| backend::version_gone(&self.version_name(pin)),
+        )?;
         let busy = self.preparing || installing.is_some();
         let action = match fix.filter(|_| !busy) {
             Some(PrepareFix::Reinstall(tag)) => self.release_to_install(&tag).map(|release| {
