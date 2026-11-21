@@ -455,6 +455,9 @@ horizon-client game::creatures::spawn_egg_mob_tests::an_egg_used_on_a_mob_posts_
 horizon-client game::creatures::spectator_view_tests::a_spectator_sees_the_invisible_body lib daily resources
 horizon-client game::creatures::tests::conversion_transfers_tags_and_team lib daily resources
 horizon-client game::creatures::tests::ender_pearl_clears_impulse_before_next_fall lib daily resources
+horizon-client game::creatures::tests::an_ender_pearl_crosses_a_portal_before_moving_its_owner lib daily resources
+horizon-client game::creatures::tests::an_ender_pearl_landing_in_another_level_moves_its_owner lib daily resources
+horizon-client game::creatures::tests::an_ender_pearl_without_guest_conn_moves_the_host_owner lib daily resources
 horizon-client game::creatures::tests::wolf_owner_rejoining_receives_the_kill_statistic lib daily resources
 horizon-client game::crop_grow_tests::a_mod_stops_one_cane_and_hears_the_other_grow lib daily resources
 horizon-client game::crossbow::tests::a_flame_crossbow_shoots_burning_arrows lib daily resources
@@ -2387,6 +2390,7 @@ horizon-client game::server_reload::tests::server_reload_retains_listeners_for_o
 horizon-client game::server_reload::tests::server_reload_skips_unparsable_files_and_delivers_the_rest lib daily resources
 horizon-client game::server_reload::tests::villager_secondary_reload_tests::failed_reload_preparation_keeps_secondary_tag_entries lib daily resources
 horizon-client game::server_reload::tests::villager_secondary_reload_tests::successful_reload_removes_secondary_tag_entries lib daily resources
+horizon-client game::server_travel::tests::a_failed_level_teleport_restores_the_active_level lib daily resources
 horizon-client game::server_travel::hold_tests::a_hold_ended_by_a_trip_elsewhere_hears_the_client_again lib daily resources
 horizon-client game::server_travel::hold_tests::a_hold_follows_the_destination_a_mod_chose lib daily resources
 horizon-client game::server_travel::hold_tests::a_hold_ignores_the_clients_moves_until_a_tp_to_lit_land_replaces_it lib daily resources

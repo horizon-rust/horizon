@@ -123,6 +123,8 @@ impl Game<'_> {
             at: [to.at.x, to.at.y, to.at.z],
             rotation: Some([to.yaw, to.pitch]),
             vehicle: None,
+            source: None,
+            damage: None,
         });
         self.run_level_teleports();
     }

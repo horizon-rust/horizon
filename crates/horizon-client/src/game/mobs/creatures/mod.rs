@@ -5270,6 +5270,20 @@ impl Game<'_> {
         });
     }
 
+    /// `ThrownEnderpearl.onHit`: roll and spawn in the pearl's landing level,
+    /// at the owner's source coordinates.
+    fn spawn_pearl_endermite(&mut self, from: [f64; 3]) {
+        if self.world.random.next_float() < 0.05
+            && self
+                .ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::SPAWN_MONSTERS)
+            && self.ui.difficulty != 0
+        {
+            self.spawn_mob_raw("minecraft:endermite", from, false);
+        }
+    }
+
     /// A projectile's hit, landed in the attack of its owner.
     pub(super) fn projectile_hit(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
         let attack = self.projectile_attack(p);
@@ -5903,56 +5917,133 @@ impl Game<'_> {
                 let mut to = p.previous;
                 let mut damage = 5.0;
                 let mut cancel = false;
-                // EntityTeleportEvent.EnderPearl: a server player's pearl.
-                if p.owner == Some(Who::Player)
-                    && let Some(from) = self.player.as_ref().map(|pl| pl.position)
-                    && let Some(owner) = self.native_acting_player().map(|player| player.entity())
-                {
+                // A pearl can land in a level other than its owner's. The
+                // normal guest swap cannot reach that player because it only
+                // swaps guests from the level currently being ticked, so
+                // carry the teleport through the server's level queue.
+                let player_owner = if p.owner == Some(Who::Player) {
+                    let cross_level = self.lan.as_ref().and_then(|host| {
+                        let conn = p.guest.or_else(|| {
+                            let owner = p.owner_uuid?;
+                            host.hub
+                                .guests
+                                .iter()
+                                .find(|g| {
+                                    g.placed
+                                        && horizon_client::lan::playerdata::uuid_ints(g.uuid)
+                                            == owner
+                                })
+                                .map(|g| g.conn)
+                        })?;
+                        host.hub
+                            .guests
+                            .iter()
+                            .find(|g| g.conn == conn && g.placed)
+                            .map(|g| {
+                                (
+                                    Some(conn),
+                                    Some(g.entity_id),
+                                    g.position,
+                                    Dim::from_id(&g.dimension),
+                                    // A cross-level ServerPlayer may use the pearl while
+                                    // sleeping; vanilla's portal path only requires alive.
+                                    g.health > 0.0 && !g.dead,
+                                )
+                            })
+                            .filter(|(_, _, _, owner_dim, _)| *owner_dim != self.dim)
+                    });
+                    cross_level.or_else(|| {
+                        // Only the player currently in the game state can use
+                        // the local path. A pearl belonging to another player
+                        // must not inherit this player's hook decision.
+                        if p.guest.is_some_and(|conn| self.lan_acting != Some(conn)) {
+                            return None;
+                        }
+                        let from = self.player.as_ref()?.position.components();
+                        let owner = self
+                            .native_acting_player()
+                            .map(|player| player.entity().id() as i32);
+                        Some((
+                            None,
+                            owner,
+                            from,
+                            self.dim,
+                            horizon_client::projectiles::owner_can_take_pearl(
+                                !self.player.as_ref()?.health.dead_or_dying(),
+                                self.sleeping.is_some(),
+                            ),
+                        ))
+                    })
+                } else {
+                    None
+                };
+                if let Some((conn, owner_entity, from, owner_dim, can_take)) = player_owner {
+                    // Resolve the owner before dispatching the hook. The hook
+                    // must run once for this owner, not once for whoever is
+                    // temporarily in `self.player` and once again for them.
                     let dimension = self.dim;
-                    let target;
-                    (target, damage, cancel) =
-                        self.native_pearl_teleport(owner, p.id, from, to, damage, hit);
-                    cancel |= self.dim != dimension
-                        || self.player.as_ref().is_none_or(|pl| pl.position != from)
-                        || self.native_acting_player().map(|player| player.entity()) != Some(owner);
-                    // A target that is not a number keeps the pearl's.
-                    if target.iter().all(|v| v.is_finite()) {
-                        to = Vec3::new(target[0], target[1], target[2]);
+                    let owner = owner_entity.and_then(|owner_entity| {
+                        self.native_lifecycle
+                            .epoch()
+                            .map(|epoch| mod_api::EntityRef::new(epoch, owner_entity as u32))
+                    });
+                    if let Some(owner) = owner {
+                        let (target, new_damage, new_cancel) = self.native_pearl_teleport(
+                            owner,
+                            p.id,
+                            Vec3::new(from[0], from[1], from[2]),
+                            to,
+                            damage,
+                            hit,
+                        );
+                        damage = new_damage;
+                        cancel = new_cancel;
+                        if owner_dim == dimension {
+                            cancel |= self.dim != dimension
+                                || self
+                                    .player
+                                    .as_ref()
+                                    .is_none_or(|pl| pl.position.components() != from)
+                                || self.native_acting_player().map(|player| player.entity())
+                                    != Some(owner);
+                        }
+                        if target.iter().all(|v| v.is_finite()) {
+                            to = Vec3::new(target[0], target[1], target[2]);
+                        }
                     }
+                    if owner_dim != self.dim {
+                        if can_take && !cancel {
+                            self.spawn_pearl_endermite(from);
+                            self.level_teleports
+                                .push(crate::game::server_travel::LevelTeleport {
+                                    conn: conn.expect("cross-level player owner has a connection"),
+                                    source: Some(owner_dim),
+                                    dim: self.dim,
+                                    at: [to.x, to.y, to.z],
+                                    rotation: None,
+                                    vehicle: None,
+                                    damage: Some(("minecraft:ender_pearl", damage)),
+                                });
+                        }
+                        return Ok(());
+                    }
+                    if can_take && !cancel {
+                        self.spawn_pearl_endermite(from);
+                        // ServerPlayer.teleport: removeVehicle before the placement.
+                        section_steps::teleport_player(self, to);
+                        self.hurt_player_by("minecraft:ender_pearl", damage);
+                        self.audio.play(
+                            "minecraft:entity.player.teleport",
+                            Some([to.x, to.y, to.z]),
+                            1.0,
+                            1.0,
+                        );
+                    }
+                    return Ok(());
                 }
                 // ThrownEnderpearl.isAllowedToTeleportOwner: an owner who is
                 // dead or asleep cannot take the pearl, so it is discarded
                 // where it lands (no teleport and no 5 damage).
-                let taken = self.player.as_ref().is_some_and(|pl| {
-                    horizon_client::projectiles::owner_can_take_pearl(
-                        !pl.health.dead_or_dying(),
-                        self.sleeping.is_some(),
-                    )
-                });
-                if p.owner == Some(Who::Player) && taken && !cancel {
-                    // ThrownEnderpearl: 5% endermite where the player was
-                    // (when monsters spawn), teleport, 5 damage.
-                    if self.world.random.next_float() < 0.05
-                        && self
-                            .ui
-                            .rules
-                            .bool_at(horizon_client::gamerules::vanilla::SPAWN_MONSTERS)
-                        && self.ui.difficulty != 0
-                        && let Some(pl) = self.player.as_ref()
-                    {
-                        let from = pl.position;
-                        self.spawn_mob_raw("minecraft:endermite", [from.x, from.y, from.z], false);
-                    }
-                    // ServerPlayer.teleport: removeVehicle before the placement.
-                    section_steps::teleport_player(self, to);
-                    self.hurt_player_by("minecraft:ender_pearl", damage);
-                    self.audio.play(
-                        "minecraft:entity.player.teleport",
-                        Some([to.x, to.y, to.z]),
-                        1.0,
-                        1.0,
-                    );
-                }
                 if let Some(Who::Mob(id)) = p.owner {
                     self.mob_pearl_teleport(p, id, hit);
                 }
@@ -9171,6 +9262,451 @@ mod tests {
             damaged,
             "a ten-block fall after the teleport must cause damage"
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_ender_pearl_landing_in_another_level_moves_its_owner() {
+        use super::{Game, Hit, Projectile, ProjectileKind, Vec3, Who};
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+        use horizon_protocol::packets::configuration::ClientInformation;
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "pearl-cross-level-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+                level_seeds: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 114,
+                name: "PearlGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+            },
+            2,
+            [4.5, 70.0, 4.5],
+            2,
+        );
+        guest.dimension = "minecraft:the_nether".into();
+        guest.placed = true;
+        guest.loaded = true;
+        let uuid = horizon_client::lan::playerdata::uuid_ints(guest.uuid);
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        game.lan = Some(host);
+
+        let target = Vec3::new(12.5, 75.0, -3.5);
+        let mut pearl = Projectile::new(ProjectileKind::EnderPearl, target, Some(Who::Player));
+        pearl.guest = Some(2);
+        pearl.owner_uuid = Some(uuid);
+        pearl.previous = target;
+        game.projectile_hit(
+            &pearl,
+            Hit::Block {
+                pos: [12, 75, -3],
+                at: target,
+                face: [0; 3],
+            },
+        )
+        .unwrap();
+        assert_eq!(game.level_teleports.len(), 1);
+        assert_eq!(
+            game.level_teleports[0].damage,
+            Some(("minecraft:ender_pearl", 5.0))
+        );
+        assert_eq!(
+            game.level_teleports[0].source,
+            Some(super::super::Dim::Nether)
+        );
+        assert_eq!(game.level_teleports[0].dim, super::super::Dim::Overworld);
+
+        game.run_level_teleports();
+        let moved = game
+            .lan
+            .as_ref()
+            .unwrap()
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == 2)
+            .unwrap();
+        assert_eq!(moved.dimension, "minecraft:overworld");
+        assert_eq!(moved.position, [target.x, target.y, target.z]);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_ender_pearl_without_guest_conn_moves_the_host_owner() {
+        use super::{Game, Hit, Projectile, ProjectileKind, Vec3, Who};
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+        use horizon_protocol::packets::configuration::ClientInformation;
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "host-pearl-cross-level-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+                level_seeds: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut host_player = Guest::new(
+            Joined {
+                conn: 0,
+                uuid: 114,
+                name: "HostPearl".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+            },
+            2,
+            [4.5, 70.0, 4.5],
+            2,
+        );
+        host_player.dimension = "minecraft:the_nether".into();
+        host_player.placed = true;
+        host_player.loaded = true;
+        let uuid = horizon_client::lan::playerdata::uuid_ints(host_player.uuid);
+        let mut host = game.lan.take().unwrap();
+        host.hub.singleplayer_owner = Some(host_player.uuid);
+        host.hub.guests.push(host_player);
+        game.lan = Some(host);
+
+        let target = Vec3::new(12.5, 75.0, -3.5);
+        let mut pearl = Projectile::new(ProjectileKind::EnderPearl, target, Some(Who::Player));
+        pearl.owner_uuid = Some(uuid);
+        pearl.previous = target;
+        game.projectile_hit(
+            &pearl,
+            Hit::Block {
+                pos: [12, 75, -3],
+                at: target,
+                face: [0; 3],
+            },
+        )
+        .unwrap();
+        assert_eq!(game.level_teleports.len(), 1);
+        assert_eq!(game.level_teleports[0].conn, 0);
+        assert_eq!(
+            game.level_teleports[0].damage,
+            Some(("minecraft:ender_pearl", 5.0))
+        );
+        assert_eq!(
+            game.level_teleports[0].source,
+            Some(super::super::Dim::Nether)
+        );
+        assert_eq!(game.level_teleports[0].dim, super::super::Dim::Overworld);
+
+        game.run_level_teleports();
+        let moved = game
+            .lan
+            .as_ref()
+            .unwrap()
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == 0)
+            .unwrap();
+        assert_eq!(moved.dimension, "minecraft:overworld");
+        assert_eq!(moved.position, [target.x, target.y, target.z]);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_ender_pearl_crosses_a_portal_before_moving_its_owner() {
+        use super::{Game, Hit, Projectile, ProjectileKind, Vec3, Who};
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::chunk::Chunk;
+        use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+        use horizon_protocol::packets::configuration::ClientInformation;
+        use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "pearl-crossing-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+                level_seeds: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 114,
+                name: "PearlGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+            },
+            2,
+            [4.5, 70.0, 4.5],
+            2,
+        );
+        guest.dimension = "minecraft:the_nether".into();
+        // Cross-level portal travel can wake a sleeping owner, matching vanilla.
+        guest.sleeping = true;
+        guest.placed = true;
+        guest.loaded = true;
+        let uuid = horizon_client::lan::playerdata::uuid_ints(guest.uuid);
+        game.lan.as_mut().unwrap().hub.guests.push(guest);
+
+        // Tick the pearl through a real portal handoff, not directly into the hit handler.
+        game.enter_level(super::super::Dim::Nether).unwrap();
+        for x in -2..=2 {
+            for z in -2..=2 {
+                game.streaming
+                    .insert_remote(&mut game.world, Chunk::empty(x, z));
+            }
+        }
+        let portal = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:nether_portal")
+            .unwrap();
+        for x in 4..=5 {
+            for y in 70..=72 {
+                game.world.set(x, y, 4, portal).unwrap();
+            }
+        }
+        game.update_chunk_tickets();
+        let source = Vec3::new(4.5, 70.0, 4.5);
+        let mut pearl = Projectile::new(ProjectileKind::EnderPearl, source, Some(Who::Player));
+        pearl.id = 400;
+        pearl.guest = Some(2);
+        pearl.owner_uuid = Some(uuid);
+        game.creatures.projectiles.push(pearl);
+        game.find_entity_portals();
+        assert!(
+            game.creatures.projectiles.is_empty(),
+            "the pearl should be removed into the portal arrival queue"
+        );
+
+        // Land the serialized pearl in the overworld, then hit a block there.
+        game.enter_level(super::super::Dim::Overworld)
+            .unwrap();
+        for x in 0..=4 {
+            for z in 0..=4 {
+                game.streaming
+                    .insert_remote(&mut game.world, Chunk::empty(x, z));
+            }
+        }
+        for x in 36..=37 {
+            for y in 70..=72 {
+                game.world.set(x, y, 36, portal).unwrap();
+            }
+        }
+        game.land_portal_arrivals();
+        let mut pearl = game
+            .creatures
+            .projectiles
+            .pop()
+            .expect("the pearl should land in the overworld");
+        assert_eq!(pearl.owner, Some(Who::Player));
+        assert_eq!(pearl.guest, Some(2));
+        let target = pearl.position;
+        pearl.previous = target;
+        game.projectile_hit(
+            &pearl,
+            Hit::Block {
+                pos: [target.x as i32, target.y as i32, target.z as i32],
+                at: target,
+                face: [0; 3],
+            },
+        )
+        .unwrap();
+        assert_eq!(game.level_teleports.len(), 1);
+        assert_eq!(
+            game.level_teleports[0].damage,
+            Some(("minecraft:ender_pearl", 5.0))
+        );
+        assert_eq!(
+            game.level_teleports[0].source,
+            Some(super::super::Dim::Nether)
+        );
+        assert_eq!(game.level_teleports[0].dim, super::super::Dim::Overworld);
+
+        game.run_level_teleports();
+        let moved = game
+            .lan
+            .as_ref()
+            .unwrap()
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == 2)
+            .unwrap();
+        assert_eq!(moved.dimension, "minecraft:overworld");
     }
 
     #[test]

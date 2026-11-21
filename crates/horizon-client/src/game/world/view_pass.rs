@@ -617,6 +617,8 @@ pub(in crate::game) mod tests {
                 at,
                 rotation: None,
                 vehicle: None,
+                source: None,
+                damage: None,
             });
         game.run_level_teleports();
     }

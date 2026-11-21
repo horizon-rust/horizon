@@ -1287,6 +1287,8 @@ impl Game<'_> {
                     at,
                     rotation: Some([yaw, pitch]),
                     vehicle: None,
+                    source: None,
+                    damage: None,
                 });
             return;
         }

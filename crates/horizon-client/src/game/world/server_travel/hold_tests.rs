@@ -241,6 +241,8 @@ fn a_command_arrival_holds_movement_until_lit_then_ticks_damage_again() {
         at,
         rotation: None,
         vehicle: None,
+        source: None,
+        damage: None,
     });
     game.run_level_teleports();
     game.tick_server_travel();

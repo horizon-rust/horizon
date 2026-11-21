@@ -1825,6 +1825,8 @@ impl Game<'_> {
                 at: pos,
                 rotation,
                 vehicle: None,
+                source: None,
+                damage: None,
             });
         Ok(true)
     }
