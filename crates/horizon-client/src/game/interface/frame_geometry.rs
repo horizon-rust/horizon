@@ -410,6 +410,7 @@ impl Game<'_> {
                 },
                 Some(ItemUseState::Other(animation)) => item_use::use_pose(
                     animation,
+                    &*stack.item == "minecraft:shield",
                     owner.use_item_remaining_ticks as f32,
                     owner.use_duration as f32,
                     a,

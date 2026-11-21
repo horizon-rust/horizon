@@ -605,9 +605,10 @@ pub(super) fn count_down(ticks: u32, duration: i32) -> Option<u32> {
 
 /// The first person pose of a hand using an item of `animation`
 /// (`ItemInHandRenderer.renderArmWithItem`'s switch), for an item of no
-/// pose of its own.
+/// pose of its own. `shield` is a `ShieldItem`: BLOCK leaves it as it is.
 pub(super) fn use_pose(
     animation: UseAnimation,
+    shield: bool,
     remaining: f32,
     duration: f32,
     partial: f32,
@@ -623,6 +624,7 @@ pub(super) fn use_pose(
         UseAnimation::Bow => ItemPose::Bow { ticks_used },
         UseAnimation::Trident => ItemPose::Trident { ticks_used },
         UseAnimation::Brush => ItemPose::Brush { remaining, partial },
+        UseAnimation::Block if !shield => ItemPose::Block,
         _ => ItemPose::Using,
     }
 }
@@ -1137,7 +1139,7 @@ mod tests {
 
     #[test]
     fn a_use_animation_picks_the_hand_pose() {
-        let pose = |animation| use_pose(animation, 12.0, 32.0, 0.5);
+        let pose = |animation| use_pose(animation, false, 12.0, 32.0, 0.5);
         assert!(matches!(
             pose(UseAnimation::Drink),
             ItemPose::Eat { remaining, duration, partial }
@@ -1155,13 +1157,15 @@ mod tests {
             pose(UseAnimation::Brush),
             ItemPose::Brush { remaining, partial } if (remaining, partial) == (12.0, 0.5)
         ));
-        for animation in [
-            UseAnimation::None,
-            UseAnimation::Block,
-            UseAnimation::Spyglass,
-        ] {
+        for animation in [UseAnimation::None, UseAnimation::Spyglass] {
             assert!(matches!(pose(animation), ItemPose::Using));
         }
+        // BLOCK turns a sword across the body but leaves a `ShieldItem` as it is.
+        assert!(matches!(pose(UseAnimation::Block), ItemPose::Block));
+        assert!(matches!(
+            use_pose(UseAnimation::Block, true, 12.0, 32.0, 0.5),
+            ItemPose::Using
+        ));
     }
 }
 
