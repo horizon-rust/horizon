@@ -96,8 +96,8 @@ class ParityRunnerTests(unittest.TestCase):
     def mismatch(self, reference, candidate, context=5):
         with tempfile.TemporaryDirectory() as temp:
             left, right = Path(temp) / "reference", Path(temp) / "candidate"
-            left.write_bytes(reference.encode("utf-8"))
-            right.write_bytes(candidate.encode("utf-8"))
+            left.write_bytes(reference if isinstance(reference, bytes) else reference.encode("utf-8"))
+            right.write_bytes(candidate if isinstance(candidate, bytes) else candidate.encode("utf-8"))
             with self.assertRaises(AssertionError) as caught:
                 parity.compare(left, right, context=context)
         return str(caught.exception)
@@ -124,6 +124,7 @@ class ParityRunnerTests(unittest.TestCase):
             "            13  'counts 1 2 3 4\\n'",
             "            14  'counts 1 2 3 4\\n'",
             "            15  (end of output)",
+            "  (two '#' before '[' and two ':' in a row are shown with a space between them)",
         ])
 
     def test_context_at_the_first_and_last_line_and_with_a_shorter_side(self):
@@ -146,8 +147,53 @@ class ParityRunnerTests(unittest.TestCase):
         lines = "".join(f"{'y' * 300} {i}\n" for i in range(20))
         message = self.mismatch(lines + "a\n" + lines, lines + "b\n" + lines, context=50)
         block = message.split("\n", 1)[1]
-        self.assertLessEqual(len(block), parity.CONTEXT_BLOCK_LIMIT + 100)
-        self.assertTrue(block.endswith("(context cut at 4,096 characters)"))
+        self.assertLessEqual(len(block.encode("utf-8")), parity.CONTEXT_BLOCK_LIMIT)
+        self.assertIn("  (context cut to 4,096 bytes)", block)
+        self.assertIn("  >         21  'a\\n'", block)
+        self.assertIn("  >         21  'b\\n'", block)
+
+    def test_context_cut_keeps_both_mismatching_rows(self):
+        heavy = ["\x01" * 150 + "€" * 50 + f" {i}\n" for i in range(12)]
+        before, after = "".join(heavy[:5]), "".join(heavy[5:])
+        message = self.mismatch(before + "\x02" * 197 + "a\n" + after, before + "€" * 197 + "b\n" + after)
+        block = message.split("\n", 1)[1]
+        self.assertLessEqual(len(("\n" + block).encode("utf-8")), parity.CONTEXT_BLOCK_LIMIT)
+        self.assertIn("  >          6  '" + "\\x02" * 197 + "a\\n'", block)
+        self.assertIn("  >          6  '" + "€" * 197 + "b\\n'", block)
+        self.assertIn("  (context cut to 4,096 bytes)", block)
+        # The lines before go first: all five, before any line after.
+        self.assertIn("Matching lines before it (0 of 5 shown, the same on both sides):", block)
+        self.assertIn("\n             7  ", block)
+
+    def test_context_spaces_workflow_command_sequences(self):
+        same = "##[warning]x\n::error::x\n"
+        tail = "::error::x\n##[error]x\n:::x\n"
+        message = self.mismatch(same + "##[error]x\n" + tail, same + "::error::x\n" + tail)
+        first, block = message.split("\n", 1)
+        self.assertEqual(first, "Parity mismatch at output line 3: vanilla='##[error]x\\n', Rust='::error::x\\n'")
+        self.assertNotIn("##[", block)
+        self.assertNotIn("::", block)
+        for shown in ["'# #[warning]x\\n'", "': :error: :x\\n'", "'# #[error]x\\n'", "': : :x\\n'"]:
+            self.assertIn(shown, block)
+        self.assertIn("  >          3  '# #[error]x\\n'", block)
+        self.assertIn("  >          3  ': :error: :x\\n'", block)
+        self.assertTrue(block.endswith("are shown with a space between them)"))
+        self.assertEqual(self.mismatch(same + "##[error]x\n", same + "::error::x\n", context=0), first)
+
+    def test_bad_bytes_after_the_mismatch_do_not_hide_it(self):
+        padding = b"z" * 1_500_000
+        first = "Parity mismatch at output line 2: vanilla='X\\n', Rust='Y\\n'"
+        reference, candidate = b"a\nX\n" + padding + b"\xff\nq\n", b"a\nY\n" + padding + b"\xff\nq\n"
+        self.assertEqual(self.mismatch(reference, candidate, context=0), first)
+        message = self.mismatch(reference, candidate)
+        self.assertTrue(message.startswith(first + "\n"))
+        self.assertIn("             3  '" + "z" * 200 + "' (1,499,805 more characters cut)\n             4  'q\\n'", message)
+        # A bad byte inside a shown line is shown escaped.
+        reference, candidate = b"a\nX\n" + padding + b"\nbad \xff x\n", b"a\nY\n" + padding + b"\nbad \xff x\n"
+        self.assertEqual(self.mismatch(reference, candidate, context=0), first)
+        message = self.mismatch(reference, candidate)
+        self.assertTrue(message.startswith(first + "\n"))
+        self.assertIn("             4  'bad \\\\xff x\\n'", message)
 
     def test_context_cannot_start_workflow_commands_or_terminal_escapes(self):
         hostile = "::error::owned\n\x1b[2J\x1b]8;;x\x07\n"

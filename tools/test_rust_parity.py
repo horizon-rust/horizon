@@ -104,7 +104,11 @@ def verify_artifacts():
 
 
 CONTEXT_LINE_LIMIT = 200
-CONTEXT_BLOCK_LIMIT = 4096
+CONTEXT_BLOCK_LIMIT = 4096  # UTF-8 bytes
+
+
+def _excerpt(text):
+    return text[:CONTEXT_LINE_LIMIT], len(text)
 
 
 def _context_line(stream):
@@ -122,34 +126,64 @@ def _context_line(stream):
     return head[:CONTEXT_LINE_LIMIT], total
 
 
-def _show(number, line, marker=' '):
-    # repr escapes control characters (ESC, CR, bidi marks) and the indent keeps a line from
-    # starting with `::`, so a trace line cannot run a workflow command or a terminal escape in a CI log.
-    if line is None:
+def _neutralise(text):
+    # GitHub's runner reads `::` at a line's start and the legacy `##[` anywhere on a line as commands.
+    while '##[' in text:
+        text = text.replace('##[', '# #[')
+    while '::' in text:
+        text = text.replace('::', ': :')
+    return text
+
+
+def _show(number, excerpt, marker=' '):
+    # repr escapes control characters (ESC, CR, bidi marks), the indent keeps a line from starting
+    # a command and _neutralise spaces the command sequences, so a trace line cannot run a workflow
+    # command or a terminal escape in a public CI log.
+    if excerpt is None:
         return f'  {marker} {number:>10}  (end of output)'
-    text, total = line
+    text, total = excerpt
     cut = f' ({total - len(text):,} more characters cut)' if total > len(text) else ''
-    return f'  {marker} {number:>10}  {text!r}{cut}'
+    return f'  {marker} {number:>10}  {_neutralise(repr(text))}{cut}'
 
 
 def _mismatch_context(line, before, left, right, expected, actual, context):
-    first = line - len(before)
-    rows = ['', f'Matching lines before it ({len(before)}, the same on both sides):' if before else
-            'No matching lines before it.']
-    rows += [_show(first + i, (text[:CONTEXT_LINE_LIMIT], len(text))) for i, text in enumerate(before)]
+    """The block after the first line of a mismatch message, at most CONTEXT_BLOCK_LIMIT UTF-8 bytes.
+    `before` holds excerpts; the two mismatching rows always stay, and over the limit the earliest
+    lines before go first, then the last lines after."""
+    sides = []
     for side, mismatch, stream in [('vanilla', left, expected), ('Rust', right, actual)]:
-        rows.append(f'{side} from line {line}:')
-        shown = None if mismatch is None else (mismatch[:CONTEXT_LINE_LIMIT], len(mismatch))
-        rows.append(_show(line, shown, '>'))
+        after = []
         if mismatch is not None:
-            for offset in range(1, context + 1):
-                following = _context_line(stream)
-                rows.append(_show(line + offset, following))
-                if following is None:
+            for _ in range(context):
+                after.append(_context_line(stream))
+                if after[-1] is None:
                     break
-    block = '\n'.join(rows)
-    if len(block) > CONTEXT_BLOCK_LIMIT:
-        block = block[:CONTEXT_BLOCK_LIMIT].rsplit('\n', 1)[0] + f'\n  (context cut at {CONTEXT_BLOCK_LIMIT:,} characters)'
+        sides.append((side, None if mismatch is None else _excerpt(mismatch), after))
+    note = '  (two \'#\' before \'[\' and two \':\' in a row are shown with a space between them)'
+
+    def build(skip_before, keep_after):
+        shown = list(before)[skip_before:]
+        first = line - len(shown)
+        count = f'{len(shown)} of {len(before)} shown' if skip_before else f'{len(shown)}'
+        rows = [f'Matching lines before it ({count}, the same on both sides):' if before else
+                'No matching lines before it.']
+        rows += [_show(first + i, excerpt) for i, excerpt in enumerate(shown)]
+        for side, mismatch, after in sides:
+            rows += [f'{side} from line {line}:', _show(line, mismatch, '>')]
+            rows += [_show(line + i, excerpt) for i, excerpt in enumerate(after[:keep_after], 1)]
+        if skip_before or keep_after < context:
+            rows.append(f'  (context cut to {CONTEXT_BLOCK_LIMIT:,} bytes)')
+        rows.append(note)
+        return '\n' + '\n'.join(rows)
+
+    skip_before, keep_after = 0, context
+    block = build(skip_before, keep_after)
+    while len(block.encode('utf-8')) > CONTEXT_BLOCK_LIMIT and (skip_before < len(before) or keep_after):
+        if skip_before < len(before):
+            skip_before += 1
+        else:
+            keep_after -= 1
+        block = build(skip_before, keep_after)
     return block
 
 
@@ -174,7 +208,13 @@ def compare(reference, candidate, context=0):
             last = left[-1]
     # Preserve the existing exact first-line mismatch diagnostic. Mismatches are
     # exceptional; successful runs use only the bounded chunk buffers above.
-    with reference.open(encoding='utf-8') as expected, candidate.open(encoding='utf-8') as actual:
+    # With context the scan decodes with backslashreplace, so a bad byte past the strictly decoded
+    # chunks above cannot hide a located mismatch; everything up to the mismatch was decoded strictly
+    # above. The scan still reads whole lines as before (one enormous line costs what it does today);
+    # only the excerpts kept for the context are capped.
+    errors = 'backslashreplace' if context > 0 else None
+    with reference.open(encoding='utf-8', errors=errors) as expected, \
+            candidate.open(encoding='utf-8', errors=errors) as actual:
         before = collections.deque(maxlen=context)
         for line, (left, right) in enumerate(itertools.zip_longest(expected, actual), 1):
             if left != right:
@@ -182,7 +222,8 @@ def compare(reference, candidate, context=0):
                 if context > 0:
                     message += _mismatch_context(line, before, left, right, expected, actual, context)
                 raise AssertionError(message)
-            before.append(left)
+            if context > 0:
+                before.append(_excerpt(left))
     raise AssertionError('Parity outputs changed during comparison')
 
 def run(command, **kwargs):
