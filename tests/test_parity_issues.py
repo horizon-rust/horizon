@@ -38,6 +38,26 @@ class ParityIssuesTests(unittest.TestCase):
         self.assertEqual(issues.mass_issue(listed), 17343)
         self.assertIsNone(issues.mass_issue(listed[1:2]))
 
+    def test_no_mass_failure_closes_every_open_mass_issue(self):
+        listed = [{"number": 5, "title": "Parity regression: x"},
+                  {"number": 9, "title": "Nightly audit: 21 harnesses newly fail"},
+                  {"number": 12, "title": "Nightly audit: 57 harnesses newly fail"}]
+        # Two duplicates can be open at once (#17343/#17794): both close, not just the lowest-numbered one.
+        self.assertEqual(issues.mass_issues(listed), [9, 12])
+        calls = []
+
+        def call(*arguments, dry_run=False):
+            calls.append(arguments)
+
+        self.assertEqual(issues.close_mass_issues(listed, "c" * 40, "run", call=call), [9, 12])
+        self.assertEqual([c[0:2] for c in calls], [("issue", "close"), ("issue", "close")])
+        self.assertEqual([c[2] for c in calls], ["9", "12"])
+        self.assertIn("No mass failure", calls[0][4])
+        # No open mass issue: nothing is closed.
+        calls.clear()
+        self.assertEqual(issues.close_mass_issues(listed[:1], "c" * 40, "run", call=call), [])
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
