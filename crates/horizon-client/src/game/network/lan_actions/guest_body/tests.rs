@@ -9,6 +9,8 @@ use std::sync::{Arc, atomic::AtomicI32, mpsc};
 
 #[path = "tests/fall_reset.rs"]
 mod fall_reset;
+#[path = "tests/sounds.rs"]
+mod sounds;
 
 fn guest(entity_id: i32) -> Guest {
     let (sender, _) = mpsc::channel();

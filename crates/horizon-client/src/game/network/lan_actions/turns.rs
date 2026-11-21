@@ -1095,16 +1095,7 @@ impl Game<'_> {
     /// reaches every player around but the hurt one, whose own client plays it
     /// from `handleDamageEvent` (arismoko/horizon#4149).
     pub(super) fn guest_hurt_sound(&mut self, conn: u32, sound: &str) {
-        let Some(at) = self
-            .lan
-            .as_ref()
-            .and_then(|host| host.hub.guest(conn))
-            .map(|g| g.position)
-        else {
-            return;
-        };
-        self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
-        self.send_level_sound(LevelSound::new(sound, at, 1.0, 1.0), Some(conn));
+        self.own_sound(conn, sound, 1.0, 1.0);
     }
 
     /// `ServerLevel.players()` in turn: the host's own player, then each

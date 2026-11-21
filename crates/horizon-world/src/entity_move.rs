@@ -202,15 +202,29 @@ pub fn move_entity<W: EntityMoveWorld>(
     {
         world.restitute(state, x, z, resolved)?;
     }
+    move_emission(world, resolved, p, state)?;
+    let factor = world.block_speed_factor()?;
+    let velocity = scale_by_block_speed(world.velocity()?, factor);
+    world.set_velocity(velocity)
+}
+/// `Entity.move`'s emission: the footstep, the swim sound and the amethyst
+/// chime for a move the level runs on this side, when the entity emits
+/// anything and rides nothing. A server runs it for a move its player's
+/// client reported too (`ServerGamePacketListenerImpl.handlePlayerPositionChange`
+/// calls `player.move`, which the other players around hear).
+pub fn move_emission<W: EntityMoveWorld>(
+    world: &mut W,
+    resolved: Vec3,
+    p: BlockPos,
+    state: BlockStateId,
+) -> Result<(), W::Error> {
     if !world.client_side()? || world.locally_authoritative()? {
         let emission = world.movement_emission()?;
         if emission.anything() && !world.passenger()? {
             world.apply_movement_emission(emission, resolved, p, state)?;
         }
     }
-    let factor = world.block_speed_factor()?;
-    let velocity = scale_by_block_speed(world.velocity()?, factor);
-    world.set_velocity(velocity)
+    Ok(())
 }
 /// The last step of `Entity.move`: the horizontal velocity is multiplied by
 /// `getBlockSpeedFactor()` (soul sand, honey), the vertical one is untouched.
