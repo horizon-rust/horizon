@@ -93,7 +93,7 @@ impl Game<'_> {
                 Some([dims.0, dims.1, dims.2].map(|v| f64::from(v as f32 * scale)))
             }
             Target::Dragon(id) => {
-                self.dragon.as_ref().filter(|d| d.id == id)?;
+                self.dragon.get(id)?;
                 // EntityTypes.ENDER_DRAGON: scalable(16, 8), default eye
                 // height 8 * 0.85. Dragons are not in the ordinary mob table.
                 let scale = self.native_target_attribute(

@@ -358,7 +358,7 @@ impl Game<'_> {
                     .map(attribute_modifiers);
             }
             Target::Dragon(id) => {
-                let d = self.dragon.as_ref().filter(|d| d.id == id)?;
+                let d = self.dragon.get(id)?;
                 return d
                     .live
                     .modifiers(catalog, "minecraft:ender_dragon", name, Vec::new)
@@ -414,7 +414,7 @@ impl Game<'_> {
                     .read(catalog, "minecraft:armor_stand", name, kind, Vec::new);
             }
             Target::Dragon(id) => {
-                let d = self.dragon.as_ref().filter(|d| d.id == id)?;
+                let d = self.dragon.get(id)?;
                 return d
                     .live
                     .read(catalog, "minecraft:ender_dragon", name, kind, Vec::new);
@@ -1022,7 +1022,7 @@ impl Game<'_> {
                     a.first_tick,
                 )
             }),
-            Target::Dragon(id) => self.dragon.as_ref().filter(|d| d.id == id).map(|d| {
+            Target::Dragon(id) => self.dragon.get(id).map(|d| {
                 (
                     d.equipment.get(slot as usize).cloned(),
                     d.position,

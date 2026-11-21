@@ -546,6 +546,27 @@ impl<T, const DIRECT: bool> JoinList<T, DIRECT> {
         binding.subtype(subtype);
         self.bind_to(binding);
     }
+    /// Bind a specialized owner whose fixed semantic children (a dragon's
+    /// parts) are projected by every structural operation, as for
+    /// [`ResidentSlot::bind_residency_specialized`].
+    pub fn bind_residency_specialized(
+        &mut self,
+        journal: &residency::Journal,
+        owner: residency::Owner,
+        identity: fn(&T) -> (u32, JoinSeq),
+        children: (residency::Kind, u8, fn(&T, u8) -> Option<[i32; 4]>),
+    ) {
+        let mut binding = journal.bind(owner, identity);
+        binding.children(children.0, children.1, children.2);
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|current| current.same(&binding))
+        {
+            return;
+        }
+        self.bind_to(binding);
+    }
     fn bind_to(&mut self, binding: residency::Binding<T>) {
         self.written();
         if let Some(old) = &self.1 {

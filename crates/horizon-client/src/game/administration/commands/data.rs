@@ -275,7 +275,7 @@ impl Game<'_> {
                 crate::game::persist::with_raw(tag, self.persist.raw.get(&id))
             }
             Target::Dragon(id) => {
-                let d = self.dragon.as_ref().filter(|d| d.id == id)?;
+                let d = self.dragon.get(id)?;
                 let raw = self.persist_anon("minecraft:ender_dragon", d.position);
                 let uuid = self.persist.uuids.get(&id).copied();
                 let tag = d.to_nbt(uuid.unwrap_or_else(random_uuid), raw);

@@ -165,7 +165,7 @@ pub(super) struct Parked {
     jukebox_sounds: HashMap<(i32, i32, i32), u64>,
     bolts: Vec<lightning::Bolt>,
     crystals: horizon_client::join_seq::JoinList<dragon::Crystal>,
-    dragon: super::native_entity_refs::dragon_parts_table::DragonSlot,
+    dragon: super::native_entity_refs::dragon_parts_table::DragonSet,
     breath_clouds: horizon_client::join_seq::ResidentList<dragon::Breath>,
     tridents: horizon_client::join_seq::JoinList<trident::ThrownTrident>,
     rockets: horizon_client::join_seq::JoinList<fireworks::Rocket>,

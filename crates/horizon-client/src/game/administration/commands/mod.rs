@@ -1377,7 +1377,7 @@ impl Game<'_> {
             target_entity_mut!(g, t, e => *e.velocity_mut() = Vec3::ZERO);
             // The dragon's flight builds on the motion it carries.
             if let Target::Dragon(id) = t
-                && let Some(d) = g.dragon.as_mut().filter(|d| d.id == id)
+                && let Some(d) = g.dragon.get_mut(id)
             {
                 d.teleport_motion([false; 3]);
             }
@@ -1669,7 +1669,7 @@ impl Game<'_> {
                 }
             }
             Target::Dragon(id) => {
-                if let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) {
+                if let Some(d) = self.dragon.get_mut(id) {
                     d.position = v;
                     d.previous = v;
                 }
@@ -1756,7 +1756,7 @@ impl Game<'_> {
                 *velocity = teleport_velocity(*velocity, relative, false);
             });
             if let Target::Dragon(id) = t
-                && let Some(dragon) = self.dragon.as_mut().filter(|dragon| dragon.id == id)
+                && let Some(dragon) = self.dragon.get_mut(id)
             {
                 dragon.teleport_motion(relative);
             }

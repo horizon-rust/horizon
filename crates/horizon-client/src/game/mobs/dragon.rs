@@ -1738,7 +1738,7 @@ impl Game<'_> {
             // Before the hook, this command treated an otherwise valid fire
             // hit as accepted while the dragon's fire immunity absorbed it.
             if is_fire(kind) && !saved {
-                let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) else {
+                let Some(d) = self.dragon.get_mut(id) else {
                     return false;
                 };
                 let level = super::entity::damage_level_of!(self, scoped);
@@ -1757,7 +1757,7 @@ impl Game<'_> {
             }
             return false;
         }
-        let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) else {
+        let Some(d) = self.dragon.get_mut(id) else {
             return false;
         };
         let counts = player.is_some() || is_explosion_type(ty);
@@ -3345,7 +3345,7 @@ impl Game<'_> {
     /// `EnderDragon.hurtServer`: Thorns hits the body part, so damage is
     /// quartered plus at most one, with the player as its causing entity.
     pub(super) fn dragon_thorns(&mut self, attacker: u32, min: f32, max: f32) {
-        let Some(d) = self.dragon.as_mut().filter(|d| d.id == attacker) else {
+        let Some(d) = self.dragon.get_mut(attacker) else {
             return;
         };
         let damage = d.random.next_float() * (max - min) + min;
@@ -4703,7 +4703,7 @@ impl Game<'_> {
 impl Game<'_> {
     /// `Mob.playAmbientSound` when EntityType.spawn places a dragon.
     pub(super) fn dragon_spawn_ambient(&mut self, id: u32) -> bool {
-        let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) else {
+        let Some(d) = self.dragon.get_mut(id) else {
             return false;
         };
         let at = [d.position.x, d.position.y, d.position.z];

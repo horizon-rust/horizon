@@ -13,13 +13,13 @@ impl Game<'_> {
         let Target::Dragon(id) = self.native_entity_target(entity)? else {
             return None;
         };
-        self.dragon.as_ref().filter(|d| d.id == id)
+        self.dragon.get(id)
     }
     pub(super) fn native_dragon_mut(&mut self, entity: EntityRef) -> Option<&mut Dragon> {
         let Target::Dragon(id) = self.native_entity_target(entity)? else {
             return None;
         };
-        self.dragon.as_mut().filter(|d| d.id == id)
+        self.dragon.get_mut(id)
     }
 
     /// The entity as the ender dragon, or None for another kind, a stale

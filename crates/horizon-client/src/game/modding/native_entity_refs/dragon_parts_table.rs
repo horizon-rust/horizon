@@ -165,40 +165,44 @@ mod tests {
     }
 }
 
-/// The table travels with the dimension-owned singleton, including actor loans.
+/// Every ender dragon of a level, in join order, with the level's part table.
+/// The table travels with the dimension-owned set, including actor loans.
+///
+/// Until the fight binding lands the methods without an id (`as_ref`, `as_mut`,
+/// `extract`, `put_back`, `replace`, `install`, `discard`) address "the dragon",
+/// the first one, exactly as the former singleton slot did; `install` and
+/// `replace` keep the set at one dragon. Anything keyed by an entity id uses
+/// [`Self::get`] / [`Self::get_mut`].
 #[derive(Default)]
-pub(in crate::game) struct DragonSlot {
-    slot: horizon_client::join_seq::ResidentSlot<crate::game::dragon::Dragon>,
+pub(in crate::game) struct DragonSet {
+    list: horizon_client::join_seq::JoinList<crate::game::dragon::Dragon>,
     table: std::cell::RefCell<DragonPartsTable>,
-    registered: std::cell::Cell<u32>,
+    /// `(join, id)` of each dragon whose eight parts are in the table; a loaned
+    /// dragon stays registered.
+    registered: std::cell::RefCell<Vec<(horizon_client::join_seq::JoinSeq, u32)>>,
 }
-impl std::ops::Deref for DragonSlot {
-    type Target = horizon_client::join_seq::ResidentSlot<crate::game::dragon::Dragon>;
-    fn deref(&self) -> &Self::Target {
-        &self.slot
-    }
-}
-impl std::ops::DerefMut for DragonSlot {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.slot
-    }
-}
-impl DragonSlot {
-    fn register(&self, id: u32) {
-        let old = self.registered.replace(id);
-        if old == id {
-            return;
-        }
-        let mut table = self.table.borrow_mut();
-        if old != 0 {
-            for part in old + 1..=old + 8 {
+impl DragonSet {
+    fn unregister(&self, join: horizon_client::join_seq::JoinSeq) {
+        let mut registered = self.registered.borrow_mut();
+        if let Some(at) = registered.iter().position(|(j, _)| *j == join) {
+            let (_, id) = registered.remove(at);
+            let mut table = self.table.borrow_mut();
+            for part in id + 1..=id + 8 {
                 table.remove(part);
             }
         }
+    }
+    fn register(&self, join: horizon_client::join_seq::JoinSeq, id: u32) {
+        if self.registered.borrow().contains(&(join, id)) {
+            return;
+        }
+        self.unregister(join);
         if id != 0 {
+            let mut table = self.table.borrow_mut();
             for part in id + 1..=id + 8 {
                 table.insert(part);
             }
+            self.registered.borrow_mut().push((join, id));
         }
     }
     pub(super) fn parts_table(&self) -> std::cell::Ref<'_, DragonPartsTable> {
@@ -208,40 +212,111 @@ impl DragonSlot {
     fn part_ids(&self) -> Vec<u32> {
         self.table.borrow().iter().collect()
     }
-    pub(in crate::game) fn replace(&mut self, dragon: crate::game::dragon::Dragon) {
-        self.register(0);
-        self.register(dragon.id);
-        self.slot.replace(dragon);
+    /// Bind the set to its dimension; the eight parts are its fixed children.
+    pub(in crate::game) fn bind_residency_specialized(
+        &mut self,
+        journal: &horizon_client::join_seq::residency::Journal,
+        owner: horizon_client::join_seq::residency::Owner,
+        identity: fn(&crate::game::dragon::Dragon) -> (u32, horizon_client::join_seq::JoinSeq),
+        children: (
+            horizon_client::join_seq::residency::Kind,
+            u8,
+            fn(&crate::game::dragon::Dragon, u8) -> Option<[i32; 4]>,
+        ),
+    ) {
+        self.list
+            .bind_residency_specialized(journal, owner, identity, children);
     }
-    // Preserve ResidentSlot's ownership-returning refusal contract without allocating.
+    pub(in crate::game) fn iter(&self) -> std::slice::Iter<'_, crate::game::dragon::Dragon> {
+        self.list.iter()
+    }
+    /// The dragon with entity id `id` (never an unassigned one).
+    pub(in crate::game) fn get(&self, id: u32) -> Option<&crate::game::dragon::Dragon> {
+        self.list.iter().find(|d| d.id != 0 && d.id == id)
+    }
+    pub(in crate::game) fn get_mut(&mut self, id: u32) -> Option<&mut crate::game::dragon::Dragon> {
+        self.list.iter_mut().find(|d| d.id != 0 && d.id == id)
+    }
+    pub(in crate::game) fn is_some(&self) -> bool {
+        !self.list.is_empty()
+    }
+    pub(in crate::game) fn is_none(&self) -> bool {
+        self.list.is_empty()
+    }
+    /// Add a dragon after the ones already there.
+    pub(in crate::game) fn push(&mut self, dragon: crate::game::dragon::Dragon) {
+        self.list.push(dragon);
+        let last = &self.list[self.list.len() - 1];
+        self.register(last.join, last.id);
+    }
+    pub(in crate::game) fn as_ref(&self) -> Option<&crate::game::dragon::Dragon> {
+        self.list.first()
+    }
+    pub(in crate::game) fn as_mut(&mut self) -> Option<&mut crate::game::dragon::Dragon> {
+        self.list.get_mut(0)
+    }
+    pub(in crate::game) fn locate(&self, join: horizon_client::join_seq::JoinSeq) -> Option<usize> {
+        self.list.locate(join)
+    }
+    /// Replace the set by one dragon, retiring the old ones.
+    pub(in crate::game) fn replace(&mut self, dragon: crate::game::dragon::Dragon) {
+        self.discard();
+        self.push(dragon);
+    }
+    // Preserve the ownership-returning refusal contract without allocating.
     #[allow(clippy::result_large_err)]
     pub(in crate::game) fn install(
         &mut self,
         dragon: crate::game::dragon::Dragon,
     ) -> Result<(), crate::game::dragon::Dragon> {
-        if self.slot.is_some() {
+        if self.is_some() {
             return Err(dragon);
         }
-        self.replace(dragon);
+        self.push(dragon);
         Ok(())
     }
+    /// Retire every dragon and forget their parts.
     pub(in crate::game) fn discard(&mut self) {
-        self.register(0);
-        self.slot.discard();
+        let joins: Vec<_> = self.list.iter().map(|d| d.join).collect();
+        for join in joins {
+            self.unregister(join);
+        }
+        self.list.clear();
     }
+    /// Report the allocator's delayed zero-to-live id assignment.
     pub(in crate::game) fn id_assigned(&self) {
-        self.register(self.slot.as_ref().map_or(0, |d| d.id));
-        self.slot.id_assigned();
+        for (index, dragon) in self.list.iter().enumerate() {
+            let old = self
+                .registered
+                .borrow()
+                .iter()
+                .find(|(j, _)| *j == dragon.join)
+                .map(|e| e.1);
+            if old != Some(dragon.id) && !(old.is_none() && dragon.id == 0) {
+                self.register(dragon.join, dragon.id);
+                self.list.id_assigned(index);
+            }
+        }
+    }
+    /// Lift the first dragon without retiring it (its parts stay registered).
+    pub(in crate::game) fn extract(&mut self) -> Option<crate::game::dragon::Dragon> {
+        let join = self.list.first()?.join;
+        self.list.extract(join)
+    }
+    /// Return an extracted dragon to the front (the tick frame uses it from the next PR on).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::game) fn put_back(&mut self, dragon: crate::game::dragon::Dragon) {
+        self.list.put_back(0, dragon);
     }
     pub(in crate::game) fn retire_extracted(
         &self,
         id: u32,
         join: horizon_client::join_seq::JoinSeq,
     ) {
-        if self.registered.get() == id {
-            self.register(0);
+        if self.registered.borrow().contains(&(join, id)) {
+            self.unregister(join);
         }
-        self.slot.retire_extracted(id, join);
+        self.list.retire_extracted(id, join);
     }
 }
 
@@ -251,8 +326,8 @@ mod lifecycle_tests {
     use crate::game::Vec3;
     use crate::game::dragon::Dragon;
     #[test]
-    fn dragon_slot_tracks_registration_not_temporary_loans() {
-        let mut slot = DragonSlot::default();
+    fn dragon_set_tracks_registration_not_temporary_loans() {
+        let mut slot = DragonSet::default();
         slot.replace(Dragon::new(Vec3::ZERO, 0.0, 0));
         assert!(slot.part_ids().is_empty());
         slot.as_mut().unwrap().id = 20;
@@ -264,5 +339,27 @@ mod lifecycle_tests {
         assert_eq!(slot.part_ids(), [25, 27, 28, 24, 26, 23, 22, 21]);
         slot.discard();
         assert!(slot.part_ids().is_empty());
+    }
+    #[test]
+    fn two_dragons_register_their_own_parts_and_retire_independently() {
+        let mut set = DragonSet::default();
+        for id in [20, 30] {
+            let mut d = Dragon::new(Vec3::ZERO, 0.0, 0);
+            d.id = id;
+            set.push(d);
+        }
+        assert_eq!(set.iter().count(), 2);
+        assert_eq!(set.get(30).map(|d| d.id), Some(30));
+        assert!(set.get(0).is_none() && set.get(31).is_none());
+        assert_eq!(
+            set.part_ids(),
+            [
+                33, 35, 25, 27, 37, 31, 32, 28, 34, 24, 38, 36, 26, 23, 22, 21
+            ]
+        );
+        let first = set.extract().unwrap();
+        assert_eq!(set.as_ref().map(|d| d.id), Some(30));
+        set.retire_extracted(first.id, first.join);
+        assert_eq!(set.part_ids(), [33, 35, 37, 31, 32, 34, 38, 36]);
     }
 }
