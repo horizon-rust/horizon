@@ -670,4 +670,55 @@ mod tests {
             .count();
         assert_eq!(neighbours, burst - own);
     }
+
+    /// docs/play-with-friends.md, "Fixed limits" and the protocol table: the figures the page gives
+    /// are the ones in `Rates::default()` and `Config::default()`, said the way the page says them.
+    #[test]
+    fn the_fixed_limits_are_the_ones_the_docs_give() {
+        let docs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/play-with-friends.md"
+        ))
+        .unwrap();
+        let docs = docs.split_whitespace().collect::<Vec<_>>().join(" ");
+        let (r, c) = (Rates::default(), crate::Config::default());
+        let minutes = |d: Duration| d.as_secs() / 60;
+        for sentence in [
+            format!(
+                "{} host registrations a minute (burst {})",
+                r.register_per_min, r.register_burst
+            ),
+            format!("{} joins a minute (burst {})", r.join_per_min, r.join_burst),
+            format!(
+                "{} unknown short codes in {} minutes block joins for {} minutes",
+                r.unknown_limit,
+                minutes(r.unknown_window),
+                minutes(r.block)
+            ),
+            format!(
+                "{} unknown short codes a minute for one short code from every client together (burst {})",
+                r.nameplate_unknown_per_min, r.nameplate_unknown_burst
+            ),
+            format!(
+                "each IPv4 /24 or IPv6 /48 also has its own budget, {} a minute (burst {})",
+                r.site_unknown_per_min, r.site_unknown_burst
+            ),
+            format!("a relayed stream idle for {} s is closed", c.idle.as_secs()),
+            format!(
+                "the first line must be complete within {} s",
+                c.first_line.as_secs()
+            ),
+            format!("hosts answer pings within {} s", c.host_timeout.as_secs()),
+            format!(
+                "`{{\"op\":\"pong\"}}` | every {} s |",
+                c.ping_every.as_secs()
+            ),
+            format!(
+                "`ended` (kept {} minutes after a host leaves)",
+                minutes(c.ended_kept)
+            ),
+        ] {
+            assert!(docs.contains(&sentence), "the page says {sentence:?}");
+        }
+    }
 }
