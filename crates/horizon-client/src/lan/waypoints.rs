@@ -133,6 +133,10 @@ struct Memo {
     /// The centre of the player's ChunkTrackingView (`ChunkMap.move`).
     view_center: [i32; 2],
     transmitting: bool,
+    /// The computed `waypoint_transmit_range` and `waypoint_receive_range` the manager last saw:
+    /// vanilla's `onAttributeUpdated` runs on every change of either, not only across zero.
+    transmit_range: f64,
+    receive_range: f64,
     team: Option<(String, Option<i32>)>,
     icon: Icon,
 }
@@ -616,13 +620,19 @@ impl Waypoints {
                 t.view.insert(*uuid, (memo.view_center, p.view_distance));
             }
         }
-        // Players who left, and the ServerPlayer a respawn replaced.
-        let gone: Vec<u128> = self
-            .players
-            .iter()
+        // Players who left, and the ServerPlayer a respawn replaced: every known entity, receiver or not
+        // (`ServerLevel.EntityCallbacks.onTrackingEnd` calls `removePlayer` for each), receivers first
+        // in their order, then the rest by id.
+        let departed = |uuid: &u128| !t.s.players.contains_key(uuid) || respawned.contains(uuid);
+        let mut gone: Vec<u128> = self.players.iter().copied().filter(departed).collect();
+        let mut silent: Vec<u128> = self
+            .memo
+            .keys()
             .copied()
-            .filter(|uuid| !t.s.players.contains_key(uuid) || respawned.contains(uuid))
+            .filter(|uuid| departed(uuid) && !self.players.contains(uuid))
             .collect();
+        silent.sort_unstable();
+        gone.extend(silent);
         for uuid in gone {
             self.remove_player(&mut t, uuid);
             self.memo.remove(&uuid);
@@ -644,6 +654,8 @@ impl Waypoints {
                     position: p.position,
                     view_center: center,
                     transmitting,
+                    transmit_range: p.transmit_range,
+                    receive_range: p.receive_range,
                     team: p.team.clone(),
                     icon: p.icon.clone(),
                 },
@@ -663,7 +675,10 @@ impl Waypoints {
         if players.len() >= by_receiver
             && players.iter().all(|p| {
                 let memo = &self.memo[&p.uuid];
-                (p.transmit_range > 0.0) == memo.transmitting && p.team == memo.team
+                p.transmit_range == memo.transmit_range
+                    && p.receive_range == memo.receive_range
+                    && (p.transmit_range > 0.0) == memo.transmitting
+                    && p.team == memo.team
             })
         {
             self.moves_by_receiver(&mut t, players);
@@ -694,12 +709,30 @@ impl Waypoints {
             }
             // LivingEntity.onAttributeUpdated(WAYPOINT_TRANSMIT_RANGE).
             let transmitting = p.transmit_range > 0.0;
-            if transmitting != self.memo[&p.uuid].transmitting {
-                self.memo.get_mut(&p.uuid).unwrap().transmitting = transmitting;
+            let memo = self.memo.get_mut(&p.uuid).unwrap();
+            let changed = p.transmit_range != memo.transmit_range;
+            memo.transmit_range = p.transmit_range;
+            if transmitting != memo.transmitting {
+                memo.transmitting = transmitting;
                 if transmitting {
                     self.track(&mut t, p.uuid);
                 } else {
                     self.untrack(&mut t, p.uuid);
+                }
+            } else if changed && transmitting {
+                // A new value while still transmitting is `trackWaypoint` again.
+                self.track(&mut t, p.uuid);
+            }
+            // ServerPlayer.onAttributeUpdated(WAYPOINT_RECEIVE_RANGE): a receiver
+            // is added (its connections remade, and `addPlayer` tracks it again if it transmits,
+            // even in the tick the transmit callback tracked it) or removed.
+            let memo = self.memo.get_mut(&p.uuid).unwrap();
+            if p.receive_range != memo.receive_range {
+                memo.receive_range = p.receive_range;
+                if p.receive_range > 0.0 {
+                    self.add_player(&mut t, p.uuid, transmitting);
+                } else {
+                    self.remove_player(&mut t, p.uuid);
                 }
             }
             // ServerScoreboard: a team joined, left or recoloured remakes the connections.
@@ -1003,6 +1036,68 @@ mod tests {
             to(&out, 20),
             vec![(waypoint_operation::UNTRACK, WaypointTarget::Empty)]
         );
+    }
+
+    /// A player who receives nothing is still a source (`onTrackingEnd` calls `removePlayer` for
+    /// every ServerPlayer): leaving the level, or being replaced, untracks it, and it joins afresh.
+    #[test]
+    fn a_player_receiving_nothing_leaves_and_returns_like_any_other() {
+        let a = player(1, 10, [0.5, 64.0, 0.5]);
+        let mut b = player(2, 20, [4.5, 64.0, 0.5]);
+        let untrack = vec![(waypoint_operation::UNTRACK, WaypointTarget::Empty)];
+        let track = vec![(waypoint_operation::TRACK, WaypointTarget::Block([4, 64, 0]))];
+        for respawn in [false, true] {
+            let mut w = Waypoints::default();
+            w.tick(&[a.clone(), b.clone()], &[], true);
+            // Receiving nothing removes B's reception and (vanilla) its waypoint; a new transmit
+            // value tracks it again, and it is a source still.
+            b.receive_range = 0.0;
+            let out = w.tick(&[a.clone(), b.clone()], &[], true);
+            assert_eq!(to(&out, 10), untrack);
+            b.transmit_range = 10.0;
+            let out = w.tick(&[a.clone(), b.clone()], &[], true);
+            assert_eq!(to(&out, 10), track);
+            // B leaves (or respawns): A loses it, though B never was a receiver.
+            let out = if respawn {
+                w.tick_level(&[a.clone(), b.clone()], &[], &[2], true)
+            } else {
+                w.tick_level(std::slice::from_ref(&a), &[(2, 20)], &[], true)
+            };
+            assert_eq!(to(&out, 10), untrack);
+            if respawn {
+                // The new ServerPlayer shows once it has ticked and moved.
+                b.position[0] += 1.0;
+                let out = w.tick(&[a.clone(), b.clone()], &[], true);
+                assert_eq!(
+                    to(&out, 10),
+                    [(waypoint_operation::TRACK, WaypointTarget::Block([5, 64, 0]))]
+                );
+                b.position[0] -= 1.0;
+            } else {
+                assert!(!w.memo.contains_key(&2));
+                // It comes back with nothing changed: joined afresh, tracked, receiving nothing.
+                let out = w.tick(&[a.clone(), b.clone()], &[], true);
+                assert_eq!(to(&out, 10), track);
+                assert!(to(&out, 20).is_empty());
+            }
+            b.receive_range = 60_000_000.0;
+            b.transmit_range = 60_000_000.0;
+        }
+    }
+
+    /// Both ranges change in one tick: the transmit callback tracks B and the receive callback's
+    /// `addPlayer` tracks it again (`trackWaypoint` always sends), so A is told twice.
+    #[test]
+    fn both_ranges_changing_in_one_tick_track_twice() {
+        let a = player(1, 10, [0.5, 64.0, 0.5]);
+        let mut b = player(2, 20, [4.5, 64.0, 0.5]);
+        let mut w = Waypoints::default();
+        w.tick(&[a.clone(), b.clone()], &[], true);
+        b.transmit_range = 5.0e7;
+        b.receive_range = 5.0e7;
+        let out = w.tick(&[a, b], &[], true);
+        let track = (waypoint_operation::TRACK, WaypointTarget::Block([4, 64, 0]));
+        assert_eq!(to(&out, 10), vec![track; 2]);
     }
 
     /// Each connection's packets as bytes, in the order it is sent them.
