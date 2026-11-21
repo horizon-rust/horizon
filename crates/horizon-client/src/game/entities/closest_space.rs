@@ -1,29 +1,43 @@
 //! `LocalPlayer.moveTowardsClosestSpace`: the push out of a wall the player's body is in.
-use horizon_client::{blocks::BlockFacts, motion::PlayerMotion, world::World};
+use super::player_suffocation::{SuffocationWorld, suffocates};
+use super::Game;
+use horizon_client::motion::PlayerMotion;
+use horizon_core::geometry::{Aabb, Axis, Vec3};
 use horizon_core::position::BlockPos;
 
 /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners (aiStep, unless a spectator or a
 /// passenger): a corner inside a suffocating block sets a 0.1 speed towards the nearest side that is
-/// free, on that side's axis; a later corner overwrites an earlier one. Suffocating is a full
-/// collision cube that is also a full render cube, as `in_wall` has it, outside the player's
-/// collision exclusions (arismoko/horizon#3717).
-pub(crate) fn closest_space_nudge(
+/// free, on that side's axis; a later corner overwrites an earlier one. Suffocating is the block's
+/// `isSuffocating` predicate and its collision shape (game/player_suffocation.rs), outside the
+/// player's collision exclusions (arismoko/horizon#3717).
+pub(super) fn closest_space_nudge(p: &PlayerMotion, g: &Game<'_>) -> [Option<f64>; 2] {
+    closest_space_nudge_in(p, &SuffocationWorld::of(g))
+}
+
+pub(super) fn closest_space_nudge_in(
     p: &PlayerMotion,
-    world: &World,
-    facts: &BlockFacts,
+    s: &SuffocationWorld<'_, '_>,
 ) -> [Option<f64>; 2] {
-    use horizon_core::geometry::Axis;
     let mut out = [None; 2];
     let body = p.bounds();
     let (min_y, max_y) = (body.min(Axis::Y) + 1.0e-7, body.max(Axis::Y) - 1.0e-7);
+    // `suffocatesAt`: `collidesWithSuffocatingBlock` of the cell's column,
+    // deflated by 1e-7.
     let suffocates_at = |x: i32, z: i32| {
         ((min_y.floor() as i32 - 1)..=(max_y.ceil() as i32 + 1)).any(|y| {
             f64::from(y) < max_y
                 && f64::from(y + 1) > min_y
                 && !p.collision_exclusions.spares(BlockPos::new(x, y, z))
                 && {
-                    let f = facts.get(world.block(x, y, z));
-                    f.full_collision && f.solid_render
+                    let area = Aabb::new(
+                        Vec3::new(f64::from(x) + 1.0e-7, min_y, f64::from(z) + 1.0e-7),
+                        Vec3::new(
+                            f64::from(x) + 1.0 - 1.0e-7,
+                            max_y,
+                            f64::from(z) + 1.0 - 1.0e-7,
+                        ),
+                    );
+                    suffocates(s, s.world.block(x, y, z), [x, y, z], area, true)
                 }
         })
     };

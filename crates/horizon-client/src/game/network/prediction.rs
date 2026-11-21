@@ -74,7 +74,18 @@ impl Game<'_> {
                 };
                 let mut run = |body: &mut PlayerMotion, keys, sprinting| {
                     // Game.sync_player_body's part that depends on the blocks.
-                    body.nudge = super::closest_space_nudge(body, &self.world, self.res.facts());
+                    body.nudge = {
+                        let suffocation = crate::game::player_suffocation::SuffocationWorld {
+                            world: &self.world,
+                            collision: self.collision,
+                            facts: self.res.facts(),
+                            registry: self.world_tables.as_ref().map_or_else(
+                                || self.res.suffocation(),
+                                |t| &t.suffocation,
+                            ),
+                        };
+                        crate::game::closest_space::closest_space_nudge_in(body, &suffocation)
+                    };
                     MotionWorld {
                         entities: &[],
                         player: body,

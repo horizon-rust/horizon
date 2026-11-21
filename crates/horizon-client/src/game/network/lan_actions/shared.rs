@@ -459,7 +459,7 @@ pub(super) fn swing_packet(id: i32, hand: Hand, animation: SwingAnimation) -> C 
 
 /// The block columns `Entity.isInWall` looks at: `AABB.ofSize` around the
 /// eyes, 0.8 of the body's width across (`BlockPos.betweenClosedStream`).
-fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>; 2] {
+pub(super) fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>; 2] {
     let half = f64::from(body.width * 0.8) / 2.0;
     let range = |v: f64| (v - half).floor() as i32..=(v + half).floor() as i32;
     [range(at[0]), range(at[2])]

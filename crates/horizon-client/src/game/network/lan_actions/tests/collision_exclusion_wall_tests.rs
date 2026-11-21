@@ -70,7 +70,7 @@ fn a_block_in_a_players_exclusions_does_not_push_it_out() {
             horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(3.5, 64.0, 5.5))
                 .unwrap();
         let nudge = |game: &Game<'_>, body: &horizon_client::motion::PlayerMotion| {
-            crate::game::closest_space_nudge(body, &game.world, game.res.facts())
+            crate::game::closest_space::closest_space_nudge(body, game)
         };
         // Every corner is in the stone; east is the nearest free side: 0.1 a tick east.
         assert_eq!(nudge(game, &body), [Some(0.1), None]);

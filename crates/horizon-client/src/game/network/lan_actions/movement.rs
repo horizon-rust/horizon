@@ -131,24 +131,15 @@ impl Game<'_> {
         });
     }
 
-    /// `Entity.isInWall`: a suffocating block in the box at the eyes as wide
-    /// as 0.8 of the body (0.48 at scale 1, 0.048 at scale 0.1). Suffocating
-    /// is a full collision box that is also a full render cube
-    /// (`BlockBehaviour.isSuffocating`'s default; glass and the like opt
-    /// out), as the mobs' check has it. A block sharing volume with one of
-    /// guest `conn`'s collision exclusions is no wall (arismoko/horizon#3717).
+    /// `Entity.isInWall`: a suffocating block whose collision shape meets the
+    /// box at the eyes, 0.8 of the body wide (0.48 at scale 1, 0.048 at scale
+    /// 0.1), as `BlockState.isSuffocating` has it (game/player_suffocation.rs).
+    /// A block sharing volume with one of guest `conn`'s collision exclusions
+    /// is no wall (arismoko/horizon#3717).
     pub(super) fn in_wall(&self, conn: u32, at: [f64; 3], body: Dimensions) -> bool {
-        let y = (at[1] + f64::from(body.eye_height)).floor() as i32;
-        let [xs, zs] = eye_columns(at, body);
         let guest = self.lan.as_ref().and_then(|host| host.hub.guest(conn));
-        let spared = |x: i32, z: i32| {
-            guest.is_some_and(|g| g.collision_exclusions.spares(BlockPos::new(x, y, z)))
-        };
-        xs.into_iter().any(|x| {
-            zs.clone().any(|z| {
-                let f = self.res.facts().get(self.world.block(x, y, z));
-                f.full_collision && f.solid_render && !spared(x, z)
-            })
+        crate::game::player_suffocation::in_wall_excluding(self, at, body, |p| {
+            guest.is_some_and(|g| g.collision_exclusions.spares(BlockPos::new(p[0], p[1], p[2])))
         })
     }
 }

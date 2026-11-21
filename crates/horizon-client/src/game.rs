@@ -2406,15 +2406,12 @@ impl Game<'_> {
         self.clip_ray_fluids(origin, dir, reach, false)
     }
     /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners
-    /// (aiStep, unless a spectator or a passenger): a corner inside a
-    /// suffocating block sets a 0.1 speed towards the nearest side that is
-    /// free, on that side's axis; a later corner overwrites an earlier one.
-    /// Suffocating is a full collision cube that is also a full render cube,
-    /// as `in_wall` has it.
+    /// (aiStep, unless a spectator or a passenger)
+    /// (game/entities/closest_space.rs).
     fn closest_space_nudge(&self) -> [Option<f64>; 2] {
         match self.player.as_ref() {
             Some(p) if !p.spectator && self.riding.is_none() => {
-                closest_space_nudge(p, &self.world, self.res.facts())
+                closest_space::closest_space_nudge(p, self)
             }
             _ => [None; 2],
         }
@@ -7344,15 +7341,16 @@ impl Game<'_> {
         } else {
             None
         };
-        // ServerPlayer.bedBlocked: Player.freeAt (not suffocating) for the
-        // blocks above the head and the foot, as `in_wall` reads suffocating.
+        // ServerPlayer.bedBlocked: Player.freeAt, `!isSuffocating` and nothing
+        // else, for the blocks above the head and the foot.
         let blocked = problem.is_none()
             && [head, foot].iter().any(|bed| {
-                let f = self
-                    .res
-                    .facts()
-                    .get(self.world.block(bed[0], bed[1] + 1, bed[2]));
-                f.full_collision && f.solid_render
+                let pos = [bed[0], bed[1] + 1, bed[2]];
+                player_suffocation::is_suffocating(
+                    self,
+                    self.world.block(pos[0], pos[1], pos[2]),
+                    pos,
+                )
             });
         if blocked {
             problem = Some("obstructed");
@@ -11435,7 +11433,6 @@ fn reset_world_progress(adv: &mut advancements::AdvState, stats: &mut stats::Sta
     *stats = Default::default();
 }
 
-pub(crate) use closest_space::closest_space_nudge;
 #[cfg(test)]
 use inventory_input::drop_whole_stack;
 use subtitles::{Subtitles, in_game_ui, subtitles};
