@@ -461,11 +461,15 @@ mod tests {
     /// none of them. It doesn't try that size again while the screen stays (`ready`), and the
     /// next screen that blurs, with room, blurs as ever.
     #[test]
+    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
     fn without_room_the_menu_is_not_blurred_and_the_next_screen_blurs() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let Some((_, device, queue)) = crate::gfx::test_gpu::optional_device() else {
-            return;
-        };
+        let instance = crate::gfx::test_gpu::instance();
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let mut blur = MenuBlur::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb, false);
         let size = [64, 8];
         crate::gfx::frame_targets::NO_ROOM.set(1);

@@ -2034,12 +2034,15 @@ var<private> params: ReferenceParams;
     /// A window frame without the room for its targets (#13624): `ready` says to skip it, the
     /// old targets are let go and no failed one is kept; the next frame with room makes them.
     #[test]
+    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
     fn a_frame_without_room_keeps_no_targets_and_the_next_makes_them() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let Some((device, queue)) = gpu() else {
-            eprintln!("HDR frame targets GPU unavailable");
-            return;
-        };
+        let instance = crate::gfx::test_gpu::instance();
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
         assert!(hdr.ready(&device, [4, 2]));
         // The window grew while video memory was full.
