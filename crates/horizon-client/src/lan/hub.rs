@@ -444,6 +444,9 @@ pub struct Hub {
     /// Names a server mod shows for players in the Tab list only (`player_set_list_name`),
     /// by UUID, over their nickname.
     pub list_names: std::collections::HashMap<u128, crate::text::Text>,
+    /// The (viewer UUID, display slot) pairs whose per-viewer objective the client already holds
+    /// (`set_display_score`).
+    pub display_objectives: std::collections::HashSet<(u128, u8)>,
     /// The name the server's user cache knew a joining player by, by UUID, looked up before the
     /// cache learns the new one (PlayerList.placeNewPlayer's `oldName`); taken by the join line.
     pub former_names: std::collections::HashMap<u128, String>,
@@ -891,6 +894,7 @@ impl Hub {
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),
             list_names: std::collections::HashMap::new(),
+            display_objectives: std::collections::HashSet::new(),
             former_names: std::collections::HashMap::new(),
             viewed: Default::default(),
         }
@@ -4993,6 +4997,75 @@ impl Hub {
         }));
     }
 
+    /// `player_set_display_score`: a score under `target`'s name in `viewer`'s client only, in the Tab
+    /// list (slot 0) or below the name (slot 2). The client gets one objective per slot, made on the
+    /// first score; a removal leaves it in place. False when a player is not online or the slot is
+    /// neither 0 nor 2.
+    pub fn set_display_score(
+        &mut self,
+        viewer: u128,
+        slot: u8,
+        target: u128,
+        score: Option<i32>,
+    ) -> bool {
+        if slot != 0 && slot != 2 {
+            return false;
+        }
+        let Some(index) = self
+            .guests
+            .iter()
+            .position(|g| g.uuid == viewer && g.participates_online())
+        else {
+            return false;
+        };
+        let Some(holder) = self
+            .guests
+            .iter()
+            .find(|g| g.uuid == target && g.participates_online())
+            .map(|g| g.name.clone())
+        else {
+            return false;
+        };
+        let objective = format!("horizon_slot_{slot}");
+        let mut packets = Vec::new();
+        match score {
+            Some(value) => {
+                if self.display_objectives.insert((viewer, slot)) {
+                    packets.push(C::SetObjective(play::SetObjective {
+                        name: objective.clone(),
+                        method: 0,
+                        display: Some((
+                            crate::scoreboard::component_tag(
+                                &crate::text::Text::literal("").component(),
+                            ),
+                            0,
+                            None,
+                        )),
+                    }));
+                    packets.push(C::SetDisplayObjective(play::SetDisplayObjective {
+                        slot: i32::from(slot),
+                        objective: objective.clone(),
+                    }));
+                }
+                packets.push(C::SetScore(play::SetScore {
+                    owner: holder,
+                    objective,
+                    score: value,
+                    display: None,
+                    number_format: None,
+                }));
+            }
+            None => packets.push(C::ResetScore(play::ResetScore {
+                owner: holder,
+                objective: Some(objective),
+            })),
+        }
+        for packet in &packets {
+            self.guests[index].send(packet);
+        }
+        true
+    }
+
     /// Paper's `Player.setPlayerListName`: `name` in place of the player's name in the Tab
     /// list (None: the nickname or real name again), sent to everyone at once
     /// (`ClientboundPlayerInfoUpdatePacket` `UPDATE_DISPLAY_NAME`) and kept for a rejoin.
@@ -8784,5 +8857,38 @@ mod tests {
         hub.guests.update(0, |g| g.release_tickets());
         hub.guests.update(0, |g| g.watching = false);
         assert_eq!(hub.guests[0].ticket_chunk(), left);
+    }
+
+    /// A display score reaches only the viewer's client: the objective comes once per slot, then one
+    /// score packet; a removal is a reset. Uuid 1 is Bob, uuid 2 is Alice.
+    #[test]
+    fn a_display_score_reaches_that_viewer_only() {
+        let (mut hub, bob) = hub_with_a_guest();
+        let alice = add_alice(&mut hub);
+        sent(&alice);
+        sent(&bob);
+        assert!(hub.set_display_score(2, 0, 1, Some(5)));
+        let got = sent(&alice);
+        assert!(
+            matches!(&got[0], play::Clientbound::SetObjective(o) if o.method == 0 && o.name == "horizon_slot_0")
+        );
+        assert!(
+            matches!(&got[1], play::Clientbound::SetDisplayObjective(d) if d.slot == 0 && d.objective == "horizon_slot_0")
+        );
+        assert!(
+            matches!(&got[2], play::Clientbound::SetScore(s) if s.score == 5 && s.objective == "horizon_slot_0")
+        );
+        assert_eq!(got.len(), 3);
+        assert!(sent(&bob).is_empty(), "the target's own client is not told");
+        // The objective is made once per slot: the next number is one packet.
+        assert!(hub.set_display_score(2, 0, 1, Some(6)));
+        assert_eq!(sent(&alice).len(), 1);
+        assert!(hub.set_display_score(2, 0, 1, None));
+        assert!(
+            matches!(&sent(&alice)[0], play::Clientbound::ResetScore(r) if r.objective.as_deref() == Some("horizon_slot_0"))
+        );
+        // Only the Tab list and below-name slots; a player who is not on is refused.
+        assert!(!hub.set_display_score(2, 1, 1, Some(1)));
+        assert!(!hub.set_display_score(2, 0, 7, Some(1)));
     }
 }

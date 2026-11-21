@@ -881,8 +881,8 @@ horizon-client game::lan_menus_tests::a_lifted_host_comes_back_after_a_panic_and
 horizon-client game::lan_menus_tests::a_panicking_turn_leaves_play_state_and_menus_restored lib daily resources
 horizon-client game::lan_menus_tests::menu_owners_stay_reachable_through_nested_guest_turns lib daily resources
 horizon-client game::lan_menus_tests::removing_a_fake_player_drops_its_menu_owners lib daily resources
-horizon-client game::lan_mount_menu::tests::horse_inventory_click_keeps_complete_body_stack lib daily resources
 horizon-client game::lan_mount_menu::tests::a_dead_mounts_inventory_takes_no_click lib daily resources
+horizon-client game::lan_mount_menu::tests::horse_inventory_click_keeps_complete_body_stack lib daily resources
 horizon-client game::lan_trading::tests::a_lowered_level_still_levels_up_with_the_next_trade_set lib daily resources
 horizon-client game::lan_trading::tests::a_merchant_edit_reaches_the_guest_trading_with_it lib daily resources
 horizon-client game::lan_trading::tests::a_trade_hook_fired_by_a_real_select_can_write_the_open_trade lib daily resources
@@ -1961,6 +1961,7 @@ horizon-client game::native_spectator_shader_tests::a_mods_entity_type_puts_its_
 horizon-client game::native_state_shapes::tests::supplied_shape_state_does_not_replace_world_state lib daily resources
 horizon-client game::native_surface::tests::a_block_part_answers_the_friction_an_entity_reads lib daily resources
 horizon-client game::native_surface::tests::mob_travel_and_both_leash_sites_use_the_parts_answer_once lib daily resources
+horizon-client game::native_teams::tests::team_options_are_kept_in_the_worlds_scoreboard lib daily resources
 horizon-client game::native_tick_time::tests::a_client_level_always_has_time lib daily resources
 horizon-client game::native_tick_time::tests::a_server_has_time_until_its_tick_deadline_passes lib daily resources
 horizon-client game::native_tick_time::tests::the_tick_listeners_see_the_deadline_through_the_host lib daily resources

@@ -145,6 +145,12 @@ Tab list (`hide` lists them out too), and chat is not filtered. The calls return
 anything changed, and refuse with `EntityVisibilityRefusal`: `Client`, `Stale`, `NoConnection` for a
 fake viewer and `StaleEntity` for an entity handle that names nothing or the viewer's own player.
 
+To show a score under a player's name for one viewer only, use
+`player.set_display_score(host, viewer, 0, Some(n))` for the Tab list or slot `2` for the name
+under the player in the world. Only the viewer's client receives the objective and the score;
+`None` removes the number. The call returns `false` when a player is not online or the slot is
+neither `0` nor `2`.
+
 The reads `player.latency(host)`, `player.hidden(host)` and `player.nickname(host)`
 return what the calls above set. Latency is the Tab list ping in milliseconds
 (`Option<i32>`, `0` until the first keep-alive answer). `hidden` is the level
@@ -152,6 +158,8 @@ return what the calls above set. Latency is the Tab list ping in milliseconds
 in place of the player's name, `None` when there is none (`Option<Option<String>>`).
 An outer `None` means a stale or unavailable player for all three, a client or an
 unjoinable world for `hidden`, and no server list for `nickname`.
+
+A team's looks and rules are set with `host.team_set_prefix(team, text)` and `team_set_suffix`, `team_set_name_tag_visibility(team, TeamVisibility)`, `team_set_collision_rule(team, TeamCollisionRule)` and `team_set_friendly_fire(team, bool)`. Each is `/team modify` for that field: the world's scoreboard keeps the value, and clients see it from the next tick's scoreboard sync. Each returns whether the value changed, so setting the same value again, a stale team and a client all read `false`. Prefix and suffix are checked for depth before anything is applied (`TextFormError`). A player's Tab list and name tag follow the team through the usual rules; a mod that wants a different Tab entry sets `player.set_list_name`.
 
 ## The server list
 
@@ -315,3 +323,30 @@ goes back to 0, scoreboard criteria follow the changed values, and the client se
 `player_stat_award` is not heard.
 
 Measuring a client's transaction round trip (a lag-compensating anticheat): send the player a `ping` with `player_send_packet` and hear the answer in `player_pong(player, name, id)`, which carries the number the ping had; the time between the two is finer than the keep-alive average `player_latency` reads. The engine's own pings (a recording's end-of-tick ping, whose id is the server tick) are answered here too, so pick ids that tell apart from small tick numbers. The hook is heard only for a pong that answers a ping the server sent on that connection, once per ping (an unsolicited or repeated pong, or an answer to a ping older than 30 seconds, is dropped), in order with the guest's other packets, with their state swapped in, and cannot cancel; with no listener nothing is queued.
+
+## Scoreboard teams
+
+`host.team(name)` gives a team handle or `None`; `host.add_team(name)` makes a new team (`Err(NameTaken)` when it exists,
+`Err(Unavailable)` for an empty name, one with a space or one the saved scoreboard could not keep).
+`host.team_set_color(team, Some(TeamColor::Red))` sets its color to one of the sixteen chat colors, `None` for no color,
+as `/team modify <team> color` does, and is `true` only when the color changed. `host.team_join(team, holder)` moves a
+`ScoreHolder` (`Player`, `Entity` or a `Name`) into the team: `Ok(true)` when it moved, `Ok(false)` when it was on that
+team already, `Err(UnknownHolder)` for a holder the scoreboard cannot key and `Err(Stale)` for a team that is gone.
+`host.team_leave(team, holder)` takes the holder out of that team (`true` when it was on it) and `host.team_remove(team)`
+deletes a team and leaves its members with none. Teams are kept in the world's scoreboard, which the server saves, and
+members take the color in every client from the next tick's sync. A team handle resolves again on each call and goes
+stale when its team is removed or the world is opened again. Server only: a refused call changes nothing.
+
+## Team of an entity
+
+`ScoreboardServerHost::entity_team(entity)` (server side) reads the scoreboard team an entity is on, as
+Paper's `Entity#getScoreboardTeam` does. It returns the team's name, `None` when the entity is on no team.
+The scoreboard keys an entity by its UUID, so the answer follows the team the entity's UUID joined. A stale
+entity, a client, or an entity without a UUID gives `None`.
+
+## Score of a holder
+
+`ScoreboardServerHost::scoreboard_score(holder, objective)` (server side) returns the value a holder has on an
+objective, as Paper's `Objective#getScore` does. The holder is the scoreboard's key: a player's name, an entity's
+UUID as text, or a name as written. `None` when the holder has no score there, the objective does not exist, or
+on a client.

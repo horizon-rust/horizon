@@ -1,0 +1,2 @@
+# horizon-rust/horizon: scoreboard_score reads a holder's score; the test sets and reads literal values.
+horizon-client game::native_scoreboard_score::tests::scoreboard_score_reads_the_holders_value lib daily resources

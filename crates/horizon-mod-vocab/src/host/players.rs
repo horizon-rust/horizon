@@ -722,6 +722,23 @@ pub trait PlayersBackendMut {
         name: Option<Text>,
     ) -> Result<bool, TextFormError>;
     /// Side: server.
+    /// Shows `score` under the name of `target` in `viewer`'s client only: in the Tab list next to
+    /// the name (`slot` 0, vanilla `DisplaySlot.LIST`) or under the name in the world (`slot` 2,
+    /// `BELOW_NAME`). Any other slot is refused with false. Only that client holds the objective
+    /// (`ClientboundSetObjectivePacket`, `SetDisplayObjective`, `SetScore`): the scoreboard,
+    /// `/scoreboard` and the other players don't see it. `Some` sets the number, `None` takes the
+    /// target's number out of that slot. TAB-style layouts use it per viewer; Paper has no
+    /// per-viewer display slot. False when either player is not online, the viewer is a fake
+    /// player (no client) or `slot` is not 0 or 2.
+    #[access(WorldOnly)]
+    fn player_set_display_score(
+        &mut self,
+        viewer: PlayerRef,
+        slot: u8,
+        target: PlayerRef,
+        score: Option<i32>,
+    ) -> bool;
+    /// Side: server.
     /// Hides that player (a vanish) from the players below permission
     /// `level`, or shows them again (None): from the next tick those players
     /// lose them from the Tab list and the world (their client stops

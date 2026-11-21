@@ -1,0 +1,2 @@
+# horizon-rust/horizon: entity_team reads the entity's team; the test reads the prepared 26.3 data.
+horizon-client game::native_scoreboard::tests::entity_team_reads_the_team_the_entity_joined lib daily resources
