@@ -208,27 +208,27 @@ impl Game<'_> {
                 play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(conn);
-            self.guest_server_tick(conn);
-            // Player.tick's statistics and ServerPlayer.tick's triggers, then
-            // PlayerAdvancements.flushDirty.
+            // ServerPlayer.doTick's updateScoreForCriteria record, taken before the guest's turns:
+            // the tail of the tick below may run in the first of them.
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
-            let sleeping = host.hub.guests[gi].sleeping;
-            // ServerPlayer.doTick's updateScoreForCriteria: the health, food,
-            // armor, experience and level objectives follow the guest.
             let mut recorded =
                 std::mem::take(&mut host.play.entry(conn).or_default().score_recorded);
-            self.as_guest(conn, |g| {
-                g.tick_fishing();
-                g.tick_maps();
-                g.tick_lodestone_compasses();
-                g.native_inventory_ticks();
-                g.count_tick_stats(sleeping);
-                g.tick_advancements();
-                g.update_player_attributes();
-                g.record_player_scores(&mut recorded);
-            });
+            let ran = self.guest_server_tick_with_tail(
+                conn,
+                Some(&mut |game| {
+                    let sleeping = game.sleeping.is_some();
+                    game.guest_tick_tail(sleeping, &mut recorded);
+                }),
+            );
+            if !ran {
+                let Some(host) = self.lan.as_mut() else {
+                    return;
+                };
+                let sleeping = host.hub.guests[gi].sleeping;
+                self.as_guest(conn, |g| g.guest_tick_tail(sleeping, &mut recorded));
+            }
             if let Some(host) = self.lan.as_mut() {
                 host.play.entry(conn).or_default().score_recorded = recorded;
             }
@@ -255,6 +255,23 @@ impl Game<'_> {
                 game.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player })
             });
         }
+    }
+
+    /// Player.tick's statistics and ServerPlayer.tick's triggers, then
+    /// PlayerAdvancements.flushDirty, with the guest's state swapped in.
+    fn guest_tick_tail(
+        &mut self,
+        sleeping: bool,
+        recorded: &mut crate::game::scoreboard::Recorded,
+    ) {
+        self.tick_fishing();
+        self.tick_maps();
+        self.tick_lodestone_compasses();
+        self.native_inventory_ticks();
+        self.count_tick_stats(sleeping);
+        self.tick_advancements();
+        self.update_player_attributes();
+        self.record_player_scores(recorded);
     }
 
     /// Only listeners pay for a guest swap; reuse the loop's resolved index.
@@ -355,6 +372,9 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "tests/building_cache.rs"]
 mod building_cache_tests;
+#[cfg(test)]
+#[path = "tests/guest_turn_merge.rs"]
+mod guest_turn_merge_tests;
 
 #[cfg(test)]
 #[path = "tests/fall_sound_tests.rs"]
