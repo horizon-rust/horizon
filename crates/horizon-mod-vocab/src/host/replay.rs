@@ -24,7 +24,8 @@ pub trait ReplayClientHost {
     /// later `replay_open` replaces a request whose read recording the game has not taken up
     /// yet, which then fails with `Superseded`. An open asked while a replay plays fails with
     /// `Unavailable` when the camera path edited in that replay can't be saved first, or when
-    /// it reads the very archive that path was just saved into; the replay playing stays.
+    /// it reads the very archive the editor saved into since the request (its camera path or a
+    /// marker); the replay playing stays.
     ///
     /// A replay is never played over a live session it would end: from a plain single-player
     /// world, the world is saved and left as Save and Quit does once the recording is ready,

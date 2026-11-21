@@ -88,6 +88,9 @@ pub(in crate::game) struct ReplayOrigin {
     pub(in crate::game) recording: String,
     pub(in crate::game) request: u32,
     pub(in crate::game) archive: Option<FileIdentity>,
+    /// For a mod's open asked while a replay played, the archive file that replay read when the
+    /// open was accepted: an editor save into it since makes the copy read stale.
+    pub(in crate::game) replacing: Option<FileIdentity>,
 }
 
 /// A mod's accepted open waiting for the reading thread: the file opened at the call.
@@ -346,11 +349,13 @@ impl Game<'_> {
         }
         let (path, file, archive) = open_recording(&self.recordings_dir(), recording)?;
         let request = next_request().ok_or(ReplayError::Unavailable)?;
+        let replacing = self.playing_archive_identity();
         let queued = QueuedOpen {
             origin: ReplayOrigin {
                 recording: recording.to_owned(),
                 request,
                 archive: Some(archive),
+                replacing,
             },
             scope: self.replay_scope(),
             file,
@@ -584,8 +589,20 @@ impl Game<'_> {
         // archive they were just saved into (so it holds them as they were), the replay playing
         // stays and the request fails.
         let saving = self.studio.camera_track_dirty && self.replay.playing();
-        let same_archive =
-            saving && origin.archive.is_some() && self.playing_archive_identity() == origin.archive;
+        let playing = self.playing_archive_identity();
+        let same_archive = saving && origin.archive.is_some() && playing == origin.archive;
+        // The same archive asked for again, and the editor saved into it (a marker) after the
+        // open was accepted: the copy read holds what was there before, so it isn't installed.
+        if origin.archive.is_some()
+            && origin.replacing == origin.archive
+            && playing != origin.replacing
+        {
+            log::warn!(
+                "Replay {:?} not opened: the editor saved into it after it was asked for",
+                origin.recording
+            );
+            return self.replay_open_failed(&origin, ReplayError::Unavailable);
+        }
         if let Err(error) = self.save_studio_camera_track() {
             log::warn!(
                 "Replay {:?} not opened: the camera path of the replay playing could not be saved: {error}",

@@ -23,8 +23,51 @@ fn write_recording(path: &Path, duration: u32, later: &[u32]) {
 /// As `write_recording`, with the Login stamped `login` ms in.
 fn write_recording_at(path: &Path, login: u32, duration: u32, later: &[u32]) {
     use horizon_client::studio::{McprWriter, Metadata};
-    use horizon_protocol::{buf::Reader, packets::play};
-    let encoded = play::Clientbound::Login(play::Login {
+    let meta = Metadata {
+        duration,
+        ..Default::default()
+    };
+    let mut writer = McprWriter::new(path.to_path_buf(), meta).unwrap();
+    write_packet(&mut writer, login, login_packet());
+    for &at in later {
+        writer.write_packet(at, 0x01, &[1]).unwrap();
+    }
+    writer.finish(duration).unwrap();
+}
+
+/// A recording of `packets`, each at its time, lasting `duration` ms.
+fn write_packets(
+    path: &Path,
+    duration: u32,
+    packets: Vec<(u32, horizon_protocol::packets::play::Clientbound)>,
+) {
+    use horizon_client::studio::{McprWriter, Metadata};
+    let meta = Metadata {
+        duration,
+        ..Default::default()
+    };
+    let mut writer = McprWriter::new(path.to_path_buf(), meta).unwrap();
+    for (at, packet) in packets {
+        write_packet(&mut writer, at, packet);
+    }
+    writer.finish(duration).unwrap();
+}
+
+fn write_packet(
+    writer: &mut horizon_client::studio::McprWriter,
+    at: u32,
+    packet: horizon_protocol::packets::play::Clientbound,
+) {
+    let encoded = packet.encode();
+    let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+    let id = reader.varint().unwrap();
+    writer.write_packet(at, id, reader.rest()).unwrap();
+}
+
+/// The Play login a recording starts with.
+fn login_packet() -> horizon_protocol::packets::play::Clientbound {
+    use horizon_protocol::packets::play;
+    play::Clientbound::Login(play::Login {
         player_id: 1,
         hardcore: false,
         levels: vec!["minecraft:overworld".into()],
@@ -49,19 +92,6 @@ fn write_recording_at(path: &Path, login: u32, duration: u32, later: &[u32]) {
         online_mode: false,
         enforces_secure_chat: false,
     })
-    .encode();
-    let mut reader = Reader::new(&encoded);
-    let id = reader.varint().unwrap();
-    let meta = Metadata {
-        duration,
-        ..Default::default()
-    };
-    let mut writer = McprWriter::new(path.to_path_buf(), meta).unwrap();
-    writer.write_packet(login, id, reader.rest()).unwrap();
-    for &at in later {
-        writer.write_packet(at, 0x01, &[1]).unwrap();
-    }
-    writer.finish(duration).unwrap();
 }
 
 /// A zip archive that is no recording: it passes the call's check and fails once read.
@@ -784,6 +814,7 @@ fn a_replay_open_never_displaces_a_joining_or_multiplayer_session() {
                 recording: "trip".into(),
                 request: 7,
                 archive: None,
+                replacing: None,
             },
         });
         game.displace_pending_replay(ReplayError::Unavailable);
@@ -1032,4 +1063,108 @@ fn save_and_quit_during_a_read_opens_no_replay() {
         panic!("the test ended early");
     };
     assert_eq!(heard, [format!("failed trip WorldBusy #{request}")]);
+}
+
+/// A screen the opening snapshot opens (a workstation's, sent at the Login's time) stays open:
+/// the replay's screen and input resets come before the snapshot, not after it.
+#[test]
+#[ignore = "daily"]
+fn a_screen_the_opening_snapshot_opens_stays_open() {
+    use horizon_core::nbt::Tag;
+    use horizon_protocol::packets::play;
+    // `minecraft:crafting` in the menu registry; checked against the session's below.
+    const CRAFTING: i32 = 12;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("bench.mcpr");
+    write_packets(
+        &path,
+        1_000,
+        vec![
+            (0, login_packet()),
+            (
+                0,
+                play::Clientbound::OpenScreen(play::OpenScreen {
+                    container: 1,
+                    menu: CRAFTING,
+                    title: Tag::String("Crafting".into()),
+                }),
+            ),
+        ],
+    );
+    with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        let answer = game
+            .open_studio_replay(&path.display().to_string())
+            .unwrap();
+        assert_eq!(answer["ok"], true);
+        let menu = game
+            .remote
+            .as_ref()
+            .unwrap()
+            .builtin
+            .get("minecraft:menu")
+            .unwrap()
+            .id("minecraft:crafting");
+        assert_eq!(menu, Some(CRAFTING as _));
+        assert_eq!(
+            game.screen,
+            crate::game::Screen::Inventory,
+            "the crafting menu the snapshot opened is shown"
+        );
+        game.screen = crate::game::Screen::Playing;
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+    });
+}
+
+/// A mod asks for the archive playing again. Untouched, it reopens. Once the editor has saved
+/// into it (a marker) after the request was accepted, the copy read is stale: the request fails
+/// with `Unavailable`, the replay playing keeps the marker, and its later saves still land.
+#[test]
+#[ignore = "daily"]
+fn a_reopen_of_the_playing_archive_after_an_editor_save_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trip.mcpr");
+    write_recording(&path, 1_000, &[]);
+    let markers = |game: &mut crate::game::Game<'_>| {
+        game.replay
+            .driver
+            .as_mut()
+            .and_then(|driver| driver.as_any_mut().downcast_mut::<ReplayDriver>())
+            .map(|driver| driver.markers().len())
+    };
+    let mut ids = Vec::new();
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        let first = game.replay_open("trip").unwrap();
+        finish_opening(game);
+        let clean = game.replay_open("trip").unwrap();
+        finish_opening(game);
+        assert_eq!(game.replay_state().unwrap().recording, "trip");
+
+        let stale = game.replay_open("trip").unwrap();
+        game.add_studio_marker();
+        finish_opening(game);
+        assert_eq!(markers(game), Some(1), "the marker stays");
+        game.add_studio_marker();
+        assert_eq!(markers(game), Some(2), "later saves still land");
+        assert_eq!(ReplayDriver::open(&path).unwrap().markers().len(), 2);
+
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+        ids = vec![first, clean, stale];
+    });
+    let [first, clean, stale] = ids[..] else {
+        panic!("the test ended early");
+    };
+    assert_eq!(
+        heard,
+        [
+            format!("opened trip 1000 true #{first}"),
+            "closed trip".into(),
+            format!("opened trip 1000 true #{clean}"),
+            format!("failed trip Unavailable #{stale}"),
+            "closed trip".into(),
+        ]
+    );
 }

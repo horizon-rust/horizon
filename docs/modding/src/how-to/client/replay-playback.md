@@ -23,8 +23,8 @@ the game runs (once every id has been given, `replay_open` is `Unavailable`). Ex
 the game closing first promises neither. One thread reads recordings at a time: a later `replay_open` replaces a
 request whose read recording the game hasn't taken up yet, which fails with `Superseded`, and the replaced reading
 is cancelled. While a replay plays, its edited camera path is saved before another replaces it; if that save fails, or
-the replacement was read from the archive the path was just saved into, the replay playing stays and the request
-fails with `Unavailable`.
+the replacement was read from the same archive and the editor saved into it after the request (the camera path or a
+marker), the replay playing stays and the request fails with `Unavailable`.
 
 A replay never displaces a session it would end: `replay_open` is `WorldBusy` while a world is being joined, a
 multiplayer server is connected, or the single-player world is open to LAN or has splitscreen players (leave it with

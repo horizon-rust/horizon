@@ -10,8 +10,8 @@ pub trait Hooks {
     ///   replaced, before it was ready, or another world entry took its place while it waited;
     /// - `Unavailable`: the replay's session couldn't start, the game began closing, the
     ///   person cancelled the wait for it (Escape while the world loads), or the replay playing
-    ///   kept its place: the camera path edited in it couldn't be saved, or was just saved into
-    ///   the very archive this request read (which holds it as it was before).
+    ///   kept its place: the camera path edited in it couldn't be saved, or the editor saved
+    ///   into the very archive this request read (which holds it as it was before).
     ///
     /// Every accepted request ends in exactly one `replay_opened` or `replay_open_failed` with
     /// its id; only a game closing first promises neither. A single-player world already left

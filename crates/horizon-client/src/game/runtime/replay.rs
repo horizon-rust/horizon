@@ -747,6 +747,7 @@ impl Game<'_> {
             recording: self.recording_id(path),
             request: 0,
             archive: None,
+            replacing: None,
         };
         self.start_studio_replay(driver, origin, path)
     }
@@ -764,6 +765,7 @@ impl Game<'_> {
             recording,
             request,
             archive,
+            ..
         } = origin;
         let mut driver = driver;
         // The first frame is set up from the opening snapshot before mods hear `replay_opened`,
@@ -804,12 +806,13 @@ impl Game<'_> {
         // The wheel's part step belongs to the session the replay leaves.
         self.mouse.scroll = Default::default();
         self.replay.driver = Some(Box::new(driver));
-        self.dispatch_studio_replay_packets(opening);
         self.camera_type = horizon_client::camera::CameraType::FirstPerson;
         self.title = None;
         self.screen = Screen::Playing;
         self.capture(false);
         self.dragging = false;
+        // After the resets: a screen the snapshot opens (a workstation's) stays open.
+        self.dispatch_studio_replay_packets(opening);
         // Apply timestamp-zero login, player pose, and chunk packets before the first rendered
         // frame so playback opens at the recorded player's viewpoint.
         let _ = self.advance_studio_replay();

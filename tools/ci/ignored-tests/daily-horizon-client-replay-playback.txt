@@ -9,3 +9,5 @@ horizon-client game::native_replay_tests::a_control_socket_seek_to_the_end_rebui
 horizon-client game::native_replay_tests::a_replay_with_a_late_login_is_set_up_before_it_is_heard_open lib daily resources
 horizon-client game::native_replay_tests::a_replacement_keeps_the_replay_whose_camera_edits_it_would_lose lib daily resources
 horizon-client game::native_replay_tests::save_and_quit_during_a_read_opens_no_replay lib daily resources
+horizon-client game::native_replay_tests::a_screen_the_opening_snapshot_opens_stays_open lib daily resources
+horizon-client game::native_replay_tests::a_reopen_of_the_playing_archive_after_an_editor_save_is_refused lib daily resources
