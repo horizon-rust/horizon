@@ -760,9 +760,9 @@ def selected_builds(artifacts, packages=None):
         yield kind, name, profile, selection, examples
 
 
-# parity-main's probe prebuild ends the run past this, after its turn on the Mac (tools/compile_lock.py): loaded
-# by other jobs' compiles it ran 2 h and more and left the harnesses too little of the job's 300 min.
-PREBUILD_LIMIT = {"main": 120 * 60}
+# parity-main's probe prebuild ends the run past this, after its turn on the Mac (tools/compile_lock.py): a prebuild
+# that builds everything takes over 2 hours even alone, and this leaves 120 of the job's 360 min.
+PREBUILD_LIMIT = {"main": 240 * 60}
 
 
 def prebuild(artifacts, jobs):
@@ -834,8 +834,7 @@ def prebuild(artifacts, jobs):
                 if timings:
                     timings.finish()
                 print(f"::error::The probe prebuild passed its {limit // 60:.0f} min limit at cargo {number}/"
-                      f"{len(commands)} (stopped there). The machine is likely loaded by other jobs' compiles: "
-                      "see the compile lock lines above.", flush=True)
+                      f"{len(commands)} and was stopped there.", flush=True)
                 sys.exit(1)
         if timings:
             timings.finish()
