@@ -26,6 +26,14 @@ impl Game<'_> {
         } else {
             self.as_guest(conn, hook);
         }
+        if !cancel
+            && let Some(p) = pos.filter(|p| {
+                &*self.res.facts().get(self.world.block(p[0], p[1], p[2])).name
+                    == "minecraft:ender_chest"
+            })
+        {
+            self.native_ender_chest_opened(uuid, p);
+        }
         !cancel
     }
 

@@ -1,0 +1,3 @@
+ids = ["hook:ender_chest_opened", "method:Game::native_ender_chest_opened"]
+why = "New listen hook ender_chest_opened: a guest's ender chest menu opened, with the guest's UUID and the chest's position. It fires after container_opened allows the menu, so a cancelled open is not heard. Chests and every other menu are not heard."
+migrate = "None: additive. Listen to ender_chest_opened to tell an ender chest transaction from a chest one."
