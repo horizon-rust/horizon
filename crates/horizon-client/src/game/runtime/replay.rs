@@ -34,8 +34,13 @@ pub(super) struct Replay {
     pub(super) generation: u64,
     /// The position mods were last told of (`replay_advanced`); none until `replay_opened`.
     pub(super) reported_ms: Option<u32>,
-    /// A mod's open, close or seek, run at the end of the frame (`native_replay_requests`).
+    /// A mod's close or seek, run at the end of the frame (`native_replay_requests`).
     pub(super) request: Option<super::native_replay::ReplayRequest>,
+    /// A mod's accepted open, its recording being read (`replay_open`).
+    pub(super) opening: Option<super::native_replay::ReplayOpening>,
+    /// A seek was applied: the next frame reports its position (`replay_advanced`) and holds the
+    /// clock there, so the frame drawn shows exactly where the seek went.
+    pub(super) seek_report: bool,
     /// The folder mods open recordings from by id; the game folder's `recordings/` when none.
     pub(super) recordings_dir: Option<PathBuf>,
 }
@@ -376,6 +381,7 @@ impl Game<'_> {
         self.dispatch_studio_replay_packets(packets);
         self.reset_studio_playback_ticks();
         self.replay.last_tick = Some(std::time::Instant::now());
+        self.replay.seek_report = true;
         Ok(())
     }
 
@@ -420,6 +426,18 @@ impl Game<'_> {
         };
 
         let now = std::time::Instant::now();
+        if std::mem::take(&mut self.replay.seek_report) {
+            // The frame after a seek shows the seek's position and says so; the clock runs on
+            // from the next one.
+            let position = driver.position_ms();
+            self.replay.last_tick = Some(now);
+            self.studio_replay_advanced();
+            if self.replay.reported_ms.is_some() {
+                self.replay.reported_ms = Some(position);
+                self.native_replay_advanced(position);
+            }
+            return Ok(());
+        }
         let delta = match self.replay.last_tick {
             Some(last) => now
                 .saturating_duration_since(last)
@@ -688,6 +706,7 @@ impl Game<'_> {
                 log::error!("Failed to open studio replay '{path}': {error}");
                 return Ok(json!({ "ok": false, "error": error.to_string() }));
             }
+            self.displace_pending_replay(mod_api::ReplayError::WorldBusy);
             self.pending_entry = Some(PendingWorldEntry::StudioReplay(PathBuf::from(path)));
             if let Err(error) = self.close_world() {
                 self.pending_entry = None;
@@ -716,6 +735,19 @@ impl Game<'_> {
             }
         };
 
+        let recording = self.recording_id(path);
+        self.start_studio_replay(driver, recording, path)
+    }
+
+    /// Plays `driver`, a recording already read, from where the game is (the title, or a replay
+    /// it replaces): its session, the first frame, then `replay_opened`. `recording` is its id
+    /// (empty when no id names it), `path` only names it in the log.
+    pub(super) fn start_studio_replay(
+        &mut self,
+        driver: ReplayDriver,
+        recording: String,
+        path: &str,
+    ) -> Result<Value> {
         let standalone = self.replay.driver.is_none() && self.remote.is_none();
         if self.remote.is_none()
             && let Err(error) = self.init_remote_for_replay()
@@ -737,10 +769,12 @@ impl Game<'_> {
             let previous = std::mem::take(&mut self.replay.recording);
             self.native_replay_closed(&previous);
         }
-        let recording = super::native_replay::recording_id(path);
         self.replay.recording = recording.clone();
         self.replay.generation += 1;
         self.replay.reported_ms = None;
+        self.replay.seek_report = false;
+        // The wheel's part step belongs to the session the replay leaves.
+        self.mouse.scroll = Default::default();
         self.replay.driver = Some(Box::new(driver));
         self.camera_type = horizon_client::camera::CameraType::FirstPerson;
         self.title = None;
@@ -783,6 +817,9 @@ impl Game<'_> {
         self.replay.last_tick = None;
         self.studio_replay_closed();
         self.replay.reported_ms = None;
+        self.replay.seek_report = false;
+        // A part step of the wheel in the replay doesn't carry into the next session.
+        self.mouse.scroll = Default::default();
         let recording = std::mem::take(&mut self.replay.recording);
         self.native_replay_closed(&recording);
         self.replay.virtual_tick_ms = 0.0;

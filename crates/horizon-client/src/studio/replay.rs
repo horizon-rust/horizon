@@ -16,6 +16,9 @@ pub struct ReplayDriver {
     pub metadata: Metadata,
     reader: McprReader,
     path: PathBuf,
+    /// Where the recording ends: its recorded duration, or its last packet when that is later,
+    /// so no packet is ever past the end. The clock never goes past it.
+    end_ms: u32,
     cursor_ms: f64,
     speed: f64,
     paused: bool,
@@ -27,7 +30,13 @@ pub struct ReplayDriver {
 impl ReplayDriver {
     /// Open an `.mcpr` recording archive for replay playback.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let mut reader = McprReader::open(path)?;
+        Self::from_file(std::fs::File::open(path)?, path)
+    }
+
+    /// As [`ReplayDriver::open`], from the archive already open as `file`; `path` is only where
+    /// the editor later saves its markers and camera path.
+    pub fn from_file(file: std::fs::File, path: &Path) -> io::Result<Self> {
+        let mut reader = McprReader::from_file(file)?;
         validate_metadata(&reader.metadata)?;
         let metadata = reader.metadata.clone();
         let next_packet_cache = reader.next_packet()?;
@@ -35,11 +44,13 @@ impl ReplayDriver {
             .as_ref()
             .ok_or_else(|| invalid_replay("recording contains no play-state packets"))?;
         validate_play_stream_start(first)?;
+        let end_ms = metadata.duration.max(reader.last_timestamp_ms());
 
         Ok(Self {
             metadata,
             reader,
             path: path.to_path_buf(),
+            end_ms,
             cursor_ms: 0.0,
             speed: 1.0,
             paused: false,
@@ -47,6 +58,11 @@ impl ReplayDriver {
             finished: false,
             next_packet_cache,
         })
+    }
+
+    /// The archive this replay reads, where the editor saves its markers and camera path.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The editor's camera path saved alongside the packet stream, as the
@@ -85,11 +101,11 @@ impl ReplayDriver {
 
 impl PacketSource for ReplayDriver {
     fn position_ms(&self) -> u32 {
-        self.cursor_ms as u32
+        (self.cursor_ms as u32).min(self.end_ms)
     }
 
     fn duration_ms(&self) -> u32 {
-        self.metadata.duration
+        self.end_ms
     }
 
     fn packet_count(&self) -> usize {
@@ -97,10 +113,10 @@ impl PacketSource for ReplayDriver {
     }
 
     fn progress(&self) -> f32 {
-        if self.metadata.duration == 0 {
+        if self.end_ms == 0 {
             0.0
         } else {
-            (self.cursor_ms / self.metadata.duration as f64).clamp(0.0, 1.0) as f32
+            (self.cursor_ms / f64::from(self.end_ms)).clamp(0.0, 1.0) as f32
         }
     }
 
@@ -108,8 +124,11 @@ impl PacketSource for ReplayDriver {
         self.speed
     }
 
+    /// A speed that isn't a number changes nothing: `clamp` would keep a NaN.
     fn set_speed(&mut self, speed: f64) {
-        self.speed = speed.clamp(0.01, 20.0);
+        if !speed.is_nan() {
+            self.speed = speed.clamp(0.01, 20.0);
+        }
     }
 
     fn is_paused(&self) -> bool {
@@ -138,28 +157,25 @@ impl PacketSource for ReplayDriver {
         }
 
         let delta_ms = delta.as_secs_f64() * 1000.0 * self.speed;
-        self.cursor_ms += delta_ms;
+        self.cursor_ms = (self.cursor_ms + delta_ms).min(f64::from(self.end_ms));
 
         let mut ready = Vec::new();
         let target_ms = self.cursor_ms as u32;
-
-        loop {
-            let Some(pkt) = &self.next_packet_cache else {
-                if self.cursor_ms >= self.metadata.duration as f64 {
-                    if self.looping {
-                        self.seek(0)?;
-                    } else {
-                        self.finished = true;
-                    }
-                }
-                break;
-            };
-
-            if pkt.timestamp_ms <= target_ms {
-                ready.push(self.next_packet_cache.take().unwrap());
-                self.next_packet_cache = self.reader.next_packet()?;
+        while self
+            .next_packet_cache
+            .as_ref()
+            .is_some_and(|pkt| pkt.timestamp_ms <= target_ms)
+        {
+            ready.push(self.next_packet_cache.take().expect("checked above"));
+            self.next_packet_cache = self.reader.next_packet()?;
+        }
+        // The end is the clock reaching `end_ms`; every packet is at or before it, so all of
+        // them have been handed out by then.
+        if target_ms >= self.end_ms {
+            if self.looping {
+                self.seek(0)?;
             } else {
-                break;
+                self.finished = true;
             }
         }
 
@@ -167,9 +183,9 @@ impl PacketSource for ReplayDriver {
     }
 
     fn seek(&mut self, target_ms: u32) -> io::Result<()> {
-        let clamped_ms = target_ms.min(self.metadata.duration);
+        let clamped_ms = target_ms.min(self.end_ms);
         self.cursor_ms = clamped_ms as f64;
-        self.finished = false;
+        self.finished = clamped_ms >= self.end_ms;
 
         self.reader.seek_to_timestamp(clamped_ms)?;
         self.next_packet_cache = self.reader.next_packet()?;
@@ -177,7 +193,7 @@ impl PacketSource for ReplayDriver {
     }
 
     fn seek_and_collect(&mut self, target_ms: u32) -> io::Result<Vec<TimestampedPacket>> {
-        let target_ms = target_ms.min(self.metadata.duration);
+        let target_ms = target_ms.min(self.end_ms);
         self.reader.seek_to_timestamp(0)?;
         self.next_packet_cache = self.reader.next_packet()?;
 
@@ -192,12 +208,12 @@ impl PacketSource for ReplayDriver {
         }
 
         self.cursor_ms = target_ms as f64;
-        self.finished = false;
+        self.finished = target_ms >= self.end_ms;
         Ok(packets)
     }
 
     fn seek_forward(&mut self, target_ms: u32) -> io::Result<Vec<TimestampedPacket>> {
-        let target_ms = target_ms.min(self.metadata.duration);
+        let target_ms = target_ms.min(self.end_ms);
         if (target_ms as f64) < self.cursor_ms {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -216,7 +232,7 @@ impl PacketSource for ReplayDriver {
         }
 
         self.cursor_ms = target_ms as f64;
-        self.finished = false;
+        self.finished = target_ms >= self.end_ms;
         Ok(packets)
     }
 

@@ -1,14 +1,70 @@
 //! A client mod reads and drives replay playback, and the person's gameplay input stays off the
 //! recording while it plays (#19247).
-use super::native_replay::recording_path;
+use super::native_replay::{open_recording, recording_path};
 use horizon_client::packet_source::PacketSource;
+use horizon_client::studio::ReplayDriver;
 use horizon_client::studio::mcpr::TimestampedPacket;
 use mod_api::{ClientHost, Hooks, ModEntry, ReplayError};
 use mod_platform::testing::with_mods;
 use std::any::Any;
-use std::io;
+use std::io::{self, Read};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// A recording `/studio record` could have written: the Play login, then a packet at each of
+/// `later` ms; its metadata says it lasts `duration` ms.
+fn write_recording(path: &Path, duration: u32, later: &[u32]) {
+    use horizon_client::studio::{McprWriter, Metadata};
+    use horizon_protocol::{buf::Reader, packets::play};
+    let encoded = play::Clientbound::Login(play::Login {
+        player_id: 1,
+        hardcore: false,
+        levels: vec!["minecraft:overworld".into()],
+        max_players: 20,
+        chunk_radius: 8,
+        simulation_distance: 8,
+        reduced_debug_info: false,
+        show_death_screen: true,
+        limited_crafting: false,
+        spawn: play::SpawnInfo {
+            dimension_type: 0,
+            dimension: "minecraft:overworld".into(),
+            seed: 0,
+            game_type: 0,
+            previous_game_type: None,
+            debug: false,
+            flat: false,
+            last_death: None,
+            portal_cooldown: 0,
+            sea_level: 63,
+        },
+        online_mode: false,
+        enforces_secure_chat: false,
+    })
+    .encode();
+    let mut reader = Reader::new(&encoded);
+    let id = reader.varint().unwrap();
+    let meta = Metadata {
+        duration,
+        ..Default::default()
+    };
+    let mut writer = McprWriter::new(path.to_path_buf(), meta).unwrap();
+    writer.write_packet(0, id, reader.rest()).unwrap();
+    for &at in later {
+        writer.write_packet(at, 0x01, &[1]).unwrap();
+    }
+    writer.finish(duration).unwrap();
+}
+
+/// A zip archive that is no recording: it passes the call's check and fails once read.
+fn write_hollow_zip(path: &Path) {
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    zip.start_file("readme.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    std::io::Write::write_all(&mut zip, b"not a recording").unwrap();
+    zip.finish().unwrap();
+}
 
 #[test]
 fn a_recording_id_names_one_file_in_the_recordings_folder() {
@@ -23,6 +79,7 @@ fn a_recording_id_names_one_file_in_the_recordings_folder() {
         recording_path(&dir, "my_trip_1"),
         Ok(dir.join("my_trip_1.mcpr"))
     );
+    let too_long = "a".repeat(251);
     // Refused as text, before any file is looked at.
     for id in [
         "",
@@ -39,7 +96,17 @@ fn a_recording_id_names_one_file_in_the_recordings_folder() {
         "my_trip_1:stream",
         "my\0trip",
         "my\ntrip",
-        &"a".repeat(251),
+        "trip.",
+        "trip ",
+        "CON",
+        "con",
+        "Nul.txt",
+        "aux.tar",
+        "COM1",
+        "lpt9.x",
+        "CON .x",
+        "COM\u{b9}",
+        too_long.as_str(),
     ] {
         assert_eq!(
             recording_path(&dir, id),
@@ -47,8 +114,19 @@ fn a_recording_id_names_one_file_in_the_recordings_folder() {
             "{id:?}"
         );
     }
-    // A missing file, a folder, and the id with its extension: no such recording.
-    for id in ["nothing_here", "folder", "my_trip_1.mcpr"] {
+    // Names that only look like devices, the longest id, a missing file, a folder, and the id
+    // with its extension: no such recording.
+    let longest = "a".repeat(250);
+    for id in [
+        "CONSOLE",
+        "com10",
+        "nul_trip",
+        "a.CON",
+        longest.as_str(),
+        "nothing_here",
+        "folder",
+        "my_trip_1.mcpr",
+    ] {
         assert_eq!(
             recording_path(&dir, id),
             Err(ReplayError::NotFound),
@@ -74,6 +152,110 @@ fn a_link_out_of_the_recordings_folder_is_no_recording() {
         return;
     }
     assert_eq!(recording_path(&dir, "escape"), Err(ReplayError::NotFound));
+}
+
+/// A recordings folder that is itself a link is refused, though the recording it leads to is a
+/// regular file directly in the folder it leads to.
+#[test]
+fn a_recordings_folder_that_is_a_link_holds_no_recording() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("trip.mcpr"), b"PK\x03\x04").unwrap();
+    let dir = root.path().join("recordings");
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&elsewhere, &dir);
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&elsewhere, &dir);
+    if let Err(error) = linked {
+        eprintln!("skipped: no symbolic link could be made: {error}");
+        return;
+    }
+    assert_eq!(
+        recording_path(&elsewhere, "trip"),
+        Ok(elsewhere.join("trip.mcpr"))
+    );
+    assert_eq!(recording_path(&dir, "trip"), Err(ReplayError::NotFound));
+    assert_eq!(
+        open_recording(&dir, "trip").err(),
+        Some(ReplayError::NotFound)
+    );
+}
+
+/// The call opens the recording once; what is read later comes from that open file, even when
+/// the name has since been given to another file.
+#[test]
+fn an_accepted_recording_is_read_from_the_file_opened_at_the_call() {
+    let root = tempfile::tempdir().unwrap();
+    write_recording(&root.path().join("trip.mcpr"), 1_000, &[]);
+    std::fs::write(root.path().join("plain.mcpr"), b"not a zip").unwrap();
+    assert_eq!(
+        open_recording(root.path(), "plain").err(),
+        Some(ReplayError::Unreadable)
+    );
+
+    let (path, file) = open_recording(root.path(), "trip").unwrap();
+    std::fs::rename(&path, root.path().join("moved.mcpr")).unwrap();
+    std::fs::write(&path, b"swapped in after the check").unwrap();
+    let driver = ReplayDriver::from_file(file, &path).unwrap();
+    assert_eq!(driver.duration_ms(), 1_000);
+    let mut swapped = String::new();
+    std::fs::File::open(&path)
+        .unwrap()
+        .read_to_string(&mut swapped)
+        .unwrap();
+    assert_eq!(swapped, "swapped in after the check");
+}
+
+/// The clock ends at the recording's end, a packet past the recorded duration included; it never
+/// reports past it; `ended` is true there however it got there and false anywhere before; and a
+/// speed that is not a number changes nothing, whichever route sets it.
+#[test]
+fn a_replays_clock_stays_within_the_recording_and_says_when_it_ended() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("long.mcpr");
+    write_recording(&path, 1_000, &[400, 1_500]);
+    let mut driver = ReplayDriver::open(&path).unwrap();
+    assert_eq!(
+        driver.duration_ms(),
+        1_500,
+        "the last packet is past the metadata's"
+    );
+
+    let played = driver.advance(Duration::from_secs(5)).unwrap();
+    assert_eq!(played.len(), 3, "every packet, the late one included");
+    assert_eq!(driver.position_ms(), 1_500);
+    assert!(driver.is_finished());
+    assert!(driver.advance(Duration::from_secs(1)).unwrap().is_empty());
+    assert_eq!(driver.position_ms(), 1_500);
+
+    driver.seek_and_collect(400).unwrap();
+    assert!(!driver.is_finished());
+    driver.set_paused(true);
+    driver.seek(1_500).unwrap();
+    assert!(driver.is_finished(), "a paused seek to the end has ended");
+    driver.seek(u32::MAX).unwrap();
+    assert_eq!(driver.position_ms(), 1_500);
+    assert!(driver.is_finished());
+    driver.seek(0).unwrap();
+    assert!(!driver.is_finished());
+
+    driver.set_speed(2.0);
+    driver.set_speed(f64::NAN);
+    assert_eq!(
+        driver.speed(),
+        2.0,
+        "NaN, as `/studio replay speed NaN` parses it"
+    );
+    for (speed, kept) in [
+        (0.0, 0.01),
+        (-3.0, 0.01),
+        (1_000.0, 20.0),
+        (f64::INFINITY, 20.0),
+    ] {
+        driver.set_speed(speed);
+        assert_eq!(driver.speed(), kept, "the speed range holds for {speed}");
+    }
 }
 
 /// A packet source standing in for a recording: its clock moves by the frame's time at its
@@ -169,6 +351,14 @@ impl Hooks for Heard {
         );
         self.0.lock().unwrap().push(line);
     }
+    fn replay_open_failed(
+        &self,
+        _: &mut dyn ClientHost,
+        event: &mut mod_api::ReplayOpenFailedEvent<'_>,
+    ) {
+        let line = format!("failed {} {:?}", event.recording, event.error);
+        self.0.lock().unwrap().push(line);
+    }
     fn replay_advanced(&self, _: &mut dyn ClientHost, event: &mut mod_api::ReplayAdvancedEvent) {
         let line = format!("advanced {}", event.position_ms);
         self.0.lock().unwrap().push(line);
@@ -197,7 +387,7 @@ fn with_heard(test: impl FnOnce(&mut crate::game::Game<'_>)) -> Vec<String> {
     heard.lock().unwrap().clone()
 }
 
-/// A replay opened over a world (not standalone), as `open_studio_replay` leaves it.
+/// A replay on a session it doesn't own, as a stand-in recording.
 fn play(game: &mut crate::game::Game<'_>, duration: u32) {
     game.replay.driver = Some(Box::new(Clock::new(duration)));
     game.replay.recording = "demo".into();
@@ -206,9 +396,28 @@ fn play(game: &mut crate::game::Game<'_>, duration: u32) {
     game.replay.reported_ms = Some(0);
 }
 
+/// A frame `ms` after the replay's last one.
+fn frame(game: &mut crate::game::Game<'_>, ms: u64) {
+    game.replay.last_tick = Some(std::time::Instant::now() - Duration::from_millis(ms));
+    game.advance_studio_replay().unwrap();
+}
+
+/// Frame ends until the accepted open's recording is read and taken up.
+fn finish_opening(game: &mut crate::game::Game<'_>) {
+    let started = std::time::Instant::now();
+    while game.replay.opening.is_some() {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "reading never ended"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        game.native_replay_requests();
+    }
+}
+
 /// Pause, resume, speed and the state read act at once; seek and close wait for the frame's end.
-/// The clock's moves are heard once a frame they happen, never on a paused frame, and a seek is
-/// heard on the next frame.
+/// The clock's moves are heard once a frame they happen, never on a paused frame; after a seek
+/// the next one is exactly the seek's position, then the clock runs on.
 #[test]
 #[ignore = "daily"]
 fn a_client_mod_drives_the_replay_and_hears_its_clock_once_a_move() {
@@ -241,23 +450,29 @@ fn a_client_mod_drives_the_replay_and_hears_its_clock_once_a_move() {
         assert_eq!(host.replay_pause(), Ok(()));
         assert!(host.replay_state().unwrap().paused);
 
-        game.advance_studio_replay().unwrap();
-        game.advance_studio_replay().unwrap();
+        frame(game, 100);
+        frame(game, 100);
         assert_eq!(game.replay_resume(), Ok(()));
-        // A frame of 100 ms at twice the speed.
-        game.replay.last_tick = Some(std::time::Instant::now() - Duration::from_millis(100));
-        game.advance_studio_replay().unwrap();
-        let moved = game.replay_state().unwrap().position_ms;
-        assert!(moved > 0);
+        // 100 ms at twice the speed.
+        frame(game, 100);
+        assert_eq!(game.replay_state().unwrap().position_ms, 200);
 
         assert_eq!(game.replay_seek(5_000), Ok(()));
-        assert_eq!(game.replay_state().unwrap().position_ms, moved, "not yet");
+        assert_eq!(game.replay_state().unwrap().position_ms, 200, "not yet");
         game.native_replay_requests();
         assert_eq!(game.replay_state().unwrap().position_ms, 5_000);
         assert_eq!(game.replay_seek(100), Err(ReplayError::BackwardSeek));
+        // Playing on: the frame drawn after the seek holds its position, the next one runs.
+        frame(game, 100);
+        assert_eq!(game.replay_state().unwrap().position_ms, 5_000);
+        frame(game, 100);
+        assert_eq!(game.replay_state().unwrap().position_ms, 5_200);
+        // A seek to where the clock is, paused, is told once too.
         game.replay_pause().unwrap();
-        game.advance_studio_replay().unwrap();
-        game.advance_studio_replay().unwrap();
+        game.replay_seek(5_200).unwrap();
+        game.native_replay_requests();
+        frame(game, 100);
+        frame(game, 100);
 
         // A close asked of a replay that is replaced before the frame ends reaches nothing.
         game.replay_close().unwrap();
@@ -270,18 +485,38 @@ fn a_client_mod_drives_the_replay_and_hears_its_clock_once_a_move() {
         game.native_replay_requests();
         assert_eq!(game.replay_state(), None);
     });
-    assert_eq!(heard.len(), 3, "{heard:?}");
-    assert!(heard[0].starts_with("advanced "), "{heard:?}");
-    assert_eq!(&heard[1..], ["advanced 5000", "closed demo"]);
+    assert_eq!(
+        heard,
+        [
+            "advanced 200",
+            "advanced 5000",
+            "advanced 5200",
+            "advanced 5200",
+            "closed demo"
+        ]
+    );
 }
 
 /// While a replay plays with no free camera (a mod's camera draws it), the person's movement
-/// keys and the focus pause stay off the recording, while a mod still hears the wheel.
+/// keys, the wheel's and a bumper's hotbar step and the focus pause stay off the recording; a mod
+/// still hears the wheel and the bumper, and a screen or prompt open over the replay takes the
+/// wheel first: the mod hears no hotbar scroll then.
 #[test]
 #[ignore = "daily"]
 fn a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel() {
     use horizon_client::held::Source;
+    use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
     use winit::keyboard::KeyCode;
+    struct Loop;
+    impl crate::game::event_loop::EventLoopCtl for Loop {
+        fn exit(&self) {}
+        fn set_control_flow(&self, _: winit::event_loop::ControlFlow) {}
+    }
+    let wheel = || WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+        phase: TouchPhase::Moved,
+    };
     let heard = with_heard(|game| {
         game.title = None;
         game.screen = crate::game::Screen::Playing;
@@ -295,13 +530,19 @@ fn a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel() {
         game.focus_lost = Some(std::time::Instant::now() - Duration::from_secs(1));
         game.pause_if_inactive();
         assert_eq!(game.screen, crate::game::Screen::Paused, "without a replay");
-
         game.screen = crate::game::Screen::Playing;
         game.mapped_key(KeyCode::KeyW, true, false, KeyCode::KeyW, Source::Keyboard)
             .unwrap();
         assert!(game.keys.raw(&KeyCode::KeyW), "walking without a replay");
         game.mapped_key(KeyCode::KeyW, false, false, KeyCode::KeyW, Source::Keyboard)
             .unwrap();
+        game.selected = 0;
+        game.handle_window_event_inner(&Loop, wheel());
+        assert_eq!(
+            game.selected, 1,
+            "the wheel steps the hotbar without a replay"
+        );
+
         play(game, 10_000);
         assert!(!game.studio.flying());
         game.mapped_key(KeyCode::KeyW, true, false, KeyCode::KeyW, Source::Keyboard)
@@ -309,91 +550,111 @@ fn a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel() {
         assert!(!game.keys.raw(&KeyCode::KeyW), "no walking in a replay");
         game.pause_if_inactive();
         assert_eq!(game.screen, crate::game::Screen::Playing, "no focus pause");
-        game.replay_wheel(winit::event::MouseScrollDelta::LineDelta(0.0, 1.0));
+        game.handle_window_event_inner(&Loop, wheel());
+        game.hotbar_step(true);
+        assert_eq!(game.selected, 1, "neither the wheel nor a bumper steps it");
+        game.screen = crate::game::Screen::Chat;
+        game.handle_window_event_inner(&Loop, wheel());
+        assert_eq!(game.selected, 1, "a screen over the replay takes the wheel");
+        game.screen = crate::game::Screen::Playing;
+        game.link_prompt = Some("https://example.invalid".into());
+        game.handle_window_event_inner(&Loop, wheel());
+        assert_eq!(game.selected, 1, "a prompt over the replay takes the wheel");
+        game.link_prompt = None;
     });
-    assert_eq!(heard, ["wheel"]);
+    assert_eq!(heard, ["wheel", "wheel", "wheel"]);
 }
 
-/// A recording `/studio record` could have written: the Play login, then nothing for `duration` ms.
-fn write_recording(path: &std::path::Path, duration: u32) {
-    use horizon_client::studio::{McprWriter, Metadata};
-    use horizon_protocol::{buf::Reader, packets::play};
-    let encoded = play::Clientbound::Login(play::Login {
-        player_id: 1,
-        hardcore: false,
-        levels: vec!["minecraft:overworld".into()],
-        max_players: 20,
-        chunk_radius: 8,
-        simulation_distance: 8,
-        reduced_debug_info: false,
-        show_death_screen: true,
-        limited_crafting: false,
-        spawn: play::SpawnInfo {
-            dimension_type: 0,
-            dimension: "minecraft:overworld".into(),
-            seed: 0,
-            game_type: 0,
-            previous_game_type: None,
-            debug: false,
-            flat: false,
-            last_death: None,
-            portal_cooldown: 0,
-            sea_level: 63,
-        },
-        online_mode: false,
-        enforces_secure_chat: false,
-    })
-    .encode();
-    let mut reader = Reader::new(&encoded);
-    let id = reader.varint().unwrap();
-    let meta = Metadata {
-        duration,
-        ..Default::default()
-    };
-    let mut writer = McprWriter::new(path.to_path_buf(), meta).unwrap();
-    writer.write_packet(0, id, reader.rest()).unwrap();
-    writer.finish(duration).unwrap();
-}
-
-/// A mod opens recordings by id from the title screen: the open waits for the frame's end and is
-/// heard once it is done, a second one over it is heard after the first one's close, and a damaged
-/// recording is refused at the call with nothing opened.
+/// A mod opens recordings by id from the title: the call accepts, the recording is read off the
+/// game's thread and opened at a frame's end, a second one over it is heard after the first
+/// one's close, and an archive that fails once read is told as failed with nothing opened.
 #[test]
 #[ignore = "daily"]
 fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
     let root = tempfile::tempdir().unwrap();
-    write_recording(&root.path().join("trip.mcpr"), 1_000);
-    write_recording(&root.path().join("trip2.mcpr"), 2_000);
+    write_recording(&root.path().join("trip.mcpr"), 1_000, &[]);
+    write_recording(&root.path().join("trip2.mcpr"), 2_000, &[]);
     std::fs::write(root.path().join("damaged.mcpr"), b"not a zip").unwrap();
+    write_hollow_zip(&root.path().join("hollow.mcpr"));
     let heard = with_heard(|game| {
         game.replay.recordings_dir = Some(root.path().to_path_buf());
         let host: &mut dyn ClientHost = game;
         assert_eq!(host.replay_open("damaged"), Err(ReplayError::Unreadable));
         assert_eq!(host.replay_open("missing"), Err(ReplayError::NotFound));
-        assert_eq!(host.replay_open("trip"), Ok(()));
-        assert_eq!(host.replay_state(), None, "opens at the frame's end");
-        game.native_replay_requests();
+        assert_eq!(host.replay_open("hollow"), Ok(()));
+        finish_opening(game);
+        assert_eq!(game.replay_state(), None);
+
+        assert_eq!(game.replay_open("trip"), Ok(()));
+        assert_eq!(game.replay_state(), None, "opens at a frame's end");
+        finish_opening(game);
         let state = game.replay_state().expect("open");
         assert_eq!(
-            (state.recording.as_str(), state.duration_ms),
-            ("trip", 1_000)
+            (
+                state.recording.as_str(),
+                state.duration_ms,
+                state.standalone
+            ),
+            ("trip", 1_000, true)
         );
 
         assert_eq!(game.replay_open("trip2"), Ok(()));
-        game.native_replay_requests();
+        finish_opening(game);
         assert_eq!(game.replay_state().unwrap().recording, "trip2");
         game.replay_close().unwrap();
         game.native_replay_requests();
         assert_eq!(game.replay_state(), None);
     });
-    let standalone = heard[0].rsplit(' ').next().unwrap().to_owned();
     assert_eq!(
         heard,
         [
-            format!("opened trip 1000 {standalone}"),
-            "closed trip".to_owned(),
-            format!("opened trip2 2000 {standalone}"),
-            "closed trip2".to_owned(),
+            "failed hollow Unreadable",
+            "opened trip 1000 true",
+            "closed trip",
+            "opened trip2 2000 true",
+            "closed trip2",
         ]
     );
+}
+
+/// A replay never displaces a session being joined or a multiplayer one: refused at the call,
+/// and an accepted request whose session changed before it was ready, or whose read replay
+/// lost its place as the world entry, fails, opening nothing.
+#[test]
+#[ignore = "daily"]
+fn a_replay_open_never_displaces_a_joining_or_multiplayer_session() {
+    let root = tempfile::tempdir().unwrap();
+    write_recording(&root.path().join("trip.mcpr"), 1_000, &[]);
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        game.pending_entry = Some(crate::game::PendingWorldEntry::StudioReplay(
+            root.path().join("trip.mcpr"),
+        ));
+        assert_eq!(game.replay_open("trip"), Err(ReplayError::WorldBusy));
+        game.displace_pending_replay(ReplayError::Unavailable);
+        assert!(
+            game.pending_entry.is_some(),
+            "only a mod's read replay is displaced"
+        );
+        // A read replay waiting as the world entry and then cancelled (Escape) or replaced is
+        // told as failed, never dropped unheard.
+        let driver = ReplayDriver::open(&root.path().join("trip.mcpr")).unwrap();
+        game.pending_entry = Some(crate::game::PendingWorldEntry::PreparedReplay {
+            driver: Box::new(driver),
+            recording: "trip".into(),
+        });
+        game.displace_pending_replay(ReplayError::Unavailable);
+        assert!(game.pending_entry.is_none());
+
+        // Accepted on the title, then a server is joined before the recording is ready.
+        assert_eq!(game.replay_open("trip"), Ok(()));
+        let (pipe, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(pipe, "Steve").unwrap();
+        finish_opening(game);
+        assert!(game.remote.is_some(), "the joined session stays");
+        assert_eq!(game.replay_state(), None);
+
+        assert_eq!(game.replay_open("trip"), Err(ReplayError::WorldBusy));
+    });
+    assert_eq!(heard, ["failed trip Unavailable", "failed trip WorldBusy"]);
 }

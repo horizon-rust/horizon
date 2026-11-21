@@ -590,6 +590,8 @@ pub struct McprReader {
     /// Sparse frame index; timestamps are normalized to never go backwards.
     packet_index: Vec<SparseIndexEntry>,
     total_packets: usize,
+    /// The last frame's timestamp (normalized): where the packet stream ends.
+    last_timestamp_ms: u32,
     /// The editor's camera path (`camera.json`), as the editor wrote it.
     pub camera_path: Option<Vec<u8>>,
     /// User-created editor bookmarks stored in the replay archive.
@@ -705,7 +707,12 @@ fn read_optional_json<T: for<'de> Deserialize<'de>>(
 impl McprReader {
     /// Open an `.mcpr` replay archive from disk.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let file = File::open(path)?;
+        Self::from_file(File::open(path)?)
+    }
+
+    /// Read an `.mcpr` replay archive from a file already open, as a caller that checked where
+    /// the file is opened it: nothing is looked up by path again.
+    pub fn from_file(file: File) -> io::Result<Self> {
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -801,9 +808,15 @@ impl McprReader {
             end: offset,
             packet_index,
             total_packets,
+            last_timestamp_ms: latest,
             camera_path,
             markers,
         })
+    }
+
+    /// The last packet's timestamp, 0 for a recording without packets.
+    pub fn last_timestamp_ms(&self) -> u32 {
+        self.last_timestamp_ms
     }
 
     /// Total number of packets indexed in the recording.

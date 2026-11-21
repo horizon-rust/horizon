@@ -9015,6 +9015,7 @@ impl Game<'_> {
                 if event.state == ElementState::Pressed
                     && event.physical_key == PhysicalKey::Code(KeyCode::Escape))
         {
+            self.displace_pending_replay(mod_api::ReplayError::Unavailable);
             self.pending_entry = None;
             self.perf.cancel_world_opening();
             return;
@@ -9351,11 +9352,6 @@ impl Game<'_> {
                             self.options_drag()?;
                         }
                     }
-                }
-                WindowEvent::MouseWheel { delta, .. }
-                    if self.screen == Screen::Playing && self.replay.driver.is_some() =>
-                {
-                    self.replay_wheel(delta);
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (raw_x, raw_y) = match delta {

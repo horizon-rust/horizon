@@ -12,9 +12,18 @@ impl Game<'_> {
     }
 
     pub(super) fn defer_world_entry(&mut self, entry: PendingWorldEntry) -> Result<bool> {
+        Ok(self.try_defer_world_entry(entry)?.is_none())
+    }
+
+    /// As `defer_world_entry`, handing `entry` back when nothing needs waiting for, so an entry
+    /// that carries what it can't rebuild (a replay already read) isn't lost.
+    pub(super) fn try_defer_world_entry(
+        &mut self,
+        entry: PendingWorldEntry,
+    ) -> Result<Option<PendingWorldEntry>> {
         self.poll_world_rest()?;
         if self.rest_loader.is_none() {
-            return Ok(false);
+            return Ok(Some(entry));
         }
         self.perf.world_opening();
         if self.title.is_none() {
@@ -23,9 +32,10 @@ impl Game<'_> {
                 .with_user(|| self.options.player_name());
             self.show_title(title);
         }
+        self.displace_pending_replay(mod_api::ReplayError::WorldBusy);
         self.pending_entry = Some(entry);
         log::info!("Horizon: world entry waiting for world resources");
-        Ok(true)
+        Ok(None)
     }
 
     pub(super) fn resume_world_entry(&mut self) -> Result<()> {
@@ -83,6 +93,9 @@ impl Game<'_> {
                 if let Err(e) = self.open_studio_replay(&path_str) {
                     log::warn!("Horizon Studio: could not open {path_str}: {e}");
                 }
+            }
+            Some(PendingWorldEntry::PreparedReplay { driver, recording }) => {
+                self.open_prepared_replay(*driver, recording);
             }
             None => {}
         }

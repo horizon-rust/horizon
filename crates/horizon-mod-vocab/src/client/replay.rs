@@ -7,20 +7,25 @@
 #[derive(horizon_mod_api_macros::Wire)]
 pub struct ReplayState {
     /// The recording's id: its file name in the recordings folder without `.mcpr`, as
-    /// `replay_open` takes it.
+    /// `replay_open` takes it. Empty for a recording no id names: one opened from a file
+    /// elsewhere (`/studio replay open <path>`), or whose name `replay_open` refuses.
     pub recording: String,
-    /// The replay was opened from the title screen and owns its world: closing it returns
-    /// there, and it can seek backwards.
+    /// The replay owns the session it plays in, a stand-in for a server that closing the
+    /// replay ends, returning to the title screen; it can seek backwards. Every replay is
+    /// opened this way today (a live world is left first). False only for a replay played on
+    /// top of a session it doesn't own, which only seeks forward.
     pub standalone: bool,
-    /// Where the replay's clock is, in ms from the recording's start.
+    /// Where the replay's clock is, in ms from the recording's start: from 0 to `duration_ms`.
     pub position_ms: u32,
-    /// The recording's length in ms.
+    /// The recording's length in ms: its recorded duration, or its last packet's time when
+    /// that is later.
     pub duration_ms: u32,
     /// The playback speed: 1 is real time, between [`REPLAY_MIN_SPEED`] and [`REPLAY_MAX_SPEED`].
     pub speed: f64,
     /// The clock is paused.
     pub paused: bool,
-    /// The clock reached the recording's end; a seek starts it again.
+    /// The clock is at `duration_ms`, every packet played: true whether it got there by playing
+    /// or by a seek, false after a seek anywhere before the end.
     pub ended: bool,
 }
 
@@ -29,26 +34,35 @@ pub const REPLAY_MIN_SPEED: f64 = 0.01;
 /// The fastest playback speed `replay_set_speed` takes.
 pub const REPLAY_MAX_SPEED: f64 = 20.0;
 
-/// Why a replay call changed nothing.
+/// Why a replay call changed nothing, or why an accepted `replay_open` opened nothing
+/// (`replay_open_failed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(horizon_mod_api_macros::Wire)]
 pub enum ReplayError {
-    /// Not a recording id: empty, longer than 255 bytes, or holding a path separator, a
-    /// drive or `..`, a NUL or another control character.
+    /// Not a recording id: empty, longer than 250 bytes, holding a path separator, a drive,
+    /// `..`, a NUL or another control character, ending in a dot or a space, or a name
+    /// Windows keeps for a device (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`,
+    /// in any case, with or without an extension).
     InvalidId,
-    /// No recording has this id: no such regular file in the recordings folder. A link
-    /// that leads out of the folder counts as none.
+    /// No recording has this id: no regular file of that name directly in the recordings
+    /// folder. A link, or a recordings folder that is itself a link, counts as none.
     NotFound,
-    /// The recording is there but can't be played (damaged, or of another version).
+    /// The recording is there but can't be played (not a recording, damaged, or of another
+    /// version).
     Unreadable,
     /// No replay is open.
     NotOpen,
     /// The speed is not a finite number between [`REPLAY_MIN_SPEED`] and [`REPLAY_MAX_SPEED`].
     InvalidSpeed,
-    /// A replay opened over a world can't seek back before where it is.
+    /// A replay that doesn't own its session can't seek back before where it is.
     BackwardSeek,
     /// This client can't play a replay now: a splitscreen guest or a server, or the game
-    /// is closing.
+    /// is closing. Also why an accepted `replay_open` fails when its session can't start or
+    /// the person cancels the wait for it.
     Unavailable,
+    /// A world is being joined, or this client is connected to a multiplayer server: a replay
+    /// would end that session. Leave it first (`disconnect`). Also why an accepted
+    /// `replay_open` fails when such a session starts before the replay is ready.
+    WorldBusy,
 }
