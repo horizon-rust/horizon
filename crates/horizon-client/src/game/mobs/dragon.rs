@@ -3052,12 +3052,11 @@ impl Game<'_> {
             self.level_event_at(3000, pos, 0);
             let _ = self.place_gateway_at(pos);
         }
-        if !self.fight.previously_killed
-            && let Some(egg) = self
-                .pack
-                .assets
-                .registry
-                .default_state("minecraft:dragon_egg")
+        if let Some(egg) = self
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:dragon_egg")
         {
             let y = (0..256)
                 .rev()
@@ -3067,12 +3066,22 @@ impl Game<'_> {
                 })
                 .map_or(64, |y| y + 1);
             let pos = BlockPos::new(0, y, 0);
+            let won_before = self.fight.previously_killed;
             let allowed = self.with_level(|_, level, _| {
-                let mut cancel = false;
+                // Vanilla's egg, on the first win only, which `dragon_egg_form` may cancel;
+                // then `dragon_fight_won`, asked on every win, may place one or leave it.
+                let mut forms = !won_before;
                 if level.native_authoritative {
-                    level.native_dragon_egg_form(level.dimension, pos, &mut cancel);
+                    if forms {
+                        let mut cancel = false;
+                        level.native_dragon_egg_form(level.dimension, pos, &mut cancel);
+                        forms = !cancel;
+                    }
+                    let mut egg = None;
+                    level.native_dragon_fight_won(level.dimension, pos, won_before, forms, &mut egg);
+                    forms = egg.unwrap_or(forms);
                 }
-                !cancel
+                forms
             });
             if allowed {
                 let _ = self.level_set([0, y, 0], egg);
@@ -3135,7 +3144,9 @@ impl Game<'_> {
             )
             .collect();
         let id = self.take_entity_id();
-        let feet = [next.x, next.y - 0.5, next.z];
+        // `next` is the projectile box's bottom (its position), already the
+        // hit location vanilla uses; the old -0.5 was for a box-center position.
+        let feet = [next.x, next.y, next.z];
         let at = fireball_cloud_origin(feet, &snap_targets);
         self.breath_clouds.push(Breath {
             attachment_lifetime: Default::default(),
@@ -5516,6 +5527,19 @@ mod tests {
         assert!(hit([3.0, 64.0, 0.0], 3.0));
     }
 
+    /// `DragonFireball.onHit` creates the cloud at the fireball's hit position.
+    /// The shared projectile engine stores the box bottom there, so no -0.5.
+    #[test]
+    #[ignore = "daily"]
+    fn a_fireballs_breath_cloud_starts_at_its_hit_position() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let at = Vec3::new(0.5, 120.0, 0.5);
+            game.dragon_fireball_on_hit(at);
+            let cloud = game.breath_clouds.last().expect("one breath cloud");
+            assert_eq!(cloud.at, [at.x, at.y, at.z]);
+        });
+    }
+
     #[test]
     fn fireball_cloud_snaps_to_a_player_within_four() {
         let (b, p) = player_box([2.0, 70.0, 1.0]);
@@ -6363,6 +6387,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "dragon/egg_tests.rs"]
+mod egg_tests;
 #[cfg(test)]
 #[path = "dragon/residency_tests.rs"]
 mod residency_tests;

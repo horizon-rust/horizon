@@ -508,6 +508,7 @@ horizon-client game::dispenser::tests::the_faced_block_answers_before_the_item_a
 horizon-client game::dragon::dragon_fireball_spawn_tests::the_dragons_fireball_direction_is_normalized_twice lib daily resources
 horizon-client game::dragon::dragon_fireball_spawn_tests::the_dragons_fireball_first_world_tick lib daily resources
 horizon-client game::dragon::dragon_fireball_spawn_tests::the_dragons_fireball_starts_at_its_start_with_a_tenth_of_its_direction lib daily resources
+horizon-client game::dragon::egg_tests::every_win_asks_dragon_fight_won_and_dragon_egg_form_keeps_to_the_first lib daily resources
 horizon-client game::dragon::residency_tests::singleton_client_dragon_install_explicitly_replaces_network_owner lib daily resources
 horizon-client game::dragon::residency_tests::singleton_death_fight_scan_and_resets_discard_owners lib daily resources
 horizon-client game::dragon::residency_tests::singleton_dragon_load_keeps_state_and_reserves_nine_ids lib daily resources
@@ -1082,6 +1083,7 @@ horizon-client game::native_block_entity_item_tests::storage_asks_a_game_contain
 horizon-client game::native_block_entity_item_tests::storage_writes_abort_to_the_exact_state_of_every_container_kind lib daily resources
 horizon-client game::native_block_entity_refs::tests::a_level_hook_set_block_replaces_whole_states_and_their_block_entities lib daily resources
 horizon-client game::native_block_entity_refs::tests::an_abort_puts_back_the_lock_and_the_loot_table_roll lib daily resources
+horizon-client game::native_block_entity_refs::tests::block_entities_in_a_box_are_listed_by_position lib daily resources
 horizon-client game::native_block_entity_refs::tests::player_opens_provider_and_refuses_non_provider lib daily resources
 horizon-client game::native_block_entity_refs::tests::retained_handles_reject_replacements_and_rollback_restores_identity lib daily resources
 horizon-client game::native_block_entity_refs::tests::viewers_follow_open_menus_per_level_and_leave_out_fake_players lib daily resources
@@ -1844,6 +1846,8 @@ horizon-client game::native_player_disconnect_tests::a_second_disconnect_while_p
 horizon-client game::native_player_disconnect_tests::disconnect_reaches_acting_and_displaced_players lib daily resources
 horizon-client game::native_player_disconnect_tests::disconnect_refuses_the_owner_stale_and_offline_players lib daily resources
 horizon-client game::native_player_disconnect_tests::disconnect_sends_the_reason_to_that_guest_only lib daily resources
+horizon-client game::native_player_disconnect_tests::leaving::a_disconnect_inside_player_leaving_is_refused lib daily resources
+horizon-client game::native_player_disconnect_tests::leaving::a_released_guest_does_not_fire_player_leaving lib daily resources
 horizon-client game::native_player_disconnect_tests::wasm_disconnect_crosses_the_generated_forwarder lib daily resources
 horizon-client game::native_player_food::tests::a_stale_handle_gives_nothing lib daily resources
 horizon-client game::native_player_food::tests::levels_are_added_taken_and_clamped_at_zero lib daily resources
@@ -1855,6 +1859,7 @@ horizon-client game::native_player_move_tests::a_veto_corrects_the_player_and_a_
 horizon-client game::native_player_move_tests::a_veto_of_the_first_of_two_reports_in_one_tick_corrects_and_the_second_is_not_heard lib daily resources
 horizon-client game::native_player_move_tests::two_reports_in_one_tick_are_heard_in_order_each_from_the_one_before_when_both_pass lib daily resources
 horizon-client game::native_player_move_tests::two_reports_in_one_tick_with_no_listener_are_committed_in_the_one_pass lib daily resources
+horizon-client game::native_player_move_packet_tests::a_packet_is_heard_with_its_flags_and_a_gone_guest_is_not lib daily resources
 horizon-client game::native_player_spectating_tests::a_guests_camera_is_heard_starting_once_and_stopping lib daily resources
 horizon-client game::native_player_spectating_tests::a_target_that_is_gone_sets_no_camera_and_is_not_heard lib daily resources
 horizon-client game::native_player_spectating_tests::switching_straight_to_another_target_is_one_start_and_no_stop lib daily resources
