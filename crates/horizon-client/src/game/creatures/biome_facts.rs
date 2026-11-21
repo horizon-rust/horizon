@@ -6,6 +6,7 @@ pub(in crate::game) fn biome_facts_in(
     world: &horizon_client::world::World,
     biomes: &horizon_client::biome::Biomes,
     tags: &horizon_client::mobs::MobData,
+    dimension: &horizon_world::dimension_type::DimensionFacts,
     x: i32,
     y: i32,
     z: i32,
@@ -38,7 +39,9 @@ pub(in crate::game) fn biome_facts_in(
         desert: b.name == "minecraft:desert",
         jungle: has("minecraft:is_jungle"),
         wolf: horizon_client::mobs::tame::wolf_variant_for(&b.name, &has),
-        full_moon: (world.day_time / 24000).rem_euclid(8) == 0,
+        // `MoonBrightnessCheck`: the `minecraft:moon` timeline's full moon, which the
+        // dimensions without it (the Nether and the End) have all the time.
+        full_moon: dimension.moon_phase(world.day_time) == 0,
         frog: if has("minecraft:spawns_warm_variant_frogs") {
             1
         } else if has("minecraft:spawns_cold_variant_frogs") {

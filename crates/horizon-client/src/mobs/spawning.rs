@@ -78,7 +78,7 @@ impl From<mod_api::Difficulty> for LocalDifficulty {
     }
 }
 /// `DimensionType.MOON_BRIGHTNESS_PER_PHASE`.
-pub const MOON_BRIGHTNESS: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
+pub use horizon_world::dimension_type::MOON_BRIGHTNESS_PER_PHASE as MOON_BRIGHTNESS;
 impl LocalDifficulty {
     /// `calculateDifficulty` from the difficulty id (0 peaceful to 3 hard),
     /// the overworld clock, the chunk's inhabited time and the moon.

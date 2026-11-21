@@ -10,7 +10,7 @@ use crate::{
         Mob, MobType, MobTypes,
         finalize::{self, Ctx, FinalizeLevel, Group, SpawnRegistries},
         spawn_rules::Reason,
-        spawning::{LocalDifficulty, MOON_BRIGHTNESS},
+        spawning::LocalDifficulty,
     },
 };
 use horizon_core::{
@@ -125,6 +125,8 @@ struct Level<'a> {
     structures: &'a [String],
     difficulty: u8,
     day_time: i64,
+    /// The level's dimension type: the moon the level's attributes give it.
+    dimension: &'a horizon_world::dimension_type::DimensionFacts,
     next_id: u32,
 }
 impl FinalizeLevel for Level<'_> {
@@ -144,7 +146,7 @@ impl FinalizeLevel for Level<'_> {
         self.structures.to_vec()
     }
     fn moon_phase(&self, _: [i32; 3]) -> usize {
-        self.day_time.div_euclid(24000).rem_euclid(8) as usize
+        self.dimension.moon_phase(self.day_time)
     }
     fn spawning_monsters(&self) -> bool {
         self.difficulty != 0
@@ -328,6 +330,9 @@ impl StructureMobFinalizer {
         let day_time = self.day_time.load(Ordering::Relaxed);
         // Release the publication lock before any finalize body runs.
         let mob_maps = Arc::clone(&self.mob_maps.read().unwrap());
+        let dimension = horizon_world::dimension_type::DimensionFacts::of_builtin_level(
+            horizon_core::LevelKey::builtin_or_overworld(&self.dimension),
+        );
         let mut level = Level {
             data,
             mob_maps: &mob_maps,
@@ -335,9 +340,10 @@ impl StructureMobFinalizer {
             structures,
             difficulty: base,
             day_time,
+            dimension,
             next_id: 1,
         };
-        let moon = MOON_BRIGHTNESS[level.moon_phase([0; 3])];
+        let moon = dimension.moon_brightness(day_time);
         // WorldGenRegion.getCurrentDifficultyAt: no inhabited time.
         let difficulty = LocalDifficulty::new(base, day_time, 0, moon);
         let any = random.as_any();

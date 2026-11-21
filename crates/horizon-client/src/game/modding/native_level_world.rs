@@ -229,7 +229,11 @@ impl Game<'_> {
     ) -> Option<mod_api::Difficulty> {
         let world = self.native_level_world(level)?;
         let at = pos.map(f64::from);
-        Some(super::creatures::local_difficulty_in(world, at).into())
+        let dimension = self.dimension_facts_for(
+            horizon_core::LevelKey::parse(level.dimension_id())
+                .unwrap_or(horizon_core::LevelKey::OVERWORLD),
+        );
+        Some(super::creatures::local_difficulty_in(world, dimension, at).into())
     }
     /// Read a registered boolean game rule.
     pub(super) fn level_game_rule_bool(

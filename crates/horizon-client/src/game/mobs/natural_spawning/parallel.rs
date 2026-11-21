@@ -183,7 +183,7 @@ impl Level<'_, NoGame> {
         } else {
             self.group.borrow().clone()
         };
-        let difficulty = local_difficulty_in(self.w.world, r.position);
+        let difficulty = local_difficulty_in(self.w.world, self.w.dimension_type, r.position);
         let mut level = LaneFinalize {
             l: self,
             rides: Vec::new(),
