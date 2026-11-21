@@ -82,6 +82,20 @@ class ProcessTreeTests(unittest.TestCase):
         self.assertIsNotNone(harness.returncode)
         self.assertTrue(output.closed(30), "the harness's child outlived it")
 
+    def test_reaping_the_leader_then_ended_still_ends_its_group(self):
+        """pr_ready.py's reaper calls wait() first: returncode is set, yet the child must still be ended."""
+        harness, output = self.start([sys.executable, "-c", HARNESS, "exit"])
+        harness.wait(30)  # reap the leader first, leaving its child holding the stdout pipe
+        self.assertIsNotNone(harness.returncode)
+        self.assertTrue(process_tree.ended(harness))
+        self.assertTrue(output.closed(30), "the harness's child outlived a reaped leader")
+
+    def test_killing_an_already_reaped_leader_still_ends_its_group(self):
+        harness, output = self.start([sys.executable, "-c", HARNESS, "exit"])
+        harness.wait(30)  # reap first, so kill() cannot rely on returncode being unset
+        process_tree.kill(harness)
+        self.assertTrue(output.closed(30), "the harness's child outlived kill() after the leader was reaped")
+
     def test_killing_a_harness_kills_what_it_started(self):
         harness, output = self.start([sys.executable, "-c", HARNESS, "hang"])
         while not output.lines:

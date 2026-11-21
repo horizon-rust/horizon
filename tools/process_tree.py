@@ -3,10 +3,11 @@
 A harness that crashes, is killed or times out used to leave its games running: one held the GPU for three hours
 (2026-11-09, #13751). Each tool that starts a game can't be trusted to end it, so the runner ends them all:
 
-- POSIX: the process leads its own session (process group). When it exits, or is killed, the rest of the group
-  goes too. The group is killed while the exited leader is still unreaped, so its id can't name another group
-  (os.waitid: macOS has it from Python 3.13; before, only a kill ends the group). A process that starts its own
-  session (start_new_session) leaves the group, and ends only if it ends itself.
+- POSIX: the process leads its own session (process group), whose id is recorded at spawn. When it exits, or is
+  killed, the rest of the group is signalled once, even if a caller has already reaped the leader (returncode set):
+  a child holding the inherited stdout would otherwise keep a reader blocked forever. Where os.waitid exists the
+  group is signalled before the leader is reaped (its zombie keeps the id from being reused); elsewhere poll() is
+  used first. A process that starts its own session (start_new_session) leaves the group, and ends only by itself.
 - Windows: the process starts suspended, joins its own Job Object, then resumes, so whatever it starts joins the
   job too. When it exits, or is killed, the job ends the rest. The job is closed on exit
   (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE), so a runner that dies takes its harnesses' processes with it. A process
@@ -121,7 +122,12 @@ if os.name == "nt":
 def popen(arguments, **options):
     """subprocess.Popen(arguments, **options), with everything the process starts tied to it (see above)."""
     if os.name != "nt":
-        return subprocess.Popen(arguments, start_new_session=True, **options)
+        process = subprocess.Popen(arguments, start_new_session=True, **options)
+        # start_new_session makes the leader its group's leader, so the group id equals its pid. Keep it: after
+        # the leader is reaped its pid could be reused, but a still-live child keeps this group id reserved.
+        process._pgid = process.pid
+        process._group_cleaned = False
+        return process
     job = _job()
     if job is None:
         return subprocess.Popen(arguments, **options)
@@ -147,16 +153,35 @@ def popen(arguments, **options):
     return process
 
 
+def _cleanup_group(process):
+    """Signal the leader's recorded process group once, whatever the leader's reaped state (POSIX only).
+
+    The group id was captured at spawn (see popen()); a still-live child keeps it from being reused, so signalling
+    it is safe even when the leader has been reaped and returncode is set. The one-shot flag keeps repeated calls
+    from signalling a group that may by then have been reused.
+    """
+    if getattr(process, "_group_cleaned", False):
+        return
+    group = getattr(process, "_pgid", None)
+    if group is None:
+        # Not one of ours: keep the old, conservative rule and leave a reaped leader alone.
+        if process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        return
+    process._group_cleaned = True
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass  # the group is gone (a zombie leader alone can answer EPERM on macOS)
+
+
 def kill(process):
-    """Kill the process and everything it started, at once. A process already reaped (returncode set) is left
-    alone on POSIX: its group's id may name another group by now."""
+    """Kill the process and everything it started, at once, even if the leader was already reaped."""
     if os.name != "nt":
-        if process.returncode is not None:
-            return
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass  # the group is gone (a zombie leader alone can answer EPERM on macOS)
+        _cleanup_group(process)
         return
     job = getattr(process, "job", None)
     if job:
@@ -168,19 +193,24 @@ def kill(process):
 def ended(process):
     """Whether the process has exited (like poll()); once it has, what it left running is killed."""
     if process.returncode is not None:
-        _release(process)
+        # Reaped by the caller (e.g. wait(), as pr_ready.py's reaper does): the group may still hold stdout open.
+        if os.name != "nt":
+            _cleanup_group(process)
+        else:
+            _release(process)
         return True
     if os.name != "nt":
-        if not hasattr(os, "waitid"):  # macOS before Python 3.13: without it, what the process left keeps running
-            return process.poll() is not None
-        # Kill the rest of the group before reaping the leader: its zombie keeps the group's id from being reused.
-        try:
-            exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        except OSError:  # reaped elsewhere already: its group's id is no longer safe to use
-            return process.poll() is not None
+        if hasattr(os, "waitid"):
+            try:
+                exited = bool(os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT))
+            except OSError:  # reaped elsewhere already: returncode is set on the next line's poll()
+                exited = process.poll() is not None
+        else:  # macOS before Python 3.13: poll() reaps first, then we signal the recorded group
+            exited = process.poll() is not None
         if not exited:
             return False
-        kill(process)
+        # Where waitid exists the leader is still an unreaped zombie, so its group id cannot be reused yet.
+        _cleanup_group(process)
         process.wait()
         return True
     if process.poll() is None:
