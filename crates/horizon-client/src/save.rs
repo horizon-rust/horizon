@@ -6970,6 +6970,10 @@ mod tests {
         });
         let records = [((3, 4), Record::Tag(Arc::clone(&tag)))];
         let refs: Vec<_> = records.iter().map(|(k, r)| (*k, r)).collect();
+        // Every other reader of the setting waits until the default is back.
+        let _codec = super::compression_pool::SELECTED_CODEC
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for name in ["none", "lz4", "gzip", "deflate"] {
             assert!(Compression::configure(name), "{name}");
             let written = compress_records(&refs, 99)
@@ -7010,6 +7014,7 @@ mod tests {
             })
             .collect();
         let refs: Vec<_> = records.iter().map(|(k, r)| (*k, r)).collect();
+        let _codec = super::compression_pool::holding_selected_codec();
         let compressed = compress_records(&refs, 1234);
         assert_eq!(compressed.len(), records.len());
         for ((_, record), got) in records.iter().zip(compressed) {
