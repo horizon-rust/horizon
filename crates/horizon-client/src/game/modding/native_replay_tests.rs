@@ -162,6 +162,13 @@ impl PacketSource for Clock {
 struct Heard(Arc<Mutex<Vec<String>>>);
 #[mod_api::__subscriptions]
 impl Hooks for Heard {
+    fn replay_opened(&self, _: &mut dyn ClientHost, event: &mut mod_api::ReplayOpenedEvent<'_>) {
+        let line = format!(
+            "opened {} {} {}",
+            event.recording, event.duration_ms, event.standalone
+        );
+        self.0.lock().unwrap().push(line);
+    }
     fn replay_advanced(&self, _: &mut dyn ClientHost, event: &mut mod_api::ReplayAdvancedEvent) {
         let line = format!("advanced {}", event.position_ms);
         self.0.lock().unwrap().push(line);
@@ -290,6 +297,11 @@ fn a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel() {
         assert_eq!(game.screen, crate::game::Screen::Paused, "without a replay");
 
         game.screen = crate::game::Screen::Playing;
+        game.mapped_key(KeyCode::KeyW, true, false, KeyCode::KeyW, Source::Keyboard)
+            .unwrap();
+        assert!(game.keys.raw(&KeyCode::KeyW), "walking without a replay");
+        game.mapped_key(KeyCode::KeyW, false, false, KeyCode::KeyW, Source::Keyboard)
+            .unwrap();
         play(game, 10_000);
         assert!(!game.studio.flying());
         game.mapped_key(KeyCode::KeyW, true, false, KeyCode::KeyW, Source::Keyboard)
@@ -300,4 +312,88 @@ fn a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel() {
         game.replay_wheel(winit::event::MouseScrollDelta::LineDelta(0.0, 1.0));
     });
     assert_eq!(heard, ["wheel"]);
+}
+
+/// A recording `/studio record` could have written: the Play login, then nothing for `duration` ms.
+fn write_recording(path: &std::path::Path, duration: u32) {
+    use horizon_client::studio::{McprWriter, Metadata};
+    use horizon_protocol::{buf::Reader, packets::play};
+    let encoded = play::Clientbound::Login(play::Login {
+        player_id: 1,
+        hardcore: false,
+        levels: vec!["minecraft:overworld".into()],
+        max_players: 20,
+        chunk_radius: 8,
+        simulation_distance: 8,
+        reduced_debug_info: false,
+        show_death_screen: true,
+        limited_crafting: false,
+        spawn: play::SpawnInfo {
+            dimension_type: 0,
+            dimension: "minecraft:overworld".into(),
+            seed: 0,
+            game_type: 0,
+            previous_game_type: None,
+            debug: false,
+            flat: false,
+            last_death: None,
+            portal_cooldown: 0,
+            sea_level: 63,
+        },
+        online_mode: false,
+        enforces_secure_chat: false,
+    })
+    .encode();
+    let mut reader = Reader::new(&encoded);
+    let id = reader.varint().unwrap();
+    let meta = Metadata {
+        duration,
+        ..Default::default()
+    };
+    let mut writer = McprWriter::new(path.to_path_buf(), meta).unwrap();
+    writer.write_packet(0, id, reader.rest()).unwrap();
+    writer.finish(duration).unwrap();
+}
+
+/// A mod opens recordings by id from the title screen: the open waits for the frame's end and is
+/// heard once it is done, a second one over it is heard after the first one's close, and a damaged
+/// recording is refused at the call with nothing opened.
+#[test]
+#[ignore = "daily"]
+fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
+    let root = tempfile::tempdir().unwrap();
+    write_recording(&root.path().join("trip.mcpr"), 1_000);
+    write_recording(&root.path().join("trip2.mcpr"), 2_000);
+    std::fs::write(root.path().join("damaged.mcpr"), b"not a zip").unwrap();
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        let host: &mut dyn ClientHost = game;
+        assert_eq!(host.replay_open("damaged"), Err(ReplayError::Unreadable));
+        assert_eq!(host.replay_open("missing"), Err(ReplayError::NotFound));
+        assert_eq!(host.replay_open("trip"), Ok(()));
+        assert_eq!(host.replay_state(), None, "opens at the frame's end");
+        game.native_replay_requests();
+        let state = game.replay_state().expect("open");
+        assert_eq!(
+            (state.recording.as_str(), state.duration_ms),
+            ("trip", 1_000)
+        );
+
+        assert_eq!(game.replay_open("trip2"), Ok(()));
+        game.native_replay_requests();
+        assert_eq!(game.replay_state().unwrap().recording, "trip2");
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+        assert_eq!(game.replay_state(), None);
+    });
+    let standalone = heard[0].rsplit(' ').next().unwrap().to_owned();
+    assert_eq!(
+        heard,
+        [
+            format!("opened trip 1000 {standalone}"),
+            "closed trip".to_owned(),
+            format!("opened trip2 2000 {standalone}"),
+            "closed trip2".to_owned(),
+        ]
+    );
 }

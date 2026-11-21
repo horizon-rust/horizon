@@ -20,11 +20,6 @@ pub(super) enum ReplayRequest {
     Seek { generation: u64, ms: u32 },
 }
 
-/// The recordings folder replays are opened from, the one `/studio record` writes to.
-fn recordings_dir() -> PathBuf {
-    horizon_client::studio::recorder::default_recordings_dir()
-}
-
 /// The recording file a mod names by `id` in `dir`: `<dir>/<id>.mcpr`. The id is checked as text
 /// first, touching no file, so it can't be used to probe the disk: one path component, no
 /// separator, drive, `..`, NUL or control character. Then the file must be a regular file whose
@@ -81,6 +76,14 @@ pub(super) fn recording_id(path: &str) -> String {
 }
 
 impl Game<'_> {
+    /// The recordings folder replays are opened from, the one `/studio record` writes to.
+    fn recordings_dir(&self) -> PathBuf {
+        self.replay
+            .recordings_dir
+            .clone()
+            .unwrap_or_else(horizon_client::studio::recorder::default_recordings_dir)
+    }
+
     /// A replay can be opened or driven by a mod: a client that is neither a splitscreen guest
     /// nor closing.
     fn replay_available(&self) -> bool {
@@ -108,7 +111,7 @@ impl Game<'_> {
         if !self.replay_available() {
             return Err(ReplayError::Unavailable);
         }
-        let path = recording_path(&recordings_dir(), recording)?;
+        let path = recording_path(&self.recordings_dir(), recording)?;
         // Read before anything changes, as `open_studio_replay` does over a live world.
         horizon_client::studio::ReplayDriver::open(&path).map_err(|_| ReplayError::Unreadable)?;
         self.replay.request = Some(ReplayRequest::Open(recording.to_owned()));
@@ -180,7 +183,7 @@ impl Game<'_> {
         };
         match request {
             ReplayRequest::Open(recording) => {
-                let path = match recording_path(&recordings_dir(), &recording) {
+                let path = match recording_path(&self.recordings_dir(), &recording) {
                     Ok(path) => path,
                     Err(error) => {
                         log::warn!("Replay {recording:?} could not be opened: {error:?}");

@@ -2,3 +2,4 @@
 # PACKAGE TEST TARGET daily REASON
 horizon-client game::native_replay_tests::a_client_mod_drives_the_replay_and_hears_its_clock_once_a_move lib daily resources
 horizon-client game::native_replay_tests::a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel lib daily resources
+horizon-client game::native_replay_tests::a_client_mod_opens_recordings_by_id_at_the_frames_end lib daily resources

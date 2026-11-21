@@ -36,6 +36,8 @@ pub(super) struct Replay {
     pub(super) reported_ms: Option<u32>,
     /// A mod's open, close or seek, run at the end of the frame (`native_replay_requests`).
     pub(super) request: Option<super::native_replay::ReplayRequest>,
+    /// The folder mods open recordings from by id; the game folder's `recordings/` when none.
+    pub(super) recordings_dir: Option<PathBuf>,
 }
 
 impl Replay {
