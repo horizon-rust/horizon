@@ -102,4 +102,74 @@ impl Game<'_> {
         });
         true
     }
+    /// `level_send_particles` around each of `positions`, in order, in one call: all of
+    /// them are queued or none, if any would be refused. Each is still a request of its own.
+    pub(super) fn level_send_particles_at(
+        &mut self,
+        level: LevelRef,
+        options: &ParticleOptions,
+        state: Option<BlockStateId>,
+        positions: &[[f64; 3]],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+    ) -> bool {
+        let Some(dimension) = self.native_level_dimension(level) else {
+            return false;
+        };
+        let registry = self.pack.assets.registry;
+        let state_ok = |id| registry.state(id).is_some();
+        if !positions
+            .iter()
+            .all(|&at| mod_particles_ok(options, state, state_ok, at, spread, speed))
+        {
+            return false;
+        }
+        self.creatures
+            .lan_particles
+            .extend(positions.iter().map(|&at| QueuedParticle {
+                dimension,
+                options: options.clone(),
+                state,
+                at,
+                spread,
+                speed: [speed; 3],
+                count,
+                randomization: 0,
+            }));
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::particles::ParticleType;
+
+    /// Every position is queued, in order, or none is.
+    #[test]
+    #[ignore = "daily"]
+    fn particles_at_queues_every_position_or_none() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.native_lifecycle_open_started();
+        let level = game.level("minecraft:overworld").expect("a level");
+        let flame = ParticleOptions::simple(ParticleType::Flame);
+        let at = [[0.0, 64.0, 0.0], [1.5, 65.0, -2.0], [3.0, 66.0, 4.0]];
+        let send = |game: &mut Game<'_>, positions: &[[f64; 3]]| {
+            game.level_send_particles_at(level, &flame, None, positions, [0.1; 3], 0.5, 3)
+        };
+        assert!(send(&mut game, &at));
+        let queued = &game.creatures.lan_particles;
+        assert_eq!(queued.iter().map(|q| q.at).collect::<Vec<_>>(), at);
+        assert!(queued.iter().all(|q| q.count == 3 && q.speed == [0.5; 3]));
+        let bad = [at[0], [f64::NAN, 64.0, 0.0]];
+        assert!(!send(&mut game, &bad));
+        assert_eq!(game.creatures.lan_particles.len(), 3);
+        // A block particle needs a state.
+        let block = ParticleOptions::simple(ParticleType::Block);
+        assert!(!game.level_send_particles_at(level, &block, None, &at, [0.0; 3], 0.0, 1));
+        assert_eq!(game.creatures.lan_particles.len(), 3);
+        assert!(send(&mut game, &[]));
+        assert_eq!(game.creatures.lan_particles.len(), 3);
+    }
 }
