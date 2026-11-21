@@ -258,15 +258,6 @@ impl Game<'_> {
             .update(gi, |guest| store_player(menu, guest));
         let guest = &host.hub.guests[gi];
         let (conn, uuid, entity_id) = (guest.conn, guest.uuid, guest.entity_id);
-        // `ItemStack.onCraftedBy`'s `Stats.ITEM_CRAFTED` count, before the
-        // recipe the take used.
-        if !crafted_counts.is_empty() {
-            self.as_guest(conn, |g| {
-                for (item, count) in crafted_counts {
-                    g.award_stat("crafted", &item, count);
-                }
-            });
-        }
         if !brewed.is_empty() || !brewed_potion_takes.is_empty() {
             self.as_guest(conn, |g| {
                 for stack in &brewed_potion_takes {
@@ -277,19 +268,22 @@ impl Game<'_> {
                 }
             });
         }
-        if !crafted.is_empty() {
+        // `ItemStack.onCraftedBy`'s `Stats.ITEM_CRAFTED` count, before the
+        // recipe the take used.
+        if !crafted_counts.is_empty() {
             self.as_guest(conn, |g| {
-                for (recipe, ingredients) in &crafted {
-                    g.trigger_recipe_crafted(recipe, ingredients);
+                for (item, count) in crafted_counts {
+                    g.award_stat("crafted", &item, count);
                 }
             });
+        }
+        if !crafted.is_empty() {
+            self.as_guest(conn, |g| g.award_crafted(&crafted));
         }
         if !item_crafted.is_empty() {
             self.as_guest(conn, |g| {
                 let player = g.native_acting_id();
                 for (recipe, stack, inputs) in &item_crafted {
-                    // ItemStack.onCraftedBy awards Stats.ITEM_CRAFTED.
-                    g.award_stat("crafted", &stack.item, stack.count as i32);
                     g.native_item_crafted(player, recipe, stack, inputs);
                 }
             });
@@ -2228,6 +2222,10 @@ mod lending_tests;
 #[cfg(test)]
 #[path = "lan_crafting/stonecutter_stat_tests.rs"]
 mod stonecutter_stat_tests;
+
+#[cfg(test)]
+#[path = "lan_crafting/lan_crafting_teach_tests.rs"]
+mod lan_crafting_teach_tests;
 
 #[cfg(test)]
 mod empty_ingredient_placement_tests {

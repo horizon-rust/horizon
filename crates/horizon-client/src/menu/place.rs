@@ -181,6 +181,27 @@ struct Grid {
 }
 
 impl Menu {
+    /// `ResultSlot.onSwapCraft`: a number key counts the whole target stack.
+    pub(super) fn on_swap_craft(&mut self, s: usize, count: u32) {
+        if self.slots[s].role == super::Role::CraftResult {
+            self.remove_count = self.remove_count.wrapping_add(count as i32);
+        }
+    }
+
+    /// `onQuickCraft`'s `removeCount += count` (`ResultSlot` and
+    /// `MerchantResultSlot`).
+    pub(super) fn add_remove_count(&mut self, count: u32) {
+        self.remove_count = self.remove_count.wrapping_add(count as i32);
+    }
+
+    /// `ResultSlot.checkTakeAchievements`'s `onCraftedBy` count.
+    pub(super) fn take_crafted_count(&mut self, stack: &ItemStack) {
+        let count = std::mem::take(&mut self.remove_count);
+        if count > 0 {
+            self.crafted_by(stack, count);
+        }
+    }
+
     /// `ItemStack.onCraftedBy`'s count for `n` of `stack` (AIR for an emptied quick move).
     pub(super) fn crafted_by(&mut self, stack: &ItemStack, n: i32) {
         let empty = stack.count == 0;
@@ -225,6 +246,10 @@ impl Menu {
             0
         };
         clicked.count -= left;
+        if self.slots[index].role == super::Role::CraftResult {
+            // ResultSlot.onQuickCraft counts the items that moved.
+            self.add_remove_count(clicked.count);
+        }
         self.on_take(env, index, clicked);
         clicked.count += left;
     }

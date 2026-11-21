@@ -132,10 +132,10 @@ pub struct State {
     /// stack taken and the grid row by row before the take used it, for the
     /// caller (`native_item_crafted`).
     pub item_crafted: Vec<(String, ItemStack, Vec<Option<ItemStack>>)>,
-    /// `ItemStack.onCraftedBy` counts from merchant result callbacks, without a recipe id.
+    /// `ItemStack.onCraftedBy` counts from result slots, without a recipe id.
     pub crafted_counts: Vec<(Arc<str>, i32)>,
-    /// `MerchantResultSlot.removeCount`, reset by checkTakeAchievements.
-    pub(super) merchant_remove_count: i32,
+    /// `ResultSlot`/`MerchantResultSlot.removeCount`, reset on take.
+    pub(super) remove_count: i32,
     /// Potions taken from a brewing stand's bottle slots
     /// (`PotionSlot.onTake`), for the caller.
     pub brewed: Vec<ItemStack>,

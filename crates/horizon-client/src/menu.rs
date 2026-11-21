@@ -870,7 +870,7 @@ impl Menu {
                 crafted: Vec::new(),
                 item_crafted: Vec::new(),
                 crafted_counts: Vec::new(),
-                merchant_remove_count: 0,
+                remove_count: 0,
                 brewed: Vec::new(),
                 brewed_potion_hook: false,
                 brewed_potion_takes: Vec::new(),
@@ -1933,10 +1933,9 @@ impl Menu {
     fn remove(&mut self, env: &Env, s: usize, amount: u32) -> Option<ItemStack> {
         self.touch();
         let slot = self.state.slots[s];
-        if slot.role == Role::MerchantResult {
+        if matches!(slot.role, Role::MerchantResult | Role::CraftResult) {
             let count = amount.min(self.slot(s).map_or(0, |stack| stack.count));
-            self.state.merchant_remove_count =
-                self.state.merchant_remove_count.wrapping_add(count as i32);
+            self.state.remove_count = self.state.remove_count.wrapping_add(count as i32);
         }
         // ResultContainer.removeItem takes the whole stack; the loom's result
         // is a SimpleContainer slot and splits.
@@ -2675,9 +2674,7 @@ impl Menu {
                         return None;
                     }
                     // Slot.onQuickCraft uses the original copy and the moved count.
-                    self.state.merchant_remove_count = self
-                        .merchant_remove_count
-                        .wrapping_add((clicked.count - stack.count) as i32);
+                    self.add_remove_count(clicked.count - stack.count);
                     self.merchant_check_take_achievements(&clicked);
                     if let Some(m) = self.state.merchant.as_mut() {
                         m.events.push(crate::merchant::Event::TradeSound);
@@ -2873,7 +2870,7 @@ impl Menu {
     /// `MerchantResultSlot.checkTakeAchievements`: award the tallied count, then reset it.
     fn merchant_check_take_achievements(&mut self, stack: &ItemStack) {
         self.touch();
-        let n = std::mem::take(&mut self.state.merchant_remove_count);
+        let n = std::mem::take(&mut self.state.remove_count);
         self.crafted_by(stack, n);
     }
 
@@ -3346,7 +3343,7 @@ pub(crate) mod tests {
                 }
             }
             assert_eq!(menu.crafted_counts, expected);
-            assert_eq!(menu.merchant_remove_count, 0);
+            assert_eq!(menu.remove_count, 0);
             assert_eq!(menu.merchant.as_ref().unwrap().offers[0].uses, 2);
             assert!(menu.slot(0).is_none());
             assert!(menu.slot(2).is_none());
@@ -4857,8 +4854,8 @@ pub(crate) mod tests {
             }
         });
     }
-
     mod crafted_stat_tests;
+    mod crafting_take_tests;
     mod mod_grid_tests;
 
     /// Extra sources (`native_recipe_sources`) count as more inventory: the

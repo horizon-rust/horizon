@@ -162,6 +162,7 @@ impl Menu {
         }
         // ResultSlot.checkTakeAchievements -> Item.onCraftedBy mutates the
         // actual taken stack, before the inputs are consumed.
+        self.take_crafted_count(taken);
         if taken.count > 0 {
             Self::map_crafted(env.maps, taken);
         }

@@ -392,6 +392,7 @@ impl Menu {
                 if self.may_pickup(env, target) {
                     self.state.containers[PLAYER][inv_slot] = Some(taken.clone());
                     self.set_by_player(env, target, None);
+                    self.on_swap_craft(target, taken.count);
                     self.on_take(env, target, &mut taken);
                     if self.state.slots[target].role == Role::CraftResult {
                         self.state.containers[PLAYER][inv_slot] = Some(taken);
