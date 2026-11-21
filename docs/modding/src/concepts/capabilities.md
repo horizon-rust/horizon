@@ -59,6 +59,11 @@ The three block-storage declarations accept mod blocks only, not `minecraft` blo
 `block_capability` to expose storage on a vanilla block. The first enabled declaration for a block
 type supplies its default storage. Item-container declarations may target vanilla items too, and
 their callbacks run in registration order until one returns `Some`.
+A declared container's stacks scatter when its block entity goes, as a vanilla container's do
+(`Containers.dropContents`). `block_container_keeps_contents(&block)` keeps them instead, as a Java
+block entity that isn't a `Container` keeps its own (Mekanism's machines carry theirs in their item):
+the mod puts them in its drop from the entity's saved `Items` in `block_drops`, and a removal that
+drops nothing (a command, a replacing write) loses them, as in vanilla. It applies while its mod is on.
 
 One capability supports at most 65,535 providers per block or block entity type. The next registration
 is refused at load with a message naming the mod, capability and target and stating that the target

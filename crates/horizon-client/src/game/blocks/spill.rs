@@ -892,10 +892,14 @@ impl GameLevel<'_> {
         self.world.forget_block_entity_source(key);
         let name = self.facts.get(old).name.clone();
         let kind = match &entity {
-            // BaseContainerBlockEntity.preRemoveSideEffects: Containers.dropContents.
+            // BaseContainerBlockEntity.preRemoveSideEffects: Containers.dropContents, unless the
+            // mod keeps them (a block entity that isn't a `Container`: its drop carries them).
             Some(BlockEntity::Mod(m))
                 if !m.items.is_empty()
-                    && self.world.block_entities.mod_container(old.0).is_some() =>
+                    && self.world.block_entities.mod_container(old.0).is_some()
+                    && !mod_api::__private::parts_installation::block_container_keeps_contents(
+                        &name,
+                    ) =>
             {
                 PreRemove::Contents {
                     slots: m.items.len(),
