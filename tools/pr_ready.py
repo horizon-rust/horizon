@@ -829,8 +829,9 @@ def run_windows(steps, verbose, environment=None):
             with process_tree.popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, errors="replace") as process:
                 def release(process):
-                    # The check's exit ends what it left running, which would otherwise hold the output open.
-                    process.wait()
+                    # Signal the check's whole group before reaping its leader, which would otherwise hold the
+                    # output open through a surviving child (tools/process_tree.py).
+                    process_tree.wait(process)
                     process_tree.ended(process)
                 # A daemon: interrupted, this process exits at once, and its jobs end the checks with it.
                 reaper = threading.Thread(target=release, args=(process,), daemon=True)
