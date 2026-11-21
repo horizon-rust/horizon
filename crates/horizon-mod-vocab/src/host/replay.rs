@@ -66,8 +66,8 @@ pub trait ReplayClientHost {
     /// Side: client.
     /// Moves the replay's clock to `ms` from the recording's start (at most its length) at
     /// the end of this frame. Then the recording's packets up to the position the seek applied
-    /// have been applied, in order, and the next `replay_advanced` reports exactly that
-    /// position, on the frame drawn with it; the clock runs on from there only on the frame
+    /// have been processed in order (a packet the game cannot decode or apply is skipped), and
+    /// the next `replay_advanced` reports exactly that position, on the frame drawn with it; the clock runs on from there only on the frame
     /// after. A standalone replay sought back starts again from a fresh session; what the game
     /// keeps outside that session may carry over (today the difficulty shown, and the backing
     /// state of a screen a packet opened). State that came only from the client's own

@@ -343,6 +343,8 @@ impl Game<'_> {
     /// request waits for it, and a later request takes the place of one not yet ready, which
     /// is told `Superseded` at the frame's end.
     pub(super) fn replay_open(&mut self, recording: &str) -> Result<u32, ReplayError> {
+        // A replay whose session has gone is no replay playing: the ordinary guards apply.
+        self.drop_stale_replay();
         if !self.replay_available() {
             return Err(ReplayError::Unavailable);
         }
@@ -587,6 +589,7 @@ impl Game<'_> {
     /// saved and left first and the replay opens on the title (`PendingWorldEntry`), carrying
     /// the read recording, never its name.
     pub(super) fn open_prepared_replay(&mut self, driver: ReplayDriver, origin: ReplayOrigin) {
+        self.drop_stale_replay();
         // The camera path edited in the replay playing is saved first; a replacement never
         // costs those edits. If they can't be saved, or the replacement was read from the very
         // archive they were just saved into (so it holds them as they were), the replay playing

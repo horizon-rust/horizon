@@ -500,6 +500,7 @@ fn play(game: &mut crate::game::Game<'_>, duration: u32) {
     game.replay.generation += 1;
     game.replay.standalone = false;
     game.replay.reported_ms = Some(0);
+    game.replay.connection = game.replay.connections;
 }
 
 /// A frame `ms` after the replay's last one.
@@ -1011,6 +1012,50 @@ fn a_backward_seek_drops_what_later_packets_set_outside_the_session() {
         game.replay_close().unwrap();
         game.native_replay_requests();
     });
+}
+
+/// A replay ends with the session it plays on: leaving it (as the control socket's
+/// `disconnect` does) closes the replay once, and a replay whose session was replaced by
+/// another is no replay playing, so an open meets the ordinary guards.
+#[test]
+#[ignore = "daily"]
+fn a_replay_ends_with_the_session_it_plays_on() {
+    let root = tempfile::tempdir().unwrap();
+    write_recording(&root.path().join("trip.mcpr"), 1_000, &[]);
+    let mut ids = Vec::new();
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        let first = game.replay_open("trip").unwrap();
+        finish_opening(game);
+        assert!(game.replay_state().is_some());
+        game.leave_server(None).unwrap();
+        assert_eq!(game.replay_state(), None);
+        assert!(game.remote.is_none(), "the replay's session went with it");
+
+        // From the title, an open is admitted as ever.
+        let second = game.replay_open("trip").unwrap();
+        finish_opening(game);
+        assert!(game.replay_state().is_some());
+        // Another connection takes the session's place under the replay: the replay is
+        // dropped, and the session there now is one a replay never displaces.
+        game.replay.connections += 1;
+        assert_eq!(game.replay_open("trip"), Err(ReplayError::WorldBusy));
+        assert_eq!(game.replay_state(), None);
+        assert!(game.remote.is_some(), "the session there now is left alone");
+        ids = vec![first, second];
+    });
+    let [first, second] = ids[..] else {
+        panic!("the test ended early");
+    };
+    assert_eq!(
+        heard,
+        [
+            format!("opened trip 1000 true #{first}"),
+            "closed trip".into(),
+            format!("opened trip 1000 true #{second}"),
+            "closed trip".into(),
+        ]
+    );
 }
 
 /// Request ids run out rather than wrap: the last `u32` is given once, then none, never the
