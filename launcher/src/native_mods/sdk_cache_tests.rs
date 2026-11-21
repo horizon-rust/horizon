@@ -372,11 +372,65 @@ fn stop_ends_a_wait_for_another_fetch_of_the_same_folder() {
     let result = got.recv_timeout(std::time::Duration::from_secs(10));
     drop(other);
     let result = result.expect("Stop ended the wait");
-    assert!(
-        matches!(&result, Err(Refusal::Cache(why)) if why == super::super::CANCELLED),
-        "{result:?}"
-    );
     assert!(!package.runtime.exists());
+    // The build ends with exactly the words the window shows as a cancel, not as a failure.
+    assert_eq!(
+        super::super::refused(result.unwrap_err()),
+        super::super::CANCELLED
+    );
+}
+
+#[cfg(unix)]
+fn link_dir(from: &Path, to: &Path) {
+    std::os::unix::fs::symlink(from, to).unwrap();
+}
+#[cfg(windows)]
+fn link_dir(from: &Path, to: &Path) {
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(to.to_string_lossy().replace('/', "\\"))
+        .arg(from.to_string_lossy().replace('/', "\\"))
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+}
+
+/// #19294: a link (a junction on Windows) anywhere between the native root and the folder a
+/// fetch works in is refused before anything is read or written through it.
+#[test]
+fn a_fetch_refuses_a_link_above_its_folder() {
+    let _guard = super::super::tests::scratch_state();
+    let fixture = Fixture::new();
+    let sdk = fixture.sdk(&[]).unwrap();
+    let prebuilt = super::super::root().join("prebuilt");
+    let _ = fs::remove_dir_all(&prebuilt);
+    fs::create_dir_all(prebuilt.parent().unwrap()).unwrap();
+    let elsewhere = fixture.scratch.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    link_dir(&elsewhere, &prebuilt);
+    let package = Package::at(&prebuilt.join(format!("{COMMIT}-{TRIPLE}")));
+    let mut fetched = Fetched::default();
+    let result = fetch_into(
+        &sdk,
+        &fixture.base(),
+        &runtime(),
+        &package.runtime,
+        false,
+        &|| false,
+        &mut fetched,
+        &|_| {},
+    );
+    let reached: Vec<_> = fs::read_dir(&elsewhere).unwrap().collect();
+    #[cfg(windows)]
+    fs::remove_dir(&prebuilt).unwrap();
+    #[cfg(unix)]
+    fs::remove_file(&prebuilt).unwrap();
+    assert!(reached.is_empty(), "{reached:?}");
+    assert!(matches!(&result, Err(Refusal::Cache(_))), "{result:?}");
 }
 
 #[test]

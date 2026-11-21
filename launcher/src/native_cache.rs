@@ -63,11 +63,12 @@ fn lock(path: &Path) -> Result<Locked, Error> {
 }
 
 /// The exclusive lock on the file `path`, checked as the build lease is (no link, nothing but a
-/// file), taken once it is free. It is polled, so `stop` can end the wait: `Ok(None)` then.
+/// file), taken once it is free. It is polled, so `stop` can end the wait: `Ok(None)` then,
+/// also when `stop` came while the holder let go.
 pub(crate) fn waited(path: &Path, stop: &dyn Fn() -> bool) -> Result<Option<Locked>, Error> {
     loop {
         match lock(path) {
-            Ok(locked) => return Ok(Some(locked)),
+            Ok(locked) => return Ok((!stop()).then_some(locked)),
             Err(Error::Busy) => {}
             Err(error) => return Err(error),
         }
@@ -83,6 +84,31 @@ pub(crate) fn waited(path: &Path, stop: &dyn Fn() -> bool) -> Result<Option<Lock
 pub(crate) fn side_lock(build_dir: &Path, name: &str) -> Result<Locked, Error> {
     let (root, _) = native_root(build_dir)?;
     Ok(waited(&root.join(name), &|| false)?.expect("a wait that never stops ends locked"))
+}
+
+/// The folder `dir`, made if missing: when it lies in `<build_dir>/native`, every folder from the
+/// native root down to it is opened (or made) without following a link or junction, as
+/// [`Cache::acquire`] opens the root. Elsewhere (a test's scratch folder) only `dir` itself is
+/// checked.
+pub(crate) fn checked_tree(build_dir: &Path, dir: &Path) -> Result<(), Error> {
+    let Ok(below) = dir.strip_prefix(build_dir.join("native")) else {
+        checked(dir, true)?;
+        fs::create_dir_all(dir)?;
+        return Ok(());
+    };
+    let (_, mut directory) = native_root(build_dir)?;
+    for component in below.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(Error::Unsafe(dir.to_owned()));
+        };
+        match directory.create_dir(name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        directory = directory.open_dir_nofollow(name)?;
+    }
+    Ok(())
 }
 
 /// `<build_dir>/native`, made if missing and opened from the filesystem root without following

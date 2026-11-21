@@ -61,6 +61,9 @@ pub enum Refusal {
     Host,
     /// Reading or writing the launcher's copy failed.
     Cache(String),
+    /// The player stopped the build while it waited to fetch: told as exactly
+    /// [`super::CANCELLED`], so the build ends as cancelled rather than failed.
+    Cancelled,
 }
 
 /// What a player can do about a refusal other than waiting.
@@ -151,6 +154,7 @@ impl std::fmt::Display for Refusal {
                 "Could not keep the mod tools: {why}",
                 &[("why", why)],
             ),
+            Self::Cancelled => super::CANCELLED.to_owned(),
         };
         f.write_str(&text)
     }
@@ -375,6 +379,8 @@ fn index_in(root: &Path, base: &Base, commit: &str, keys: &[PublicKey]) -> Resul
         });
     }
     let dir = root.join(commit);
+    crate::native_cache::checked_tree(&crate::backend::build_dir(), &dir)
+        .map_err(|error| Refusal::Cache(super::cache_error(error)))?;
     let kept = dir.join(INDEX);
     if let Ok(bytes) = fs::read(&kept) {
         // Written only once verified: read as the same checks would, without the signature.
@@ -708,6 +714,10 @@ fn fetch_into(
     fetched: &mut Fetched,
     progress: &dyn Fn(Fetched),
 ) -> Result<(), Refusal> {
+    // No link or junction between the native root and the folder, before any I/O in it.
+    let parent = into.parent().expect("a slice folder has a parent");
+    crate::native_cache::checked_tree(&crate::backend::build_dir(), parent)
+        .map_err(|error| Refusal::Cache(super::cache_error(error)))?;
     if stamp_holds(sdk, name, into) {
         return Ok(());
     }
@@ -716,15 +726,12 @@ fn fetch_into(
         build: build.clone(),
         why,
     };
-    let cache = |error: std::io::Error| Refusal::Cache(format!("{}: {error}", into.display()));
     let size = sdk
         .index
         .asset(name)
         .map_err(|r| refused(r.to_string()))?
         .size;
     let stamp = stamp_path(into);
-    let parent = into.parent().expect("a slice folder has a parent");
-    fs::create_dir_all(parent).map_err(cache)?;
     let tag = tag(sdk.commit());
     let start = fetched.done;
     let (archive, downloaded) = match base.local(&tag, name) {
@@ -807,11 +814,9 @@ fn in_place(
     let mut path = into.as_os_str().to_owned();
     path.push(".fetch.lock");
     let cache = |error| Made::Refused(Refusal::Cache(super::cache_error(error)));
-    let parent = into.parent().expect("a slice folder has a parent");
-    crate::native_cache::checked(parent, true).map_err(cache)?;
     let Some(_lock) = crate::native_cache::waited(&PathBuf::from(path), stop).map_err(cache)?
     else {
-        return Err(Made::Refused(Refusal::Cache(super::CANCELLED.into())));
+        return Err(Made::Refused(Refusal::Cancelled));
     };
     if stamp_holds(sdk, name, into) {
         return Ok(());

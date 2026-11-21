@@ -103,6 +103,8 @@ pub(super) fn classify(
                 said(id.as_str(), route);
             }
         }
+        // Stop while a build waited for the SDK's build data ends the build as cancelled.
+        Err(sdk_cache::Refusal::Cancelled) => return Err(CANCELLED.to_owned().into()),
         // Nothing is guessed: without the build's files, no mod made for another build "fits".
         Err(refusal) => {
             for project in &projects {
