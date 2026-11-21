@@ -198,6 +198,12 @@ another window, a closed menu or a player who left), and a write to `ItemPlace::
 transaction is sent with the next tick's container sync, one `ContainerSetSlot` per changed slot, as vanilla's
 `broadcastChanges` sends a menu a mod changed. Nothing reopens and the cursor stays where it is.
 
+`host.open_hopper_menu(uuid, title, items, replace)` opens the same kind of menu with a hopper's five slots
+(`minecraft:hopper`), and `host.open_dispenser_menu(uuid, title, items, replace)` one with the nine slots of a
+dispenser or dropper (`minecraft:generic_3x3`). Items are by slot, padded with empty ones and cut at the menu's size;
+the window id, `replace`, `menu_clicked`, `menu_closed` and the `host.menu(uuid, window)` writes work as for a chest
+menu. A block's own menu is opened with `player.open_menu(host, block_entity)`.
+
 ```rust,ignore
 // In menu_clicked: show the next page's item in slot 4 of the same menu.
 if let Some(menu) = host.menu(uuid, window) {

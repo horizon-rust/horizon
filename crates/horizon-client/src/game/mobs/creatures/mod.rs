@@ -6133,18 +6133,20 @@ impl Game<'_> {
                 };
                 let owner = self.potion_owner(p.owner);
                 let item = stack.item.to_string();
-                self.splash(
-                    stack,
-                    at,
-                    mob,
-                    block,
-                    p.age,
-                    &owner,
-                    self.entity_silent(p.id),
-                    p.velocity,
-                );
-                if stack.item.as_ref() != "minecraft:experience_bottle" {
-                    self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                if !self.potion_splash_cancelled(&item, [at.x, at.y, at.z]) {
+                    self.splash(
+                        stack,
+                        at,
+                        mob,
+                        block,
+                        p.age,
+                        &owner,
+                        self.entity_silent(p.id),
+                        p.velocity,
+                    );
+                    if stack.item.as_ref() != "minecraft:experience_bottle" {
+                        self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                    }
                 }
             }
             // LlamaSpit.onHitEntity hurts only when the owner is a LivingEntity.

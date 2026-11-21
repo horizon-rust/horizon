@@ -54,4 +54,18 @@ impl Game<'_> {
         let stack = horizon_items::item_nbt::item_from_nbt(&tag)?;
         self.items().get(&stack.item).is_some().then_some(stack)
     }
+
+    /// `ItemStack.CODEC` written as SNBT, the inverse of `item_from_snbt`: the compound
+    /// `{id, count, components}`. None for air, an item this world lacks, and a count the codec
+    /// does not read (outside 1 to 99), so `item_from_snbt` reads every text this writes.
+    pub(super) fn item_to_snbt(&self, stack: &ItemStack) -> Option<String> {
+        if !(1..=99).contains(&stack.count)
+            || &*stack.item == "minecraft:air"
+            || self.items().get(&stack.item).is_none()
+        {
+            return None;
+        }
+        let tag = horizon_items::item_nbt::item_to_nbt_with_items(stack, self.items());
+        Some(horizon_client::snbt::to_snbt(&tag))
+    }
 }

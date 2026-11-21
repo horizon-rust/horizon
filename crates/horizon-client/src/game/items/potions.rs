@@ -1848,6 +1848,9 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
+            if self.potion_splash_cancelled(&item, [at.x, at.y, at.z]) {
+                continue;
+            }
             self.splash(&stack, at, mob, block, age, &owner, silent, motion);
             if item != "minecraft:experience_bottle" {
                 self.native_potion_splash(&item, [at.x, at.y, at.z]);

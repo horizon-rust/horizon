@@ -80,6 +80,22 @@ impl Game<'_> {
         self.item_entity_set_pickup_delay(item, i32::from(i16::MAX))
     }
 
+    /// `item_entity_return_on_cancel`: only for an item whose `item_toss` is being heard now
+    /// (`held_joins`), so a listener that asks later gets false and nothing is kept.
+    pub(super) fn item_entity_return_on_cancel(&mut self, item: ItemEntityRef) -> bool {
+        let Some(index) = self.native_item_entity_index(item) else {
+            return false;
+        };
+        let id = self.dropped[index].id;
+        if !self.native_lifecycle.held_joins.contains(&id) {
+            return false;
+        }
+        if !self.native_lifecycle.return_on_cancel.contains(&id) {
+            self.native_lifecycle.return_on_cancel.push(id);
+        }
+        true
+    }
+
     /// `ItemEntity.getAge`, including negative lifetime sentinels.
     pub(super) fn item_entity_age(&self, item: ItemEntityRef) -> Option<i32> {
         Some(self.dropped.get(self.native_item_entity_index(item)?)?.age)

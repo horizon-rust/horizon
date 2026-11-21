@@ -297,3 +297,33 @@ fn fishing_catch_invalid_drops_keep_the_earlier_listeners_outputs() {
         "{warnings:?}"
     );
 }
+
+/// `fish_caught_item` hears the player, their name and the first caught stack with the literal values.
+struct CaughtFish;
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for CaughtFish {
+    fn fish_caught_item(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::FishCaughtItemEvent<'_>,
+    ) {
+        assert_eq!(event.player, 7);
+        assert_eq!(event.name, "catcher");
+        let caught = event.caught.expect("a catch");
+        assert_eq!(caught.count(), 2);
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn fish_caught_item_gets_the_first_caught_stack() {
+    mod_platform::testing::with_mods(
+        vec![mod_api::ModEntry::new("caught", Box::new(CaughtFish))].into(),
+        || {
+            crate::game::native_entity_refs::tests::with_game(|game| {
+                let stack = ItemStack::new("minecraft:cod", 2);
+                game.native_fish_caught_item(7, "catcher", Some(&stack));
+            });
+        },
+    );
+}

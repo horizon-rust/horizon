@@ -169,6 +169,14 @@ impl Game<'_> {
     pub(super) fn item_keys(&self) -> Vec<ItemKey> {
         mod_api::__private::item_keys()
     }
+    /// The id of every item key, in registry order (`item_keys`); an id the registry cannot
+    /// spell back is left out.
+    pub(in crate::game) fn item_ids(&self) -> Vec<mod_api::Identifier> {
+        self.item_keys()
+            .into_iter()
+            .filter_map(|key| mod_api::Identifier::parse(&self.item_key_id(key)).ok())
+            .collect()
+    }
     /// Every entity-type key in registry order.
     pub(super) fn entity_type_keys(&self) -> Vec<EntityTypeKey> {
         mod_api::__private::entity_type_keys()

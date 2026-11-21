@@ -1243,6 +1243,21 @@ pub trait PlayersBackendMut {
         stack: Option<ItemStack>,
     ) -> Result<(), PlayerDataRefusal>;
     /// Side: server.
+    /// Takes everything the player carries (`player_inventory_slots`' slots 0 to 42: main
+    /// inventory, armour, off hand, body and saddle) out of them in one write and returns it
+    /// as `player_inventory_slots` lists it, the slots now empty: a grave collecting a keep-
+    /// inventory player's items. It is the one write a dead player allows, as their inventory
+    /// is still theirs until they respawn; `player_set_inventory_slot` refuses `Dead`. The
+    /// client is sent the slots with the tick's inventory sync, and equipment effects follow
+    /// as for `player_set_inventory_slot`. Refuses, taking nothing: `Stale` (no online player
+    /// behind the handle) and `Client`. A player carrying nothing returns an empty list.
+    /// An open transaction journals this write; an abort restores the items.
+    #[access(WorldOnly)]
+    fn player_take_inventory(
+        &mut self,
+        player: PlayerRef,
+    ) -> Result<Vec<(u32, ItemStack)>, PlayerDataRefusal>;
+    /// Side: server.
     /// `PlayerEnderChestContainer.setItem(slot, stack)`: `stack` (None empties it) in ender
     /// chest slot `slot` (0 to 26). A player looking into their ender chest is sent the slot
     /// with the open menu's sync. Refuses as `player_set_inventory_slot` does, with

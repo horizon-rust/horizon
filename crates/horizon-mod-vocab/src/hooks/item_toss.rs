@@ -1,7 +1,7 @@
 //! The `item_toss` hooks and helpers: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// `ItemTossEvent`: `player` tosses the item entity `item` (`Player.drop`: the drop key, a menu's throw, what no longer fits in the inventory), not what scatters when they die. The entity is made, with its thrower, but has not joined the level yet: its handle reads and changes the whole stack, the pickup delay and the target, and those changes stay. Set `canceled` and it never joins the level; the items are already out of the inventory and are lost. A canceled toss awards no drop statistic, as vanilla awards one only when an item entity came of it. Server-side. Diverges from upstream: replaces the listen-only `item_dropped`, which fired for the drop key and menu throws only.
+    /// `ItemTossEvent`: `player` tosses the item entity `item` (`Player.drop`: the drop key, a menu's throw, what no longer fits in the inventory), not what scatters when they die. The entity is made, with its thrower, but has not joined the level yet: its handle reads and changes the whole stack, the pickup delay and the target, and those changes stay. Set `canceled` and it never joins the level; the items are already out of the inventory and are lost, unless the listener asked `item_entity_return_on_cancel` for them back. A canceled toss awards no drop statistic, as vanilla awards one only when an item entity came of it. Server-side. Diverges from upstream: replaces the listen-only `item_dropped`, which fired for the drop key and menu throws only.
     #[hook(
         side = "server",
         contract = "cancel",

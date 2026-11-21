@@ -307,3 +307,41 @@ fn equipment_effects_wait_for_root() {
         assert_eq!(game.audio.capture.as_ref().unwrap().len(), 1);
     });
 }
+
+/// A grave takes everything a player carries in one call, a dead player included: the list is
+/// `inventory_slots`' (slot numbers and stacks), the slots are empty afterwards, and a second take
+/// finds nothing.
+#[test]
+#[ignore = "daily"]
+fn take_inventory_empties_every_slot_and_works_on_a_dead_player() {
+    with_guests(|game| {
+        let b = game.players().server_players()[1];
+        let stone = stack(game, r#"{id:"minecraft:stone",count:5}"#);
+        let boots = stack(game, r#"{id:"minecraft:iron_boots",count:1}"#);
+        assert_eq!(b.set_inventory_slot(game, 3, Some(stone.clone())), Ok(()));
+        assert_eq!(b.set_inventory_slot(game, 36, Some(boots.clone())), Ok(()));
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .guests
+            .update_connection(13, |g| g.dead = true);
+        assert_eq!(
+            b.take_inventory(game),
+            Ok(vec![(3, stone), (36, boots)]),
+            "the slots as `inventory_slots` lists them"
+        );
+        assert_eq!(b.inventory_slots(game), Some(Vec::new()));
+        assert_eq!(b.take_inventory(game), Ok(Vec::new()));
+        let index = game
+            .lan
+            .as_ref()
+            .unwrap()
+            .hub
+            .guests
+            .connection_index(13)
+            .unwrap();
+        game.lan.as_mut().unwrap().hub.guests.remove(index);
+        assert_eq!(b.take_inventory(game), Err(PlayerDataRefusal::Stale));
+    });
+}

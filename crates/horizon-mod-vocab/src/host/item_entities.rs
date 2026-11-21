@@ -89,4 +89,12 @@ pub trait ItemEntitiesBackendMut {
     /// `ItemEntity.setTarget`; None allows any player to pick it up.
     #[access(WorldOnly)]
     fn item_entity_set_target(&mut self, item: ItemEntityRef, target: Option<u128>) -> bool;
+    /// Side: server.
+    /// Asks that the stack of the item `item` whose toss `item_toss` is hearing goes back to the
+    /// thrower's inventory if the listener cancels that toss, instead of being lost: what does
+    /// not fit is thrown for them to pick up. It is only valid during that `item_toss` call; false
+    /// for any other item, a toss not being heard now, or outside a server. A toss that is not
+    /// canceled is unaffected.
+    #[access(WorldOnly)]
+    fn item_entity_return_on_cancel(&mut self, item: ItemEntityRef) -> bool;
 }

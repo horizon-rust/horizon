@@ -59,6 +59,28 @@ to component NBT by `host.text_to_nbt(&text)`; `None` removes the name and an em
 removes the lore. A refused text returns `TextFormError` and changes nothing. Vanilla draws a
 custom name in italics unless its style sets `italic: false`.
 
+A canceled item toss loses the stack unless the listener asks for it back: during `item_toss`, `item.return_on_cancel(host)` makes a cancel give the stack to the thrower. Asked outside that call, it is `false` and changes nothing.
+The enchantments a stack carries are its `minecraft:enchantments` component, a map from registry id to
+level. `ItemStack::enchantments()` returns them as `(id, level)` pairs in id order, and
+`ItemStack::stored_enchantments()` returns an enchanted book's `minecraft:stored_enchantments` the same way.
+Only the stack's own patch is read: a prototype's enchantments are not reported, and an entry whose level is
+negative or not an integer is left out.
+Three item-meta setters write one component each, with no host call in the write itself.
+`ItemStack::set_glint_override(host, Some(on))` forces the glint on or off (`minecraft:enchantment_glint_override`);
+`None` returns the stack to the item's own rule. `ItemStack::set_tooltip_hidden(host, hidden)` sets
+`hide_tooltip` in `minecraft:tooltip_display` and keeps its other keys such as `hidden_components`; a display left
+with no key is removed. `ItemStack::set_leather_color(host, Some(rgb))` sets `rgb` in `minecraft:dyed_color` (only
+the low 24 bits are kept) and `None` returns the stack to the item's colour. Clearing any of them records a removal
+when the item's prototype supplies that component, so its default does not come back.
+A stack that holds stacks, a shulker box or chest item (`minecraft:container`) or a bundle
+(`minecraft:bundle_contents`), is read one level down with `stack.contained_stacks(host)`: the entries in the order
+stored, container first, with an entry left out when its item is unknown to the host, its count is zero or it is
+malformed, and at most 256 entries read of each. `stack.nesting_depth(host)` counts how many containers deep the
+stack goes (0 for none, 1 for a box of plain items, 2 for a box with a bundle inside) and stops at 64, so an item
+built to be deep cannot make the walk long: a scan for hostile items asks it once per stack.
+A stack goes back to SNBT with `host.item_to_snbt(&stack)`, the inverse of `item_from_snbt`: `None` for air, an item the world lacks or a count outside 1 to 99, and any other text it writes reads back to the same stack.
+The list of every item id a server has is `host.item_ids()` (`Material.values()`): registry order, vanilla first, mod items after, each id once. It is for offering names, such as tab completion; it reads no stack.
+
 ## Game boundaries
 
 A consume or death-protection override whose opaque native effect payload cannot be decoded

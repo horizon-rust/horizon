@@ -74,6 +74,38 @@ impl Game<'_> {
         }
     }
 
+    /// Every stack the player carries, taken out of every slot in their turn and returned as
+    /// `player_inventory_slots` lists it. A dead player is allowed: it is how a grave collects
+    /// what a keep-inventory death left them.
+    pub(super) fn player_take_inventory(
+        &mut self,
+        player: PlayerRef,
+    ) -> Result<Vec<(u32, ItemStack)>, PlayerDataRefusal> {
+        if self.remote.is_some() {
+            return Err(PlayerDataRefusal::Client);
+        }
+        let taken = self
+            .player_inventory_slots(player)
+            .ok_or(PlayerDataRefusal::Stale)?;
+        if taken.is_empty() {
+            return Ok(taken);
+        }
+        let mut cleared = false;
+        let ran = self.native_as_player_handle(player, |game| {
+            cleared = taken
+                .iter()
+                .all(|(slot, _)| inventory_slot(*slot).is_some_and(|t| game.slot_set(&t, None)));
+            if cleared && game.player.is_some() {
+                game.after_commit(super::transactions::After::InventoryTrigger(player.uuid()));
+            }
+        });
+        if ran && cleared {
+            Ok(taken)
+        } else {
+            Err(PlayerDataRefusal::Stale)
+        }
+    }
+
     /// `Inventory.setItem`, in the player's turn: the tick's inventory sync tells the client.
     pub(super) fn player_set_inventory_slot(
         &mut self,

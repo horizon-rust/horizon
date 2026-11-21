@@ -42,14 +42,23 @@ impl Game<'_> {
             self.native_lifecycle.held_joins.push(id);
             self.native_item_toss(player, item, &mut canceled);
             self.native_lifecycle.held_joins.pop();
+            let asked_back = self.native_lifecycle.return_on_cancel.contains(&id);
+            self.native_lifecycle.return_on_cancel.retain(|&held| held != id);
             if canceled {
-                // A canceled toss never enters the world; what was thrown is gone.
+                // A canceled toss never enters the world; what was thrown is gone, unless the
+                // listener asked for it back (`item_entity_return_on_cancel`).
+                let back = asked_back
+                    .then(|| self.dropped.iter().find(|d| d.id == id).map(|d| d.stack.clone()))
+                    .flatten();
                 if let Some(at) = self.dropped.iter().rposition(|d| d.id == id) {
                     self.remove_dropped(at);
                 }
                 self.forget_entity(id);
                 // What the listeners spawned waited behind the toss.
                 self.native_joins_flush(false, 0);
+                if let Some(stack) = back {
+                    self.give_acting_stack(stack, thrower);
+                }
                 return None;
             }
         }
@@ -230,6 +239,47 @@ mod item_toss_tests {
                     assert_eq!(*probe.order.lock().unwrap(), ["join", "spawn"]);
                     assert!(game.dropped.iter().any(|d| d.id == spawned));
                 }
+            });
+        });
+    }
+}
+
+#[cfg(test)]
+mod item_toss_return_tests {
+    use super::*;
+    use mod_api::{Flow, Hooks, ItemTossEvent, ModEntry, ServerHost};
+    use mod_platform::testing::with_mods;
+
+    /// Asks for the tossed stone back, then cancels the toss.
+    struct ReturnOnCancel;
+    #[mod_api::__subscriptions]
+    impl Hooks for ReturnOnCancel {
+        fn item_toss(&self, host: &mut dyn ServerHost, event: &mut ItemTossEvent) -> Flow {
+            assert!(event.item.return_on_cancel(host));
+            Flow::Cancel
+        }
+    }
+
+    /// A canceled toss that asked for its stack back leaves no item in the world; the stack
+    /// goes to the thrower's inventory (the inventory is not read here yet, see the PR).
+    #[test]
+    #[ignore = "daily"]
+    fn a_canceled_toss_that_asked_gets_its_stack_back_and_no_item() {
+        let mods = vec![ModEntry::new("toss_return_probe", Box::new(ReturnOnCancel))];
+        with_mods(mods.into(), || {
+            crate::game::native_entity_refs::tests::with_game(|game| {
+                game.options.dedicated = Some(Vec::new());
+                game.player = Some(
+                    horizon_client::motion::PlayerMotion::new(
+                        game.motion,
+                        horizon_core::geometry::Vec3::ZERO,
+                    )
+                    .unwrap(),
+                );
+                let before = game.dropped.len();
+                let stone = ItemStack::new("minecraft:stone", 1);
+                assert!(game.throw_from_eyes(stone, [0.5, 65.0, 0.5], false, true).is_none());
+                assert_eq!(game.dropped.len(), before, "no item joins the world");
             });
         });
     }

@@ -456,7 +456,7 @@ what Pick Block gives.
 
 An item whose template is `minecraft:fishing_rod` (and no `block`) is a fishing rod, as a NeoForge mod's
 `new FishingRodItem(...)` is: it casts, floats, bites, reels in and wears as vanilla's rod, its item model's
-`minecraft:fishing_rod/cast` is true while its bobber is out, and `player_fish` hears it. List it in
+`minecraft:fishing_rod/cast` is true while its bobber is out, and `player_fish` hears it. A native mod hears each reel-in catch through `fish_caught_item`, which gives the first caught stack after `item_fished` did not cancel. List it in
 `#minecraft:enchantable/fishing` for Lure and Luck of the Sea, as vanilla's rod is. Other behaviour that vanilla ties
 to an item's class, such as a bow's draw or a shield's block, belongs to vanilla's item alone; components
 (`minecraft:tool`, `minecraft:consumable`, `minecraft:equippable` and the others) carry over for every template.
@@ -479,6 +479,8 @@ one of the mod's own, refused at load otherwise. It holds on the crafting
 table, the inventory grid, the crafter and as furnace fuel (the last of the stack leaves it in
 the fuel slot, a stack with more left drops it), not in a brewing stand. What the item leaves once eaten
 or drunk is the `minecraft:use_remainder` component instead:
+
+A native mod hears a finished brew through `brewing_owner_results`: the three bottles as they are after the brew, and the guest who last opened that stand (None when no guest did). It fires right after `brewing_complete`, listen only.
 
 ```json
 { "template": "minecraft:mushroom_stew", "crafting_remainder": "minecraft:bowl" }

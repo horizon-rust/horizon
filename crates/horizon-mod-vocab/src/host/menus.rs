@@ -26,6 +26,31 @@ pub trait MenusServerHost {
         replace: MenuReplace,
     ) -> Result<Option<i32>, StackWriteError>;
     /// Side: server.
+    /// `open_menu` for a hopper's menu (`minecraft:hopper`: five slots in a row, titled
+    /// `title`), which Paper's `InventoryType.HOPPER` opens. `items` are by slot, padded with
+    /// empty ones and cut at five; everything else, the window id, `replace`, the clicks that go
+    /// to `menu_clicked` and the writes through `menu`, is as for `open_menu`.
+    #[access(WorldOnly)]
+    fn open_hopper_menu(
+        &mut self,
+        uuid: u128,
+        title: Text,
+        items: Vec<Option<ItemStack>>,
+        replace: MenuReplace,
+    ) -> Result<Option<i32>, StackWriteError>;
+    /// Side: server.
+    /// `open_menu` for a dispenser's or dropper's menu (`minecraft:generic_3x3`: nine slots in a
+    /// square), which Paper's `InventoryType.DISPENSER` and `DROPPER` open. `items` are by slot,
+    /// padded with empty ones and cut at nine; everything else is as for `open_menu`.
+    #[access(WorldOnly)]
+    fn open_dispenser_menu(
+        &mut self,
+        uuid: u128,
+        title: Text,
+        items: Vec<Option<ItemStack>>,
+        replace: MenuReplace,
+    ) -> Result<Option<i32>, StackWriteError>;
+    /// Side: server.
     /// The menu `open_menu` opened that the player has open as window
     /// `window` (the window id `open_menu`, `menu_clicked` and `menu_closed`
     /// give). Its slots are written as `ItemPlace::MenuSlot` in a
@@ -95,6 +120,13 @@ pub trait MenusBackend {
     /// Carried (cursor) stack; outer None means unavailable.
     #[access(WorldOnly)]
     fn menu_carried(&self, menu: MenuRef) -> Option<Option<ItemStack>>;
+    /// Side: server.
+    /// Every slot of `menu` in slot order, `None` for an empty slot, as `menu_slot` reads them one by
+    /// one. Meant for a `menu_closed` listener: the closing menu is still lent there, so its contents
+    /// are read before they are gone (Paper: `InventoryCloseEvent#getInventory`). `None` for a stale
+    /// menu, a client's menu or a read refused by `menu_slot`. Read-only.
+    #[access(WorldOnly)]
+    fn menu_contents(&self, menu: MenuRef) -> Option<Vec<Option<ItemStack>>>;
     /// Side: server.
     /// The storage menu slot `slot` shows (`Slot.container` and `getContainerSlot`): the
     /// player's inventory by `ENTITY_ITEMS` index (`InventoryMenu`'s armour slots 5..9 go head

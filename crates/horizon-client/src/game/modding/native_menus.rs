@@ -101,6 +101,48 @@ impl Game<'_> {
         self.player_menu_opening(conn);
         Some(window)
     }
+    /// [`Self::open_menu`] for a hopper's menu (`minecraft:hopper`, 5 slots).
+    pub(super) fn open_hopper_menu(
+        &mut self,
+        uuid: u128,
+        title: Text,
+        items: Vec<Option<ItemStack>>,
+        replace: MenuReplace,
+    ) -> Option<i32> {
+        self.open_menu_of(uuid, "minecraft:hopper", 5, title, items, replace)
+    }
+    /// [`Self::open_menu`] for a dispenser's or dropper's menu (`minecraft:generic_3x3`, 9
+    /// slots).
+    pub(super) fn open_dispenser_menu(
+        &mut self,
+        uuid: u128,
+        title: Text,
+        items: Vec<Option<ItemStack>>,
+        replace: MenuReplace,
+    ) -> Option<i32> {
+        self.open_menu_of(uuid, "minecraft:generic_3x3", 9, title, items, replace)
+    }
+    fn open_menu_of(
+        &mut self,
+        uuid: u128,
+        menu: &str,
+        size: usize,
+        title: Text,
+        items: Vec<Option<ItemStack>>,
+        replace: MenuReplace,
+    ) -> Option<i32> {
+        let conn = self.native_conn(uuid)?;
+        self.close_for_open(conn, replace);
+        let window = self.lan.as_mut()?.hub.open_native_menu_of(
+            conn,
+            menu,
+            size,
+            component_nbt(&title.component()),
+            items,
+        )?;
+        self.player_menu_opening(conn);
+        Some(window)
+    }
     /// `ServerPlayer.openMenu`'s close of the menu that was open: `closeContainer`, which then
     /// tells the client, or `doCloseContainer` for a provider that skips the client's close.
     /// Either way the old menu's `removed` runs and the mods hear it close.
@@ -1105,5 +1147,45 @@ mod tests {
         assert_eq!(native_menu_inventory_slot(54, 90), None);
         assert_eq!(native_menu_inventory_slot(54, -999), None);
         assert_eq!(native_menu_inventory_slot(9, 9), Some(9));
+    }
+}
+
+#[cfg(test)]
+mod typed_menu_tests {
+    use super::super::native_guest_turn_tests::with_guests;
+    use horizon_client::{items::ItemStack, lan::menu::Slots};
+    use mod_api::MenuReplace;
+
+    /// A hopper's menu has five slots and a dispenser's nine, each padded or cut to its size, as a
+    /// native menu the mods answer: its type's name, size and items are exactly these.
+    #[test]
+    #[ignore = "daily"]
+    fn a_hopper_and_a_dispenser_menu_have_their_own_slot_counts() {
+        with_guests(|game| {
+            let title = || horizon_client::text::Text::literal("t");
+            let stone = || Some(ItemStack::new("minecraft:stone", 2));
+            let w = game
+                .open_hopper_menu(12, title(), vec![stone(); 7], MenuReplace::CloseFirst)
+                .unwrap();
+            let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+            let menu = guest.menu.as_ref().unwrap();
+            assert_eq!(
+                (menu.window, &*menu.registry_id, menu.size, menu.slots),
+                (w, "minecraft:hopper", 5, Slots::Native)
+            );
+            assert_eq!(guest.native_menu, vec![stone(); 5]);
+            game.open_dispenser_menu(12, title(), vec![stone()], MenuReplace::CloseFirst)
+                .unwrap();
+            let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+            let menu = guest.menu.as_ref().unwrap();
+            assert_eq!(
+                (&*menu.registry_id, menu.size),
+                ("minecraft:generic_3x3", 9)
+            );
+            let mut nine = vec![None; 9];
+            nine[0] = stone();
+            assert_eq!(guest.native_menu, nine);
+            assert_eq!(game.open_hopper_menu(99, title(), Vec::new(), MenuReplace::CloseFirst), None);
+        });
     }
 }

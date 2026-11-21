@@ -2454,6 +2454,18 @@ impl Game<'_> {
         }
         if out.brewed {
             self.native_brewing_complete(at);
+            // The bottles of this brew (slots 0 to 2, empty ones left out) and the guest who opened the stand.
+            let owner = self.brew_owners.get(&pos).copied();
+            let results: Vec<_> = match self.world.block_entities.get(&pos) {
+                Some(BlockEntity::Brewing(b)) => b.items[..3]
+                    .iter()
+                    .flatten()
+                    .filter(|s| s.count > 0)
+                    .cloned()
+                    .collect(),
+                _ => Vec::new(),
+            };
+            self.native_brewing_owner_results(owner, at, &results);
             self.play_at("minecraft:block.brewing_stand.brew", at, 1.0, 1.0);
         }
         // PotionBrewEvent.Post ends `doBrew`, after its sound and the

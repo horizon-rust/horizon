@@ -718,6 +718,13 @@ impl Game<'_> {
                     return rod_damage.max(0) as u32;
                 }
             }
+            // Paper's PlayerFishEvent CAUGHT_FISH: the catch after the hooks above, not on a cancel.
+            if let Some(player) = self.lan_acting_uuid
+                && mod_api::__private::listened(mod_api::HookId::FishCaughtItem)
+            {
+                let name = self.lan_acting_name.clone().unwrap_or_default();
+                self.native_fish_caught_item(player, &name, caught.first());
+            }
             // CriteriaTriggers.FISHING_ROD_HOOKED: the hook itself is the entity.
             let bobber = EntityView {
                 kind: "minecraft:fishing_bobber".into(),

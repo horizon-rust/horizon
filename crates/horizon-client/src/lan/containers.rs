@@ -461,17 +461,36 @@ impl Hub {
         conn: u32,
         rows: u8,
         title: Tag,
-        mut items: Vec<Option<ItemStack>>,
+        items: Vec<Option<ItemStack>>,
     ) -> Option<i32> {
         let rows = rows.clamp(1, 6);
+        self.open_native_menu_of(
+            conn,
+            &format!("minecraft:generic_9x{rows}"),
+            usize::from(rows) * 9,
+            title,
+            items,
+        )
+    }
+
+    /// [`Self::open_native_menu`] for any vanilla container menu type of `size` container slots
+    /// (`minecraft:hopper` 5, `minecraft:generic_3x3` 9): `items` are padded to `size`. None for
+    /// an unknown type or guest.
+    pub fn open_native_menu_of(
+        &mut self,
+        conn: u32,
+        menu_kind: &str,
+        size: usize,
+        title: Tag,
+        mut items: Vec<Option<ItemStack>>,
+    ) -> Option<i32> {
         let kind = self
             .sync
             .builtin
             .get("minecraft:menu")
-            .and_then(|m| m.id(&format!("minecraft:generic_9x{rows}")))?;
+            .and_then(|m| m.id(menu_kind))?;
         let i = self.guests.iter().position(|g| g.conn == conn)?;
         self.close_container_at(i);
-        let size = usize::from(rows) * 9;
         items.resize(size, None);
         let window = self.guests.update(i, |g| {
             g.native_menu = items.clone();
@@ -484,7 +503,7 @@ impl Hub {
             g.menu = Some(Menu {
                 window,
                 kind,
-                registry_id: format!("minecraft:generic_9x{rows}").into_boxed_str(),
+                registry_id: menu_kind.into(),
                 pos: None,
                 slots: Slots::Native,
                 size,

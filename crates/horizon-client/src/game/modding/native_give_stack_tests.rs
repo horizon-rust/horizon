@@ -2,7 +2,7 @@
 
 use super::{api_values::TryIntoApi, native_guest_turn_tests::with_guests};
 use horizon_core::nbt::parse_snbt;
-use mod_api::{Host, ItemStack, PlayerDataRefusal, prelude::*};
+use mod_api::{Host, Identifier, ItemStack, PlayerDataRefusal, prelude::*};
 
 fn api_item(game: &super::Game<'_>, snbt: &str) -> Option<ItemStack> {
     let host: &dyn Host = game;
@@ -167,5 +167,36 @@ fn a_dead_player_is_given_nothing() {
         assert_eq!(b.give_stack(game, rock), Err(PlayerDataRefusal::Dead));
         assert_eq!(b.inventory_slots(game), Some(Vec::new()));
         assert_eq!(game.dropped.len(), before);
+    });
+}
+
+/// `item_to_snbt` writes the compound `item_from_snbt` reads back to the same stack, and
+/// refuses air.
+#[test]
+#[ignore = "daily"]
+fn item_to_snbt_reads_back_through_item_from_snbt() {
+    with_guests(|game| {
+        let host: &dyn Host = game;
+        let stone = host.item_key(&Identifier::parse("minecraft:stone").unwrap()).unwrap();
+        let stack = ItemStack::new(stone, 64).unwrap();
+        let snbt = host.item_to_snbt(&stack).expect("stone writes");
+        assert_eq!(snbt, r#"{id:"minecraft:stone",count:64}"#);
+        assert_eq!(host.item_from_snbt(&snbt), Some(stack));
+        let air = host.item_key(&Identifier::parse("minecraft:air").unwrap()).unwrap();
+        assert!(host.item_to_snbt(&ItemStack::new(air, 1).unwrap()).is_none());
+    });
+}
+
+/// `item_ids` lists every item the registry holds, once each, and finds the vanilla ones.
+#[test]
+#[ignore = "daily"]
+fn item_ids_lists_every_registered_item() {
+    with_guests(|game| {
+        let host: &dyn Host = game;
+        let ids = host.item_ids();
+        assert_eq!(ids.len(), game.item_keys().len());
+        let stone = Identifier::parse("minecraft:stone").unwrap();
+        assert!(ids.contains(&stone));
+        assert!(host.item_key(&stone).is_some());
     });
 }

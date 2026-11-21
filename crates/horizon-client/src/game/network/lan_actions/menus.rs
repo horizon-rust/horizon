@@ -83,7 +83,11 @@ impl Game<'_> {
             // CrafterBlock.useWithoutItem: CrafterMenu over the block entity.
             ("minecraft:crafter_3x3", Slots::Block(pos))
         } else if let Some(BlockEntity::Brewing(_)) = self.world.block_entities.get(&pos) {
-            // BrewingStandBlock.useWithoutItem: BrewingStandMenu.
+            // BrewingStandBlock.useWithoutItem: BrewingStandMenu. The guest is who the brew is for.
+            if let Some(guest) = self.lan.as_ref().and_then(|host| host.hub.guest(conn)) {
+                let uuid = guest.uuid;
+                self.brew_owners.insert(pos, uuid);
+            }
             ("minecraft:brewing_stand", Slots::Block(pos))
         } else if let Some((other, right)) = self.chest_partner(pos) {
             // ChestBlock.combine: the right half's slots come first.
