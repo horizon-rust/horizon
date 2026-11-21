@@ -7501,6 +7501,11 @@ impl Renderer {
         let landed = landing.elapsed();
         self.queue.take_waited();
         // The last frame, landed now, given up on the submit thread or not (#13624).
+        if self.queue.copies_lost() {
+            panic!(
+                "Horizon renderer: video memory is full: the section copies could not be                  submitted, and their terrain cannot be drawn again (#13624)"
+            );
+        }
         let lost_there = self.queue.take_lost();
         if std::mem::take(&mut self.handed_off) && !lost_there {
             self.given_up = 0;
@@ -9638,7 +9643,7 @@ impl Renderer {
             && let Some(flat) = &mut self.flat
         {
             let sections = &self.sections;
-            flat.write_origins(
+            let written = flat.write_origins(
                 &self.device,
                 &mut encoder,
                 &mut self.uploads,
@@ -9651,6 +9656,16 @@ impl Renderer {
                     ))
                 }),
             );
+            // No room to grow the origins (#13624): the mesh draws would read past them.
+            if !written {
+                return self.abandon_frame(frame_targets::Abandoned::grown(
+                    encoder,
+                    copies,
+                    surface_frame,
+                    fg_frames,
+                    backstop,
+                ));
+            }
         }
         // Each page's group binds the page for the solid draws, flat or not.
         if let Some(looks) = &mut self.look_groups {

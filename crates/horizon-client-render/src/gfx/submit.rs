@@ -64,6 +64,9 @@ pub struct Queue {
     waited: AtomicU64,
     /// The submit thread gave a frame up (#13624) since the last [`take_lost`](Self::take_lost).
     lost: Arc<AtomicBool>,
+    /// The section copies sent ahead of a frame did not land (#13624): see
+    /// [`copies_lost`](Self::copies_lost).
+    copies_lost: Arc<AtomicBool>,
 }
 
 impl Queue {
@@ -76,6 +79,7 @@ impl Queue {
             landing: Mutex::new(None),
             waited: AtomicU64::new(0),
             lost: Arc::new(AtomicBool::new(false)),
+            copies_lost: Arc::new(AtomicBool::new(false)),
         };
         if !threaded {
             return this;
@@ -84,6 +88,7 @@ impl Queue {
         let (done_tx, done) = mpsc::channel();
         let queue = this.queue.clone();
         let lost_frame = Arc::clone(&this.lost);
+        let lost_copies = Arc::clone(&this.copies_lost);
         let spawned = std::thread::Builder::new()
             .name("Render submit".into())
             .spawn(move || {
@@ -103,6 +108,9 @@ impl Queue {
                     // clears an image nothing drew to, and the renderer is told (`take_lost`).
                     let commands = lost.is_none().then_some(commands);
                     let (submission, failed) = out_of_memory(device, || queue.submit(commands));
+                    if ahead.is_some() {
+                        lost_copies.store(true, Ordering::Release);
+                    }
                     if let Some(error) = ahead.or(lost).or(failed) {
                         super::frame_targets::warn_frame_lost(&error);
                         lost_frame.store(true, Ordering::Release);
@@ -174,6 +182,12 @@ impl Queue {
     /// is uploaded again. Reliable once that frame is waited for ([`wait`](Self::wait)).
     pub fn take_lost(&self) -> bool {
         self.lost.swap(false, Ordering::Acquire)
+    }
+    /// Whether section copies the submit thread submitted ahead of a frame ran out of video
+    /// memory (#13624). Their sections' old ranges are already released, so nothing can be
+    /// drawn from them again: the renderer ends the game, as running out of memory did before.
+    pub fn copies_lost(&self) -> bool {
+        self.copies_lost.load(Ordering::Acquire)
     }
     /// Wait until the frame on the submit thread is submitted and presented.
     pub fn wait(&self) {
