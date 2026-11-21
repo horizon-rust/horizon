@@ -4350,10 +4350,12 @@ impl Hub {
                 }
                 S::ClientTickEnd(_) => {
                     // handleClientTickEnd: no move this tick, no known movement.
+                    // A rider's move came with its vehicle's packet, not its own.
                     self.guests.update(i, |g| {
-                        if !g.position_this_tick {
+                        if !g.movement_this_tick {
                             g.known_movement = [0.0; 3];
                         }
+                        g.movement_this_tick = false;
                         g.position_this_tick = false;
                     });
                     self.anticheat_tick_end(i, events);
