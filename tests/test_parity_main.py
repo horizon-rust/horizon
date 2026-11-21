@@ -364,8 +364,10 @@ class ParityMainTests(unittest.TestCase):
         self.assertEqual(upload["if"], "${{ !cancelled() }}")
         self.assertTrue(upload["continue-on-error"], "the artifact service never decides the run")
         self.assertEqual((upload["with"]["retention-days"], upload["with"]["if-no-files-found"]), (7, "ignore"))
-        # Only the two kinds of file tools/parity.py writes, in the folder it names after PARITY_RUN_ID.
+        # Only the two kinds of file tools/parity.py publishes, in the folder it publishes after PARITY_RUN_ID (never
+        # its working folder, `...-working`).
         folder = f".local/parity-runner/prebuild-timings-{job['env']['PARITY_RUN_ID']}"
+        self.assertNotIn("-working", upload["with"]["path"])
         self.assertEqual(upload["with"]["path"].splitlines(), [f"{folder}/cargo-*.html", f"{folder}/prebuild-calls.txt"])
         self.assertEqual(upload["uses"], job["steps"][names.index("Upload the verdict")]["uses"])
 

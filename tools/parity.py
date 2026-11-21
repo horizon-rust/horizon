@@ -827,6 +827,7 @@ def prebuild(artifacts, jobs):
 
             if timings:
                 timings.stats = stats
+            failed = False  # with the switch on: a call's last attempt exited nonzero
             for number, command in enumerate(commands, 1):
                 if timings:
                     timings.before_call()
@@ -835,30 +836,33 @@ def prebuild(artifacts, jobs):
                 # selected.
                 returncode, lines = build(timings.command(command) if timings else command)
                 output = lines
-                if returncode and timings and timings.on and not expired.is_set():
-                    # Cargo fails a run whose timing report it could not write even when everything compiled: the
-                    # run is repeated without the report (a real build error fails again, quickly).
+                if returncode and timings and timings.on and not expired.is_set() \
+                        and not (deadline and time.monotonic() >= deadline):
+                    # Cargo fails a run whose timing report it could not write even when everything compiled: any
+                    # failure is run once more without the report, and that attempt is the call's result (a real
+                    # build error fails again, quickly).
                     print(f"  cargo {number}/{len(commands)}: failed with --timings; run again without it, no "
                           "timing report for it", flush=True)
                     returncode, output = build(command)
                     lines = lines + output
                 if returncode:
+                    failed = failed or bool(timings)
                     errors += "".join(line for _, line in output)
                 summary = report(lambda: f"cargo {number}/{len(commands)}: "
                                          f"{describe_cargo_build(command, lines, started, time.monotonic())}")
-                if timings:
-                    timings.after_call(number, len(commands), summary)
                 if expired.is_set():
                     print(f"::error::The probe prebuild passed its {limit // 60:.0f} min limit at cargo {number}/"
                           f"{len(commands)} and was stopped there.", flush=True)
                     sys.exit(1)
+                if timings:
+                    timings.after_call(number, len(commands), summary)
             report(lambda: describe_machine(os.cpu_count(), load, machine_load()))
             report(lambda: describe_sccache(stats, sccache_stats(environment)))
     finally:
         # After the turn is released (and the limit's error line): only file work on the collection folder.
         if timings:
             timings.finish()
-    return not errors, errors
+    return not errors and not failed, errors
 
 
 def report(line):
@@ -987,35 +991,47 @@ def remove_collection(path):
     os.rmdir(path)
 
 
+PREBUILD_TIMINGS_NAMES = re.compile(r"cargo-\d{2,}\.html|prebuild-calls\.txt")
+
+
 class PrebuildTimings:
-    """The prebuild's timing reports, collected in STATE_DIR/prebuild-timings-<PARITY_RUN_ID>, which parity-main.yml
-    uploads: cargo-NN.html for run NN and prebuild-calls.txt, nothing else, at most PREBUILD_TIMINGS_CAP in all.
-    Cargo's report holds unit names, features, the profile, host, rustc version and timings, not the command line,
-    paths or environment (cargo 1.100).
+    """The prebuild's timing reports: cargo-NN.html for run NN and prebuild-calls.txt, nothing else, at most
+    PREBUILD_TIMINGS_CAP in all. They are collected in a working folder and renamed to
+    STATE_DIR/prebuild-timings-<PARITY_RUN_ID>, the folder parity-main.yml uploads, only once finish() has checked
+    them. Cargo's report holds unit names, features, the profile, host, rustc version and timings, not the command
+    line, paths or environment (cargo 1.100).
 
     Collecting never fails or stops the prebuild: what fails prints one line and is left out. During the compile turn
     it only clears and copies bounded files and reads sccache (within its timeout); finish() does the rest after."""
 
     def __init__(self, environment):
         run = os.environ.get("PARITY_RUN_ID")
-        self.folder = STATE_DIR / (f"prebuild-timings-{run}" if run else "prebuild-timings")
+        self.published = STATE_DIR / (f"prebuild-timings-{run}" if run else "prebuild-timings")
+        self.folder = self.published.with_name(f"{self.published.name}-working")
         # Cargo writes them to <target>/cargo-timings, the probe profiles' shared target folder; it outlives runs.
         self.reports = Path(environment["CARGO_TARGET_DIR"]) / "cargo-timings"
         self.environment, self.stats, self.on, self.calls = environment, None, False, []
         self.previous, self.started = None, 0
         for folder in STATE_DIR.glob("prebuild-timings*"):
-            if folder != self.folder:
+            if folder not in (self.published, self.folder):
                 try:
                     remove_collection(folder)  # an earlier run's: disk only, the upload names this run's
                 except Exception:
                     pass
         try:
+            if os.path.lexists(self.published):
+                remove_collection(self.published)  # an earlier try of this attempt: never uploaded as this one's
+        except Exception as error:
+            self.fail("an earlier collection could not be removed, no timings published", error)
+            return
+        try:
             if os.path.lexists(self.folder):
-                remove_collection(self.folder)  # an earlier attempt's with this id, or the plain local name
+                remove_collection(self.folder)
             self.folder.mkdir(parents=True)
             self.on = True
         except Exception as error:
-            self.fail("could not start", error)
+            self.fail("no working folder, no timings published", error)
+            self.discard()
 
     def fail(self, what, error):
         print(f"  prebuild timings: {what} ({type(error).__name__}: {error}); the prebuild goes on", flush=True)
@@ -1023,10 +1039,13 @@ class PrebuildTimings:
     def command(self, command):
         return [*command, "--timings"] if self.on else command
 
+    @staticmethod
+    def identity(info):
+        return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size
+
     def report_identity(self):
         try:
-            info = os.lstat(self.reports / "cargo-timing.html")
-            return info.st_ino, info.st_mtime_ns, info.st_size
+            return self.identity(os.lstat(self.reports / "cargo-timing.html"))
         except OSError:
             return None
 
@@ -1052,18 +1071,20 @@ class PrebuildTimings:
         if not stat.S_ISDIR(os.lstat(self.reports).st_mode):
             raise ValueError(f"{self.reports} is not a folder")
         source = self.reports / "cargo-timing.html"
-        info = os.lstat(source)
-        if not stat.S_ISREG(info.st_mode):
+        found = os.lstat(source)
+        if not stat.S_ISREG(found.st_mode):
             raise ValueError("not a regular file")
-        # Whole seconds: file systems with coarse times.
-        if self.report_identity() == self.previous or info.st_mtime < int(self.started):
-            raise ValueError("not written by this run")
-        if info.st_size > PREBUILD_TIMINGS_CAP:
-            raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
         descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
         with os.fdopen(descriptor, "rb") as file:
-            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
-                raise ValueError("not a regular file")
+            # What is read is the file the checks are on: the open one.
+            info = os.fstat(file.fileno())
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (found.st_dev, found.st_ino):
+                raise ValueError("replaced while it was opened")
+            # Whole seconds: file systems with coarse times.
+            if self.identity(info) == self.previous or info.st_mtime < int(self.started):
+                raise ValueError("not written by this run")
+            if info.st_size > PREBUILD_TIMINGS_CAP:
+                raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
             data = file.read(PREBUILD_TIMINGS_CAP + 1)
         if len(data) > PREBUILD_TIMINGS_CAP:
             raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
@@ -1106,33 +1127,31 @@ class PrebuildTimings:
             del reports[largest]
             dropped.append(largest.stem.removeprefix("cargo-"))
         (self.folder / "prebuild-calls.txt").write_bytes(text)
-        if self.size() > PREBUILD_TIMINGS_CAP:
-            raise ValueError(f"{self.size()} bytes")
 
     def finish(self):
-        """Holds the folder to PREBUILD_TIMINGS_CAP; when that fails, only prebuild-calls.txt stays, or nothing."""
+        """Holds the working folder to PREBUILD_TIMINGS_CAP, checks it holds only regular files of the two kinds,
+        then publishes it; anything failing publishes nothing."""
         if not self.on:
             return
         try:
             self.hold_to_cap()
-            return
-        except Exception as error:
-            self.fail("could not hold the reports to their size cap, all left out", error)
-        try:
-            for path in self.folder.glob("cargo-*.html"):
-                path.unlink()
-            self.calls.append("timing reports all left out: they could not be held to the size cap")
-            (self.folder / "prebuild-calls.txt").write_text("".join(f"{line}\n" for line in self.calls),
-                                                             encoding="utf-8")
+            with os.scandir(self.folder) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False) or not PREBUILD_TIMINGS_NAMES.fullmatch(entry.name):
+                        raise ValueError(f"{entry.name} does not belong in it")
             if self.size() > PREBUILD_TIMINGS_CAP:
-                raise ValueError(f"{self.size()} bytes")
-            return
+                raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
+            os.rename(self.folder, self.published)
         except Exception as error:
-            self.fail("could not leave the reports out, nothing uploaded", error)
+            self.fail("could not finish, no timings published", error)
+            self.discard()
+
+    def discard(self):
+        self.on = False
         try:
             remove_collection(self.folder)
-        except Exception as error:
-            self.fail("could not remove the collection folder", error)
+        except Exception:
+            pass
 
 
 def describe_call_sccache(before, after):
