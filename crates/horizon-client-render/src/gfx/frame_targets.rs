@@ -133,8 +133,8 @@ pub(crate) fn buffer(
 }
 
 /// The verdict on a window frame's own scopes (`Renderer::draw_frame`): `true` where it ran out
-/// of memory, so its commands may hold something invalid and the frame is given up. A validation error in a frame that ran out of memory
-/// nowhere panics, as wgpu's handler would.
+/// of memory, so its commands may hold something invalid and the frame is given up. A
+/// validation error in a frame that ran out of memory nowhere panics, as wgpu's handler would.
 pub(super) fn frame_lost(memory: Option<wgpu::Error>, validation: Option<wgpu::Error>) -> bool {
     let error = match (memory, validation) {
         (None, None) => return false,
