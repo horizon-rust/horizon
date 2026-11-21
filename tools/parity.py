@@ -1074,7 +1074,9 @@ class PrebuildTimings:
         found = os.lstat(source)
         if not stat.S_ISREG(found.st_mode):
             raise ValueError("not a regular file")
-        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        # Nonblocking: a FIFO swapped in opens at once, and the regular-file check below refuses it.
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                             | getattr(os, "O_BINARY", 0))
         with os.fdopen(descriptor, "rb") as file:
             # What is read is the file the checks are on: the open one.
             info = os.fstat(file.fileno())
@@ -1088,8 +1090,15 @@ class PrebuildTimings:
             data = file.read(PREBUILD_TIMINGS_CAP + 1)
         if len(data) > PREBUILD_TIMINGS_CAP:
             raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
-        with open(self.folder / f"cargo-{number:02d}.html", "xb") as copy:
-            copy.write(data)
+        # Under a name finish() refuses until it is whole.
+        part = self.folder / f"cargo-{number:02d}.html.part"
+        try:
+            with open(part, "xb") as copy:
+                copy.write(data)
+            os.replace(part, self.folder / f"cargo-{number:02d}.html")
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
 
     def after_call(self, number, total, line):
         """Keeps run `number`'s report and prints its compiler-cache line; both lines go to prebuild-calls.txt."""
@@ -1142,6 +1151,10 @@ class PrebuildTimings:
             if self.size() > PREBUILD_TIMINGS_CAP:
                 raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
             os.rename(self.folder, self.published)
+            # The upload step's signal: it uploads this folder only when this run published it.
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                    output.write(f"prebuild_timings={self.published.resolve()}\n")
         except Exception as error:
             self.fail("could not finish, no timings published", error)
             self.discard()

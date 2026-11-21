@@ -77,17 +77,17 @@ jobs:
           git log --first-parent --format='  %h %s' "$BASE_SHA..HEAD"
           exec python3 tools/parity.py --changed "$BASE_SHA" --timeout 2400
       - name: Upload the prebuild's timing reports
-        if: ${{ !cancelled() }}
-        # Best effort, as the verdict's upload: the artifact service never decides the run. Only this attempt's
-        # published folder (tools/parity.py renames its working folder to it once the files are checked), and in it
-        # only the two kinds of file it holds.
+        # Only the folder this step's tools/parity.py published (it names it in its output once the files are
+        # checked and renamed), and in it only the two kinds of file it holds. Best effort, as the verdict's upload:
+        # the artifact service never decides the run.
+        if: ${{ !cancelled() && steps.harnesses.outputs.prebuild_timings != '' }}
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: parity-main-prebuild-timings
           path: |
-            .local/parity-runner/prebuild-timings-${{ github.run_id }}-${{ github.run_attempt }}/cargo-*.html
-            .local/parity-runner/prebuild-timings-${{ github.run_id }}-${{ github.run_attempt }}/prebuild-calls.txt
+            ${{ steps.harnesses.outputs.prebuild_timings }}/cargo-*.html
+            ${{ steps.harnesses.outputs.prebuild_timings }}/prebuild-calls.txt
           if-no-files-found: ignore
           retention-days: 7
       - name: Preserve the initial failure logs

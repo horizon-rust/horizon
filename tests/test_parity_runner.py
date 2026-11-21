@@ -364,7 +364,9 @@ class ParityRunnerTests(unittest.TestCase):
         (state / "prebuild-timings-6-1" / "cargo-01.html").write_text("an earlier run's copy")
         if prepare:
             prepare(target, state)
-        environment = {"FAKE_CARGO_ARGV": str(argv), "PARITY_RUN_ID": "7-1"}
+        # GITHUB_OUTPUT: a test run in CI must not write the job's real one.
+        environment = {"FAKE_CARGO_ARGV": str(argv), "PARITY_RUN_ID": "7-1",
+                       "GITHUB_OUTPUT": str(temp / "github-output")}
         if switch:
             environment[parity.PREBUILD_TIMINGS] = "1"
         if role:
@@ -437,6 +439,9 @@ class ParityRunnerTests(unittest.TestCase):
                          "the run that wrote none gets no report, neither its predecessor's nor an earlier run's")
         self.assertEqual(sorted(path.name for path in folder.iterdir()),
                          ["cargo-01.html", "cargo-03.html", "prebuild-calls.txt"])
+        # The upload step's signal: one output line naming the published folder.
+        self.assertEqual((state.parent / "github-output").read_text(encoding="utf-8"),
+                         f"prebuild_timings={folder.resolve()}\n")
         cache = "compiler cache, change in the machine's whole sccache server since the last reading: not in use"
         lines = ["cargo 1/3: dev one: 0s, 0 crates compiled", f"cargo 1/3 {cache}",
                  "cargo 2/3: dev none: 0s, 0 crates compiled", f"cargo 2/3 {cache}",
@@ -501,6 +506,65 @@ class ParityRunnerTests(unittest.TestCase):
         missing, = [line for line in self.printed(events) if "no report kept" in line]
         self.assertIn("replaced while it was opened", missing)
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs")
+    def test_a_fifo_swapped_in_does_not_block_the_copy(self):
+        open_file = os.open
+
+        def swapping_open(path, *args, **options):
+            if str(path).endswith("cargo-timing.html"):
+                os.unlink(path)
+                os.mkfifo(path)  # with no writer, a blocking open for reading waits forever
+            return open_file(path, *args, **options)
+
+        def hung(*_):
+            raise TimeoutError("the open blocked")
+
+        previous = signal.signal(signal.SIGALRM, hung)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        signal.alarm(10)
+        try:
+            started = time.monotonic()
+            (built, _), _, events, state, _ = self.prebuild_with_fake_cargo(
+                ["one"], patches=[mock.patch.object(parity.os, "open", swapping_open)])
+        finally:
+            signal.alarm(0)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertTrue(built)
+        self.assertEqual([path.name for path in (state / "prebuild-timings-7-1").iterdir()], ["prebuild-calls.txt"])
+        missing, = [line for line in self.printed(events) if "no report kept" in line]
+        self.assertIn("replaced while it was opened", missing)
+
+    def test_a_copy_cut_short_leaves_no_report_under_its_name(self):
+        real_open = open
+
+        class Failing:
+            """A copy that writes part of the report, then fails."""
+            def __init__(self, file):
+                self.file = file
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exception):
+                self.file.close()
+
+            def write(self, data):
+                self.file.write(data[:3])
+                self.file.flush()
+                raise OSError("disk full")
+
+        def cut_short(path, *args, **options):
+            file = real_open(path, *args, **options)
+            return Failing(file) if str(path).endswith("cargo-01.html.part") else file
+
+        (built, _), _, events, state, _ = self.prebuild_with_fake_cargo(
+            ["one", "two"], patches=[mock.patch.object(parity, "open", cut_short, create=True)])
+        self.assertTrue(built)
+        folder = state / "prebuild-timings-7-1"
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["cargo-02.html", "prebuild-calls.txt"])
+        missing, = [line for line in self.printed(events) if "no report kept" in line]
+        self.assertIn("cargo 1/2 (OSError: disk full)", missing)
+
     def test_a_run_that_fails_with_timings_is_run_again_without(self):
         (built, errors), runs, events, state, _ = self.prebuild_with_fake_cargo(["fail-timings", "one"])
         self.assertTrue(built, "the attempt without --timings is the call's result")
@@ -543,13 +607,20 @@ class ParityRunnerTests(unittest.TestCase):
                          "not in use")  # a server restarted meanwhile
 
     def test_the_timing_reports_can_fail_to_start_without_the_prebuild(self):
-        # A folder that can't be emptied safely (it holds a folder): where this run works, or an earlier try's
-        # published one.
+        # A folder that can't be emptied safely (it holds a folder) beside files the upload's patterns match: where
+        # this run works, or an earlier try's published one.
+        def taken(folder):
+            def prepare(target, state):
+                (state / folder / "inner").mkdir(parents=True)
+                (state / folder / "cargo-01.html").write_text("an earlier try's report")
+                (state / folder / "prebuild-calls.txt").write_text("an earlier try's lines")
+            return prepare
+
         for folder, why in (("prebuild-timings-7-1-working", "no working folder, no timings published"),
                             ("prebuild-timings-7-1", "an earlier collection could not be removed, no timings published")):
             with self.subTest(folder):
-                (built, _), runs, events, state, _ = self.prebuild_with_fake_cargo(
-                    ["one"], prepare=lambda target, state: (state / folder / "inner").mkdir(parents=True))
+                (built, _), runs, events, state, _ = self.prebuild_with_fake_cargo(["one"], prepare=taken(folder))
+                self.assertFalse((state.parent / "github-output").exists(), "no signal: the upload step is skipped")
                 self.assertTrue(built)
                 self.assertEqual(runs, [["one"]])
                 printed = self.printed(events)
@@ -558,7 +629,7 @@ class ParityRunnerTests(unittest.TestCase):
                 if folder.endswith("-working"):
                     self.assertFalse(os.path.lexists(state / "prebuild-timings-7-1"), "nothing published")
                 else:
-                    self.assertEqual([path.name for path in (state / folder).iterdir()], ["inner"])
+                    self.assertIn("inner", [path.name for path in (state / folder).iterdir()])
 
     def test_the_collection_is_finished_when_the_prebuild_raises(self):
         error, runs, events, state, _ = self.prebuild_with_fake_cargo(["one", "missing"])
@@ -592,11 +663,13 @@ class ParityRunnerTests(unittest.TestCase):
     def test_the_timing_reports_are_held_to_their_cap_largest_first(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "STATE_DIR", Path(temp, "state")), \
                 mock.patch.object(parity, "PREBUILD_TIMINGS_CAP", 150), \
-                mock.patch.dict(os.environ, {"PARITY_RUN_ID": "7-1"}):
+                mock.patch.dict(os.environ, {"PARITY_RUN_ID": "7-1", "GITHUB_OUTPUT": str(Path(temp, "output"))}):
             timings = self.collection(temp, ["a" * 20], {"cargo-01.html": 40, "cargo-02.html": 60, "cargo-03.html": 20,
                                                          "cargo-04.html": 50})
             timings.finish()
             self.assertFalse(os.path.lexists(timings.folder))
+            self.assertEqual(Path(temp, "output").read_text(encoding="utf-8"),
+                             f"prebuild_timings={timings.published.resolve()}\n")
             sizes = {path.name: path.stat().st_size for path in timings.published.iterdir()}
             calls = (timings.published / "prebuild-calls.txt").read_text(encoding="utf-8")
         self.assertEqual(calls, "a" * 20 + "\ntiming reports left out to stay under 0 MB: cargo 02, 04\n")
@@ -605,25 +678,26 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertLessEqual(sum(sizes.values()), 150)
 
     def test_a_collection_that_cannot_be_finished_publishes_nothing(self):
-        def stray(timings):
-            (timings.folder / "notes.log").write_text("not one of the two kinds")
-
-        failures = {"the cap": mock.patch.object(parity.PrebuildTimings, "size",
-                                                 return_value=parity.PREBUILD_TIMINGS_CAP + 1),
-                    "trimming": mock.patch.object(parity.PrebuildTimings, "hold_to_cap", side_effect=OSError("trim")),
-                    "a stray file": None}
-        for case, failure in failures.items():
+        failures = {"the cap": ({}, mock.patch.object(parity.PrebuildTimings, "size",
+                                                      return_value=parity.PREBUILD_TIMINGS_CAP + 1)),
+                    "trimming": ({}, mock.patch.object(parity.PrebuildTimings, "hold_to_cap",
+                                                       side_effect=OSError("trim"))),
+                    "a stray file": ({"notes.log": 10}, contextlib.nullcontext()),
+                    "a partial copy left": ({"cargo-02.html.part": 10}, contextlib.nullcontext())}
+        for case, (stray, failure) in failures.items():
             with self.subTest(case), tempfile.TemporaryDirectory() as temp, \
                     mock.patch.object(parity, "STATE_DIR", Path(temp, "state")), \
-                    mock.patch.dict(os.environ, {"PARITY_RUN_ID": "7-1"}), mock.patch("builtins.print") as printed:
-                timings = self.collection(temp, ["cargo 1/1: dev one"], {"cargo-01.html": 40})
-                if failure is None:
-                    stray(timings)
-                with failure or contextlib.nullcontext():
+                    mock.patch.dict(os.environ, {"PARITY_RUN_ID": "7-1", "GITHUB_OUTPUT": str(Path(temp, "output"))}), \
+                    mock.patch("builtins.print") as printed:
+                timings = self.collection(temp, ["cargo 1/1: dev one"], {"cargo-01.html": 40, **stray})
+                with failure:
                     timings.finish()
                 self.assertEqual(list(Path(temp, "state").iterdir()), [], "nothing published, the working folder gone")
+                self.assertFalse(Path(temp, "output").exists(), "no signal: the upload step is skipped")
                 self.assertTrue(printed.call_args.args[0].startswith(
                     "  prebuild timings: could not finish, no timings published ("))
+
+
     def test_a_probe_binary_depends_only_on_the_probes_it_ran(self):
         commands = [["/t/release/examples/world_probe", "a_fixture", "/dir"],
                     ["cargo", "run", "-p", "horizon-client", "--example", "client_probe", "--", "b_fixture"]]
