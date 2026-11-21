@@ -48,6 +48,9 @@ pub(super) struct Replay {
     /// The archive a mod's replay was opened from (`replay_open`): the editor saves its markers
     /// and camera path only into that very file, never into one put in its place since.
     pub(super) archive: Option<super::native_replay::FileIdentity>,
+    /// The archive file the replay playing read (any route), refreshed from the file each
+    /// editor save writes: what a mod's reopen of it is compared with, without opening it.
+    pub(super) identity: Option<super::native_replay::FileIdentity>,
     /// A seek was applied: the next frame reports its position (`replay_advanced`) and holds the
     /// clock there, so the frame drawn shows exactly where the seek went.
     pub(super) seek_report: bool,
@@ -735,8 +738,13 @@ impl Game<'_> {
 
         // Validate and index the archive before replacing the title menu or active world. A
         // temp-file, metadata, or protocol error must leave the current screen usable.
-        let driver = match ReplayDriver::open(Path::new(path)) {
-            Ok(driver) => driver,
+        // The archive is read through one handle, which also says which file it is.
+        let opened = std::fs::File::open(path).and_then(|file| {
+            let identity = super::native_replay::FileIdentity::of(&file).ok();
+            Ok((ReplayDriver::from_file(file, Path::new(path))?, identity))
+        });
+        let (driver, identity) = match opened {
+            Ok(opened) => opened,
             Err(error) => {
                 log::error!("Failed to open studio replay '{path}': {error}");
                 return Ok(json!({ "ok": false, "error": error.to_string() }));
@@ -747,6 +755,7 @@ impl Game<'_> {
             recording: self.recording_id(path),
             request: 0,
             archive: None,
+            identity,
             replacing: None,
         };
         self.start_studio_replay(driver, origin, path)
@@ -765,6 +774,7 @@ impl Game<'_> {
             recording,
             request,
             archive,
+            identity,
             ..
         } = origin;
         let mut driver = driver;
@@ -800,6 +810,7 @@ impl Game<'_> {
         }
         self.replay.recording = recording.clone();
         self.replay.archive = archive;
+        self.replay.identity = identity;
         self.replay.generation += 1;
         self.replay.reported_ms = None;
         self.replay.seek_report = false;
@@ -853,6 +864,7 @@ impl Game<'_> {
         // A part step of the wheel in the replay doesn't carry into the next session.
         self.mouse.scroll = Default::default();
         self.replay.archive = None;
+        self.replay.identity = None;
         let recording = std::mem::take(&mut self.replay.recording);
         self.native_replay_closed(&recording);
         self.replay.virtual_tick_ms = 0.0;

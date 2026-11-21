@@ -88,6 +88,8 @@ pub(in crate::game) struct ReplayOrigin {
     pub(in crate::game) recording: String,
     pub(in crate::game) request: u32,
     pub(in crate::game) archive: Option<FileIdentity>,
+    /// The archive file read, taken from the handle it was read through (any route).
+    pub(in crate::game) identity: Option<FileIdentity>,
     /// For a mod's open asked while a replay played, the archive file that replay read when the
     /// open was accepted: an editor save into it since makes the copy read stale.
     pub(in crate::game) replacing: Option<FileIdentity>,
@@ -355,6 +357,7 @@ impl Game<'_> {
                 recording: recording.to_owned(),
                 request,
                 archive: Some(archive),
+                identity: Some(archive),
                 replacing,
             },
             scope: self.replay_scope(),
@@ -654,16 +657,10 @@ impl Game<'_> {
         self.start_prepared_replay(driver, origin);
     }
 
-    /// The archive file the replay playing reads, as it is at its path now.
-    fn playing_archive_identity(&mut self) -> Option<FileIdentity> {
-        let driver = self
-            .replay
-            .driver
-            .as_mut()?
-            .as_any_mut()
-            .downcast_mut::<ReplayDriver>()?;
-        let file = File::open(driver.path()).ok()?;
-        FileIdentity::of(&file).ok()
+    /// The archive file the replay playing read, as of the editor's last save into it: kept in
+    /// memory from the handles that read and wrote it, so nothing is opened to tell.
+    fn playing_archive_identity(&self) -> Option<FileIdentity> {
+        self.replay.identity.filter(|_| self.replay.playing())
     }
 
     fn start_prepared_replay(&mut self, driver: ReplayDriver, origin: ReplayOrigin) {

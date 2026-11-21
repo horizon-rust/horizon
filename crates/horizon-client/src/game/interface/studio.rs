@@ -423,6 +423,7 @@ impl Game<'_> {
     /// Add a bookmark at the replay playhead and save it in the `.mcpr` archive.
     pub(super) fn add_studio_marker(&mut self) {
         let archive = &mut self.replay.archive;
+        let identity = &mut self.replay.identity;
         let Some(replay) = self
             .replay
             .driver
@@ -441,7 +442,7 @@ impl Game<'_> {
         )
         .plain();
         let added = replay.add_marker(label);
-        note_written(archive, replay);
+        note_written(archive, identity, replay);
         match added {
             Ok(_) => self.studio.timeline.markers = replay.markers().to_vec(),
             Err(error) => log::warn!("Studio: could not save replay marker: {error}"),
@@ -474,6 +475,7 @@ impl Game<'_> {
     /// Saves the free camera's path into the replay playing, when it changed.
     pub(super) fn save_studio_camera_track(&mut self) -> std::io::Result<()> {
         let archive = &mut self.replay.archive;
+        let identity = &mut self.replay.identity;
         if self.studio.camera_track_dirty
             && let Some(driver) = self
                 .replay
@@ -489,7 +491,7 @@ impl Game<'_> {
             };
             archive_unchanged(*archive, driver)?;
             let saved = driver.save_camera_path(json);
-            note_written(archive, driver);
+            note_written(archive, identity, driver);
             saved?;
             self.studio.camera_track_dirty = false;
         }
@@ -791,16 +793,23 @@ fn archive_unchanged(
     Ok(())
 }
 
-/// After an editor save, the archive it wrote is the one a mod's replay saves into next.
+/// After an editor save, the archive it wrote (from the handle the writer returns) is the one the
+/// replay reads (`identity`) and a mod's replay saves into next (`archive`).
 fn note_written(
     archive: &mut Option<super::native_replay::FileIdentity>,
+    identity: &mut Option<super::native_replay::FileIdentity>,
     driver: &mut ReplayDriver,
 ) {
+    let Some(written) = driver.take_written() else {
+        return;
+    };
+    let written = super::native_replay::FileIdentity::of(&written).ok();
+    // Unknown, it matches nothing: a reopen recorded before this save counts as stale.
+    *identity = written;
     // An identity that can't be read keeps the old one: the next save is refused, not unguarded.
-    if let Some(written) = driver.take_written()
-        && archive.is_some()
-        && let Ok(identity) = super::native_replay::FileIdentity::of(&written)
+    if archive.is_some()
+        && let Some(written) = written
     {
-        *archive = Some(identity);
+        *archive = Some(written);
     }
 }

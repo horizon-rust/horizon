@@ -814,6 +814,7 @@ fn a_replay_open_never_displaces_a_joining_or_multiplayer_session() {
                 recording: "trip".into(),
                 request: 7,
                 archive: None,
+                identity: None,
                 replacing: None,
             },
         });
