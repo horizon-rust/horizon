@@ -648,10 +648,14 @@ pub struct PadSettings {
     pub adaptive_triggers: bool,
     /// An Xbox One pad's impulse triggers buzz with the handles (docs/controllers.md).
     pub impulse_triggers: bool,
-    /// A broken block ticks the pad, as in Bedrock (docs/controllers.md).
+    /// A broken block ticks the pad and splitting a stack buzzes, as in Bedrock
+    /// (docs/controllers.md).
     pub block_vibration: bool,
-    /// Splitting a stack buzzes briefly, as in Bedrock (docs/controllers.md).
-    pub split_vibration: bool,
+    /// How hard the handles buzz, 0..1: the player's own strength (docs/controllers.md
+    /// "Rumble").
+    pub vibration_strength: f32,
+    /// How hard an Xbox One pad's impulse triggers buzz, 0..1.
+    pub impulse_strength: f32,
     pub lightbar: Lightbar,
     /// 0..1; 0.5 is the default speed, 1 twice that.
     pub look_sensitivity: f32,
@@ -707,7 +711,8 @@ impl Default for PadSettings {
             adaptive_triggers: true,
             impulse_triggers: true,
             block_vibration: true,
-            split_vibration: true,
+            vibration_strength: 1.0,
+            impulse_strength: 1.0,
             lightbar: Lightbar::Health,
             look_sensitivity: 0.5,
             invert_x: false,
@@ -746,6 +751,7 @@ impl PadSettings {
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
         let mut saved_opener = None;
+        let mut legacy_split_vibration = true;
         for line in text.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -777,7 +783,9 @@ impl PadSettings {
                 "adaptiveTriggers" => s.adaptive_triggers = flag(s.adaptive_triggers),
                 "impulseTriggers" => s.impulse_triggers = flag(s.impulse_triggers),
                 "blockVibration" => s.block_vibration = flag(s.block_vibration),
-                "splitVibration" => s.split_vibration = flag(s.split_vibration),
+                "splitVibration" => legacy_split_vibration = flag(legacy_split_vibration),
+                "vibrationStrength" => s.vibration_strength = unit(s.vibration_strength),
+                "impulseStrength" => s.impulse_strength = unit(s.impulse_strength),
                 "lightbar" => s.lightbar = Lightbar::parse(value),
                 "lookSensitivity" => s.look_sensitivity = unit(s.look_sensitivity),
                 "invertX" => s.invert_x = flag(s.invert_x),
@@ -821,6 +829,9 @@ impl PadSettings {
                 }
             }
         }
+        // The two old switches are one now. Keep either opt-out, regardless of
+        // line order, and consume the old key rather than saving it as an extra.
+        s.block_vibration &= legacy_split_vibration;
         // An opener on a button it can't be with this stick reads as never saved.
         let refused_opener = match saved_opener {
             Some(Some(b)) if opener_refused(s.radial_stick, b) => true,
@@ -893,13 +904,14 @@ impl PadSettings {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nimpulseTriggers:{}\nblockVibration:{}\nsplitVibration:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nnintendoLetters:{}\nkeyboard:{}\n",
+            "enabled:{}\nvibration:{}\nadaptiveTriggers:{}\nimpulseTriggers:{}\nblockVibration:{}\nvibrationStrength:{}\nimpulseStrength:{}\nlightbar:{}\nlookSensitivity:{}\ninvertX:{}\ninvertY:{}\nmoveDeadzone:{}\nlookDeadzone:{}\ntriggerThreshold:{}\ntoggleSneak:{}\nglyphs:{}\nnintendoLetters:{}\nkeyboard:{}\n",
             bool_text(self.enabled),
             bool_text(self.vibration),
             bool_text(self.adaptive_triggers),
             bool_text(self.impulse_triggers),
             bool_text(self.block_vibration),
-            bool_text(self.split_vibration),
+            self.vibration_strength,
+            self.impulse_strength,
             self.lightbar.name(),
             self.look_sensitivity,
             bool_text(self.invert_x),
@@ -1639,6 +1651,28 @@ pub struct Pulse {
     /// leaves alone.
     pub triggers: [f32; 2],
     pub millis: u32,
+}
+impl Pulse {
+    /// The same pulse at the player's strengths, 0..1 each: `vibration` scales both handles and
+    /// `impulse` the trigger motors, so one setting fits every pad without changing a pulse's
+    /// shape.
+    ///
+    /// A strength is applied squared, not as the raw fraction. A motor doesn't answer its level
+    /// evenly: at half the level it still spins at well over half its speed and is felt near the
+    /// full force, which is why a slider at 50% played like 100%. Squared, the slider's middle is
+    /// a quarter of the level and is felt as a quarter, while 1 stays the full pulse.
+    pub fn scaled(self, vibration: f32, impulse: f32) -> Pulse {
+        let scale = |v: f32, strength: f32| v * strength.clamp(0.0, 1.0).powi(2);
+        Pulse {
+            strong: scale(self.strong, vibration),
+            weak: scale(self.weak, vibration),
+            triggers: [
+                scale(self.triggers[0], impulse),
+                scale(self.triggers[1], impulse),
+            ],
+            millis: self.millis,
+        }
+    }
 }
 use crate::radial::{RADIAL_NOTHING, RADIAL_PAGE_TICK, RADIAL_TICK};
 impl Rumble {
@@ -2751,27 +2785,45 @@ bind_key.hotbar.2:north
     #[test]
     fn impulse_triggers_and_block_vibration_are_on_until_saved_off() {
         let settings = PadSettings::default();
-        assert!(settings.impulse_triggers && settings.block_vibration && settings.split_vibration);
-        let off = PadSettings::parse(
-            "impulseTriggers:false\nblockVibration:false\nsplitVibration:false\n",
-        );
-        assert!(!off.impulse_triggers && !off.block_vibration && !off.split_vibration);
+        assert!(settings.impulse_triggers && settings.block_vibration);
+        let off = PadSettings::parse("impulseTriggers:false\nblockVibration:false\n");
+        assert!(!off.impulse_triggers && !off.block_vibration);
         assert!(
             off.serialize()
-                .contains("impulseTriggers:false\nblockVibration:false\nsplitVibration:false\n")
+                .contains("impulseTriggers:false\nblockVibration:false\n")
         );
         assert_eq!(PadSettings::parse(&off.serialize()), off);
     }
 
-    /// The split's tick has its own switch, so turning it off leaves the broken block's tick on,
-    /// and it is lighter and shorter than the block's.
     #[test]
-    fn a_split_has_its_own_switch_and_a_shorter_buzz_than_a_block() {
-        let off = PadSettings::parse("splitVibration:false\n");
-        assert!(!off.split_vibration);
-        assert!(off.block_vibration, "the block tick has its own switch");
-        assert_eq!(PadSettings::parse(&off.serialize()), off);
+    fn old_haptics_switches_keep_either_opt_out() {
+        assert!(!PadSettings::parse("splitVibration:false\n").block_vibration);
+        assert!(PadSettings::parse("").block_vibration);
+        for (block, split, expected) in [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+            (false, false, false),
+        ] {
+            for text in [
+                format!("blockVibration:{block}\nsplitVibration:{split}\nfuture:true\n"),
+                format!("splitVibration:{split}\nblockVibration:{block}\nfuture:true\n"),
+            ] {
+                let settings = PadSettings::parse(&text);
+                assert_eq!(settings.block_vibration, expected, "{text}");
+                assert!(settings.vibration && settings.impulse_triggers);
+                let saved = settings.serialize();
+                assert!(!saved.contains("splitVibration:"));
+                assert!(saved.contains("future:true\n"));
+                assert_eq!(PadSettings::parse(&saved), settings);
+            }
+        }
+    }
 
+    /// One switch covers both Bedrock-like ticks (a broken block and a split); the split is
+    /// lighter and shorter than the block's.
+    #[test]
+    fn a_split_buzzes_lighter_and_shorter_than_a_block() {
         let split = Rumble::ItemStackSplit.pulse().unwrap();
         let broken = Rumble::BlockBroken.pulse().unwrap();
         assert!(split.millis < broken.millis);
@@ -2817,6 +2869,46 @@ bind_key.hotbar.2:north
                 .windows(2)
                 .all(|w| w[1].triggers[0] < w[0].triggers[0])
         );
+    }
+
+    /// The two strength sliders save, clamp, and a file from before them reads as full strength.
+    #[test]
+    fn the_strengths_save_and_an_older_file_reads_as_full_strength() {
+        let settings = PadSettings::default();
+        assert_eq!(
+            (settings.vibration_strength, settings.impulse_strength),
+            (1.0, 1.0)
+        );
+        // A file written before the sliders existed: both stay full.
+        let old = PadSettings::parse("vibration:true\nimpulseTriggers:true\nblockVibration:true\n");
+        assert_eq!((old.vibration_strength, old.impulse_strength), (1.0, 1.0));
+        // What the sliders write, and a value from a hand-edited file.
+        let set = PadSettings::parse("vibrationStrength:0.45\nimpulseStrength:1.5\n");
+        assert_eq!((set.vibration_strength, set.impulse_strength), (0.45, 1.0));
+        assert_eq!(PadSettings::parse(&set.serialize()), set);
+    }
+
+    /// A strength scales its own motors along its curve; the other motors, the length and full
+    /// strength stay as they were.
+    #[test]
+    fn a_strength_scales_only_its_own_motors() {
+        let pulse = Rumble::BlockBroken.pulse().unwrap();
+        // The slider's middle is a quarter of the level, its quarter a sixteenth: a motor's
+        // force trails its level, so the number the player picks is applied squared.
+        let half = pulse.scaled(0.5, 0.25);
+        assert_eq!(half.strong, pulse.strong * 0.25);
+        assert_eq!(half.weak, pulse.weak * 0.25);
+        assert_eq!(
+            half.triggers,
+            [pulse.triggers[0] * 0.0625, pulse.triggers[1] * 0.0625]
+        );
+        assert_eq!(half.millis, pulse.millis);
+        assert_eq!(pulse.scaled(1.0, 1.0), pulse);
+        // Zero silences that motor; beyond the sliders' range the clamp holds it at full or none.
+        let silent = pulse.scaled(0.0, 0.0);
+        assert_eq!((silent.strong, silent.weak), (0.0, 0.0));
+        assert_eq!(silent.triggers, [0.0, 0.0]);
+        assert_eq!(pulse.scaled(2.0, 1.0), pulse);
     }
 
     #[test]
