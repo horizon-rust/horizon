@@ -536,7 +536,7 @@ impl Game<'_> {
                 // DedicatedServer.setDifficulty stores the property and then forces the world
                 // difficulty, including hardcore's always-hard rule and the player broadcast.
                 self.store_property("difficulty", value.to_owned());
-                self.set_difficulty_forced(if self.level.hardcore { 3 } else { index as u8 });
+                self.set_difficulty_forced(index as u8);
                 return json!({ "value": DIFFICULTIES[self.level.difficulty_id() as usize] });
             }
             "allowlist/add" => {
