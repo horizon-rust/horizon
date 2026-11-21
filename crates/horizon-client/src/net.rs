@@ -834,10 +834,21 @@ impl Reason {
     /// kicks have none; their text is the server's own language).
     fn component(reason_json: &str, lang: &Language) -> Self {
         match serde_json::from_str::<serde_json::Value>(reason_json) {
-            Ok(v) => Self {
-                text: json_text(&v, lang),
-                key: v["translate"].as_str().map(str::to_owned),
-            },
+            Ok(v) => {
+                let text = json_text(&v, lang);
+                let root = v.as_array().and_then(|a| a.first()).unwrap_or(&v);
+                Self {
+                    text: if text.is_empty() && !reason_json.trim().is_empty() {
+                        reason_json.chars().take(200).collect()
+                    } else {
+                        text
+                    },
+                    key: root
+                        .get("translate")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                }
+            }
             Err(_) => Self::plain(reason_json),
         }
     }
@@ -1692,58 +1703,76 @@ fn brand() -> Vec<u8> {
 /// At most `horizon_protocol::text::MAX_TEXT` bytes, as `plain`: a login-phase reason from a
 /// server is any JSON it likes.
 pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
+    let mut out = String::new();
+    append_json_text(v, lang, &mut out, 0);
+    out
+}
+
+fn append_json_text(v: &serde_json::Value, lang: &Language, out: &mut String, depth: usize) {
     use horizon_protocol::text::{MAX_TEXT, push_capped};
+    if depth > 32 || out.len() >= MAX_TEXT {
+        return;
+    }
     match v {
-        serde_json::Value::String(s) => {
-            let mut out = String::new();
-            push_capped(&mut out, s);
-            out
-        }
+        serde_json::Value::String(s) => push_capped(out, s),
+        serde_json::Value::Bool(b) => push_capped(out, if *b { "true" } else { "false" }),
+        serde_json::Value::Number(n) => push_capped(out, &n.to_string()),
+        serde_json::Value::Null => {}
         serde_json::Value::Array(a) => {
-            let mut out = String::new();
             for e in a {
                 if out.len() >= MAX_TEXT {
                     break;
                 }
-                push_capped(&mut out, &json_text(e, lang));
+                append_json_text(e, lang, out, depth + 1);
             }
-            out
         }
         serde_json::Value::Object(o) => {
-            let mut out = if let Some(t) = o.get("text").and_then(|t| t.as_str()) {
-                let mut out = String::new();
-                push_capped(&mut out, t);
-                out
-            } else if let Some(key) = o.get("translate").and_then(|t| t.as_str()) {
+            if let Some(t) = o.get("text").and_then(serde_json::Value::as_str) {
+                push_capped(out, t);
+            } else if let Some(key) = o.get("translate").and_then(serde_json::Value::as_str) {
                 let args: Vec<String> = o
                     .get("with")
-                    .and_then(|w| w.as_array())
-                    .map(|a| a.iter().map(|e| json_text(e, lang)).collect())
+                    .and_then(serde_json::Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .map(|e| {
+                                let mut s = String::new();
+                                append_json_text(e, lang, &mut s, depth + 1);
+                                s
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let pattern = lang
                     .get(key)
                     .cloned()
                     .or_else(|| {
                         o.get("fallback")
-                            .and_then(|f| f.as_str())
+                            .and_then(serde_json::Value::as_str)
                             .map(str::to_owned)
                     })
                     .unwrap_or_else(|| key.to_owned());
-                horizon_protocol::text::format_java(&pattern, &args)
-            } else {
-                String::new()
-            };
-            if let Some(extra) = o.get("extra").and_then(|e| e.as_array()) {
+                push_capped(out, &horizon_protocol::text::format_java(&pattern, &args));
+            } else if let Some(key) = o.get("keybind").and_then(serde_json::Value::as_str) {
+                push_capped(out, lang.get(key).map_or(key, String::as_str));
+            } else if let Some(selector) = o.get("selector").and_then(serde_json::Value::as_str) {
+                push_capped(out, selector);
+            } else if let Some(name) = o
+                .get("score")
+                .and_then(|s| s.get("name"))
+                .and_then(serde_json::Value::as_str)
+            {
+                push_capped(out, name);
+            }
+            if let Some(extra) = o.get("extra").and_then(serde_json::Value::as_array) {
                 for e in extra {
                     if out.len() >= MAX_TEXT {
                         break;
                     }
-                    push_capped(&mut out, &json_text(e, lang));
+                    append_json_text(e, lang, out, depth + 1);
                 }
             }
-            out
         }
-        other => other.to_string(),
     }
 }
 
@@ -2289,6 +2318,61 @@ mod tests {
         let v = serde_json::json!({ "text": "", "extra": [v.clone(), v] });
         let text = json_text(&v, &Language::default());
         assert!(text.len() <= horizon_protocol::text::MAX_TEXT);
+    }
+
+    #[test]
+    fn login_reason_joins_empty_root_text_with_nested_extra() {
+        let raw = r#"{"text":"","extra":[{"text":"Server "},{"text":"restarting","extra":[{"text":"!"}]}]}"#;
+        let reason = Reason::component(raw, &Language::default());
+        assert_eq!(reason.text, "Server restarting!");
+        assert_eq!(reason.key, None);
+    }
+
+    #[test]
+    fn login_reason_supports_keybind_selector_score_and_ignores_null() {
+        let mut lang = Language::default();
+        lang.insert("key.jump".into(), "Space".into());
+        let v = serde_json::json!({
+            "text": "",
+            "extra": [
+                { "keybind": "key.jump" },
+                " ",
+                { "selector": "@p" },
+                " ",
+                { "score": { "name": "Alex" } },
+                null
+            ]
+        });
+        assert_eq!(json_text(&v, &lang), "Space @p Alex");
+    }
+
+    #[test]
+    fn login_reason_array_component_preserves_translate_key() {
+        let mut lang = Language::default();
+        lang.insert(
+            "multiplayer.disconnect.kicked".into(),
+            "Kicked by an operator".into(),
+        );
+        let raw = r#"[{"translate":"multiplayer.disconnect.kicked"},{"text":": Maintenance"}]"#;
+        let reason = Reason::component(raw, &lang);
+        assert_eq!(reason.text, "Kicked by an operator: Maintenance");
+        assert_eq!(reason.key.as_deref(), Some("multiplayer.disconnect.kicked"));
+    }
+
+    #[test]
+    fn login_reason_deeply_nested_extra_stops_at_depth_limit() {
+        let mut v = serde_json::json!({ "text": "deep" });
+        for _ in 0..40 {
+            v = serde_json::json!({ "text": "", "extra": [v] });
+        }
+        assert_eq!(json_text(&v, &Language::default()), "");
+    }
+
+    #[test]
+    fn login_reason_empty_unknown_object_falls_back_to_raw_json() {
+        let raw = r#"{"custom":"unexpected_kick_payload"}"#;
+        let reason = Reason::component(raw, &Language::default());
+        assert_eq!(reason.text, raw);
     }
 
     fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
