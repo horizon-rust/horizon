@@ -13,16 +13,22 @@ Two lock files in LOCK_DIR, held with flock, so the kernel ends a turn the momen
 Admission order of a `pr` job, all non-blocking: (1) flock(priority, EX); if refused, a priority job is here: wait.
 (2) flock(turn, EX). (3) flock(priority, UN), whether (2) succeeded or not. A priority job's arrival is its shared
 lock on `priority`, which it keeps. An exclusive and a shared lock on one file never coexist, so in the instant a
-`pr` job takes `turn` no priority job has arrived; one that arrives later waits for `turn` like anybody. A pull
-request's job is admitted when it takes the turn; nothing here says when its cargo starts.
+`pr` job takes `turn` no priority job has arrived. One that arrives later waits for `turn`, and a `pr` job holding it
+gives it back at its next cargo-call boundary (Turn.yield_if_ahead, which tools/parity.py's prebuild calls between
+its Cargo runs; a wrapped command gives nothing back). It reads the arrival from the kernel the same way: `priority`
+refused to it twice, ARRIVE_POLL apart, as another `pr` job's step (1) holds it for an instant; a granted try is let
+go at once. It then waits as any `pr` job does, admitted again only once no priority job is here. Priority jobs
+never give the turn back. A pull request's job is admitted when it takes the turn; nothing here says when its cargo
+starts.
 
 Priority jobs among themselves, and pull requests among themselves, poll `turn` every POLL seconds with a bounded
 wait: whoever polls first after a release gets the turn, which is no queue. Every wait is bounded (WAIT, by
 time.monotonic): then the job compiles anyway and says who held the turn. A priority job that goes ahead keeps its `priority` lock, so no pull
 request is admitted beside it meanwhile. A priority job's waits share one budget per job (WAIT[role] in all): each
 records what it waited in BUDGET_FILE under RUNNER_TEMP, and a later wait in the same job gets only what is left
-(its preparer, game and packaging compiles, say). A pull request's job has WAIT["pr"] per wait. A holder that hangs is only ever met by these bounds: nothing is taken over,
-renamed or deleted here, ever.
+(its preparer, game and packaging compiles, say). A pull request's job has WAIT["pr"] per Turn (a prebuild, a
+wrapped command), in memory: its first wait and those after giving the turn back share it. A holder that hangs is
+only ever met by these bounds: nothing is taken over, renamed or deleted here, ever.
 
 Fail open: a folder or lock file that can't be opened, isn't a real directory or regular file, or a system without
 fcntl (Windows): said once, and the job compiles without the lock. The folder and both lock files may already exist
@@ -53,9 +59,9 @@ import time
 
 LOCK_DIR = "/Users/Shared/horizon-compile-lock"
 # Each role's longest wait, in seconds: for a priority role, all of a job's waits together (BUDGET_FILE); for a pull
-# request, each wait. parity-main 20 min of its job's 360; a Mac build job 60 (Mac build legs 180, exporters 150, the
-# launcher's Mac leg on main 90); a pull request's parity job 60 per prebuild of its 240 (the frame_identity step is a
-# second prebuild).
+# request, all waits of one Turn (a prebuild's first and those after giving the turn back). parity-main 20 min of its
+# job's 360; a Mac build job 60 (Mac build legs 180, exporters 150, the launcher's Mac leg on main 90); a pull
+# request's parity job 60 per prebuild of its 240 (the frame_identity step is a second prebuild).
 WAIT = {"main": 20 * 60, "build": 60 * 60, "pr": 60 * 60}
 PRIORITY = {"main", "build"}
 BUDGET_FILE = "horizon-compile-lock-waited"  # under RUNNER_TEMP: the seconds this job's priority waits took
@@ -138,7 +144,8 @@ def open_entry(folder, name, write=False):
 
 
 class Turn:
-    """The lock as a context manager: entering waits for a turn (bounded), leaving releases it.
+    """The lock as a context manager: entering waits for a turn (bounded), leaving releases it. A pull request's
+    job may give it back and wait again between its compiles (yield_if_ahead).
 
     clock and sleep are time.monotonic and time.sleep unless a test passes its own."""
 
@@ -161,6 +168,7 @@ class Turn:
         self.held = self.arrived = self.ahead = False
         self.complained = False
         self.taken_at = None
+        self.waited = 0  # seconds this Turn's waits took (a pull request's budget)
 
     def say(self, line):
         try:
@@ -263,7 +271,37 @@ class Turn:
             self.close()
             return False
         finally:
-            self.record(spent + self.clock() - started)
+            self.waited = self.clock() - started
+            self.record(spent + self.waited)
+
+    def yield_if_ahead(self):
+        """At a cargo-call boundary: a pull request's job holding the turn gives it back while a priority job is here
+        (see the module's text), then waits for it again with what is left of WAIT["pr"]. True when it gave the turn
+        back. Without the turn held (the lock off or failed open included), or for a priority role, it does nothing."""
+        if not self.held or self.role in PRIORITY:
+            return False
+        try:
+            for attempt in range(2):
+                if attempt:
+                    self.sleep(ARRIVE_POLL)
+                if self.lock(self.priority, self.fcntl.LOCK_EX):
+                    self.fcntl.flock(self.priority, self.fcntl.LOCK_UN)
+                    return False
+            held_for = self.clock() - self.taken_at
+            self.clear_holder()
+            self.fcntl.flock(self.turn, self.fcntl.LOCK_UN)
+            self.held = False
+            self.say(f"gave the turn back after {held_for / 60:.1f} min: a job ahead of pull requests is waiting")
+            started = self.clock()
+            try:
+                self.wait(max(0, WAIT[self.role] - self.waited), int(self.waited))
+            finally:
+                self.waited += self.clock() - started
+        except Exception as error:
+            self.fail_open(f"{self.path} can't be used ({type(error).__name__}: {error})")
+            self.held = False
+            self.close()
+        return True
 
     def spent(self):
         """Seconds this job's earlier priority waits took: 0 without a budget file or for one that isn't a number."""
