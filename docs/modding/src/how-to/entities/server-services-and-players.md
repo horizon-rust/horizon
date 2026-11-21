@@ -315,3 +315,12 @@ goes back to 0, scoreboard criteria follow the changed values, and the client se
 `player_stat_award` is not heard.
 
 Measuring a client's transaction round trip (a lag-compensating anticheat): send the player a `ping` with `player_send_packet` and hear the answer in `player_pong(player, name, id)`, which carries the number the ping had; the time between the two is finer than the keep-alive average `player_latency` reads. The engine's own pings (a recording's end-of-tick ping, whose id is the server tick) are answered here too, so pick ids that tell apart from small tick numbers. The hook is heard only for a pong that answers a ping the server sent on that connection, once per ping (an unsolicited or repeated pong, or an answer to a ping older than 30 seconds, is dropped), in order with the guest's other packets, with their state swapped in, and cannot cancel; with no listener nothing is queued.
+
+## A player who is not online
+
+`host.offline_player_data(uuid)` returns the saved player file of a player who is not connected (`players/data/<uuid>.dat`)
+as the vanilla player compound, or None when there is no file, the file is not a compound, or the world is remote. It only
+reads. `host.set_offline_player_data(uuid, data)` replaces that file whole, the way a save writes it. It refuses with
+`OfflinePlayerDataRefusal::Online` while the player is connected: change a connected player through the player writes
+(their inventory, ender chest and hands), since their file is written again when they leave. A client or a remote world
+gets `NoServer`, and a file that cannot be written gets `Write`; nothing is changed by a refusal.
