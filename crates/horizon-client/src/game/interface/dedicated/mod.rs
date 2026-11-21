@@ -9,7 +9,7 @@
 //! console on standard input.
 use super::{Game, Options, lan::LanSettings, world_loading::WorldRequest};
 use horizon_client::{
-    Result,
+    Result, control,
     lan::{
         LoginGate, NetConfig, NetLog, OnlineMode, hub::HubConfig, viewed_levels::areas as viewed,
     },
@@ -47,6 +47,94 @@ mod management;
 pub(super) mod report;
 mod status;
 mod transfer;
+
+/// Records one of the management protocol's world-upgrade events for the supervisor to forward.
+pub(in crate::game) fn record_world_upgrade(kind: &str, fields: serde_json::Value) {
+    events::record_server(kind, fields);
+}
+
+/// Serves the event poll while the dedicated server is still preparing its first world. The
+/// normal control loop cannot run until the first game tick, but the supervisor polls this endpoint
+/// during `Starting` so it can forward upgrade progress as it happens.
+struct StartupControl {
+    stop: Arc<AtomicBool>,
+    returned: mpsc::Receiver<control::Server>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// The supervisor polls every 250 ms. Keep the temporary endpoint alive long enough for a final
+/// failed-upgrade event to be observed before startup returns without entering the tick loop.
+const STARTUP_FAILURE_EVENT_DRAIN: Duration = Duration::from_millis(350);
+
+impl StartupControl {
+    fn start(server: control::Server) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (return_server, returned) = mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
+            .name("dedicated-startup-control".into())
+            .spawn(move || {
+                while !worker_stop.load(Ordering::Relaxed) {
+                    let Some(request) = server.try_recv() else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    };
+                    let reply = match request.line.trim().split_once(' ') {
+                        Some(("server-events", since)) => {
+                            events::since(since.trim().parse().unwrap_or(0)).to_string()
+                        }
+                        _ => serde_json::json!({
+                            "error": "the dedicated server is still starting"
+                        })
+                        .to_string(),
+                    };
+                    let _ = request.reply.send(reply);
+                }
+                let _ = return_server.send(server);
+            })?;
+        Ok(Self {
+            stop,
+            returned,
+            thread: Some(thread),
+        })
+    }
+
+    fn finish(mut self, drain_failure_event: bool) -> Option<control::Server> {
+        if drain_failure_event {
+            std::thread::sleep(STARTUP_FAILURE_EVENT_DRAIN);
+        }
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.returned.recv().ok()
+    }
+}
+
+impl Drop for StartupControl {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+            let _ = self.returned.recv();
+        }
+    }
+}
+
+/// Ensures the progress watcher stops if the world fixer panics before the normal join path.
+pub(in crate::game) struct StopUpgradeWatcher<'a>(pub(in crate::game) &'a AtomicBool);
+
+impl<'a> StopUpgradeWatcher<'a> {
+    pub(in crate::game) fn new(stop: &'a AtomicBool) -> Self {
+        Self(stop)
+    }
+}
+
+impl Drop for StopUpgradeWatcher<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 /// What the tick loop tells `ServerWatchdog`: when the tick in progress was
 /// due (`getNextTickTime`), how long a tick is, and whether the server runs.
@@ -1163,14 +1251,19 @@ impl Game<'_> {
         // Read before the levels are made: each one's block ticks take it (`Levels::new_ticks`).
         self.levels
             .set_max_chained_neighbor_updates(props.max_chained_neighbor_updates);
-        let prepared = self.prepare_world_and_rules(WorldRequest::new(
+        let mut startup_control = self.control.take().map(StartupControl::start).transpose()?;
+        let prepared_result = self.prepare_world_and_rules(WorldRequest::new(
             &folder,
             Some(&level_name),
             Some(props.seed),
             game_mode == 1,
             None,
             Arc::new(crate::game::api_values::game_rule_registry()),
-        )?)?;
+        )?);
+        if let Some(startup) = startup_control.take() {
+            self.control = startup.finish(prepared_result.is_err());
+        }
+        let prepared = prepared_result?;
         *startup_began = true;
         self.native_server_about_to_start(true);
         self.native_server_starting(true);
@@ -2740,7 +2833,8 @@ mod tests {
     }
 
     use super::{
-        capture_log, log, log_from, overload_warning, panic_message, parse_whitelist_bypass,
+        Options, StartupControl, capture_log, log, log_from, overload_warning, panic_message,
+        parse_whitelist_bypass,
     };
     use std::{
         fs,
@@ -2748,6 +2842,88 @@ mod tests {
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// Run a failed upgrade after the supervisor's last startup poll and keep the real control
+    /// endpoint alive through the shutdown handoff so the management poll can fetch its event.
+    #[test]
+    fn upgrade_world_failure_is_served_during_startup_shutdown_handoff() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("control.sock");
+        let server = super::control::Server::start(&path).unwrap();
+        let startup = StartupControl::start(server).unwrap();
+        let mut client = horizon_client::control::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+
+        let cursor = super::events::since(u64::MAX)["next"].as_u64().unwrap();
+        let request = format!("server-events {cursor}");
+        writeln!(client, "{request}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let before_failure: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(
+            !before_failure["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["type"] == "world_upgrade_failed")
+        );
+
+        let world = temp.path().join("old-world");
+        horizon_client::save::write_dat(
+            &world.join("level.dat"),
+            horizon_core::nbt::Tag::compound([(
+                "Data",
+                horizon_core::nbt::Tag::compound([(
+                    "DataVersion",
+                    horizon_core::nbt::Tag::Int(4899),
+                )]),
+            )]),
+        )
+        .unwrap();
+        let broken_region = world.join("dimensions/minecraft/overworld/region/broken.mca");
+        fs::create_dir_all(broken_region.parent().unwrap()).unwrap();
+        fs::write(&broken_region, b"x").unwrap();
+
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.execution_role = crate::game::execution_role::ExecutionRole::DedicatedServer;
+        assert!(
+            crate::game::world_loading::upgrade_world(
+                &world,
+                &options,
+                &horizon_world::datafix::progress::UpgradeProgress::new(),
+            )
+            .is_err()
+        );
+        let finishing = std::thread::spawn(move || startup.finish(true));
+
+        line.clear();
+        writeln!(client, "{request}").unwrap();
+        reader.read_line(&mut line).unwrap();
+        let during_shutdown: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(
+            during_shutdown["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| {
+                    event["type"] == "world_upgrade_failed"
+                        && event["reason"] == "World upgrade failed"
+                }),
+            "late failure event missing from {during_shutdown}"
+        );
+
+        let returned = finishing.join().unwrap();
+        assert!(
+            returned.is_some(),
+            "startup control server was not returned"
+        );
+        drop(reader);
+        drop(client);
+        drop(returned);
+    }
 
     /// A console line runs in the overworld even after a server tick left the nether in place.
     #[test]
