@@ -231,7 +231,11 @@ fn bodies_kept_by_write_equal_bodies_built_afresh() {
         seed ^= seed << 17;
         seed % n
     };
-    let dimensions = ["minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"];
+    let dimensions = [
+        "minecraft:overworld",
+        "minecraft:the_nether",
+        "minecraft:the_end",
+    ];
     let (mut cached_bursts, mut bursts) = (0, 0);
     for round in 0..40 {
         let mut guests = GuestList::default();
@@ -298,9 +302,13 @@ fn bodies_kept_by_write_equal_bodies_built_afresh() {
             refresh_bodies(&guests, &cache);
             let kept = bodies_of(&guests, Some(&cache));
             let fresh = shared(guests.simulation_iter().map(building_player));
-            assert_eq!(body_bits(&kept), body_bits(&fresh), "round {round}, burst {burst}");
+            assert_eq!(
+                body_bits(&kept),
+                body_bits(&fresh),
+                "round {round}, burst {burst}"
+            );
             bursts += 1;
-            if std::rc::Rc::ptr_eq(&kept, &cache.1) {
+            if std::sync::Arc::ptr_eq(&kept, &cache.1) {
                 cached_bursts += 1;
             } else {
                 // The guests came or went: bodies built afresh stand for the rest of the tick.
@@ -375,7 +383,10 @@ fn a_scenario_of_guests_hitting_pushing_and_teleporting_is_the_same_by_write_or_
     let every = scenario(true);
     assert_eq!(by_write.len(), every.len());
     let changes = by_write.iter().filter(|s| s.1 != by_write[0].1).count();
-    assert!(changes > 5, "the scenario moved the boxes ({changes} ticks)");
+    assert!(
+        changes > 5,
+        "the scenario moved the boxes ({changes} ticks)"
+    );
     for (tick, (a, b)) in by_write.iter().zip(&every).enumerate() {
         assert_eq!(a, b, "tick {tick}");
     }
@@ -419,7 +430,10 @@ fn bodies_cost() {
             let start = std::time::Instant::now();
             for turn in 0..n as usize {
                 guests.update(turn, |g| g.position[0] += 0.05 * f64::from(tick % 3));
-                assert!(std::rc::Rc::ptr_eq(&bodies_of(&guests, Some(&cache)), &cache.1));
+                assert!(std::sync::Arc::ptr_eq(
+                    &bodies_of(&guests, Some(&cache)),
+                    &cache.1
+                ));
                 refresh_bodies(&guests, &cache);
             }
             new_ns += start.elapsed().as_nanos();

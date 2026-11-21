@@ -1145,6 +1145,12 @@ impl Game<'_> {
                     g.uuid,
                 )
             })
+            .chain(self.away_server_players().map(|player| {
+                mod_api::__private::game::player_ref(
+                    mod_api::EntityRef::new(epoch, player.id),
+                    player.uuid,
+                )
+            }))
             .collect()
     }
 
@@ -1314,7 +1320,11 @@ impl Game<'_> {
             return false;
         };
         let Some(g) = host.hub.online_players().find(|g| g.uuid == uuid) else {
-            return false;
+            let mut sent = false;
+            for packet in packets {
+                sent |= self.queue_for_away(uuid, packet, false);
+            }
+            return sent;
         };
         for packet in &packets {
             host.hub.send_to(g.conn, packet);
@@ -1751,6 +1761,9 @@ impl Game<'_> {
     ) -> (bool, Vec<horizon_client::text::Text>) {
         if self.lan.is_none() {
             return (false, Vec::new());
+        }
+        if self.lan_acting.is_none() {
+            self.land_residents_for_native_command();
         }
         let base = self.server_source();
         let server = execute::Source {
@@ -2425,7 +2438,10 @@ mod tests {
         ));
         let plain = ItemStack::new("minecraft:stick", 5);
         assert_eq!(api_stack_or_keep(Some(unknown.clone()), &mut kept), None);
-        assert_eq!(api_stack_or_keep(Some(odd_components.clone()), &mut kept), None);
+        assert_eq!(
+            api_stack_or_keep(Some(odd_components.clone()), &mut kept),
+            None
+        );
         assert_eq!(api_stack_or_keep(None, &mut kept), None);
         assert_eq!(
             api_stack_or_keep(Some(plain.clone()), &mut kept),

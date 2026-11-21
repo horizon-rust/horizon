@@ -1212,6 +1212,9 @@ impl Game<'_> {
             None
         };
         let server = self.serving.is_some() || self.options.dedicated.is_some();
+        if server && running.is_some() {
+            self.regions.prof.begin();
+        }
         if server {
             self.run_requested_saves();
         }
@@ -1249,6 +1252,7 @@ impl Game<'_> {
                 Dim::End => "level_the_end",
                 Dim::Extra(_) => "level_extra",
             });
+            let entering = Instant::now();
             if let Err(e) = self.enter_level(dim) {
                 result = Err(e);
                 break;
@@ -1262,10 +1266,17 @@ impl Game<'_> {
             if observe_level && let Some(level) = self.level(dim.id()) {
                 self.native_level_tick_pre(level);
             }
+            // Resident regions start first: the streaming and the prelude below run while they tick.
+            if running == Some(true) && !paused {
+                horizon_client::spans::time("regions_launch", || self.launch_residents_early());
+            }
             horizon_client::spans::time("dedicated_streaming", || {
                 self.update_dedicated_streaming();
             });
             horizon_client::spans::time("update_world", || self.update_world());
+            self.regions
+                .prof
+                .add(super::region_profile::Step::Stream, entering);
             let tick_span = horizon_client::spans::guard("level_tick");
             result = horizon_client::block_contact::in_level(
                 (self.serving.is_some() || self.options.dedicated.is_some()).then_some(dim.id()),
@@ -1285,6 +1296,12 @@ impl Game<'_> {
             );
             drop(tick_span);
             self.drain_entity_inside();
+            // Regions started early whose level's world tick never waited for them.
+            if let Err(e) = self.finish_flight()
+                && result.is_ok()
+            {
+                result = Err(e);
+            }
             if result.is_err() {
                 break;
             }
@@ -1341,6 +1358,7 @@ impl Game<'_> {
             let _span = horizon_client::spans::guard("mods_server_tick_end");
             self.native_lifecycle_server_tick_end(paused);
         }
+        self.regions.prof.end();
         Ok(())
     }
 
@@ -1405,6 +1423,7 @@ impl Game<'_> {
     pub(super) fn tick_first_level(&mut self) -> Result<()> {
         // Only a server ticks its own world from here: its players are guests, swapped in for
         // their turns (`as_guest`), and the window's player is a client of it.
+        let began = Instant::now();
         self.ticks += 1;
         self.repro_tick();
         let window = !self.is_logical_server();
@@ -1431,6 +1450,9 @@ impl Game<'_> {
             // long before this point; the lazy scoreboard/storage read has to
             // be done by then too, or a load tag writes over what it restores.
             self.load_scoreboard();
+            span("regions_land_functions", || {
+                self.land_residents_for_functions()
+            });
             span("tick_functions", || self.tick_functions());
             self.world.game_time += 1;
             if self
@@ -1475,6 +1497,9 @@ impl Game<'_> {
         self.tick_totem();
         self.update_totem_ready();
         span("tick_command_extras", || self.tick_command_extras());
+        self.regions
+            .prof
+            .add(super::region_profile::Step::Prelude, began);
         self.tick_world(running)
     }
 
@@ -1532,6 +1557,7 @@ impl Game<'_> {
                         .is_some_and(|p| held(&p.streaming))
                 };
                 guests.iter().any(|g| g.dimension == d.id() && g.participates_in_player_simulation())
+                    || self.level_has_residents(*d)
                     // A viewer count not yet told to 0 (`tick_mod_container_viewers`).
                     || self.mod_container_viewers.keys().any(|(k, _)| *k == d.id())
                     || self.player_bed_levels().any(|b| b == *d)

@@ -119,6 +119,7 @@ mod tests {
             finishing: &finishing,
             decorates: true,
             remote: false,
+            lent: None,
         };
         let candidates = GenerationScan::default()
             .candidates(input, usize::MAX)

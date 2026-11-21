@@ -80,6 +80,61 @@ fn leaving_physical_guest_keeps_then_discards_its_queued_input_credit() {
     });
 }
 
+/// Packets held for a player away in a resident region reach its hub in order and none is dropped: the
+/// ones after a packet the server's thread has to see wait with it (`Hub::give_away`).
+#[test]
+fn an_away_players_packets_keep_their_order_around_one_for_the_server() {
+    let (mut hub, _out) = hub_with_a_guest();
+    let conn = hub.guests[0].conn;
+    hub.away.insert(conn);
+    publish_packet(&hub, S::PlayerLoaded(horizon_protocol::packets::Empty));
+    // Any packet `region_local` leaves out reaches past the region.
+    publish_packet(
+        &hub,
+        S::ConfigurationAcknowledged(horizon_protocol::packets::Empty),
+    );
+    publish_packet(&hub, S::ClientTickEnd(horizon_protocol::packets::Empty));
+    with_input_context(|ctx| drop(hub.poll(ctx)));
+    let mut region = hub.region_shell();
+    region.guests.push(hub.guests.remove(0));
+    hub.give_away(&mut region);
+    let inbox: Vec<_> = region.guests[0].inbox.iter().collect();
+    assert!(matches!(
+        inbox.as_slice(),
+        [InboxItem::Packet(S::PlayerLoaded(_), _)]
+    ));
+    let held: Vec<_> = hub
+        .away_events
+        .iter()
+        .map(|(e, _)| match e {
+            NetEvent::Packet(c, p, _) if *c == conn => match **p {
+                S::ConfigurationAcknowledged(_) => "server",
+                S::ClientTickEnd(_) => "tick end",
+                _ => "other",
+            },
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(held, ["server", "tick end"]);
+}
+
+/// The timer's balance is given a player's own time since it was last ticked, by whichever hub ticks it: a player
+/// lent to a resident region is given its time there by the region's hub, whose clock had not run for it.
+#[test]
+fn the_timer_gives_a_lent_player_its_time_in_the_region() {
+    let (mut hub, _out) = hub_with_a_guest();
+    hub.set_anticheat(horizon_anticheat::Config::default());
+    hub.anticheat_tick(20.0);
+    let mut region = hub.region_shell();
+    region.guests.push(hub.guests.remove(0));
+    for _ in 0..2 {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        region.anticheat_tick(20.0);
+    }
+    let ms = region.guests[0].anticheat.timer.ms;
+    assert!(ms >= 300.0, "300 ms passed, the balance was given {ms:.0}");
+}
+
 #[test]
 fn derived_action_replies_wait_for_the_next_frozen_receiving_turn() {
     let (mut hub, _out) = hub_with_a_guest();

@@ -611,6 +611,9 @@ pub fn session_dispatcher(registry: &RuleRegistry, features: &[String]) -> Dispa
         features.iter().any(|f| f == MINECART_IMPROVEMENTS),
         registry,
     );
+    if dedicated {
+        super::tree_extra::register_horizon_dedicated(&mut tree, 0);
+    }
     if horizon {
         horizon_commands(&mut tree, 0);
     }
@@ -654,6 +657,10 @@ pub(crate) fn game_tree(dev: bool, horizon: bool, dedicated: bool) -> &'static D
         _ => TREES[usize::from(dev) | usize::from(horizon) << 1 | usize::from(dedicated) << 2]
             .get_or_init(|| {
                 let mut d = build_for(dev, dedicated);
+                // The health commands are on for every dedicated server; `/pregen` waits for its flag.
+                if dedicated {
+                    super::tree_extra::register_horizon_dedicated(&mut d, 0);
+                }
                 if horizon {
                     horizon_commands(&mut d, 0);
                 }
@@ -661,7 +668,7 @@ pub(crate) fn game_tree(dev: bool, horizon: bool, dedicated: bool) -> &'static D
             }),
     }
 }
-/// Commands vanilla doesn't have, after its own: `/pregen`
+/// Commands vanilla doesn't have, after its own, behind Horizon's commands being on: `/pregen`
 /// (docs/pregeneration.md).
 fn horizon_commands(d: &mut Dispatcher, root: usize) {
     let pregen = d.literal(root, "pregen");

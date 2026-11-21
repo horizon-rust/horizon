@@ -37,7 +37,8 @@ fn finalization_never_retargets_stale_items_or_replaced_placeholders() {
             game.block_entity_tick_key = Some(Key {
                 pos,
                 placeholder_identity,
-                failure_generation: game.wasm_dispatch_failures.get(),
+                failure_generation:
+                    game.wasm_dispatch_failures.get(),
                 transaction_depth: 0,
                 unbalanced: false,
             });

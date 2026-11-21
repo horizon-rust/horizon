@@ -67,6 +67,8 @@ pub(super) struct ScoreState {
     pub stopwatches: horizon_client::stopwatches::Stopwatches,
     loaded: bool,
     recorded: Recorded,
+    /// A region game's copy of the server's board as lent, to find what the region changed when it comes home.
+    lent_board: Option<Scoreboard>,
 }
 
 fn in_range(v: i32, (lo, hi): IntRange) -> bool {
@@ -151,6 +153,41 @@ impl Game<'_> {
             horizon_client::command_storage::CommandStorage::load(&self.world_root);
         self.score.stopwatches = horizon_client::stopwatches::Stopwatches::load(&self.world_root);
         self.sync_score_registries();
+    }
+    /// A region game's board is the server's as lent (its storage and stopwatches are read from the save), and
+    /// remembered, so [`Self::merge_region_scores`] finds what the region changed.
+    pub(super) fn lend_scoreboard_from(&mut self, from: &Game<'_>) {
+        self.load_scoreboard();
+        if from.score.loaded && self.score.board != from.score.board {
+            self.score.board.clone_from(&from.score.board);
+        }
+        self.score.lent_board = Some(self.score.board.clone());
+    }
+    /// The scores region game `w` changed while the region was out (its players' criteria scores) are the
+    /// server's now; the server's own board is otherwise the only one, so its objectives and teams stand.
+    pub(super) fn merge_region_scores(&mut self, w: &mut Game<'_>) {
+        let Some(lent) = w.score.lent_board.take() else {
+            return;
+        };
+        if w.score.board == lent {
+            return;
+        }
+        self.load_scoreboard();
+        for (holder, scores) in &w.score.board.scores {
+            for (objective, score) in scores {
+                if lent.score(holder, objective).map(|s| s.value) == Some(score.value)
+                    || !self
+                        .score
+                        .board
+                        .objectives
+                        .iter()
+                        .any(|o| &o.name == objective)
+                {
+                    continue;
+                }
+                self.score.board.score_mut(holder, objective).value = score.value;
+            }
+        }
     }
     pub(super) fn save_scoreboard(&mut self) {
         if !self.score.loaded || self.remote.is_some() {
@@ -466,11 +503,13 @@ impl Game<'_> {
     /// what changed on the board since it was last sent it (all of it on
     /// joining), lan/scoreboard.rs.
     pub(super) fn lan_sync_scoreboard(&mut self) {
-        if self
-            .lan
-            .as_ref()
-            .is_none_or(|host| host.hub.guests.iter().all(|g| !g.placed))
-        {
+        // The region has a snapshot; the server sends scoreboard updates.
+        if self.regions.worker {
+            return;
+        }
+        if self.lan.as_ref().is_none_or(|host| {
+            host.hub.guests.iter().all(|g| !g.placed) && !host.hub.has_roster_others()
+        }) {
             return;
         }
         self.load_scoreboard();
@@ -479,6 +518,7 @@ impl Game<'_> {
         };
         host.hub.teams.clone_from(&self.score.board.teams);
         let view = horizon_client::lan::scoreboard::View::of(&self.score.board);
+        host.hub.sync_scoreboard_others(&view);
         host.hub.guests.update_all(|g| {
             if g.placed && g.scoreboard != view {
                 g.send_all(&g.scoreboard.changes(&view));
@@ -1378,9 +1418,9 @@ mod criterion_tests;
 #[cfg(test)]
 mod empty_tag_tests;
 #[cfg(test)]
-mod team_without_members_tests;
-#[cfg(test)]
 mod guest_advancement_tests;
+#[cfg(test)]
+mod team_without_members_tests;
 
 #[cfg(test)]
 mod source_holder_tests;

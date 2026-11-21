@@ -843,6 +843,32 @@ impl Raids {
             self.order.put(id);
         }
     }
+    /// The raids another copy of this level started (a region's game, `game/runtime/regions.rs`), added
+    /// after these in their order. A raid keeps its id unless one here holds it already; then it takes the next
+    /// free id. Not vanilla: one level has one `Raids`.
+    pub fn absorb(&mut self, other: Raids) {
+        let Raids {
+            mut map,
+            order,
+            next_id,
+            ..
+        } = other;
+        for id in order.iter() {
+            let Some(raid) = map.remove(&id) else {
+                continue;
+            };
+            let id = if self.map.contains_key(&id) {
+                self.next_id += 1;
+                self.next_id
+            } else {
+                id
+            };
+            self.next_id = self.next_id.max(id);
+            self.insert(id, raid);
+            self.dirty = true;
+        }
+        self.next_id = self.next_id.max(next_id);
+    }
     /// `Raids.getNearbyRaid(pos, 9216)`: the closest active raid.
     pub fn nearby(&self, pos: [i32; 3]) -> Option<(i32, &Raid)> {
         nearest(
@@ -1825,6 +1851,23 @@ mod tests {
         assert_eq!(r.omen_level, 2);
         assert_eq!(r.heroes(), vec![[1, 2, 3, 4]]);
         assert_eq!(back.to_nbt(), tag);
+    }
+    #[test]
+    fn absorbed_raids_keep_their_ids_unless_taken() {
+        // The level and two regions lent at next id 1: each region's first raid is raid 2.
+        let mut level = Raids::default();
+        let mut a = Raids::default();
+        let mut b = Raids::default();
+        a.create_or_extend([0, 64, 0], 2, Some(0), 1);
+        b.create_or_extend([1000, 64, 0], 2, Some(0), 2);
+        level.absorb(a);
+        level.absorb(b);
+        assert_eq!(level.ids().len(), 2);
+        assert_eq!(level.get(2).unwrap().center, [0, 64, 0]);
+        assert_eq!(level.get(3).unwrap().center, [1000, 64, 0]);
+        // The next raid the level starts takes an id neither of them holds.
+        let (next, _) = level.create_or_extend([-1000, 64, 0], 2, Some(0), 3);
+        assert_eq!(next, 4);
     }
     #[test]
     fn a_second_omen_extends_the_nearby_raid() {

@@ -126,7 +126,14 @@ impl Game<'_> {
         };
         let mut section_moves = section_table
             .as_ref()
-            .map(|sections| std::mem::take(&mut sections.borrow_mut().ticked))
+            .map(|sections| {
+                std::mem::take(
+                    &mut sections
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .ticked,
+                )
+            })
             .unwrap_or_default();
         crate::mobs::living::section_writes::begin(section_table.is_some());
         let mut dispatch_panic = None;
@@ -694,7 +701,9 @@ impl Game<'_> {
             let callback_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if section_yield && let Some(sections) = section_table.as_ref() {
                     self.entity_sections_ticked_live(
-                        &mut sections.borrow_mut(),
+                        &mut sections
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
                         &mut section_moves,
                     );
                 }
@@ -818,7 +827,9 @@ impl Game<'_> {
         // consumed every record that belonged to this family tick.
         section_moves.clear();
         if let Some(table) = section_table {
-            let mut sections = table.borrow_mut();
+            let mut sections = table
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             sections.ticked = section_moves;
             std::mem::swap(&mut self.native_lifecycle.entity_sections, &mut sections);
         } else {

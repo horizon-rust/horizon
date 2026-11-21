@@ -191,6 +191,12 @@ impl Game<'_> {
                 count(g.bed.is_some(), g.sleep_timer);
             }
         }
+        if let Some(host) = &self.lan {
+            let away = host.hub.away_sleep;
+            active += away.0;
+            sleeping += away.1;
+            deep += away.2;
+        }
         (active, sleeping, deep)
     }
 

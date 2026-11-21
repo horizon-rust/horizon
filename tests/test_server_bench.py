@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tools.server_bench import (DONE, PERF, PUMPKIN_READY, RUN_RECORD, TICK_AVERAGE, TICK_PERCENTILES, finish_profile,
-                                pumpkin_config, report_line, start_profile, work)
+                                pumpkin_config, report_line, start_profile, stopped_lines, work)
 
 
 def run(server, bots, sent, new, waited=0.0, behaviour="mixed"):
@@ -49,6 +49,16 @@ class ServerBenchLogTests(unittest.TestCase):
                      '[02:53:58 INFO]: Done (29.649s)! For help, type "help"']:
             self.assertTrue(re.search(DONE, line), line)
         self.assertFalse(re.search(DONE, '[02:53:58 INFO]: Preparing spawn area: Done (12%)'))
+
+    def test_a_game_the_supervisor_restarted_fails_the_run(self):
+        # From a regions run that stopped (the benchmark then measured the empty server it restarted).
+        lines = ["[23:26:08] [Server thread/INFO]: ticking 150 regions for 150 players",
+                 "[23:26:08] [Server thread/ERROR]: entity residency operation did not finish",
+                 "[23:26:08] [Server thread/INFO]: Stopping server",
+                 "[23:26:13] [Supervisor/WARN]: The game stopped unexpectedly (exit status: 1); restarting in 5 s"]
+        [stopped] = stopped_lines(lines)
+        self.assertIn("entity residency operation did not finish", stopped)
+        self.assertEqual(stopped_lines(lines[:3]), [])
 
     def test_paper_answers_tick_query_as_vanilla_does(self):
         # Paper 26.3 build 205, from a smoke run of this tool.

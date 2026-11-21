@@ -132,6 +132,13 @@ enabled = true               # false pauses it and keeps the webhook
 # villager_lobotomize = true
 # villager_lobotomize_check_interval = 100   # ticks between rechecks of whether a villager can move
 # max_collisions = 8
+
+# Players in separate areas of a level are ticked in parallel, each area (a region) on a thread of its own
+# (docs/hosting.md). Not vanilla's serial tick, so off. To turn it on:
+# [regions]
+# enabled = true
+# deadline_ms = 50           # how long a tick waits for its regions
+# resident_ticks = 20        # ticks a region stays on its thread before it comes home
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
@@ -230,6 +237,43 @@ pub struct Config {
     /// `[entities]` (docs/server.md): mob settings passed to the game; written only when it isn't the default.
     #[serde(default, skip_serializing_if = "Entities::is_default")]
     pub entities: Entities,
+    /// `[regions]` (docs/hosting.md): region ticking, passed to the game; written only when it isn't the default.
+    #[serde(default, skip_serializing_if = "Regions::is_default")]
+    pub regions: Regions,
+}
+
+/// `[regions]`: `enabled = true` ticks the world by resident regions on threads of their own (the game's
+/// `game/runtime/regions.rs`): players in separate areas of a level are ticked in parallel. Off by default; with it off the
+/// tick is vanilla's serial one. `deadline_ms` is how long a tick waits for its regions, `resident_ticks` how many
+/// ticks a region stays on its own thread before it comes home. `[engine] parallel_tick` alone never turns it on. The
+/// environment variables `HORIZON_REGIONS=0`, `HORIZON_PARALLEL_TICK=0` and `HORIZON_REGION_THREADS=0` still override it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Regions {
+    pub enabled: bool,
+    pub deadline_ms: u32,
+    pub resident_ticks: u32,
+}
+impl Default for Regions {
+    fn default() -> Self {
+        // The defaults match `region_deadline` and `resident_period` in horizon-client's game/runtime/regions.rs.
+        Self {
+            enabled: false,
+            deadline_ms: 50,
+            resident_ticks: 20,
+        }
+    }
+}
+impl Regions {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+    fn check(&self) -> Result<(), String> {
+        if self.resident_ticks == 0 {
+            return Err("regions.resident_ticks must be at least 1".into());
+        }
+        Ok(())
+    }
 }
 
 /// `[entities]`: `villager_lobotomize = true` skips the brain of villagers that cannot move (stuck in a cell,
@@ -778,6 +822,7 @@ impl Config {
                 ));
             }
         }
+        self.regions.check()?;
         if self.server.port == 0 {
             return Err("server.port must be a port number from 1 to 65535".into());
         }
@@ -959,6 +1004,7 @@ pub fn render(config: &Config) -> String {
         "combat",
         "biome_regions",
         "entities",
+        "regions",
     ] {
         if let Some(settings) = table.get(section) {
             let mut only = toml::Table::new();

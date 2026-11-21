@@ -307,7 +307,7 @@ pub(super) fn run_loading(
         App::Ready(mut split) => {
             write_report(&split.host)?;
             if let Some(e) = split.host.error.take() {
-                return Err(e);
+                return Err(e.boxed());
             }
         }
         App::Loading(loading) => {

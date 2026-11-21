@@ -357,8 +357,13 @@ impl Game<'_> {
         registries.item_modifiers = store.item_modifiers.keys().cloned().collect();
         // On world open the content tables get the world's packs only after this: the
         // candidate's own loot tables are named here, as its predicates and modifiers are.
-        let pack_tables = store.files.keys().filter_map(|id| id.strip_prefix("loot_table/"));
-        registries.loot_tables.extend(pack_tables.map(str::to_owned));
+        let pack_tables = store
+            .files
+            .keys()
+            .filter_map(|id| id.strip_prefix("loot_table/"));
+        registries
+            .loot_tables
+            .extend(pack_tables.map(str::to_owned));
         registries.loot_tables.sort();
         registries.loot_tables.dedup();
         let sources = registries
@@ -593,6 +598,19 @@ impl Game<'_> {
 
     // ---- ticking -----------------------------------------------------------------
 
+    /// Whether the tick's prelude runs functions that may reach any chunk or player: the `load` tag still to run,
+    /// the `tick` tag's, or a scheduled one due once the clock has moved on. Resident regions are not started
+    /// before them: they would find lent chunks unavailable and their players absent.
+    pub(super) fn functions_run_this_tick(&mut self) -> bool {
+        self.ensure_datapacks();
+        self.fns.load_pending
+            || !self.fns.store.tag_functions("minecraft:tick").is_empty()
+            || self
+                .fns
+                .schedule
+                .iter()
+                .any(|e| e.time <= self.world.game_time + 1)
+    }
     /// `ServerFunctionManager.tick`: the `#minecraft:load` functions after a
     /// reload, then the `#minecraft:tick` ones, before the levels tick (and
     /// before the game time moves on).

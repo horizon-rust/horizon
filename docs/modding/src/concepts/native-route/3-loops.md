@@ -61,7 +61,7 @@ call your mod's crate by its Rust crate name.
 | `id` | yes | The row's name, unique in the mod. |
 | `loop` | yes | A loop the game publishes: `block_entities.tick`. |
 | `helper` | yes | A `.rs` file under `src/` with the slot's code. |
-| `with` | yes | The slot type the helper defines. It implements the loop's slot trait and `Default`, and is `'static`. |
+| `with` | yes | The slot type the helper defines. It implements the loop's slot trait and `Default`, is `Send`, and is `'static`. |
 | `priority` | no | **Lower** is asked first (the opposite of mixins); ties go by mod id, then row id. The default is 1000. |
 
 ## What you will see
@@ -153,8 +153,9 @@ Its saved data is `entity.nbt`, its item slots `entity.items` and its menu data 
 - Within one entry, every slot's `before` gets the same cursor: if an earlier slot replaced the entity and
   continued, a later slot's `before` sees the `kind` and type from before that edit (the loop then
   rechecks and skips the replaced entity, so it doesn't tick as the old one).
-- Your slot value is made with `Default` on the loop's first run and kept. There is one per `Game`, the
-  game state of one running server, which ticks every dimension in turn: read `tick.game.dim` to tell them apart.
+- Your slot value is made with `Default` on the loop's first run and kept. Each `Game` owns its slots.
+  With region ticking enabled, each region game has its own slot and can move between worker threads.
+  Read `tick.game.dim` for the dimension currently being ticked.
 - A slot may add, remove or replace block entities. If it removes the visited one, or replaces it with another
   `kind` or a mod block entity of another type, that one does not tick. One removed later in the list is passed over. One added ticks from the next pass.
 - Calling `tick.game.tick_block_entities()` from inside a slot runs the game's own loop, without any slots,

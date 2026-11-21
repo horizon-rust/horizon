@@ -104,6 +104,93 @@ pub(super) struct LanHost {
     pub(super) idle_states: super::lan_idle::IdleStates,
 }
 
+impl LanHost {
+    /// A host for one region's players on a region thread, made once per region game; each tick it is lent the
+    /// region's players ([`LanHost::lend_region`]).
+    pub(super) fn region_shell(&self) -> LanHost {
+        LanHost {
+            hub: self.hub.region_shell(),
+            players_told_left: false,
+            settings: self.settings,
+            play: HashMap::new(),
+            menus: HashMap::new(),
+            broken: Vec::new(),
+            mob_state: HashMap::new(),
+            poses: HashMap::new(),
+            mob_players: Default::default(),
+            owner: None,
+            waypoints: Default::default(),
+            waypoint_dead: Default::default(),
+            border_sent: None,
+            commands: Vec::new(),
+            quiet: Default::default(),
+            far: None,
+            native_commands_sent: self.native_commands_sent,
+            sleep_ignored: Default::default(),
+            states: Default::default(),
+            states_next_entity: None,
+            idle_states: Default::default(),
+        }
+    }
+
+    /// The players on `conns` (with their turns' state) and what is kept for the mobs `mobs` (the guest each sees,
+    /// its hurt and swing state), lent to region host `r` for its tick; `guests` are the ones the hub split off for
+    /// every region at once.
+    pub(super) fn lend_region(
+        &mut self,
+        r: &mut LanHost,
+        conns: &[u32],
+        mobs: &[u32],
+        dim: super::Dim,
+        guests: Vec<horizon_client::lan::guest::Guest>,
+    ) {
+        r.hub.copy_region_settings(&self.hub);
+        r.native_commands_sent = self.native_commands_sent;
+        r.sleep_ignored = self.sleep_ignored.clone();
+        r.hub.guests.extend(guests);
+        for conn in conns {
+            if let Some(p) = self.play.remove(conn) {
+                r.play.insert(*conn, p);
+            }
+            if let Some(menus) = self.menus.remove(conn) {
+                r.menus.insert(*conn, menus);
+            }
+            if let Some(p) = self.poses.remove(conn) {
+                r.poses.insert(*conn, p);
+            }
+        }
+        let entity_ids: Vec<u32> = r.hub.guests.iter().map(|g| g.entity_id as u32).collect();
+        let states = self.mob_state.entry(dim).or_default();
+        let region_states = r.mob_state.entry(dim).or_default();
+        for id in mobs.iter().chain(&entity_ids) {
+            if let Some(c) = self.mob_players.remove(id) {
+                r.mob_players.insert(*id, c);
+            }
+            if let Some(s) = states.remove(id) {
+                region_states.insert(*id, s);
+            }
+        }
+    }
+
+    /// Region host `r`'s players back, with what their region's tick left for the server's host.
+    pub(super) fn take_region_back(&mut self, r: &mut LanHost) {
+        self.hub.take_guests_back(&mut r.hub);
+        self.play.extend(r.play.drain());
+        self.menus.extend(r.menus.drain());
+        self.poses.extend(r.poses.drain());
+        self.mob_players.extend(r.mob_players.drain());
+        for (dim, states) in r.mob_state.iter_mut() {
+            self.mob_state
+                .entry(*dim)
+                .or_default()
+                .extend(states.drain());
+        }
+        self.broken.append(&mut r.broken);
+        self.commands.append(&mut r.commands);
+        self.quiet.extend(r.quiet.drain(..));
+    }
+}
+
 impl Game<'_> {
     /// `PlayerList.remove`: `player.awardStat(Stats.LEAVE_GAME)` before the
     /// player is saved, heard by native mods first. Once per guest, however
@@ -2503,7 +2590,7 @@ impl Game<'_> {
                 tick_steps: self.clock.step_state(),
                 collision: Some(self.collision),
                 border: &self.border,
-                streaming: Some(&self.streaming),
+                streaming: (!self.regions.worker).then_some(&self.streaming),
             };
             host.hub.movement_checks = (
                 self.ui
@@ -2663,6 +2750,11 @@ impl Game<'_> {
     pub(super) fn spend_forced_meta(&mut self) {
         self.persist.forced_meta.clear();
     }
+
+    /// Run the hub for this tick and apply what the guests did. While the
+    /// single player game is `paused` only the connections run
+    /// (`IntegratedServer.tickPaused`): `ServerGamePacketListenerImpl.tick`
+    /// skips `tickPlayer`, so no player's air, hunger or damage moves on.
     pub(super) fn tick_lan(&mut self, paused: bool) {
         // A frozen level does not reach tick_lan_packets through tick_world.
         // Apply its packets before taking the snapshot too.
@@ -2842,7 +2934,7 @@ impl Game<'_> {
                     tick_steps: self.clock.step_state(),
                     collision: Some(self.collision),
                     border: &self.border,
-                    streaming: Some(&self.streaming),
+                    streaming: (!self.regions.worker).then_some(&self.streaming),
                 };
                 host.hub.movement_checks = (
                     self.ui
@@ -3109,7 +3201,7 @@ impl Game<'_> {
             tick_steps: self.clock.step_state(),
             collision: Some(self.collision),
             border: &self.border,
-            streaming: Some(&self.streaming),
+            streaming: (!self.regions.worker).then_some(&self.streaming),
         };
         let Some(host) = self.lan.as_mut() else {
             return;
@@ -5242,10 +5334,16 @@ pub(crate) mod world_spawn_sync_tests {
             // RespawnData.of(level.dimension(), ..): the same block set from the
             // End is a changed RespawnData, sent with the End as its dimension.
             game.as_console(|game| {
-                assert!(game.run_command("execute in minecraft:the_end run setworldspawn 100 140 -20"))
+                assert!(
+                    game.run_command("execute in minecraft:the_end run setworldspawn 100 140 -20")
+                )
             });
             let sent = spawns(&rx);
-            assert_eq!(sent.len(), 1, "a spawn that only changes dimension is broadcast");
+            assert_eq!(
+                sent.len(),
+                1,
+                "a spawn that only changes dimension is broadcast"
+            );
             assert_eq!(sent[0].pos.dimension, "minecraft:the_end");
             assert_eq!(sent[0].pos.pos, [100, 140, -20]);
             game.as_console(|game| {
@@ -5848,7 +5946,9 @@ mod merchant_restock_tests {
         game.set_allow_commands(true);
         let rx = super::world_spawn_sync_tests::host_for(&mut game);
         let mut host = game.lan.take().unwrap();
-        host.hub.guests.update(0, |guest| guest.dimension = "minecraft:overworld".into());
+        host.hub
+            .guests
+            .update(0, |guest| guest.dimension = "minecraft:overworld".into());
         game.lan = Some(host);
         assert!(game.run_command(concat!(
             "summon villager 0.5 80 2.5 {NoAI:1b,Silent:1b,Xp:20,",
@@ -5902,9 +6002,13 @@ mod merchant_restock_tests {
         live.offers[0].uses = 0;
         live.offers[0].demand = 12;
         game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
-            guest.effects.add(horizon_client::effects::EffectInstance::new(
-                "hero_of_the_village", 1000, 0,
-            ));
+            guest
+                .effects
+                .add(horizon_client::effects::EffectInstance::new(
+                    "hero_of_the_village",
+                    1000,
+                    0,
+                ));
         });
         game.merchant_restocked(id);
         let restocked = offers();

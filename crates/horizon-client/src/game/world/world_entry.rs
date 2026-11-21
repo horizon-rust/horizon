@@ -237,7 +237,7 @@ impl Game<'_> {
         reload: bool,
         root: &std::path::Path,
     ) -> Result<(
-        Option<WorldTables>,
+        Option<Arc<WorldTables>>,
         horizon_client::health::HealthResources,
         Option<mod_api::DatapackRegistrySet>,
     )> {
@@ -423,7 +423,7 @@ impl Game<'_> {
         drop(registries);
         conditions.check_errors()?;
         Ok((
-            Some(WorldTables {
+            Some(Arc::new(WorldTables {
                 conditions,
                 suffocation,
                 files,
@@ -433,7 +433,7 @@ impl Game<'_> {
                 reload_sources: reload.then_some(sources),
                 data_maps,
                 pack_tags,
-            }),
+            })),
             health,
             datapack_registries,
         ))

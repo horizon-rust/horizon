@@ -31,10 +31,18 @@ impl Game<'_> {
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError> {
+        if self.native_lifecycle.epoch() != Some(player.entity().epoch()) {
+            return Err(PayloadSendError::StaleEpoch);
+        }
         let sender = self
             .online_player_record(player)
+            .map(|guest| &guest.sender)
+            .or_else(|| {
+                self.away_server_players()
+                    .find(|guest| guest.uuid == player.uuid() && guest.id == player.entity().id())
+                    .map(|guest| &guest.sender)
+            })
             .ok_or(PayloadSendError::StaleEpoch)?
-            .sender
             .clone();
         self.queue_current_payload(Endpoint::server(sender), id, bytes)
     }

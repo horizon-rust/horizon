@@ -324,6 +324,7 @@ impl Hub {
             Ok(session) => {
                 let data = session.data();
                 self.guests.update(i, |g| g.chain = Chain::keyed(session));
+                self.publish_guest(&self.guests[i]);
                 // resetPlayerChatState: INITIALIZE_CHAT to every player.
                 self.announce_chat_session(
                     play::PlayerInfoUpdate {

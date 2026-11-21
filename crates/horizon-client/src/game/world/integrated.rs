@@ -1061,6 +1061,7 @@ impl Game<'_> {
     /// `MinecraftServer.stopServer`: the players are saved and sent away,
     /// then the world is saved.
     pub(super) fn stop_integrated(&mut self, crashed: bool) -> Result<()> {
+        self.land_residents();
         // Abort background terrain generation/decoration on shutdown, matching vanilla behavior.
         self.streaming.abort_generation();
         // The close request: lifecycle observation stops.
@@ -1137,7 +1138,11 @@ impl Game<'_> {
             // the level in place after a failed switch, would report success for the wrong level.
             let owner = self.serving.as_ref().map(|s| s.owner);
             let owner_dim = self.lan.as_ref().and_then(|h| {
-                h.hub.guests.iter().find(|g| Some(g.uuid) == owner).map(|g| g.dimension.clone())
+                h.hub
+                    .guests
+                    .iter()
+                    .find(|g| Some(g.uuid) == owner)
+                    .map(|g| g.dimension.clone())
             });
             let Some(owner_dim) = owner_dim else {
                 return vec!["digest-sync: the owner is not in the world yet".to_owned()];
@@ -1518,7 +1523,7 @@ impl Game<'_> {
     }
 }
 
-fn server_game(
+pub(super) fn server_game(
     res: &Arc<Resources>,
     pack: PackResources,
     options: Options,

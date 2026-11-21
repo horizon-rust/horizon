@@ -66,6 +66,15 @@ impl EntityUuids {
         });
     }
 
+    pub(in crate::game) fn append(&mut self, other: &mut Self) {
+        for (id, uuid) in other.by_id.drain() {
+            if let Some((journal, dimension)) = &other.binding {
+                journal.set_saved_uuid(*dimension, id, None);
+            }
+            self.insert(id, uuid);
+        }
+    }
+
     fn clear_binding(&mut self) {
         if let Some((journal, dimension)) = self.binding.take() {
             for &id in self.by_id.keys() {

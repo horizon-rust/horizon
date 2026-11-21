@@ -34,7 +34,8 @@ impl Game<'_> {
                 .replace(crate::game::block_entity_tick_items::Key {
                     pos,
                     placeholder_identity,
-                    failure_generation: self.wasm_dispatch_failures.get(),
+                    failure_generation:
+                        self.wasm_dispatch_failures.get(),
                     transaction_depth: self.transactions.len(),
                     unbalanced: false,
                 }),

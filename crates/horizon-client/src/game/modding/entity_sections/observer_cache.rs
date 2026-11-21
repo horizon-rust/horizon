@@ -1,10 +1,10 @@
 //! Retain the live observer's two allocations across borrowed creature passes.
 use super::{EntitySections, LiveSectionObserver, Scope};
 use crate::mobs::living::section_writes::Observer;
-use std::{cell::RefCell, rc::Rc};
+use std::sync::{Arc, Mutex, PoisonError};
 
-type SharedSections = Rc<RefCell<EntitySections>>;
-type SharedObserver = Rc<RefCell<LiveSectionObserver>>;
+type SharedSections = Arc<Mutex<EntitySections>>;
+type SharedObserver = Arc<Mutex<LiveSectionObserver>>;
 
 #[derive(Default)]
 pub(crate) struct ObserverCache {
@@ -19,22 +19,25 @@ impl ObserverCache {
         scope: Option<Scope>,
     ) -> (Option<SharedSections>, Option<Observer>) {
         let shared = self.sections.get_or_insert_with(Default::default);
-        std::mem::swap(sections, &mut shared.borrow_mut());
+        std::mem::swap(
+            sections,
+            &mut shared.lock().unwrap_or_else(PoisonError::into_inner),
+        );
         let observer = scope.map(|scope| {
             let observer = self.observer.get_or_insert_with(|| {
-                Rc::new(RefCell::new(LiveSectionObserver::new(
-                    Rc::clone(shared),
+                Arc::new(Mutex::new(LiveSectionObserver::new(
+                    Arc::clone(shared),
                     scope,
                 )))
             });
             {
-                let mut observer = observer.borrow_mut();
+                let mut observer = observer.lock().unwrap_or_else(PoisonError::into_inner);
                 observer.scope = scope;
                 observer.current = None;
             }
-            Rc::clone(observer) as Observer
+            Arc::clone(observer) as Observer
         });
-        (Some(Rc::clone(shared)), observer)
+        (Some(Arc::clone(shared)), observer)
     }
 }
 
@@ -55,7 +58,13 @@ mod tests {
             let before = here();
             let (table, observer) = cache.begin(&mut sections, Some(scope));
             drop(observer);
-            std::mem::swap(&mut sections, &mut table.unwrap().borrow_mut());
+            std::mem::swap(
+                &mut sections,
+                &mut table
+                    .unwrap()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
             let counts = here().since(before);
             assert_eq!(counts.allocs, expected);
             assert_eq!(counts.frees, 0);

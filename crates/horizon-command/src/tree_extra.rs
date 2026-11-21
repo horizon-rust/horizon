@@ -312,3 +312,14 @@ pub fn register_dedicated(d: &mut Dispatcher, root: usize) {
     let reload = d.literal(whitelist, "reload");
     d.executes(reload, "whitelist.reload");
 }
+
+/// Horizon's own commands of every dedicated server, whatever `horizon-pregen` says: the server's health,
+/// `/tps` (TPS, tick times and each region's last tick) and `/mspt`. Vanilla has neither, so they are no part
+/// of [`register_dedicated`].
+pub fn register_horizon_dedicated(d: &mut Dispatcher, root: usize) {
+    for name in ["tps", "mspt"] {
+        let n = d.literal(root, name);
+        d.requires(n, GAMEMASTERS);
+        d.executes(n, name);
+    }
+}

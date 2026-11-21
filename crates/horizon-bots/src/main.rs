@@ -129,6 +129,9 @@ enum Behaviour {
     Hotbar,
     Walk,
     Explore,
+    /// Flies to its own cell of a grid 320 blocks apart round the spawn, then stands still: players far enough
+    /// apart to be regions of their own.
+    Scatter,
     Fight,
     FloodMove,
     FloodAcks,
@@ -150,6 +153,7 @@ impl Behaviour {
             Self::Hotbar => "hotbar",
             Self::Walk => "walk",
             Self::Explore => "explore",
+            Self::Scatter => "scatter",
             Self::Fight => "fight",
             Self::FloodMove => "flood-move",
             Self::FloodAcks => "flood-acks",
@@ -380,7 +384,8 @@ fn options() -> Result<Options, String> {
             _ => return Err(format!("unknown option {arg}; --help lists them")),
         }
     }
-    const BEHAVIOURS: [&str; 17] = [
+    const BEHAVIOURS: [&str; 18] = [
+        "scatter",
         "idle",
         "walk",
         "explore",
@@ -1368,6 +1373,19 @@ fn run_bot(
         } else {
             match behaviour {
                 Behaviour::Idle | Behaviour::Stand | Behaviour::Hotbar => {}
+                Behaviour::Scatter => {
+                    let goal = [
+                        spawn[0] + ((index % 13) as f64 - 6.0) * 320.0,
+                        spawn[2] + ((index / 13) as f64 - 6.0) * 320.0,
+                    ];
+                    let (dx, dz) = (goal[0] - pos[0], goal[1] - pos[2]);
+                    let left = dx.hypot(dz);
+                    if left > 1.0 {
+                        let step = (o.explore_speed / 20.0).min(left);
+                        pos[0] += dx / left * step;
+                        pos[2] += dz / left * step;
+                    }
+                }
                 Behaviour::Walk => walk_step(&mut pos, &mut target, spawn, cruise, &mut random),
                 Behaviour::Fight => {
                     let near = lock(&bot.entities).nearest(pos, o.pvp, &bots);
@@ -1545,6 +1563,7 @@ fn behaviour_of(mode: &str, index: usize) -> Behaviour {
         "hotbar" => Behaviour::Hotbar,
         "walk" => Behaviour::Walk,
         "explore" => Behaviour::Explore,
+        "scatter" => Behaviour::Scatter,
         "fight" => Behaviour::Fight,
         "flood-move" => Behaviour::FloodMove,
         "flood-acks" => Behaviour::FloodAcks,

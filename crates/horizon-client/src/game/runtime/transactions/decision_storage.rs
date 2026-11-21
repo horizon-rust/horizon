@@ -66,7 +66,11 @@ impl Journal {
         #[cfg(test)]
         drop(self.after);
         for kept in self.menus.into_values() {
-            let mut inner = kept.menu.inner.borrow_mut();
+            let mut inner = kept
+                .menu
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             inner.epoch.advance();
             inner.state = kept.state;
         }

@@ -19,13 +19,13 @@ mod anger_tests;
 #[cfg(test)]
 #[path = "persist/completion_tests.rs"]
 mod completion_tests;
-#[path = "persist/passenger_graph.rs"]
-mod passenger_graph;
 #[path = "persist/hurt_by_refs.rs"]
 mod hurt_by_refs;
 #[cfg(test)]
 #[path = "persist/lookup_order_tests.rs"]
 mod lookup_order_tests;
+#[path = "persist/passenger_graph.rs"]
+mod passenger_graph;
 
 use super::{FallingBlock, Game};
 use horizon_client::{
@@ -1744,6 +1744,16 @@ impl Game<'_> {
         keys: &HashSet<(i32, i32)>,
         remove: bool,
     ) -> Vec<((i32, i32), Vec<Tag>)> {
+        // A chunk lent to a resident region has its entities there: written from here it would be saved
+        // without them (and an empty list replaces the file's).
+        let kept: HashSet<(i32, i32)>;
+        let keys = match self.streaming.lent.as_deref() {
+            Some(lent) if keys.iter().any(|k| lent.contains(k)) => {
+                kept = keys.iter().filter(|k| !lent.contains(k)).copied().collect();
+                &kept
+            }
+            _ => keys,
+        };
         use horizon_client::join_seq::{JoinSeq, Joined};
         // Each root with its id and join number, ordered once all are in.
         let mut roots: HashMap<(i32, i32), Vec<(u32, JoinSeq, Tag)>> = HashMap::new();
@@ -1976,8 +1986,18 @@ impl Game<'_> {
     /// without `saveAll`'s flush.
     pub(super) fn save_entities(&mut self, wait: bool) -> Result<()> {
         self.spawn_loaded_entities();
+        self.unique_entity_uuids();
         let keys: HashSet<(i32, i32)> = self.world.chunks.keys().copied().collect();
         let chunks = self.entity_chunks(&keys, false);
+        if let Some(before) = self.regions.entities_before_save.take() {
+            let written: usize = chunks.iter().map(|(_, e)| e.len()).sum();
+            if before > 0 && written == 0 {
+                log::warn!(
+                    "regions: save lost entities in {}: {before} in memory before landing its regions, {written} written",
+                    self.dim.id()
+                );
+            }
+        }
         self.prune_entity_memory();
         if wait {
             self.save.save_entities(chunks)
@@ -2061,6 +2081,31 @@ impl Game<'_> {
                 self.score.board.entity_removed(&uuid_text(uuid));
             }
         }
+    }
+    /// A saved world never holds two entities under one UUID (vanilla drops the second on load): when two
+    /// remembered ids carry the same UUID, the higher id, the later entity, gets a fresh one.
+    pub(super) fn unique_entity_uuids(&mut self) {
+        let mut ids: Vec<u32> = self.persist.uuids.keys().copied().collect();
+        ids.sort_unstable();
+        let mut seen: HashSet<[i32; 4]> = HashSet::with_capacity(ids.len());
+        for id in ids {
+            let uuid = self.persist.uuids[&id];
+            if !seen.insert(uuid) {
+                let mut fresh = random_uuid();
+                while !seen.insert(fresh) {
+                    fresh = random_uuid();
+                }
+                log::warn!("entity {id} shared a UUID with an earlier entity: it gets a new one");
+                self.persist.uuids.insert(id, fresh);
+            }
+        }
+    }
+    /// Drops what is remembered for ids from `start` up: nothing alive holds them, so it belongs to entities
+    /// that are gone, and the ids are about to be handed out again.
+    pub(super) fn forget_ids_from(&mut self, start: u32) {
+        self.persist.uuids.retain(|id, _| *id < start);
+        self.persist.raw.retain(|id, _| *id < start);
+        self.persist.passenger_slots.retain(|id, _| *id < start);
     }
     pub(super) fn prune_entity_memory(&mut self) {
         if !self.persist.removed_vehicles.is_empty()

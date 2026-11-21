@@ -476,6 +476,9 @@ pub struct Shared {
     /// PlayerList.players in join order: profile id, name, and `ServerPlayer.allowsListing`
     /// (the client's "Allow Server Listings", true until its client information says otherwise).
     online: Mutex<Vec<(u128, String, bool)>>,
+    /// Every placed player's tab list entry and way to reach them, whichever hub holds them (the server's or a
+    /// resident region's), so a join, a leave or a change reaches the lists of the players in other hubs too.
+    roster: Mutex<Vec<RosterEntry>>,
     next: AtomicU32,
     stop: AtomicBool,
     random: Mutex<u64>,
@@ -857,6 +860,91 @@ pub fn base64(data: &[u8]) -> String {
 }
 
 /// A running LAN server.
+/// A placed player as every hub sees them: their connection, tab list entry and latency.
+#[derive(Clone)]
+pub struct RosterEntry {
+    pub conn: u32,
+    pub uuid: u128,
+    pub sender: PlayerSender,
+    pub info: play::PlayerInfo,
+    pub latency: Arc<std::sync::atomic::AtomicI32>,
+    pub permission: u8,
+    /// The scoreboard as this player's client has it, while the player is in another hub than the one whose tick
+    /// sends the scoreboard (None: the player's own hub keeps it).
+    pub scoreboard: Option<scoreboard::View>,
+}
+
+impl Shared {
+    /// The scoreboard a player's client has, kept here while a region holds the player.
+    pub fn roster_lend_scoreboard(&self, conn: u32, view: scoreboard::View) {
+        if let Some(e) = self
+            .roster
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e.conn == conn)
+        {
+            e.scoreboard = Some(view);
+        }
+    }
+    /// The scoreboard kept for a player coming home (and the entry stops keeping one).
+    pub fn roster_return_scoreboard(&self, conn: u32) -> Option<scoreboard::View> {
+        self.roster
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e.conn == conn)
+            .and_then(|e| e.scoreboard.take())
+    }
+    /// Sends the scoreboard changes since each kept view to the players whose connection `own` does not hold.
+    pub fn roster_sync_scoreboard(&self, own: impl Fn(u32) -> bool, view: &scoreboard::View) {
+        for e in self
+            .roster
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .filter(|e| !own(e.conn))
+        {
+            let Some(old) = e.scoreboard.as_ref().filter(|old| *old != view) else {
+                continue;
+            };
+            for packet in old.changes(view) {
+                e.sender.send(packet.encode());
+            }
+            e.scoreboard = Some(view.clone());
+        }
+    }
+    /// Adds or replaces a player's roster entry.
+    pub fn roster_set(&self, entry: RosterEntry) {
+        let mut roster = self.roster.lock().unwrap();
+        match roster.iter_mut().find(|e| e.conn == entry.conn) {
+            Some(e) => {
+                let kept = e.scoreboard.take();
+                *e = entry;
+                e.scoreboard = kept;
+            }
+            None => roster.push(entry),
+        }
+    }
+    pub fn roster_has(&self, conn: u32) -> bool {
+        self.roster.lock().unwrap().iter().any(|e| e.conn == conn)
+    }
+    /// Drops a player's roster entry (they left).
+    pub fn roster_remove(&self, conn: u32) {
+        self.roster.lock().unwrap().retain(|e| e.conn != conn);
+    }
+    /// The roster entries whose connection `own` does not hold: the players of the other hubs.
+    pub fn roster_others(&self, own: impl Fn(u32) -> bool) -> Vec<RosterEntry> {
+        self.roster
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| !own(e.conn))
+            .cloned()
+            .collect()
+    }
+}
+
 pub struct Lan {
     pub shared: Arc<Shared>,
     events: crate::net::ingress::Consumer<NetEvent>,
@@ -866,8 +954,25 @@ pub struct Lan {
     listener_stop: Arc<AtomicBool>,
     /// The multicast announcement (LanServerPinger); absent when the socket failed.
     _pinger: Option<discovery::Pinger>,
+    /// A handle for a region's hub ([`Lan::detached`]): it closes nothing when dropped.
+    detached: bool,
 }
 impl Lan {
+    /// A handle on this server's connections for a region's hub on another thread: the same players' connections
+    /// and shared state, no listener and no events of its own (the server's hub reads the network); dropping it
+    /// closes nothing.
+    pub fn detached(&self) -> Self {
+        let (_, events) = event_channel();
+        Self {
+            shared: self.shared.clone(),
+            events,
+            port: self.port,
+            listener: None,
+            listener_stop: Arc::new(AtomicBool::new(false)),
+            _pinger: None,
+            detached: true,
+        }
+    }
     /// Listen on `port` (0 picks a free one).
     pub fn start(
         sync: Arc<data::SyncData>,
@@ -894,6 +999,7 @@ impl Lan {
             enable_status: AtomicBool::new(enable_status),
             accepts_transfers: AtomicBool::new(config.accepts_transfers),
             online: Mutex::new(Vec::new()),
+            roster: Mutex::new(Vec::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),
             connections: AtomicUsize::new(0),
@@ -916,6 +1022,7 @@ impl Lan {
             listener: None,
             listener_stop: Arc::new(AtomicBool::new(false)),
             _pinger: None,
+            detached: false,
         };
         if listen {
             lan.listen(port, announce)?;
@@ -1007,6 +1114,9 @@ impl Lan {
         self.events.take_turn()
     }
     pub fn stop(&mut self) {
+        if self.detached {
+            return;
+        }
         self.shared.stop.store(true, Ordering::Relaxed);
         self.stop_listening();
     }

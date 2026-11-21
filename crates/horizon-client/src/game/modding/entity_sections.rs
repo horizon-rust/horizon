@@ -204,14 +204,14 @@ impl mod_api::ServerHost for LiveSectionHost {}
 /// owns only the section table, so it can run while the mob's borrowed world
 /// view is still live.
 pub(crate) struct LiveSectionObserver {
-    sections: std::rc::Rc<std::cell::RefCell<EntitySections>>,
+    sections: std::sync::Arc<std::sync::Mutex<EntitySections>>,
     scope: Scope,
     current: Option<(u32, [f64; 3])>,
 }
 
 impl LiveSectionObserver {
     pub(crate) fn new(
-        sections: std::rc::Rc<std::cell::RefCell<EntitySections>>,
+        sections: std::sync::Arc<std::sync::Mutex<EntitySections>>,
         scope: Scope,
     ) -> Self {
         Self {
@@ -222,7 +222,12 @@ impl LiveSectionObserver {
     }
 
     fn tell(&mut self) {
-        let Some(mut batch) = self.sections.borrow_mut().begin_telling() else {
+        let Some(mut batch) = self
+            .sections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_telling()
+        else {
             return;
         };
         let mut host = LiveSectionHost {
@@ -242,7 +247,10 @@ impl LiveSectionObserver {
             );
         }
         batch.clear();
-        let mut sections = self.sections.borrow_mut();
+        let mut sections = self
+            .sections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         sections.telling = batch;
         sections.busy = false;
     }
@@ -256,12 +264,15 @@ impl crate::mobs::living::section_writes::WriteObserver for LiveSectionObserver 
         to: horizon_core::geometry::Vec3,
     ) {
         self.current = Some((id, [to.x, to.y, to.z]));
-        self.sections.borrow_mut().moved(
-            self.scope,
-            id,
-            Some([from.x, from.y, from.z]),
-            [to.x, to.y, to.z],
-        );
+        self.sections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .moved(
+                self.scope,
+                id,
+                Some([from.x, from.y, from.z]),
+                [to.x, to.y, to.z],
+            );
         self.tell();
         self.current = None;
     }

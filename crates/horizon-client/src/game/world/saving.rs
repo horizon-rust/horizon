@@ -207,6 +207,7 @@ impl Game<'_> {
                     }
                     if keys.is_empty() {
                         self.spawn_loaded_entities();
+                        self.unique_entity_uuids();
                         save.stage = Stage::Entities(self.world.chunks.keys().copied().collect());
                     }
                     Ok(false)
@@ -376,6 +377,8 @@ impl Game<'_> {
 impl Game<'_> {
     /// Save the level in place: its changed chunks, its entities and its raids.
     pub(super) fn save_level(&mut self, wait: bool) -> Result<()> {
+        self.regions.entities_before_save = self.entities_with_residents();
+        self.land_residents();
         self.admit_level_save()?;
         self.save_border();
         self.save_chunk_tickets()?;

@@ -403,6 +403,17 @@ impl GuestList {
         self.identities.clear();
         self.written().reset();
     }
+    pub(super) fn take_rows(&mut self) -> Vec<Guest> {
+        let rows = std::mem::take(&mut self.rows);
+        self.reindex();
+        rows
+    }
+
+    pub(super) fn sort_by_connection(&mut self) {
+        self.rows.sort_by_key(|guest| guest.conn);
+        self.reindex();
+    }
+
     pub fn reverse(&mut self) {
         self.rows.reverse();
         self.reindex();

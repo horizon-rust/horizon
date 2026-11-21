@@ -351,6 +351,42 @@ fn take_tracking(
     }
 }
 
+/// Whether a player's packet stays inside the player's region, so its region thread handles it. What reaches
+/// other players or the whole server (chat, commands, respawning, settings, mod messages) is the server's.
+pub(crate) fn region_local(p: &S) -> bool {
+    matches!(
+        p,
+        S::AcceptTeleportation(_)
+            | S::PlayerAbilities(_)
+            | S::MovePlayerPos(_)
+            | S::MovePlayerPosRot(_)
+            | S::MovePlayerRot(_)
+            | S::MovePlayerStatus(_)
+            | S::PlayerLoaded(_)
+            | S::ChunkBatchReceived(_)
+            | S::Pong(_)
+            | S::KeepAlive(_)
+            | S::ClientTickEnd(_)
+            | S::PlayerInput(_)
+            | S::PlayerCommand(_)
+            | S::PlayerAction(_)
+            | S::Punch(_)
+            | S::Attack(_)
+            | S::Interact(_)
+            | S::UseItemOn(_)
+            | S::UseItem(_)
+            | S::SetCarriedItem(_)
+            | S::MoveVehicle(_)
+            | S::PaddleBoat(_)
+            | S::SetCreativeModeSlot(_)
+            | S::ContainerClick(_)
+            | S::ContainerClose(_)
+            | S::ContainerButtonClick(_)
+            | S::PickItemFromBlock(_)
+            | S::PickItemFromEntity(_)
+    )
+}
+
 pub struct Hub {
     packet_drain: Option<PacketDrain>,
     deferred_payloads: std::collections::HashMap<Option<u32>, DeferredPayload>,
@@ -485,6 +521,20 @@ pub struct Hub {
     clock_ids: Vec<i32>,
     item_ids: std::collections::HashMap<Arc<str>, i32>,
     entity_types: std::collections::HashMap<String, i32>,
+    /// The players whose region keeps them on its thread between ticks: their packets and leaves wait in
+    /// `away_events` for it (a resident region, `regions.rs`).
+    pub away: std::collections::HashSet<u32>,
+    /// Where those players stand, by level: the chunks the server keeps loaded for them in that level (and
+    /// only there: a level's players away in a region say nothing of another level's streaming).
+    pub away_places: std::collections::HashMap<String, Vec<(i32, i32)>>,
+    away_events: Vec<(NetEvent, crate::net::ingress::ReceiveLease<NetEvent>)>,
+    /// The sleep counts (players not in spectator mode, in bed, asleep 100 ticks) the resident regions reported
+    /// last, summed: the server's night skip counts them with its own players. In a region's hub: its own report.
+    pub away_sleep: (i64, i64, i64),
+    /// The night was skipped: the region wakes its players on its next tick.
+    pub wake_request: bool,
+    /// Network events a landing gave back: the next poll handles them first.
+    replay: Vec<(NetEvent, crate::net::ingress::ReceiveLease<NetEvent>)>,
     /// Each level's tracked entities, by dimension.
     entities: std::collections::HashMap<String, Entities>,
     /// Each level's entities that joined it after its tracking pass, as they
@@ -800,6 +850,103 @@ impl Default for LevelSync {
 }
 
 impl Hub {
+    /// A hub for one region's players on a region thread, made once per region game and given the players for each
+    /// tick ([`Hub::lend_guests`]). It shares this hub's connections and registries; the server's hub still reads
+    /// the network and sends the chunks and entities.
+    pub fn region_shell(&self) -> Hub {
+        let mut hub = Hub::new(
+            self.lan.detached(),
+            self.sync.clone(),
+            self.encoder.detached(),
+            self.config.clone(),
+            self.loop_context.clone(),
+        );
+        hub.copy_region_settings(self);
+        hub
+    }
+
+    /// What a region's hub reads of the server's each tick: the rules and settings the game set on it.
+    pub fn copy_region_settings(&mut self, from: &Hub) {
+        self.ticks = from.ticks;
+        self.movement_checks = from.movement_checks;
+        self.immediate_respawn = from.immediate_respawn;
+        self.reduced_debug_info = from.reduced_debug_info;
+        self.limited_crafting = from.limited_crafting;
+        self.singleplayer_owner = from.singleplayer_owner;
+        self.flat_world = from.flat_world;
+        self.debug_world = from.debug_world;
+        self.teams = from.teams.clone();
+        self.nicknames = from.nicknames.clone();
+        self.ops = from.ops.clone();
+        self.entity_range_percent = from.entity_range_percent;
+        self.spawn_protection = from.spawn_protection;
+        self.admin_feedback_to_ops = from.admin_feedback_to_ops;
+        self.weather = from.weather;
+        self.ticking = from.ticking;
+        self.stepping = from.stepping;
+        self.last_clock = from.last_clock;
+        self.last_rate = from.last_rate;
+        self.mods_loaded = from.mods_loaded;
+        // The region's players are checked on its thread, with the server's settings, flag log and kicks.
+        if self.anticheat.is_some() != from.anticheat.is_some() {
+            self.anticheat = from.anticheat.as_ref().map(|a| Box::new(a.for_region()));
+        }
+    }
+
+    /// Every region's guests split off at once (`region_of` a connection's region), each guest moved once.
+    pub fn split_guests(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn(u32) -> Option<usize>,
+    ) -> Vec<Vec<Guest>> {
+        let mut out: Vec<Vec<Guest>> = (0..regions).map(|_| Vec::new()).collect();
+        let mut kept = Vec::with_capacity(self.guests.len());
+        for g in self.guests.take_rows() {
+            match region_of(g.conn) {
+                Some(r) if r < regions => {
+                    if g.placed && g.participates_online() && !self.lan.shared.roster_has(g.conn) {
+                        self.publish_guest(&g);
+                    }
+                    self.lan
+                        .shared
+                        .roster_lend_scoreboard(g.conn, g.scoreboard.clone());
+                    out[r].push(g)
+                }
+                _ => kept.push(g),
+            }
+        }
+        self.guests.extend(kept);
+        out
+    }
+
+    /// The guests in connection order again after regions gave theirs back ([`Hub::take_guests_back`] only
+    /// appends).
+    pub fn restore_guest_order(&mut self) {
+        self.guests.sort_by_connection();
+    }
+
+    /// A region hub's guests back, with what its tick left for this hub.
+    pub fn take_guests_back(&mut self, region: &mut Hub) {
+        // What the server sent their clients of the scoreboard meanwhile.
+        let mut guests = region.guests.take_rows();
+        for g in &mut guests {
+            if let Some(view) = self.lan.shared.roster_return_scoreboard(g.conn) {
+                g.scoreboard = view;
+            }
+        }
+        self.guests.extend(guests);
+        self.native_menu_events
+            .append(&mut region.native_menu_events);
+        self.native_tracking.append(&mut region.native_tracking);
+        self.attachment_snapshots
+            .append(&mut region.attachment_snapshots);
+        self.native_advancement_grants
+            .append(&mut region.native_advancement_grants);
+        for (k, v) in region.item_ids.drain() {
+            self.item_ids.entry(k).or_insert(v);
+        }
+    }
+
     pub fn new(
         lan: Lan,
         sync: Arc<SyncData>,
@@ -862,6 +1009,12 @@ impl Hub {
             clock_ids,
             item_ids: Default::default(),
             entity_types: Default::default(),
+            away: Default::default(),
+            away_places: std::collections::HashMap::new(),
+            away_sleep: (0, 0, 0),
+            wake_request: false,
+            away_events: Vec::new(),
+            replay: Vec::new(),
             entities: Default::default(),
             joined: Default::default(),
             fresh_joined: Default::default(),
@@ -951,6 +1104,67 @@ impl Hub {
     /// `PlayerList.broadcastAll`: send a packet to every placed player.
     pub fn broadcast(&self, packet: &C) {
         self.broadcast_to(packet, self.online_players());
+    }
+    /// [`Self::broadcast`] for a tab list change: the players of the other hubs (the server's, other resident
+    /// regions') get it too, from the shared roster.
+    pub fn broadcast_tab(&self, packet: &C) {
+        self.broadcast(packet);
+        self.send_to_roster_others(&packet.encode());
+    }
+    /// Sends already encoded packet bytes to the players of the other hubs.
+    fn send_to_roster_others(&self, body: &[u8]) {
+        for e in self.lan.shared.roster_others(|c| self.guest(c).is_some()) {
+            e.sender.send(body.to_vec());
+        }
+    }
+    /// The roster entries of the players in other hubs, as list entries for a newcomer (those it may see).
+    fn roster_infos(&self, permission: u8, except_uuid: u128) -> Vec<play::PlayerInfo> {
+        self.lan
+            .shared
+            .roster_others(|c| self.guest(c).is_some())
+            .into_iter()
+            .filter(|e| e.uuid != except_uuid && self.sees(permission, e.uuid))
+            .map(|e| {
+                let mut info = e.info;
+                info.latency = Some(e.latency.load(Ordering::Relaxed));
+                info
+            })
+            .collect()
+    }
+    /// Sends the scoreboard changes to the players in other hubs (resident regions).
+    pub fn sync_scoreboard_others(&self, view: &super::scoreboard::View) {
+        self.lan
+            .shared
+            .roster_sync_scoreboard(|c| self.guest(c).is_some(), view);
+    }
+    /// Whether players are in other hubs.
+    pub fn has_roster_others(&self) -> bool {
+        !self
+            .lan
+            .shared
+            .roster_others(|c| self.guest(c).is_some())
+            .is_empty()
+    }
+    /// Puts this hub's placed players in the shared roster (or refreshes their entries).
+    pub fn publish_roster(&self) {
+        for g in self
+            .guests
+            .iter()
+            .filter(|g| g.placed && g.participates_online())
+        {
+            self.publish_guest(g);
+        }
+    }
+    pub(super) fn publish_guest(&self, g: &Guest) {
+        self.lan.shared.roster_set(super::RosterEntry {
+            conn: g.conn,
+            uuid: g.uuid,
+            sender: g.sender.clone(),
+            info: self.player_info(g.uuid, &g.name, g.game_mode, 0),
+            latency: g.latency.clone(),
+            permission: g.permission,
+            scoreboard: None,
+        });
     }
     /// [`Self::broadcast`] to the held players as well, which keep a picture of
     /// the players and the entities while they wait for their hand-over.
@@ -1106,6 +1320,13 @@ impl Hub {
             .simulation_iter()
             .filter(move |g| self.watches(g) && loads(g))
             .map(Guest::chunk)
+            .chain(
+                self.away_places
+                    .get(&self.config.dimension)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            )
     }
     /// `PlayerList.broadcastAll(packet, dimension)`: the players in the level in place.
     pub fn broadcast_level(&self, packet: &C) {
@@ -1645,10 +1866,12 @@ impl Hub {
                     g.sender.send(joined.clone());
                 }
             }
-            {
-                let value = true;
-                self.guests.update(i, |guest| guest.placed = value);
+            for e in self.lan.shared.roster_others(|c| self.guest(c).is_some()) {
+                if self.sees(e.permission, uuid) {
+                    e.sender.send(joined.clone());
+                }
             }
+            self.guests.update(i, |guest| guest.placed = true);
         }
         self.resend_teleport(i, None);
         let g = &self.guests[i];
@@ -1678,6 +1901,7 @@ impl Hub {
                 o.latency.load(Ordering::Relaxed),
             ));
         }
+        entries.extend(self.roster_infos(permission, uuid));
         self.guests.update(i, |g| g.tab_hidden.extend(hidden));
         self.send_player_list(i, entries);
         let newcomer = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
@@ -1690,6 +1914,10 @@ impl Hub {
             self.guests[i].sender.send(newcomer);
         } else {
             let level = self.hidden.get(&uuid).copied();
+            if level.is_none() {
+                self.send_to_roster_others(&newcomer);
+            }
+            self.publish_guest(&self.guests[i]);
             // A held player is shown the entities around it, so it must know the players
             // who join meanwhile, or its client drops their entity (`ClientPacketListener`
             // adds a player only with its list entry).
@@ -2400,8 +2628,26 @@ impl Hub {
         self.finish_fake_kicks(&mut events);
         self.expire_arrivals(&mut events);
         let mut credits = Vec::new();
-        for receipt in self.lan.poll() {
-            let (event, credit) = receipt.into_parts();
+        let mut polled = std::mem::take(&mut self.replay);
+        polled.extend(
+            self.lan
+                .poll()
+                .into_iter()
+                .map(|receipt| receipt.into_parts()),
+        );
+        for (event, credit) in polled {
+            let for_away = match &event {
+                NetEvent::Packet(conn, ..) | NetEvent::Left(conn, _) => self.away.contains(conn),
+                NetEvent::RawPayload(delivery) => {
+                    delivery.conn.is_some_and(|conn| self.away.contains(&conn))
+                }
+                NetEvent::Duplicate(_) => !self.away.is_empty(),
+                NetEvent::Joined(_) => false,
+            };
+            if for_away {
+                self.away_events.push((event, credit));
+                continue;
+            }
             match event {
                 NetEvent::RawPayload(delivery) => {
                     self.poll_raw_payload(delivery, credit, &mut events, &mut credits);
@@ -2426,6 +2672,16 @@ impl Hub {
                     }
                 }
                 NetEvent::Packet(conn, packet, bytes) => {
+                    if self.guest(conn).is_none()
+                        && matches!(
+                            &*packet,
+                            S::Chat(_) | S::ChatCommand(_) | S::ChatCommandSigned(_)
+                        )
+                    {
+                        log::warn!(
+                            "dropped a chat or command packet from connection {conn}: no player in the server hub"
+                        );
+                    }
                     self.update_guest(conn, |g| {
                         g.sender.undrained.taken(bytes);
                         if g.left_reason.is_empty() {
@@ -2592,6 +2848,15 @@ impl Hub {
 
     /// After every level: `PlayerList.tick`.
     pub fn end_tick(&mut self) {
+        // Players placed since the roster last saw them, and every 601 ticks all, with their current entries.
+        if self.ticks.is_multiple_of(601)
+            || self
+                .guests
+                .iter()
+                .any(|g| g.placed && g.participates_online() && !self.lan.shared.roster_has(g.conn))
+        {
+            self.publish_roster();
+        }
         let latencies: Vec<_> = self
             .guests
             .iter()
@@ -2609,7 +2874,7 @@ impl Hub {
                     ..Default::default()
                 })
                 .collect();
-            self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            self.broadcast_tab(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
                 actions: 16,
                 entries,
             }));
@@ -2674,12 +2939,25 @@ impl Hub {
             self.sync_attachments,
         );
         // To the held players too: they were told of this one, and see its entity.
+        self.lan.shared.roster_remove(g.conn);
         self.broadcast_watching(&C::PlayerInfoRemove(play::PlayerInfoRemove {
             uuids: vec![g.uuid],
         }));
         self.broadcast_watching(&C::RemoveEntities(play::RemoveEntities {
             ids: vec![g.entity_id],
         }));
+        self.send_to_roster_others(
+            &C::PlayerInfoRemove(play::PlayerInfoRemove {
+                uuids: vec![g.uuid],
+            })
+            .encode(),
+        );
+        self.send_to_roster_others(
+            &C::RemoveEntities(play::RemoveEntities {
+                ids: vec![g.entity_id],
+            })
+            .encode(),
+        );
         let left = C::SystemChat(play::SystemChat {
             content: yellow_names(
                 "multiplayer.player.left",
@@ -2852,7 +3130,121 @@ impl Hub {
     /// keep their order. The far ring's chunks the level doesn't hold go as
     /// the save's readers made them.
     fn update_chunks(&mut self, ctx: &TickCtx) {
-        let world = &*ctx.world;
+        self.update_chunks_in(&*ctx.world, ctx.streaming);
+    }
+
+    /// Whether something an away player's connection sent has to be seen by the server's thread: a leave, a
+    /// duplicate login, or a packet that reaches past its region.
+    pub fn away_wants_server(&self) -> bool {
+        self.away_events
+            .iter()
+            .any(|(event, _)| !matches!(event, NetEvent::Packet(_, p, _) if region_local(p)))
+    }
+
+    /// Whether an away player sent a chat message or a command: it reaches every player, so every region must be
+    /// home for it (the recipients' chat chains live with their players).
+    pub fn away_chat_pending(&self) -> bool {
+        self.away_events.iter().any(|(e, _)| {
+            matches!(e, NetEvent::Packet(_, p, _) if matches!(&**p, S::Chat(_) | S::ChatCommand(_) | S::ChatCommandSigned(_)))
+        })
+    }
+
+    /// The packets held for `region`'s players put in their inboxes, in order, for its tick to handle.
+    pub fn give_away(&mut self, region: &mut Hub) {
+        if self.away_events.is_empty() {
+            return;
+        }
+        let mine: crate::fast_hash::FxHashSet<u32> = region.guests.iter().map(|g| g.conn).collect();
+        // Only what stays in the region goes: a packet that reaches past it (a chat message) stays for the server's
+        // thread, with every later packet of its connection, so the order of one player's packets keeps.
+        let mut blocked: crate::fast_hash::FxHashSet<u32> = Default::default();
+        let (mut given, mut kept) = (Vec::new(), Vec::new());
+        for e in std::mem::take(&mut self.away_events) {
+            match &e.0 {
+                NetEvent::Packet(conn, p, _)
+                    if mine.contains(conn) && !blocked.contains(conn) && region_local(p) =>
+                {
+                    given.push(e)
+                }
+                NetEvent::Packet(conn, ..) | NetEvent::Left(conn, _) => {
+                    if mine.contains(conn) {
+                        blocked.insert(*conn);
+                    }
+                    kept.push(e);
+                }
+                NetEvent::RawPayload(delivery) => {
+                    blocked.extend(delivery.conn.filter(|conn| mine.contains(conn)));
+                    kept.push(e);
+                }
+                NetEvent::Duplicate(_) => {
+                    blocked.extend(mine.iter().copied());
+                    kept.push(e);
+                }
+                _ => kept.push(e),
+            }
+        }
+        self.away_events = kept;
+        for (event, credit) in given {
+            if let NetEvent::Packet(conn, packet, bytes) = event {
+                region.update_guest(conn, |guest| {
+                    guest.sender.undrained.taken(bytes);
+                    if guest.left_reason.is_empty() {
+                        guest
+                            .inbox
+                            .push_back(InboxItem::Packet(*packet, Some(credit)));
+                    }
+                });
+            }
+        }
+    }
+
+    /// The connections whose held events the server's thread has to see, or None when one belongs to no
+    /// connection (a duplicate login).
+    pub fn away_server_conns(&self) -> Option<Vec<u32>> {
+        let mut out = Vec::new();
+        for (event, _) in &self.away_events {
+            match event {
+                NetEvent::Packet(_, p, _) if region_local(p) => {}
+                NetEvent::Packet(conn, ..) | NetEvent::Left(conn, _) => {
+                    if !out.contains(conn) {
+                        out.push(*conn);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// Some of the players are back: what waited for them is for the next poll, the others stay away.
+    pub fn release_away_conns(&mut self, conns: &[u32]) {
+        for c in conns {
+            self.away.remove(c);
+        }
+        let (mine, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.away_events)
+            .into_iter()
+            .partition(|(event, _)| match event {
+                NetEvent::Packet(conn, ..) | NetEvent::Left(conn, _) => conns.contains(conn),
+                NetEvent::RawPayload(delivery) => {
+                    delivery.conn.is_some_and(|conn| conns.contains(&conn))
+                }
+                _ => false,
+            });
+        self.away_events = kept;
+        self.replay.extend(mine);
+        // A duplicate login belongs to no connection: it waits for the last region to be home.
+        if self.away.is_empty() {
+            self.replay.append(&mut self.away_events);
+        }
+    }
+
+    /// The players are back: what waited for them is for the next poll.
+    pub fn release_away(&mut self) {
+        self.away.clear();
+        self.replay.append(&mut self.away_events);
+    }
+
+    fn update_chunks_in(&mut self, world: &World, streaming: Option<&crate::streaming::Streaming>) {
         self.prepare_terrain_pass();
         if let Some(far) = self.far.as_mut() {
             far.poll();
@@ -2865,9 +3257,9 @@ impl Hub {
                     self.terrain.is_some() && self.guests[i].center != Some(self.guests[i].chunk());
                 self.update_view(i, watching);
                 if moved || self.terrain.is_some() && self.ticks <= self.guests[i].placed_at + 1 {
-                    self.warm_first_terrain(i, world, ctx.streaming);
+                    self.warm_first_terrain(i, world, streaming);
                 }
-                if let Some(batch) = self.next_batch(i, world, ctx.streaming) {
+                if let Some(batch) = self.next_batch(i, world, streaming) {
                     batches.push((i, batch));
                 }
             }
@@ -2880,7 +3272,7 @@ impl Hub {
         let mut columns = Columns::default();
         let mut far_bodies = crate::fast_hash::FxHashMap::default();
         let mut protected = terrain::Bodies::default();
-        let protos = |x, z| ctx.streaming.and_then(|s| s.proto_sections(x, z));
+        let protos = |x, z| streaming.and_then(|s| s.proto_sections(x, z));
         let batches: Vec<_> = batches
             .into_iter()
             .map(|(i, batch)| {
@@ -2942,7 +3334,7 @@ impl Hub {
             .collect();
         self.encoder.warm(&columns.chunks);
         let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
-            ctx.streaming.and_then(|s| s.proto_sections(x, z))
+            streaming.and_then(|s| s.proto_sections(x, z))
         });
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
@@ -3499,7 +3891,37 @@ impl Hub {
     }
 
     /// All entities as one client sees them: the world's and the other players.
+    /// The level's entity states for the region trackers, by the chunk each was last seen in.
+    pub fn lend_trackers(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn((i32, i32)) -> Option<usize>,
+    ) -> Vec<Entities> {
+        self.entities
+            .entry(self.config.dimension.clone())
+            .or_default()
+            .lend(regions, region_of)
+    }
+
+    /// A region tracker for this (region) hub's level.
+    pub fn set_tracker(&mut self, tracker: Entities) {
+        self.entities.insert(self.config.dimension.clone(), tracker);
+    }
+
+    /// A region hub's tracker back in this (the server's) hub's, parked.
+    pub fn park_tracker(&mut self, region: &mut Hub) {
+        if let Some(t) = region.entities.remove(&region.config.dimension) {
+            self.entities
+                .entry(self.config.dimension.clone())
+                .or_default()
+                .park(t);
+        }
+    }
+
     pub(in crate::lan) fn track_entities(&mut self, ctx: &mut TickCtx) {
+        if let Some(level) = self.entities.get_mut(&self.config.dimension) {
+            level.unpark();
+        }
         let mut all: Vec<EntityState> = Vec::with_capacity(ctx.entities.len() + self.guests.len());
         let modified_particles =
             mod_api::__private::listened(mod_api::HookId::EffectParticleModification);
@@ -4461,7 +4883,7 @@ impl Hub {
                     });
                     // ServerGamePacketListenerImpl.handleClientInformation: UPDATE_HAT to everyone.
                     if hat != was_hat {
-                        self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                        self.broadcast_tab(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
                             actions: 128,
                             entries: vec![play::PlayerInfo {
                                 uuid: self.guests[i].uuid,

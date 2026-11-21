@@ -47,6 +47,13 @@ impl Game<'_> {
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
             // A `console stop` just before stops this server for the next request too.
             self.note_stopping(state.lists.lock().unwrap().stop);
+            // The console's lines, `server-status`, the management API and the player requests all read the
+            // players and chunks of every level: a player away in a resident region is not in the server's own
+            // hub, so `list` and `status` counted none and `tp`, `kick` or `data get` found nobody. Every region
+            // of every level comes home first, as it does for a line typed on the console.
+            if !request.line.trim().starts_with("server-events") {
+                self.land_residents();
+            }
             let reply = match request.line.trim().split_once(' ') {
                 _ if request.line.trim() == "server-status" => self.server_status(state),
                 _ if request.line.trim() == "server-mods" => server_mods(),

@@ -25,7 +25,8 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
         game.run_headless();
         // narrator::start ran for it too (options.txt's narrator setting).
         narrator::stop();
-        let result = write_report(&game).and_then(|()| game.error.take().map_or(Ok(()), Err));
+        let result =
+            write_report(&game).and_then(|()| game.error.take().map_or(Ok(()), |e| Err(e.boxed())));
         if game.options.is_client_start() {
             game.native_client_stopped();
             game.native_game_shutting_down();
@@ -40,7 +41,7 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     let result = result
         .map_err(Into::into)
         .and_then(|()| write_report(&game))
-        .and_then(|()| game.error.take().map_or(Ok(()), Err));
+        .and_then(|()| game.error.take().map_or(Ok(()), |e| Err(e.boxed())));
     if game.options.is_client_start() {
         game.native_client_stopped();
         game.native_game_shutting_down();

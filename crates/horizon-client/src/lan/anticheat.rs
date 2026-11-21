@@ -9,16 +9,19 @@ use crate::collisions::SceneCollisions;
 use horizon_anticheat::{Check, Config, Strikes};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_core::nbt::{JavaString, Tag};
-use std::{io::Write, time::Instant};
+use std::{
+    io::Write,
+    sync::{Arc, Mutex, PoisonError},
+    time::Instant,
+};
 
 pub struct Anticheat {
     pub config: Config,
-    /// The thread writing `log`, started at the first flag: the tick only hands it the lines.
-    log: Option<LogWriter>,
+    /// The thread writing `log`, started at the first flag: the tick only hands it the lines. Shared with
+    /// the anticheats of the server's resident regions ([`Anticheat::for_region`]), as `strikes` is.
+    log: Arc<Mutex<Option<LogWriter>>>,
     /// The players' kicks by check, read from `strikes` at the first kick.
-    strikes: Option<Strikes>,
-    /// When the previous server tick started, for the timer's balance.
-    last_tick: Option<Instant>,
+    strikes: Arc<Mutex<Option<Strikes>>>,
     tick_rate: f32,
 }
 
@@ -26,10 +29,20 @@ impl Anticheat {
     pub fn new(config: Config) -> Self {
         Self {
             config,
-            log: None,
-            strikes: None,
-            last_tick: None,
+            log: Arc::default(),
+            strikes: Arc::default(),
             tick_rate: 20.0,
+        }
+    }
+
+    /// The anticheat of a resident region's hub (`game/runtime/regions.rs`), whose players' packets it
+    /// handles on the region's thread: the same settings, flag log and kicks.
+    pub fn for_region(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            log: Arc::clone(&self.log),
+            strikes: Arc::clone(&self.strikes),
+            tick_rate: self.tick_rate,
         }
     }
 
@@ -37,7 +50,8 @@ impl Anticheat {
         if self.config.log.is_empty() {
             return;
         }
-        if self.log.is_none() {
+        let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
+        if log.is_none() {
             let path = std::path::PathBuf::from(&self.config.log);
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -68,12 +82,12 @@ impl Anticheat {
             else {
                 return;
             };
-            self.log = Some(LogWriter {
+            *log = Some(LogWriter {
                 send: Some(send),
                 thread: Some(thread),
             });
         }
-        if let Some(send) = self.log.as_ref().and_then(|log| log.send.as_ref()) {
+        if let Some(send) = log.as_ref().and_then(|log| log.send.as_ref()) {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
             let _ = send.send(format!("[{time}] {line}\n"));
         }
@@ -83,7 +97,8 @@ impl Anticheat {
     /// count is saved at once, so a restart doesn't forgive it.
     fn strike(&mut self, uuid: u128, check: Check) -> (u32, bool) {
         let path = std::path::Path::new(&self.config.strikes);
-        let strikes = self.strikes.get_or_insert_with(|| {
+        let mut strikes = self.strikes.lock().unwrap_or_else(PoisonError::into_inner);
+        let strikes = strikes.get_or_insert_with(|| {
             std::fs::read(path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -92,7 +107,7 @@ impl Anticheat {
         let ban_after = self.config.actions(check).ban_after;
         let kick = strikes.kick(&uuid_text(uuid), check, ban_after);
         if !self.config.strikes.is_empty()
-            && let Ok(json) = serde_json::to_vec_pretty(strikes)
+            && let Ok(json) = serde_json::to_vec_pretty(&*strikes)
         {
             let _ = std::fs::write(path, json);
         }
@@ -161,21 +176,26 @@ impl Hub {
         self.anticheat = config.enabled.then(|| Box::new(Anticheat::new(config)));
     }
 
-    /// The start of a server tick: the time since the previous one fills each player's timer balance.
-    pub(super) fn anticheat_tick(&mut self, tick_rate: f32) {
+    /// The start of a server tick (or of a resident region's, `game/runtime/regions.rs`): the time since each
+    /// player's balance was last given it fills the balance. The clock is the player's, so one that moves between
+    /// the server's hub and a region's is given every moment once.
+    pub fn anticheat_tick(&mut self, tick_rate: f32) {
         let Some(ac) = self.anticheat.as_deref_mut() else {
             return;
         };
-        let now = Instant::now();
-        let elapsed = ac.last_tick.replace(now).map(|t| now - t);
         if !ac.config.runs(Check::Timer) {
             return;
         }
+        let now = Instant::now();
         // A new tick rate reaches the client a little later: both start again.
         let restart = ac.tick_rate != tick_rate;
         ac.tick_rate = tick_rate;
-        let ms = elapsed.map_or(0.0, |e| e.as_secs_f64() * 1000.0);
         self.guests.update_all(|g| {
+            let ms = g
+                .anticheat
+                .timer_at
+                .replace(now)
+                .map_or(0.0, |t| (now - t).as_secs_f64() * 1000.0);
             if restart {
                 g.anticheat.timer.reset();
             }
@@ -549,6 +569,19 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A player kicked once on the server's thread and once more in a resident region is banned at
+    /// the second kick, as when both happen on the server's thread.
+    #[test]
+    fn a_regions_anticheat_counts_the_servers_kicks() {
+        let mut server = Anticheat::new(Config {
+            strikes: String::new(),
+            ..Config::default()
+        });
+        let mut region = server.for_region();
+        assert_eq!(server.strike(7, Check::Ground), (1, false));
+        assert_eq!(region.strike(7, Check::Ground), (2, true));
+    }
 
     /// The log's lines reach the file in the order flagged, every one of them by the time the
     /// anticheat is dropped (the server stopping), even a flood written just before.

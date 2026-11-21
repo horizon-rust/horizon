@@ -15,7 +15,7 @@ pub struct TimestampedPacket {
 }
 
 /// A replay being played: its timeline, its speed and the packets that come due.
-pub trait PacketSource {
+pub trait PacketSource: Send {
     /// Current timeline position in milliseconds.
     fn position_ms(&self) -> u32;
     /// Total recording duration in milliseconds.

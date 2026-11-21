@@ -289,7 +289,7 @@ impl Game<'_> {
         {
             // A mod hook or a signal requested the normal closing save.
             if let Err(error) = self.begin_closing_save(true) {
-                self.error = Some(error);
+                self.error = Some(error.into());
                 event_loop.exit();
                 return;
             }
@@ -307,7 +307,7 @@ impl Game<'_> {
                     ));
                 }
                 Err(error) => {
-                    self.error = Some(error);
+                    self.error = Some(error.into());
                     self.exit_on_error(event_loop);
                 }
             }
@@ -315,7 +315,7 @@ impl Game<'_> {
         }
         if let Err(error) = horizon_client::spans::time("world_entry", || self.resume_world_entry())
         {
-            self.error = Some(error);
+            self.error = Some(error.into());
             self.exit_on_error(event_loop);
             return;
         }
@@ -323,7 +323,7 @@ impl Game<'_> {
         if let Some(folder) = self.title.as_mut().and_then(|t| t.take_open_request())
             && let Err(error) = self.open_world(&folder, None, None, false, None)
         {
-            self.error = Some(error);
+            self.error = Some(error.into());
             event_loop.exit();
             return;
         }
@@ -331,7 +331,7 @@ impl Game<'_> {
         if let Some(action) = self.title.as_mut().and_then(|t| t.take_connect_request())
             && let Err(error) = self.title_action(event_loop, action)
         {
-            self.error = Some(error);
+            self.error = Some(error.into());
             event_loop.exit();
             return;
         }
@@ -417,7 +417,7 @@ impl ApplicationHandler for Game<'_> {
         ) {
             Ok(w) => Arc::new(w),
             Err(e) => {
-                self.error = Some(e.into());
+                self.error = Some(e.to_string().into());
                 event_loop.exit();
                 return;
             }
@@ -434,7 +434,7 @@ impl ApplicationHandler for Game<'_> {
                 self.world_renderer_ready = true;
             }
             Err(e) => {
-                self.error = Some(e);
+                self.error = Some(e.into());
                 event_loop.exit();
                 return;
             }

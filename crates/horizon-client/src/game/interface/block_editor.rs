@@ -97,7 +97,7 @@ pub(super) enum Outcome {
 }
 
 /// One edit screen's widgets and rules.
-pub(super) trait Editor {
+pub(super) trait Editor: Send {
     /// The text boxes, in tab order.
     fn edits(&mut self) -> &mut [EditBox];
     /// The widgets for the block entity as it is now, in a `w`×`h` screen.

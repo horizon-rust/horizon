@@ -44,12 +44,12 @@ impl PositionWrite {
 /// A live section boundary for a mob write.  The game supplies this only while
 /// the entity list is lifted; keeping it behind a tiny trait lets the mob code
 /// report a write without borrowing `Game` through its world view.
-pub trait WriteObserver {
+pub trait WriteObserver: Send {
     fn position_written(&mut self, id: u32, from: Vec3, to: Vec3);
 }
 
 /// A shared live observer used inside cloned `MobWorld` views.
-pub type Observer = std::rc::Rc<RefCell<dyn WriteObserver>>;
+pub type Observer = std::sync::Arc<std::sync::Mutex<dyn WriteObserver>>;
 
 #[derive(Default)]
 struct State {
@@ -83,7 +83,10 @@ pub fn record_with(id: u32, join: JoinSeq, from: Vec3, to: Vec3, observer: Optio
         let mut state = state.borrow_mut();
         if state.enabled {
             if let Some(observer) = observer.as_ref() {
-                observer.borrow_mut().position_written(id, from, to);
+                observer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .position_written(id, from, to);
             }
             let mut write = PositionWrite::captured(id, join, from, to);
             write.delivered = observer.is_some();

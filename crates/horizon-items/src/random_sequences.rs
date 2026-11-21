@@ -85,6 +85,53 @@ impl RandomSequences {
         self.settle();
         std::mem::take(&mut self.dirty).then(|| self.to_nbt())
     }
+    /// `n` copies for `n` regions' ticks on threads of their own. The first is these sequences as they stand (its
+    /// draws carry on in [`RandomSequences::join`]); every other region's draws are its own (each sequence and
+    /// the salt mixed with the region's number), so two regions never roll the same loot in one tick.
+    pub fn split(&self, n: usize) -> Vec<Self> {
+        (0..n)
+            .map(|r| {
+                let mut copy = self.clone();
+                if r > 0 {
+                    // Its own flag: set when the region draws, for [`RandomSequences::absorb`].
+                    copy.dirty = false;
+                    copy.watched = None;
+                    let k = (r as u64).wrapping_mul(GOLDEN_RATIO);
+                    copy.salt ^= k as i32;
+                    for random in copy.sequences.values_mut() {
+                        let (lo, hi) = random.state_words();
+                        *random = XoroshiroRandom::from_state(
+                            mix_stafford13(lo ^ k),
+                            mix_stafford13(hi.wrapping_add(k)),
+                        );
+                    }
+                }
+                copy
+            })
+            .collect()
+    }
+    /// The first region's sequences from [`RandomSequences::split`] become these.
+    pub fn join(&mut self, mut regions: Vec<Self>) {
+        if !regions.is_empty() {
+            self.settle();
+            let sequences = regions.swap_remove(0).sequences;
+            self.dirty |= sequences != self.sequences;
+            self.sequences = sequences;
+        }
+    }
+    /// A region from [`RandomSequences::split`] that stays out for many ticks and comes home alone: when it drew,
+    /// its streams (the new ones too) become these, so the draws carry on where it left them and a later split
+    /// does not repeat them. A region that did not draw leaves these as they are. With several regions on one
+    /// level, the last one home wins an id they all drew from; each stream is a valid, separate one.
+    pub fn absorb(&mut self, mut region: Self) {
+        region.settle();
+        if !region.dirty {
+            return;
+        }
+        self.settle();
+        self.sequences.extend(region.sequences);
+        self.dirty = true;
+    }
     /// Lends sequence `id` out (created if missing); `give_back` returns it. Lending
     /// is no draw; what was drawn from it marks the data when it comes back.
     pub fn lend(&mut self, id: &str, world_seed: i64) -> XoroshiroRandom {
@@ -198,6 +245,75 @@ impl RandomSequences {
 mod tests {
     use super::*;
     use horizon_core::random::RandomSource;
+
+    /// A resident region's draws are the level's once it lands: the next split carries on after them, and the
+    /// save has them; a region that drew nothing changes nothing.
+    #[test]
+    fn a_landed_region_leaves_its_draws_with_the_level() {
+        let mut level = RandomSequences::default();
+        level.get("minecraft:x", 42).next_int_bound(10).unwrap();
+        assert!(level.take_dirty_nbt().is_some());
+        let mut parts = level.split(3);
+        parts.remove(0);
+        let before = level.clone();
+        // Region 1 draws (and makes a stream of its own); region 2 does not.
+        let drawn = parts[0]
+            .get("minecraft:y", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        parts[0]
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        let mut resumed = parts[0].clone();
+        let idle = parts.remove(1);
+        level.absorb(idle);
+        assert_eq!(level.sequences, before.sequences);
+        assert!(level.take_dirty_nbt().is_none());
+        level.absorb(parts.remove(0));
+        assert!(level.take_dirty_nbt().is_some());
+        let next = level
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        let expected = resumed
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        assert_eq!(next, expected);
+        assert!(level.ids().contains(&"minecraft:y".to_owned()));
+        let _ = drawn;
+    }
+
+    /// The first region carries on the sequences' own draws; the others draw differently from each other.
+    #[test]
+    fn regions_draw_apart_and_the_first_carries_on() {
+        let mut sequences = RandomSequences::default();
+        sequences.get("minecraft:x", 42);
+        let mut own = sequences.clone();
+        let expected = own
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        let mut parts = sequences.split(3);
+        let draws: Vec<i32> = parts
+            .iter_mut()
+            .map(|p| p.get("minecraft:x", 42).next_int_bound(1_000_000).unwrap())
+            .collect();
+        assert_eq!(draws[0], expected);
+        assert_ne!(draws[1], draws[0]);
+        assert_ne!(draws[2], draws[1]);
+        sequences.join(parts);
+        let next = sequences
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        let again = own
+            .get("minecraft:x", 42)
+            .next_int_bound(1_000_000)
+            .unwrap();
+        assert_eq!(next, again);
+    }
 
     #[test]
     fn sequences_are_deterministic_and_resettable() {

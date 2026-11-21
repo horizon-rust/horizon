@@ -87,6 +87,9 @@ pub struct World {
     pub chunks: crate::chunk_map::ChunkMap,
     pub random: LevelRandom,
     pub revision: u64,
+    /// For a region's world: the level's `revision` when it was lent, so that what the region wrote adds to the
+    /// level's count on its way back instead of hiding behind another region's.
+    pub lent_revision: u64,
     pub health_rules: HealthRules,
     pub air: BlockStateId,
     /// Sections whose geometry changed and need remeshing.
@@ -316,6 +319,7 @@ impl World {
             chunks: Default::default(),
             random: LevelRandom::for_level(LegacyRandom::new(seed)),
             revision: 0,
+            lent_revision: 0,
             health_rules: HealthRules::default(),
             air,
             fast_lava: false,
@@ -354,6 +358,175 @@ impl World {
             moving_pistons: Vec::new(),
             shulkers: FxHashMap::default(),
             pois: Default::default(),
+        }
+    }
+    /// A world for each region, holding the region's chunks and their block entities, moved out of this one, and
+    /// copies of the level-wide values, for a region's ticks on a thread of its own. What the ticks change comes
+    /// back with [`World::take_back`]. To a region every chunk not lent to it is not loaded.
+    pub fn lend(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn((i32, i32)) -> Option<usize>,
+        seeds: &[i64],
+    ) -> Vec<World> {
+        let chunks = self.chunks.lend(regions, &region_of);
+        let mut entities = self
+            .block_entities
+            .lend(regions, |p| region_of((p.0 >> 4, p.2 >> 4)));
+        let mut inhabited: Vec<FxHashMap<(i32, i32), i64>> =
+            (0..regions).map(|_| FxHashMap::default()).collect();
+        for (key, t) in self
+            .inhabited
+            .extract_if(|key, _| region_of(*key).is_some())
+        {
+            if let Some(r) = region_of(key) {
+                inhabited[r].insert(key, t);
+            }
+        }
+        let mut out: Vec<World> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(r, chunks)| {
+                let mut w = self.stand_in();
+                w.random = LevelRandom::for_level(LegacyRandom::new(
+                    seeds.get(r).copied().unwrap_or(r as i64),
+                ));
+                w.lent_revision = self.revision;
+                w.chunks = chunks;
+                w.block_entities = std::mem::take(&mut entities[r]);
+                w.inhabited = std::mem::take(&mut inhabited[r]);
+                w.watched = self.watched.clone();
+                w.block_log = self.block_log.as_ref().map(|_| Vec::new());
+                w.path_writes = self.path_writes.as_ref().map(|_| Vec::new());
+                w.light_log = self.light_log.as_ref().map(|_| FxHashMap::default());
+                w
+            })
+            .collect();
+        // What a region's ticks read of these, by position: copies of the region's own.
+        for (&pos, &v) in &self.chest_openers {
+            if let Some(r) = region_of((pos.0 >> 4, pos.2 >> 4)) {
+                out[r].chest_openers.insert(pos, v);
+            }
+        }
+        for (pos, name) in &self.block_names {
+            if let Some(r) = region_of((pos.0 >> 4, pos.2 >> 4)) {
+                out[r].block_names.insert(*pos, name.clone());
+            }
+        }
+        // The block and light changes not sent yet (a command's, made on the server's thread) go with their
+        // chunks: a region's thread sends its own players its chunks' changes.
+        if let Some(log) = self.block_log.as_mut() {
+            for p in log.extract_if(.., |p| region_of((p.0 >> 4, p.2 >> 4)).is_some()) {
+                if let Some(r) = region_of((p.0 >> 4, p.2 >> 4)) {
+                    out[r].block_log.get_or_insert_with(Vec::new).push(p);
+                }
+            }
+        }
+        for p in self
+            .block_log_held
+            .extract_if(.., |p| region_of((p.0 >> 4, p.2 >> 4)).is_some())
+        {
+            if let Some(r) = region_of((p.0 >> 4, p.2 >> 4)) {
+                out[r].block_log_held.push(p);
+            }
+        }
+        for key in self.bulk_log.extract_if(|key| region_of(*key).is_some()) {
+            if let Some(r) = region_of(key) {
+                out[r].bulk_log.insert(key);
+            }
+        }
+        if let Some(log) = self.light_log.as_mut() {
+            for (key, mask) in log.extract_if(|key, _| region_of(*key).is_some()) {
+                if let Some(r) = region_of(key) {
+                    out[r]
+                        .light_log
+                        .get_or_insert_with(Default::default)
+                        .insert(key, mask);
+                }
+            }
+        }
+        out
+    }
+    /// An empty world with this one's level-wide values (shape, time, weather, rules), to stand in its place
+    /// while a region's world is in use: whatever reads the level's time or weather meanwhile reads the same.
+    pub fn stand_in(&self) -> World {
+        let mut w = World::new(self.air, 0);
+        w.shape = self.shape;
+        w.fast_lava = self.fast_lava;
+        w.infiniburn.clone_from(&self.infiniburn);
+        w.health_rules = self.health_rules;
+        w.game_time = self.game_time;
+        w.day_time = self.day_time;
+        w.end_clock = self.end_clock;
+        w.weather = self.weather;
+        w.revision = self.revision;
+        w
+    }
+    /// A region's world from [`World::lend`] back in this one: its chunks and block entities, and what its
+    /// ticks logged (sections to remesh, light to redo, writes), after this world's own.
+    pub fn take_back(&mut self, region: World) {
+        let World {
+            chunks,
+            revision,
+            lent_revision,
+            dirty_sections,
+            dirty_light,
+            light_edits,
+            modified,
+            block_entities,
+            chest_openers,
+            block_names,
+            watched_writes,
+            inhabited,
+            block_log,
+            block_log_held,
+            path_writes,
+            bulk_log,
+            light_log,
+            attachment_syncs,
+            attachment_landings,
+            ..
+        } = region;
+        // Each region counted its own writes from the same start: the total adds them, so no region's writes hide
+        // behind another's (a cache keyed on the count sees every landing that changed something).
+        let wrote = revision.wrapping_sub(lent_revision);
+        let changed = wrote > 0 || !modified.is_empty() || !dirty_light.is_empty();
+        self.revision = self
+            .revision
+            .wrapping_add(if changed { wrote.max(1) } else { 0 });
+        // The region's maps replace the server's copies for its chunks: a chest closed or a container name
+        // dropped by the region's ticks must not stay on the server (an "open" chest forever, a name that passes
+        // to the next block placed there).
+        let lent: FxHashSet<(i32, i32)> = chunks.keys().copied().collect();
+        let in_region = |p: &(i32, i32, i32)| lent.contains(&(p.0 >> 4, p.2 >> 4));
+        self.chest_openers.retain(|p, _| !in_region(p));
+        self.block_names.retain(|p, _| !in_region(p));
+        self.chunks.take_back(chunks);
+        self.block_entities.take_back(block_entities);
+        for ((x, z), mask) in dirty_sections.columns() {
+            self.dirty_sections.insert_column_mask((x, z), mask);
+        }
+        self.dirty_light.extend(dirty_light);
+        self.light_edits.extend(light_edits);
+        self.modified.extend(modified.iter().copied());
+        self.chest_openers.extend(chest_openers);
+        self.block_names.extend(block_names);
+        self.watched_writes.extend(watched_writes);
+        self.inhabited.extend(inhabited);
+        self.block_log_held.extend(block_log_held);
+        self.bulk_log.extend(bulk_log);
+        self.attachment_syncs.extend(attachment_syncs);
+        self.attachment_landings.extend(attachment_landings);
+        if let (Some(all), Some(log)) = (self.block_log.as_mut(), block_log) {
+            all.extend(log);
+        }
+        if let (Some(all), Some(log)) = (self.path_writes.as_mut(), path_writes) {
+            all.extend(log);
+        }
+        if let (Some(all), Some(log)) = (self.light_log.as_mut(), light_log) {
+            for (key, mask) in log {
+                *all.entry(key).or_default() |= mask;
+            }
         }
     }
     /// A controlled blockstate scene for the native scene probes: material
@@ -1001,4 +1174,67 @@ mod tests {
 pub struct BlockEntityExtras {
     pub source: Option<horizon_core::nbt::Tag>,
     pub pending_loot: Option<crate::chunk::PendingContainerLoot>,
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    use crate::chunk::Chunk;
+    use std::sync::Arc;
+
+    /// Two regions' worlds go out with their chunks and per-chunk records, log what their ticks changed, and
+    /// everything comes back to the one world.
+    #[test]
+    fn lent_worlds_come_back_with_what_their_ticks_logged() {
+        let mut world = World::new(BlockStateId(0), 1);
+        for x in 0..4 {
+            world.chunks.insert((x, 0), Arc::new(Chunk::empty(0, 0)));
+            world.inhabited.insert((x, 0), 10 + i64::from(x));
+        }
+        world.game_time = 77;
+        world.chest_openers.insert((1, 64, 1), (2, 3.0));
+        world.chest_openers.insert((33, 64, 1), (1, 4.0));
+        let mut parts = world.lend(2, |(x, _)| Some((x / 2) as usize), &[5, 6]);
+        assert_eq!(world.chunks.len(), 0);
+        assert_eq!(parts[0].chunks.len(), 2);
+        assert_eq!(parts[1].game_time, 77);
+        assert_eq!(parts[0].chest_openers.len(), 1);
+        assert_eq!(parts[0].inhabited.len(), 2);
+        // Region 1's tick edits something in its chunk 3.
+        parts[1].modified.insert((3, 0));
+        parts[1].dirty_light.insert((3, 0));
+        parts[1].revision += 1;
+        // Region 0 wrote one block too: both count.
+        parts[0].revision += 1;
+        for part in parts {
+            world.take_back(part);
+        }
+        assert_eq!(world.chunks.len(), 4);
+        assert_eq!(world.inhabited[&(3, 0)], 13);
+        assert!(world.modified.contains(&(3, 0)));
+        assert!(world.dirty_light.contains(&(3, 0)));
+        assert_eq!(world.revision, 2);
+        assert_eq!(world.chest_openers.len(), 2);
+    }
+
+    /// A chest the region closed, and a name it dropped, are gone from the world when it comes back.
+    #[test]
+    fn a_closed_chest_and_a_dropped_name_do_not_come_back() {
+        let mut world = World::new(BlockStateId(0), 1);
+        world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        world.chunks.insert((5, 0), Arc::new(Chunk::empty(0, 0)));
+        world.chest_openers.insert((1, 64, 1), (2, 3.0));
+        world
+            .block_names
+            .insert((2, 64, 2), horizon_core::nbt::Tag::String("old".into()));
+        // Another chunk, not lent: stays.
+        world.chest_openers.insert((81, 64, 1), (1, 4.0));
+        let mut parts = world.lend(1, |(x, _)| (x == 0).then_some(0), &[5]);
+        parts[0].chest_openers.clear();
+        parts[0].block_names.clear();
+        world.take_back(parts.remove(0));
+        assert_eq!(world.chest_openers.len(), 1);
+        assert!(world.chest_openers.contains_key(&(81, 64, 1)));
+        assert!(world.block_names.is_empty());
+    }
 }

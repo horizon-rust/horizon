@@ -222,6 +222,91 @@ impl Ticks {
     pub fn remove_chunk(&mut self, pos: ChunkPos) -> (Option<ChunkTicks>, Option<ChunkTicks>) {
         (self.blocks.remove_chunk(pos), self.fluids.remove_chunk(pos))
     }
+    /// Each region's chunks' ticks moved into a `Ticks` of its own, for the region's block ticks on a thread of
+    /// its own. Each region counts sub-ticks and block entity ids in a range of its own, so nothing it makes
+    /// clashes with another's (`first`: the number of the first, when only a later region is lent); `seeds` give each its own random tick draws. [`Ticks::take_back`] returns it all.
+    pub fn lend(&mut self, chunks: &[Vec<ChunkPos>], seeds: &[i32], first: usize) -> Vec<Ticks> {
+        let mut region_of: horizon_core::fast_hash::FxHashMap<(i32, i32), usize> =
+            Default::default();
+        let mut out: Vec<Ticks> = chunks
+            .iter()
+            .enumerate()
+            .map(|(r, keys)| {
+                let band = ((first + r) as i64 + 1) << 40;
+                let mut t =
+                    Ticks::new(seeds.get(r).copied().unwrap_or(r as i32) ^ self.random_tick_value);
+                t.sub_tick = self.sub_tick.wrapping_add(band);
+                t.next_block_entity_id = self.next_block_entity_id.wrapping_add(band as u64);
+                for &pos in keys {
+                    region_of.insert((pos.x, pos.z), r);
+                    if let Some(ticks) = self.blocks.remove_chunk(pos) {
+                        let _ = t.blocks.add_chunk(pos, ticks);
+                    }
+                    if let Some(ticks) = self.fluids.remove_chunk(pos) {
+                        let _ = t.fluids.add_chunk(pos, ticks);
+                    }
+                }
+                t
+            })
+            .collect();
+        let of = |p: &BlockPos| region_of.get(&(p.x >> 4, p.z >> 4)).copied();
+        for (pos, output) in self.comparator_outputs.extract_if(|p, _| of(p).is_some()) {
+            out[of(&pos).expect("extracted for its region")]
+                .comparator_outputs
+                .insert(pos, output);
+        }
+        for (pos, time) in self.torch_toggles.extract_if(.., |(p, _)| of(p).is_some()) {
+            out[of(&pos).expect("extracted for its region")]
+                .torch_toggles
+                .push((pos, time));
+        }
+        // Moving pistons and queued block events at the region's blocks go with it, in their order: the server's
+        // tick would find their chunks gone, and the blocks they move or the events they carry would be lost.
+        for (pos, piston) in std::mem::take(&mut self.moving_pistons) {
+            match of(&pos) {
+                Some(r) => {
+                    self.moving_piston_ids.remove(&pos);
+                    out[r].moving_piston_ids.insert(pos, piston.id);
+                    out[r].moving_pistons.push((pos, piston));
+                }
+                None => self.moving_pistons.push((pos, piston)),
+            }
+        }
+        for event in std::mem::take(&mut self.block_events) {
+            match of(&event.pos) {
+                Some(r) => {
+                    self.block_event_keys.remove(&event);
+                    out[r].queue_block_event(event);
+                }
+                None => self.block_events.push_back(event),
+            }
+        }
+        out
+    }
+    /// A region's ticks from [`Ticks::lend`] back, with what they scheduled and queued (block events, piston
+    /// pushes, new moving pistons) after this one's. `chunks` are the ones it was lent.
+    pub fn take_back(&mut self, mut region: Ticks, chunks: &[ChunkPos]) {
+        for &pos in chunks {
+            if let Some(ticks) = region.blocks.remove_chunk(pos) {
+                let _ = self.blocks.add_chunk(pos, ticks);
+            }
+            if let Some(ticks) = region.fluids.remove_chunk(pos) {
+                let _ = self.fluids.add_chunk(pos, ticks);
+            }
+        }
+        self.sub_tick = self.sub_tick.max(region.sub_tick & ((1 << 40) - 1));
+        self.next_block_entity_id = self.next_block_entity_id.max(region.next_block_entity_id);
+        self.comparator_outputs.extend(region.comparator_outputs);
+        self.torch_toggles.extend(region.torch_toggles);
+        for (pos, piston) in region.moving_pistons {
+            self.moving_piston_ids.insert(pos, piston.id);
+            self.moving_pistons.push((pos, piston));
+        }
+        self.piston_pushes.extend(region.piston_pushes);
+        for event in region.block_events {
+            self.queue_block_event(event);
+        }
+    }
     /// `ServerLevel.nextSubTickCount`, shared by block and fluid ticks.
     pub fn next_sub_tick(&mut self) -> i64 {
         let value = self.sub_tick;
@@ -377,6 +462,39 @@ mod block_event_queue_tests {
         assert_eq!(ticks.pop_block_event(), None);
     }
 
+    /// Events queued at a lent chunk's blocks go to its region and come back in order; the others stay.
+    #[test]
+    fn lent_chunks_take_their_block_events_and_return_them() {
+        use horizon_core::position::ChunkPos;
+        let at = |x: i32, i: i32| BlockEventData {
+            pos: BlockPos::new(x, 64, 0),
+            block: BlockId(1),
+            param_a: i,
+            param_b: 0,
+            note_override: None,
+        };
+        let mut ticks = Ticks::new(0);
+        for e in [at(1, 0), at(40, 1), at(2, 2), at(41, 3)] {
+            assert!(ticks.queue_block_event(e));
+        }
+        let chunks = vec![vec![ChunkPos::new(0, 0)]];
+        let mut lent = ticks.lend(&chunks, &[1], 0);
+        assert_eq!(
+            ticks.block_events.iter().copied().collect::<Vec<_>>(),
+            [at(40, 1), at(41, 3)]
+        );
+        assert_eq!(
+            lent[0].block_events.iter().copied().collect::<Vec<_>>(),
+            [at(1, 0), at(2, 2)]
+        );
+        ticks.take_back(lent.remove(0), &chunks[0]);
+        assert_eq!(ticks.block_events.len(), 4);
+        assert!(
+            !ticks.queue_block_event(at(1, 0)),
+            "the dedupe set has them again"
+        );
+    }
+
     #[test]
     fn distinct_events_pop_in_queue_order() {
         let mut ticks = Ticks::new(0);
@@ -467,5 +585,68 @@ mod tests {
         let id = ticks.moving_pistons[scan(&ticks, at(2)).unwrap()].1.id;
         assert!(ticks.moving_piston_has(at(2), id));
         assert!(!ticks.moving_piston_has(at(2), id + 1));
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+
+    /// Ticks lent to two regions, one tick added in each, all back where they were.
+    #[test]
+    fn lent_ticks_come_back_with_what_the_regions_scheduled() {
+        let mut ticks = Ticks::new(7);
+        let (a, b, c) = (
+            ChunkPos::new(0, 0),
+            ChunkPos::new(40, 0),
+            ChunkPos::new(-40, 3),
+        );
+        for pos in [a, b, c] {
+            ticks.add_empty_chunk(pos).unwrap();
+        }
+        ticks.schedule_block(
+            0,
+            BlockPos::new(1, 64, 1),
+            BlockId(5),
+            10,
+            TickPriority::Normal,
+        );
+        ticks.schedule_block(
+            0,
+            BlockPos::new(641, 64, 1),
+            BlockId(5),
+            10,
+            TickPriority::Normal,
+        );
+        ticks.schedule_fluid(0, BlockPos::new(-639, 64, 49), FluidKind::Water, 5);
+        let regions = vec![vec![a], vec![b]];
+        let mut lent = ticks.lend(&regions, &[1, 2], 0);
+        // Only the chunk no region holds stays.
+        assert_eq!(ticks.blocks.count() + ticks.fluids.count(), 1);
+        assert_eq!(lent[0].blocks.count(), 1);
+        lent[0].schedule_block(
+            0,
+            BlockPos::new(2, 64, 2),
+            BlockId(6),
+            3,
+            TickPriority::Normal,
+        );
+        lent[1].schedule_block(
+            0,
+            BlockPos::new(642, 64, 2),
+            BlockId(6),
+            3,
+            TickPriority::Normal,
+        );
+        for (r, region) in lent.into_iter().enumerate() {
+            ticks.take_back(region, &regions[r]);
+        }
+        assert_eq!(ticks.blocks.count(), 4);
+        assert_eq!(ticks.fluids.count(), 1);
+        assert!(
+            ticks
+                .blocks
+                .has_scheduled(BlockPos::new(642, 64, 2), TickTypeId(6))
+        );
     }
 }

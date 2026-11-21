@@ -7,7 +7,6 @@ use crate::{
     section_mask::SectionMask,
 };
 use horizon_world::{level::RandomTickMask, registry::BlockStateId};
-use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 /// A value snapshot, in ascending section order, with no per-chunk allocation.
@@ -56,10 +55,14 @@ struct Cached {
     read: Vec<Weak<Section>>,
     sections: Sections,
     /// Each ticking section's [`RandomTickMask`], built at its first draw
-    /// and dropped when the section is read again. `Rc`, not `Arc`: the
-    /// tick thread hands one out per ticking section per tick, and an atomic
-    /// count on a mask out of cache stalled the whole random tick loop.
-    masks: Vec<Option<Rc<RandomTickMask>>>,
+    /// and dropped when the section is read again. Owned, never shared by a
+    /// reference count: the tick thread takes a mask per ticking section per
+    /// tick, and an atomic count on a mask out of cache stalled the whole random
+    /// tick loop, while an `Rc` cannot move with the level to a region's thread.
+    /// [`RandomTickSections::next_masked`] hands out a plain copy (512 bytes read
+    /// in a row, which the loop's draws would touch anyway), so nothing in the
+    /// loop counts references.
+    masks: Vec<Option<Box<RandomTickMask>>>,
 }
 /// Vanilla keeps a count of randomly ticking blocks and fluids per section,
 /// updated by every `setBlockState`, and ticks the sections where it is above
@@ -81,6 +84,24 @@ impl RandomTickSections {
     }
     pub fn remove(&mut self, key: &(i32, i32)) {
         self.chunks.remove(key);
+    }
+    /// Each region's chunks' cached sections, moved out for the region's ticks.
+    pub fn lend(
+        &mut self,
+        regions: usize,
+        region_of: impl Fn((i32, i32)) -> Option<usize>,
+    ) -> Vec<Self> {
+        let mut out: Vec<Self> = (0..regions).map(|_| Self::default()).collect();
+        for (key, cached) in self.chunks.extract_if(|key, _| region_of(*key).is_some()) {
+            out[region_of(key).expect("extracted for its region")]
+                .chunks
+                .insert(key, cached);
+        }
+        out
+    }
+    /// The sections [`RandomTickSections::lend`] lent, back.
+    pub fn take_back(&mut self, region: Self) {
+        self.chunks.extend(region.chunks);
     }
     /// The sections of `chunk` holding a randomly ticking block or fluid.
     pub fn get(&mut self, key: (i32, i32), chunk: &Arc<Chunk>, facts: &BlockFacts) -> Sections {
@@ -106,16 +127,16 @@ impl RandomTickSections {
         facts: &BlockFacts,
         mut candidate: impl FnMut(u32) -> bool,
         from_y: i32,
-    ) -> Option<(i32, Rc<RandomTickMask>)> {
+    ) -> Option<(i32, RandomTickMask)> {
         let cached = Self::refresh(&mut self.chunks, key, chunk, &mut |id| {
             facts.get(BlockStateId(id)).random_ticks
         });
         let y = cached.sections.from(from_y)?;
         let index = ((y - cached.sections.base) >> 4) as usize;
         let mask = cached.masks[index].get_or_insert_with(|| {
-            Rc::new(Self::candidate_mask(&chunk.sections[index], &mut candidate))
+            Box::new(Self::candidate_mask(&chunk.sections[index], &mut candidate))
         });
-        Some((y, mask.clone()))
+        Some((y, (**mask).clone()))
     }
     /// Builds, on the tick's helper threads (`crate::parallel`), the masks [`Self::next_masked`]
     /// will build at the first draw in each ticking section of the chunks `keys` names, from their
@@ -151,7 +172,7 @@ impl RandomTickSections {
         });
         for ((key, i, _), mask) in todo.into_iter().zip(masks) {
             if let Some(cached) = self.chunks.get_mut(&key) {
-                cached.masks[i] = Some(Rc::new(mask));
+                cached.masks[i] = Some(Box::new(mask));
             }
         }
     }

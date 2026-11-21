@@ -839,6 +839,61 @@ leaving its school, a parrot imitating, a brain's durations) come from a random 
 on different threads do not wait for each other. The odds are vanilla's; the values are not the ones the level's
 random would have given ([mob-islands.md](mob-islands.md#every-turn-draws-its-own-random)).
 
+### Region ticking: `[regions]`
+
+Off by default. `[regions] enabled = true` ticks the world by regions: with players in two or more separate areas of a
+level, each area's chunks, entities and players are ticked on a thread of their own (a resident region), so a busy
+corner does not slow the rest. The server thread still does what no region owns (joins and leaves, chat and commands,
+the End's dragon fight). It applies at the next start. It turns the parallel tick on too, since regions share its helper
+threads. With it off (the default), the tick is vanilla's serial one, or the older parallel tick if `[engine] parallel_tick`
+is on: that setting alone never splits the world into regions.
+
+```toml
+[regions]
+enabled = true
+deadline_ms = 50             # how long a tick waits for its regions; a slower one keeps going and comes home later
+resident_ticks = 20          # ticks a region stays on its thread before it comes home to be split anew
+```
+
+`/tps` (TPS and tick times, and each region's last tick) and `/mspt` are Horizon's own commands. A dedicated server
+always has them (operators only), whether or not `horizon-pregen` is on.
+
+The environment variables still override it: `HORIZON_PARALLEL_TICK=0` keeps every tick serial, `HORIZON_REGIONS=0` or
+`HORIZON_REGION_THREADS=0` keep the older parallel tick without regions (`HORIZON_REGIONS=1` is what `enabled = true` sets), and `HORIZON_REGION_DEADLINE_MS` and `HORIZON_RESIDENT_TICKS` set the two
+numbers.
+
+#### What changes with regions on
+
+Region ticking trades some of vanilla's behaviour for speed, the way other region-threaded servers do. With it on:
+
+- **Order.** Regions tick at the same time, so what happens in one region and what happens in another in the same
+  tick has no order, and the random draws are not the ones a serial tick would make. Regions read the clock and the
+  weather one tick late.
+- **Things that need the whole level bring regions home first.** Chat, commands (the console's too), datapack tick
+  functions, a join or a leave, a death, a portal or a teleport to another level, a save, and a native mod's hook
+  for a player make the regions involved (often all of them) come back to the server's thread before they run. They
+  work as without regions; a busy chat or a datapack that runs every tick costs most of the gain.
+- **Command blocks** reach only the chunks and players of the region they are in.
+- **Scores** a region's players change reach the clients when the region comes home (within `resident_ticks`).
+- **Raids and the dragon fight** run on the server's thread: a level with a raid near a player, and the End until its
+  dragon is killed, are not split. A raid a player starts in a region brings that region home.
+- **The level-wide spawners** (wandering trader, pillager patrols, cats, phantoms, zombie sieges) count down in each
+  region on their own, so a server with many regions may see them more often than vanilla does.
+- **The anticheat** checks each region's players on that region's thread, with the same settings, log and kicks.
+  Its chat alerts reach the operators in the same region; the console and the log get every one.
+- **Native mods** are called from a region's thread for that region's players and chunks. A mod that keeps state of
+  its own across players must expect that. Writes to the tab list, nicknames or hidden players for players away in a
+  region, `level_tick_post` reads of their chunks, and the Input and Sneak events of their players are not
+  delivered yet.
+- **Light** at the border of a region is worked out again when the region comes home.
+- **New terrain** around a player in a region is generated and lit on the server's thread and reaches the player
+  once the region has come home for it (one or two `resident_ticks` periods), so a player who teleports to new
+  ground waits a little longer for it.
+
+A region that panics comes home and the level ticks whole for 200 ticks before it is split again; the log says
+`a region of <level> failed`. A save that writes none of the entities in memory logs `regions: save lost entities`:
+please report it.
+
 ### Mob AI far from players: `[entities] dab`
 
 Off by default, because it is not vanilla's behaviour: mobs far from every player react more slowly. It is

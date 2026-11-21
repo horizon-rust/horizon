@@ -1020,6 +1020,8 @@ impl Game<'_> {
             "advancement" => self.cmd_advancement(ctx),
             "gamerule" => self.cmd_gamerule(ctx),
             "difficulty" => self.cmd_difficulty(ctx),
+            "tps" => self.cmd_tps(),
+            "mspt" => self.cmd_mspt(),
             "seed" => {
                 let seed = self.level.seed.to_string();
                 let value = Text::copyable(seed);
@@ -1282,9 +1284,7 @@ impl Game<'_> {
             .as_deref()
             .map(horizon_client::item_data::command_components)
         {
-            Some(Ok(tag)) => {
-                horizon_client::item_data::decode_components_for_item(&id, Some(&tag))
-            }
+            Some(Ok(tag)) => horizon_client::item_data::decode_components_for_item(&id, Some(&tag)),
             Some(Err(e)) => return Err(CommandError::new(Text::literal(e))),
             None => (0, None),
         };
@@ -4886,20 +4886,25 @@ mod forced_respawn_tests {
         with_game(|game| {
             game.build_registries();
             game.set_allow_commands(true);
-            for pos in [[1_000_000, 1024, -1_000_000], [-29_999_999, -1024, 29_999_999]] {
+            for pos in [
+                [1_000_000, 1024, -1_000_000],
+                [-29_999_999, -1024, 29_999_999],
+            ] {
                 assert!(!game.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4)));
-                assert!(game.run_command(&format!(
-                    "setworldspawn {} {} {}",
-                    pos[0], pos[1], pos[2]
-                )));
+                assert!(
+                    game.run_command(&format!("setworldspawn {} {} {}", pos[0], pos[1], pos[2]))
+                );
                 assert_eq!(game.level.world_spawn, Some(pos));
             }
             let previous = game.level.world_spawn;
-            for pos in [[30_000_000, 64, 0], [0, 20_000_000, 0], [0, 64, -30_000_001]] {
-                assert!(!game.run_command(&format!(
-                    "setworldspawn {} {} {}",
-                    pos[0], pos[1], pos[2]
-                )));
+            for pos in [
+                [30_000_000, 64, 0],
+                [0, 20_000_000, 0],
+                [0, 64, -30_000_001],
+            ] {
+                assert!(
+                    !game.run_command(&format!("setworldspawn {} {} {}", pos[0], pos[1], pos[2]))
+                );
                 assert_eq!(game.level.world_spawn, previous);
             }
         });

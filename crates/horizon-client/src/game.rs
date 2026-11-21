@@ -53,7 +53,7 @@ macro_rules! world_biomes {
     };
 }
 /// The world's packs' content files, as a field-level borrow (see the macros).
-fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
+fn pack_files(world_tables: &Option<Arc<WorldTables>>) -> horizon_world::loot::PackOverlay<'_> {
     match world_tables {
         Some(t) => horizon_world::loot::PackOverlay {
             conditions: &t.conditions,
@@ -943,6 +943,8 @@ struct TickScratch {
 }
 
 struct Game<'a> {
+    /// What ticking by regions keeps (`regions.rs`).
+    regions: regions::RegionState,
     /// Shared with an integrated server; `collision` and `motion` borrow from it.
     res: Arc<Resources>,
     rest_loader: Option<WorldRestLoader>,
@@ -1235,7 +1237,7 @@ struct Game<'a> {
     texture_ticks: u64,
     health_hud: hud_layout::HealthHud,
     /// What ends the game with an error; kept as it is, so main can tell a debug crash.
-    error: Option<Box<dyn std::error::Error>>,
+    error: Option<held_error::HeldError>,
     message: Option<(String, Instant)>,
     save: Arc<SaveDir>,
     level: Level,
@@ -1468,7 +1470,7 @@ struct Game<'a> {
     owner_migration: Option<(u128, u128)>,
     /// The world's data packs' content tables, when it has packs (`None`
     /// keeps `Resources.rest`'s own in use).
-    world_tables: Option<WorldTables>,
+    world_tables: Option<Arc<WorldTables>>,
     /// Server-owned loot and item snapshots, independent of client preloads.
     server_loot: horizon_client::structure_blocks::LootSnapshot,
     server_items: Option<Arc<Items>>,
@@ -2049,7 +2051,7 @@ struct Game<'a> {
     player_model: Option<Mob>,
     block_entity_tick_key: Option<block_entity_tick_items::Key>,
     block_entity_tick_items: Option<Box<block_entity_tick_items::Scope>>,
-    wasm_dispatch_failures: std::rc::Rc<std::cell::Cell<u64>>,
+    wasm_dispatch_failures: horizon_mod_runtime::dispatch_failures::DispatchFailures,
 }
 use horizon_gameplay::dim::Dim;
 /// `Inventory.add` on a player's 36 slots (hotbar first) and off hand,
@@ -4401,6 +4403,7 @@ impl Game<'_> {
     /// What the tick runs after the local player's own update: effects, the
     /// world's entities and blocks, and the network hub.
     fn tick_world(&mut self, running: bool) -> Result<()> {
+        let began = Instant::now();
         // Entities added since the last tick join the level before it ticks.
         span("mods_joins_flush", || self.native_joins_flush(false, 0));
         span("share_spawn_conditions", || self.share_spawn_conditions());
@@ -4435,8 +4438,16 @@ impl Game<'_> {
         horizon_client::spans::time("tick_local_hand", || self.tick_local_hand())?;
         horizon_client::spans::time("postprocess_chunks", || self.postprocess_chunks())?;
         let mut sent = None;
+        let mut after_regions = Instant::now();
         if running {
+            let started = self.regions.prof.add(region_profile::Step::Pre, began);
             horizon_client::spans::time("tick_lan_packets", || self.tick_lan_packets());
+            self.regions.prof.add(region_profile::Step::Net, started);
+            // With the parallel tick on, the level's blocks and entities tick by regions on threads of
+            // their own (`regions.rs`); the phases below run on what this thread still holds (the data no
+            // region owns: chunks outside every region, a fight's dragon, mobs of a level not split).
+            horizon_client::spans::time("tick_regions", || self.tick_world_regions())?;
+            after_regions = Instant::now();
             sent = horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
             // What the blocks spawned (a dispensed minecart, a lit TNT, a
             // placed boat) joins before the entities tick.
@@ -4540,7 +4551,12 @@ impl Game<'_> {
         if let (Some(sent), Some(log)) = (sent, self.world.block_log.as_mut()) {
             self.world.block_log_held = log.split_off(sent.min(log.len()));
         }
+        let before_lan = self
+            .regions
+            .prof
+            .add(region_profile::Step::Leftover, after_regions);
         horizon_client::spans::time("tick_lan", || self.tick_lan(false));
+        let after_lan = self.regions.prof.add(region_profile::Step::Lan, before_lan);
         let held = std::mem::take(&mut self.world.block_log_held);
         if let Some(log) = self.world.block_log.as_mut() {
             log.extend(held);
@@ -4624,6 +4640,7 @@ impl Game<'_> {
         if running {
             horizon_client::spans::time("lan_note_joined", || self.lan_note_joined());
         }
+        self.regions.prof.add(region_profile::Step::Late, after_lan);
         Ok(())
     }
     /// The title remains the no-level sentinel while debug options covers it.
@@ -7622,6 +7639,11 @@ impl Game<'_> {
                 self.wake_up(false, false);
             }
             self.wake_guests();
+            // The resident regions wake their players on their next tick.
+            if let Some(h) = self.lan.as_mut() {
+                h.hub.wake_request = true;
+                h.hub.away_sleep = (0, 0, 0);
+            }
             // SleepStatus.removeAllSleepers: waking everyone is not announced.
             self.sleep_seen.1 = 0;
         }
@@ -9069,7 +9091,7 @@ impl Game<'_> {
                 }
                 WindowEvent::RedrawRequested => {
                     if let Err(error) = self.render_closing_save() {
-                        self.error = Some(error);
+                        self.error = Some(error.into());
                         self.exit_on_error(event_loop);
                     }
                 }
@@ -10348,7 +10370,7 @@ impl Game<'_> {
         // open, after the key's own effects (`KeyboardHandler.charTyped`).
         self.screen_chars_typed(typed.as_deref());
         if let Err(e) = result {
-            self.error = Some(e);
+            self.error = Some(e.into());
             self.exit_on_error(event_loop);
         }
     }
@@ -10643,6 +10665,7 @@ impl<'a> Game<'a> {
             guardian_look_scratch: Vec::new(),
             dropped: Default::default(),
             next_entity: 0,
+            regions: Default::default(),
             ticked_entities_through: u32::MAX,
             contact_drops: 0..0,
             particles,
@@ -10847,8 +10870,7 @@ impl<'a> Game<'a> {
             transactions: Default::default(),
             block_entity_tick_key: None,
             block_entity_tick_items: None,
-            wasm_dispatch_failures:
-                horizon_mod_runtime::dispatch_failures::dispatch_failure_counter(),
+            wasm_dispatch_failures: horizon_mod_runtime::dispatch_failures::DispatchFailures,
             contents_changing: Vec::new(),
             mod_screen: None,
             mod_container_viewers: HashMap::new(),

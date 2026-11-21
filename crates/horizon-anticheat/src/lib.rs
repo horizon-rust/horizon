@@ -297,6 +297,10 @@ pub struct Player {
     /// When each check last alerted, in the same milliseconds.
     alerted: [Option<f64>; CHECKS],
     pub timer: timer::Balance,
+    /// When `timer` was last given the time that passed: the player's own clock, not its hub's, as a
+    /// player of a resident region is ticked by the region's hub and, when the region lands, by the
+    /// server's.
+    pub timer_at: Option<std::time::Instant>,
     /// The server tick and height where the ground last held the player.
     pub ground: Option<(u64, f64)>,
     /// The attacks of the client tick being heard.

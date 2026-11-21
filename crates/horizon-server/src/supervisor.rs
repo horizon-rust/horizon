@@ -276,6 +276,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             config.engine.low_memory,
             config.engine.parallel_tick,
             &config.entities,
+            &config.regions,
             transfers.as_deref(),
         );
         let (mut child, _leases) = match spawned {

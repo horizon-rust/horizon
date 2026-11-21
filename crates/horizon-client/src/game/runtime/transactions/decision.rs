@@ -12,7 +12,10 @@
 use super::After as Effect;
 use horizon_client::items::ItemStack;
 use mod_api::{EntityRef, WorldEpoch};
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 #[path = "menu_owner.rs"]
 mod menu_owner;
@@ -101,14 +104,14 @@ struct MenuInner {
 #[derive(Clone)]
 pub(in crate::game) struct Menu {
     id: MenuId,
-    inner: Rc<RefCell<MenuInner>>,
+    inner: Arc<Mutex<MenuInner>>,
 }
 
 impl Menu {
     pub(in crate::game) fn new(state: MenuState) -> Self {
         Self {
             id: MenuId::fresh(),
-            inner: Rc::new(RefCell::new(MenuInner {
+            inner: Arc::new(Mutex::new(MenuInner {
                 epoch: Generation::default(),
                 state,
             })),
@@ -116,7 +119,11 @@ impl Menu {
     }
 
     pub(in crate::game) fn read<R>(&self, f: impl FnOnce(&MenuState) -> R) -> R {
-        f(&self.inner.borrow().state)
+        f(&self
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state)
     }
 
     /// Journal before granting write access; even an equal or panicking write
@@ -127,7 +134,7 @@ impl Menu {
         f: impl FnOnce(&mut MenuState) -> R,
     ) -> R {
         host.journal().keep(self);
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         inner.epoch.advance();
         f(&mut inner.state)
     }
@@ -400,7 +407,7 @@ impl<H: ActionHost> ActionTarget<H> for Menu {
     }
 
     fn capture(&self, _host: &H) -> Result<Reads, Outcome> {
-        let inner = self.inner.borrow();
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         Ok(Reads {
             epoch: inner.epoch,
             menu: inner.state.clone(),
@@ -420,7 +427,7 @@ impl<H: ActionHost> ActionTarget<H> for Menu {
     }
 
     fn validate(&self, _host: &H, reads: &Reads) -> Result<(), Outcome> {
-        let inner = self.inner.borrow();
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         validate_state(&inner.state).map_err(Outcome::InvalidInput)?;
         if inner.state.instance != reads.menu.instance {
             return Err(Outcome::Stale(StaleReason::MenuInstance));

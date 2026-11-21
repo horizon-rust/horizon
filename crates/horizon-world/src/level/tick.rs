@@ -13,7 +13,6 @@ use horizon_core::{
     random::RandomSource,
     ticks::{ScheduledTick, TickTypeId},
 };
-use std::rc::Rc;
 use std::sync::Arc;
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
@@ -2142,11 +2141,13 @@ impl Behaviours {
 
 /// How [`Behaviours::tick_chunk_random_masked`] should update the current
 /// section mask. `Keep` reuses the mask already held by the tick loop, so a
-/// callback can answer repeated asks without cloning its `Rc`.
+/// callback can answer repeated asks without copying it again. The mask goes by
+/// value: a reference count on a mask out of cache (atomic, to move with its
+/// level to another thread) stalled the loop that draws from it.
 #[derive(Debug)]
 pub enum RandomTickMaskUpdate {
     Keep,
-    Replace(Option<Rc<RandomTickMask>>),
+    Replace(Option<RandomTickMask>),
 }
 
 /// Which of a section's 4,096 blocks a random tick can do anything for

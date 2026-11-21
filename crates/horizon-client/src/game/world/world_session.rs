@@ -250,6 +250,7 @@ impl Game<'_> {
     }
 
     pub(super) fn save_for_exit(&mut self) -> Result<()> {
+        self.land_residents();
         // Native application termination can bypass CloseRequested. Finish any
         // save screen synchronously here, before the process can go away.
         while self.pending_save.is_some() {
@@ -293,6 +294,7 @@ impl Game<'_> {
     }
 
     pub(super) fn close_world(&mut self) -> Result<()> {
+        self.land_residents();
         self.destroying.clear();
         // Pause-menu and death-screen exits use the normal world-close action.
         // A standalone replay owns a synthetic remote session, so it must go

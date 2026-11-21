@@ -7,3 +7,6 @@
 # `#[horizon_mod_api_macros::replaceable]` on it in the lower crate (an issue is enough); that keeps its point.
 #
 # One line per point: name | #PR | short reason. Lines starting with # are comments.
+game_entity_sections_live_section_observer_new | #16273 | The observer shares its section index across server and region threads through Arc<Mutex<_>>.
+game_pack_files | #16273 | Region games share the level's immutable world tables through Arc.
+stage_world_tables | #16273 | World table staging returns the Arc shared by the server and its region games.

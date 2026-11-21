@@ -44,6 +44,9 @@ pub(super) struct Raiding {
     /// Beds near each raid's centre, rescanned now and then (`HOME` points
     /// of interest for `RaiderMoveThroughVillageGoal`).
     homes: HashMap<i32, (i64, std::sync::Arc<Vec<[i32; 3]>>)>,
+    /// In a region's game (`game/runtime/regions.rs`): the chunks of the level's raids' centres, none of them
+    /// loaded when it was lent. Loading one brings the region home, where the server's thread ticks that raid.
+    region_watch: Vec<(i32, i32)>,
 }
 
 /// A level's living raid members, in mob-list order.
@@ -273,6 +276,54 @@ impl Game<'_> {
     }
     /// `dimensions/<dimension>/data/minecraft/raids.dat`: each dimension
     /// keeps its own raids.
+    /// Whether the level's raids let it be split into regions (`game/runtime/regions.rs`): they are read, and no
+    /// raid's centre is loaded. A raid's waves, raiders and bar span its village, so a level with a raid near a
+    /// player ticks whole on the server's thread, as the End does during its dragon fight. A raid left in a
+    /// village nobody is near does not tick and keeps no level whole.
+    pub(super) fn raids_let_regions(&self) -> bool {
+        self.raiding.loaded == Some(self.dim)
+            && self
+                .raiding
+                .raids
+                .map
+                .values()
+                .all(|r| self.world.chunks.get(&raid_chunk(r.center)).is_none())
+    }
+    /// A region game's raids as it is lent its part of level `from`: none, marked read so the game does not
+    /// read the level's file and tick a copy, with the level's next raid id so a raid one of its players starts
+    /// keeps it on the way home, and the chunks of the level's raids to watch for.
+    pub(super) fn lend_raids_from(&mut self, from: &Game<'_>) {
+        let mut raids = Raids::default();
+        raids.next_id = from.raiding.raids.next_id;
+        raids.dirty = false;
+        self.raiding.raids = raids;
+        self.raiding.loaded = Some(from.dim);
+        self.raiding.unseeded = None;
+        self.raiding.bar_hurts.clear();
+        self.raiding.homes.clear();
+        self.raiding.region_watch = from
+            .raiding
+            .raids
+            .map
+            .values()
+            .map(|r| raid_chunk(r.center))
+            .collect();
+    }
+    /// Whether this region game's raids need the server's thread: one of its players started a raid, or it
+    /// loaded the village of one of the level's.
+    pub(super) fn region_raids_want_home(&self) -> bool {
+        !self.raiding.raids.map.is_empty()
+            || self
+                .raiding
+                .region_watch
+                .iter()
+                .any(|c| self.world.chunks.get(c).is_some())
+    }
+    /// The raids region game `w` started, moved into the level's.
+    pub(super) fn take_raids_back(&mut self, w: &mut Game<'_>) {
+        let raids = std::mem::take(&mut w.raiding.raids);
+        self.raiding.raids.absorb(raids);
+    }
     fn raids_path(&self, dim: Dim) -> std::path::PathBuf {
         horizon_client::save::dimension_dir(&self.world_root, dim.id())
             .join("data/minecraft/raids.dat")
@@ -632,7 +683,8 @@ impl Game<'_> {
     }
     /// `ServerLevel.tick` for the raids and their raiders.
     pub(super) fn tick_raids(&mut self) {
-        if self.remote.is_some() {
+        // A region's game holds no raid to tick: raids belong to the server's thread (`lend_raids_from`).
+        if self.remote.is_some() || self.regions.worker {
             return;
         }
         self.load_raids();
@@ -1576,6 +1628,11 @@ impl Game<'_> {
         );
         Ok(state)
     }
+}
+
+/// The chunk of a raid's centre.
+fn raid_chunk(center: [i32; 3]) -> (i32, i32) {
+    (center[0] >> 4, center[2] >> 4)
 }
 
 #[cfg(test)]

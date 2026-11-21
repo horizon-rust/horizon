@@ -614,6 +614,9 @@ pub struct Streaming {
     mod_tickets: ModTickets,
     /// No work is scheduled while paused (title screen).
     pub paused: bool,
+    /// The columns lent to resident regions (their chunks are not in the world meanwhile, but are loaded): never
+    /// scheduled for generation, never dropped from `decorated`.
+    pub lent: Option<std::sync::Arc<FxHashSet<(i32, i32)>>>,
     /// Finished meshes the renderer has not taken yet (the game's pending
     /// uploads): they count against the meshing room as the jobs do.
     pub upload_backlog: usize,
@@ -770,6 +773,7 @@ struct GenerationInputs<'a> {
     finishing: &'a FxHashSet<(i32, i32)>,
     decorates: bool,
     remote: bool,
+    lent: Option<&'a FxHashSet<(i32, i32)>>,
 }
 impl GenerationScan {
     /// None means the scan was skipped; Some preserves the original candidate
@@ -789,6 +793,7 @@ impl GenerationScan {
         }
         let missing = |&(_, x, z): &(i64, i32, i32)| {
             !input.world.chunks.contains_key(&(x, z))
+                && !input.lent.is_some_and(|l| l.contains(&(x, z)))
                 && !input.generating.contains(&(x, z))
                 && !input.protos.contains_key(&(x, z))
                 && !input.finishing.contains(&(x, z))
@@ -838,6 +843,7 @@ impl GenerationScan {
                 for x in x0..=x1 {
                     if !input.ranges.requested(x, z, input.decorates)
                         || input.world.chunks.contains_key(&(x, z))
+                        || input.lent.is_some_and(|l| l.contains(&(x, z)))
                         || input.generating.contains(&(x, z))
                         || input.protos.contains_key(&(x, z))
                         || input.finishing.contains(&(x, z))
@@ -860,6 +866,7 @@ impl GenerationScan {
                     for dx in -reach..=reach {
                         let (x, z) = (fx + dx, fz + dz);
                         if input.world.chunks.contains_key(&(x, z))
+                            || input.lent.is_some_and(|l| l.contains(&(x, z)))
                             || input.generating.contains(&(x, z))
                             || input.protos.contains_key(&(x, z))
                             || input.finishing.contains(&(x, z))
@@ -1232,6 +1239,7 @@ impl Streaming {
             commanded: HashSet::new(),
             mod_tickets: ModTickets::default(),
             paused: false,
+            lent: None,
             upload_backlog: 0,
             sky_light: true,
             nether_shading: false,
@@ -2021,8 +2029,12 @@ impl Streaming {
         columns.clear();
         let mut hz_laps = crate::spans::laps();
         let (protos, finishing) = (&self.protos, &self.finishing);
+        let lent = self.lent.as_deref();
         self.decorated.retain(|k| {
-            protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
+            protos.contains_key(k)
+                || finishing.contains(k)
+                || world.chunks.contains_key(k)
+                || lent.is_some_and(|l| l.contains(k))
         });
         // Finalize chunks whose neighbourhood is decorated.
         let finalize_candidates: Vec<(i32, i32)> = self.protos.keys().copied().collect();
@@ -2343,6 +2355,7 @@ impl Streaming {
             finishing: &self.finishing,
             decorates: self.decorates,
             remote: self.remote,
+            lent: self.lent.as_deref(),
         };
         if let Some(wanted) = self.generation_scan.candidates(input, workers * 3) {
             for (_, x, z) in wanted {
@@ -2391,6 +2404,61 @@ impl Streaming {
                 self.light_log.push((self.light_edit_sequence, p));
             }
         }
+    }
+    /// A resident region's block edits, lit inside its own tick instead of on the server thread when the
+    /// region comes home: the edits coalesced per block (the first old state, the last new one), those whose
+    /// column and eight neighbours are all in the region's world lit in place, at most `cap` blocks of them;
+    /// the rest (at the region's edge, or past the cap) stay in `world.light_edits` for the next tick or for
+    /// the server when the region lands. Returns the blocks lit.
+    pub fn relight_region_edits(
+        &mut self,
+        world: &mut World,
+        sky_light: bool,
+        cap: usize,
+    ) -> usize {
+        if world.light_edits.is_empty() {
+            return 0;
+        }
+        let edits = std::mem::take(&mut world.light_edits);
+        let mut merged: FxHashMap<(i32, i32, i32), (usize, u32, u32)> = FxHashMap::default();
+        for (n, (p, old, new)) in edits.into_iter().enumerate() {
+            merged
+                .entry(p)
+                .and_modify(|e| e.2 = new)
+                .or_insert((n, old, new));
+        }
+        let mut merged: Vec<_> = merged.into_iter().collect();
+        merged.sort_unstable_by_key(|(_, (n, _, _))| *n);
+        let mut positions = Vec::new();
+        for (p, (_, old, new)) in merged {
+            let own = (-1..=1).all(|dz| {
+                (-1..=1).all(|dx| {
+                    world
+                        .chunks
+                        .contains_key(&((p.0 >> 4) + dx, (p.2 >> 4) + dz))
+                })
+            });
+            if !own || positions.len() >= cap {
+                world.light_edits.push((p, old, new));
+            } else if self.light_tables.differs(old, new) {
+                positions.push(p);
+            }
+        }
+        if positions.is_empty() {
+            return 0;
+        }
+        let mut changed = LightChanges::default();
+        crate::light::relight(
+            &mut world.chunks,
+            &self.light_tables,
+            sky_light,
+            &positions,
+            false,
+            &mut changed,
+        );
+        Self::mark_light_changes(world, &changed);
+        Self::relight_beside_unlit(world, &changed);
+        positions.len()
     }
     /// Hands a big batch of edits (a `/fill` arriving block by block) to the
     /// workers: the columns they touch and their neighbours get full light
@@ -4251,6 +4319,7 @@ mod tests {
                 finishing: &self.finishing,
                 decorates: self.decorates,
                 remote: self.remote,
+                lent: None,
             }
         }
         fn fill(&mut self) {

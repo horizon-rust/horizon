@@ -1592,6 +1592,7 @@ impl Game<'_> {
             }
             // MinecraftServer.tickServer records each tick's time, for /tick query (and the status).
             self.clock.record(tick_start.elapsed());
+            super::health::record_tick(tick_start.elapsed());
             state.perf.tick(
                 state.perf_epoch.elapsed().as_secs_f64(),
                 tick_start.elapsed().as_secs_f32() * 1000.0,
@@ -1889,6 +1890,8 @@ impl Game<'_> {
 
     /// `console_line` with `inform` as `CommandSource.shouldInformAdmins`.
     fn console_line_telling(&mut self, state: &mut ServerState, line: &str, inform: bool) {
+        // The command may reach any player or chunk: regions out on their threads come home first.
+        self.land_residents();
         self.console_broadcast = Some(inform);
         self.console_command(state, line);
         self.console_broadcast = None;

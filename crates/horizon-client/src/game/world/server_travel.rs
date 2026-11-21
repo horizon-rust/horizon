@@ -1498,6 +1498,11 @@ impl Game<'_> {
                 return;
             };
             let Some(i) = host.hub.guests.iter().position(|g| g.conn == t.conn) else {
+                log::warn!(
+                    "dropped a teleport to {} for connection {}: no player in the server hub",
+                    t.dim.id(),
+                    t.conn
+                );
                 continue;
             };
             let source = self.dim;

@@ -2,7 +2,7 @@ use super::*;
 pub(super) struct PreparedWorldReload {
     pub(super) structure_spawns: horizon_client::mobs::spawn_selection::StructureSpawns,
     pub(super) advancements: Arc<horizon_client::advancements::Tree>,
-    pub(super) tables: Option<WorldTables>,
+    pub(super) tables: Option<Arc<WorldTables>>,
     pub(super) health: horizon_client::health::HealthResources,
     pub(super) parts: PreparedParts,
     pub(super) wire: Option<Arc<horizon_client::lan::data::SyncData>>,

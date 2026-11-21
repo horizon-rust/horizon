@@ -403,7 +403,10 @@ fn reentrant_same_menu_admission_busy_zero_inner_tokens() {
 
 fn token(host: &mut Harness, menu: &Menu, plan: Plan) -> Decision {
     let savepoint = host.open_action(menu.id);
-    let inner = menu.inner.borrow();
+    let inner = menu
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Decision(Proposed {
         identity: host.identity,
         savepoint,
@@ -422,10 +425,21 @@ fn token(host: &mut Harness, menu: &Menu, plan: Plan) -> Decision {
 fn single_apply_writes_once_publishes_once() {
     let (mut host, menu) = fixture();
     let decision = token(&mut host, &menu, menu.read(placement));
-    let epoch = menu.inner.borrow().epoch;
+    let epoch = menu
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .epoch;
     assert_eq!(apply(&mut host, decision, Reply::Allow), Outcome::Applied);
     // Placement is two writes (cursor, slot), each advancing the epoch once.
-    assert_eq!(menu.inner.borrow().epoch.0, epoch.0 + 2);
+    assert_eq!(
+        menu.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .epoch
+            .0,
+        epoch.0 + 2
+    );
     assert_eq!(host.applies, 1);
     host.close(true);
     host.close(true);
@@ -443,9 +457,19 @@ fn every_refused_outcome_consumes_token_without_writes() {
         let (mut host, menu) = fixture();
         let decision = token(&mut host, &menu, menu.read(placement));
         menu.edit(&mut host, |s| s.cursor = stack("minecraft:stone", 4));
-        let epoch = menu.inner.borrow().epoch;
+        let epoch = menu
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .epoch;
         assert_ne!(apply(&mut host, decision, reply), Outcome::Applied);
-        assert_eq!(menu.inner.borrow().epoch, epoch);
+        assert_eq!(
+            menu.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .epoch,
+            epoch
+        );
         host.close(false);
         assert_eq!(menu.read(Clone::clone), state());
         host.no_success();
@@ -756,12 +780,22 @@ fn token_from_another_session_invalid_input_zero_mutations() {
     let decision = token(&mut first, &menu, menu.read(placement));
     let mut other = Harness::new();
     other.open_action(menu.id);
-    let epoch = menu.inner.borrow().epoch;
+    let epoch = menu
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .epoch;
     assert_eq!(
         apply(&mut other, decision, Reply::Allow),
         Outcome::InvalidInput(InvalidReason::ForeignSavepoint)
     );
-    assert_eq!(menu.inner.borrow().epoch, epoch);
+    assert_eq!(
+        menu.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .epoch,
+        epoch
+    );
     assert_eq!(menu.read(Clone::clone), state());
     other.no_success();
     first.no_success();
