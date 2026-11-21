@@ -132,6 +132,7 @@ pub mod api_context;
 pub mod radial_editor;
 pub mod radial_overlay;
 pub mod random_source;
+pub mod report;
 pub mod screen_draw;
 pub mod screen_effects;
 pub mod sculk;
