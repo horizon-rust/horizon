@@ -2725,6 +2725,34 @@ fn tnt_duper_3856_piston_keeps_original_and_primes_one_tnt() {
     }
 }
 
+/// `TntBlock.prime` draws the push angle only in `new PrimedTnt`, i.e. after
+/// the `tnt_explodes` rule has accepted the prime. The level event must not
+/// consume that draw up front: with the rule off, vanilla leaves the level
+/// random untouched (and the TNT block in place).
+#[test]
+#[ignore = "daily"]
+fn a_tnt_prime_event_does_not_draw_the_level_random() {
+    let mut w = world!();
+    let mut control = world!();
+    let pos = BlockPos::new(0, 1, 0);
+    {
+        let mut sim = w.b().sim(&mut w.level, &mut w.ticks);
+        sim.prime_tnt(pos);
+    }
+    assert_eq!(
+        w.level.random.next_double(),
+        control.level.random.next_double(),
+        "the refused prime advanced the level random"
+    );
+    assert!(
+        w.level
+            .events
+            .iter()
+            .any(|e| { matches!(e, LevelEvent::PrimeTnt { pos: p } if *p == pos) }),
+        "the level event still names the TNT cell"
+    );
+}
+
 /// `ServerLevel.runBlockEvents` reports a handled event for the clients
 /// (`ClientboundBlockEventPacket`), carrying the block the event named.
 #[test]

@@ -405,10 +405,10 @@ pub enum LevelEvent {
         state: BlockStateId,
         feature: Arc<str>,
     },
-    /// `TntBlock.prime`: spawn primed TNT pushed along `rot` (radians, drawn
-    /// from the level random by `new PrimedTnt`). The primed sound and game
-    /// event follow as their own events; the caller removes the block.
-    PrimeTnt { pos: BlockPos, rot: f64 },
+    /// `TntBlock.prime`: spawn primed TNT at `pos`. The push angle is drawn
+    /// by `new PrimedTnt` only on the successful path, so it belongs to the
+    /// client handler after the rule check, not here.
+    PrimeTnt { pos: BlockPos },
     /// Block-entity or entity side effects the caller implements: `"dispense"`
     /// (dispenser/dropper/crafter scheduled tick), `"brushable"` (a suspicious
     /// block's scheduled tick: `checkReset`), `"hatch"` (frogspawn

@@ -27,8 +27,28 @@ impl Game<'_> {
                 .rules
                 .bool_at(horizon_client::gamerules::vanilla::TNT_EXPLODES)
     }
+    /// The game path: `TntBlock.prime` draws the push angle only once the
+    /// `tnt_explodes` rule has accepted the prime, so a refused prime leaves
+    /// the level random untouched.
+    pub(super) fn prime_tnt_event_checked(&mut self, pos: BlockPos) {
+        if self.tnt_prime_allowed(pos) {
+            let rot = self.world.random.next_double() * f64::from(std::f32::consts::TAU);
+            self.add_primed_tnt(pos, rot, 80, None, None);
+            return;
+        }
+        self.tnt_refused = Some(pos);
+        let Some(tnt) = self.pack.assets.registry.default_state("minecraft:tnt") else {
+            return;
+        };
+        if self.world.block(pos.x, pos.y, pos.z) == self.world.air {
+            let flags = level_flags::UPDATE_CLIENTS | level_flags::UPDATE_SKIP_ON_PLACE;
+            self.with_level(|b, level, ticks| b.set_block(level, ticks, pos, tnt, flags));
+        }
+    }
+
     /// Primes TNT a level event announced, or, when the mods refuse, puts
     /// back the block the fire or signal had already taken out.
+    #[allow(dead_code)] // mod-facing signature; the game path uses _checked
     pub(super) fn prime_tnt_event(&mut self, pos: BlockPos, rot: f64) {
         if self.tnt_prime_allowed(pos) {
             self.add_primed_tnt(pos, rot, 80, None, None);

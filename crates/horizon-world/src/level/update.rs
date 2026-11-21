@@ -8,7 +8,7 @@ use crate::{fluid::FluidState, registry::BlockStateId};
 use horizon_core::{
     geometry::Direction,
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::LegacyRandom,
     ticks::{ScheduleResult, TickPriority},
 };
 
@@ -230,11 +230,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub fn emit(&mut self, event: LevelEvent) {
         self.level.emit(event);
     }
-    /// `TntBlock.prime` without a source: `new PrimedTnt` draws its push angle
-    /// from the level random, then the primed sound and `prime_fuse` event.
+    /// `TntBlock.prime` without a source: the primed sound and `prime_fuse`
+    /// event follow as their own events, and the caller removes the block.
+    /// The push angle is drawn by `new PrimedTnt` when the prime succeeds.
     pub fn prime_tnt(&mut self, pos: BlockPos) {
-        let rot = self.random().next_double() * f64::from(std::f32::consts::TAU);
-        self.emit(LevelEvent::PrimeTnt { pos, rot });
+        self.emit(LevelEvent::PrimeTnt { pos });
         self.sound(
             pos,
             &std::sync::Arc::from("minecraft:entity.tnt.primed"),
