@@ -548,6 +548,7 @@ place; `server_tick` does not define one, so name the dimension and expect a ref
 
 Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global loot modifiers and Fabric's
 `LootTableEvents.MODIFY` and `MODIFY_DROPS` do. A mod's own loot function and condition kinds are #5451.
+- **`mob_died(entity, kind, killer, damage_type, weapon)`**: a mob or server player died, after `living_death` let it through and before its loot and death message. `killer` is the causing entity's network id (0 for none), `damage_type` the killing blow's type and `weapon` the killing item's id (`""` for none). Listen only, any cause; the killer's player UUID is not passed yet (only its entity id).
 - **`living_death(entity, kind, source, weapon, cancel)` (version 2)**: server-only, before loot, experience and death messages. `source: &HurtSource` retains the accepted killing blow's damage type, real causing entity (including players), direct entity (including projectiles) and original optional position; `weapon: Option<&ItemStack>` retains its full killing stack and components. `LivingDeathEvent` exposes `entity`, `kind`, `source`, `weapon`, `cancel`; the old top-level `damage_type`/`attacker` fields and callback signature are removed, with no shim. Cancel suppresses death loot and leaves health exactly where the listener left it: health 5 stays 5; an unhealed body at health <= 0 is removed after 20 ticks without redispatch or loot.
 - **`horizon_world::loot::loot_table_load(context, id, table)`**: each table's JSON as it loads, after the data packs'. `Hooks::loot_table_load` gets the owning load's `&dyn DataLoadContext` first (see "Items' default components"); its `origin()` is always `ServerDataLoad`, since only the server loads loot tables. Push a pool
   onto `table["pools"]` or an entry onto a pool's `entries`; chests, block and mob drops, fishing and the rest then roll the
@@ -1045,6 +1046,10 @@ steers a mob through the engine's own controls, each a momentary wish the mob's 
   mob's own are one flag, not a brain memory a write could miss (which is why `set_target` refuses brain species, and `set_brain_target` writes their `ATTACK_TARGET` memory instead). A
   creaking being looked at, an angry bee and an axolotl playing dead hold their look control, and a held creaking its
   jump control, as in vanilla: the wish waits until the control runs again.
+- `mob.attack(host, target)` is `Mob.doHurtTarget`: the mob's own melee blow on a player or another mob, with the weapon
+  it holds, through the combat path a melee goal's blow takes (a shield or armour can still take it). It runs no swing,
+  cooldown or reach check, as Paper's `LivingEntity#attack` does not either. True means dealt, not landed. A mob naming
+  itself, a dragon, a stale handle and a guest target are refused. Guest targets wait for their own routing.
 - `mob.navigation_speed(host)` / `set_navigation_speed(host, speed)` read and set `PathNavigation.speedModifier`, the
   multiplier the current path is followed at (1.0 is the mob's normal speed; 0 until a path sets one) — not the mob's
   movement-speed attribute. `move_to`'s speed argument sets the same modifier, and the mob's own next `moveTo` (a goal's
@@ -1060,6 +1065,8 @@ steers a mob through the engine's own controls, each a momentary wish the mob's 
   `LeftHanded`) and `can_pick_up_loot` / `set_can_pick_up_loot` (`Mob.setCanPickUpLoot`, saved as `CanPickUpLoot`;
   an allay and a sulfur cube decide for themselves) moved here from the flat `living_*` helpers of #938's first round:
   vanilla keeps both on `Mob`, so `MobRef` is their home. The flat helpers are gone, with no aliases.
+- `mob.shear(host)` (`Shearable.shear` with shears, as a dispenser's shears do, without its block events): sheds a sheep's wool (once, not a baby), a bogged's mushrooms, a snow golem's pumpkin, a copper golem's antenna, and turns a mooshroom into a cow. Returns false for a stale handle, a client, the dragon, or a mob that cannot be sheared now.
+- `mob.zombify(host)` (`AbstractPiglin.finishConversion`): a piglin turns into a zombified piglin in its place through the game's own conversion (equipment and loot pickup kept, the nausea after, `living_conversion_pre` asked). Refuses other kinds, stale handles, clients and the dragon. Immunity to zombification does not stop the call.
 - All of these answer `None`/`false` for a stale handle, a client, the dragon (no `Mob` state), and a mob whose copy is
   held out of the level.
 
@@ -2299,6 +2306,7 @@ registration path.
 `living_jump(context, entity, kind)` listens for NeoForge's `LivingEvent.LivingJumpEvent` after a living entity jumps. It receives the entity ID and type, and cannot cancel or change the jump. The player motion and mob ground-jump paths, including cubes and ridden horses and camels, are wired; whether every client-side prediction path reaches them remains unverified.
 
 `living_heal(context, entity, amount, cancel)` corresponds to NeoForge's `LivingHealEvent` at `LivingEntity.heal`. The amount can be changed and cancellation prevents the heal. It covers player effect, food and peaceful regeneration healing and the wired mob healing paths. Other healing paths and client-side coverage remain unverified. `entity` is the affected player or mob ID. `context` is the loop context of the side that ticks the entity; the hook fires inside the health update, so it takes no `Host` (a deferred call would reorder vanilla's regeneration timers). Contract version `2`: a mod written for `1` takes the context as a new first argument of the `Hooks` method.
+`living_heal_cause(context, entity, cause, amount)` (listen only) tells a mod why a heal that `living_heal` let through happened: `regeneration` (peaceful natural regeneration), `satiated` (food saturation), `magic` (an instant health effect) or `other` (a mob's heal from any other source). It is the Horizon form of Paper's `EntityRegainHealthEvent#getRegainReason`; `amount` is the amount applied. Only player and mob heals along the wired paths report a cause; other healing paths stay silent.
 
 `living_drown(context, entity, kind, is_drowning, damage_amount, bubble_count, cancel)` asks on the server when a player or mob cannot breathe and has no air (NeoForge's `LivingDrownEvent`, `LivingEntity.baseTick`); water animals, axolotls and nautiluses are asked too, from their own air logic, and show no bubbles. Mods may change the drowning decision, damage and bubble count, or cancel. Damage at or below zero does not hurt. The normal eight bubbles use the entity event; other positive counts are sent in a particle packet, and nonpositive counts suppress bubbles.
 
