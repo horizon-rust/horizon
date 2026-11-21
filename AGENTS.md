@@ -51,6 +51,7 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - **Controllers reach what registers.** Draw controls with a registering helper (`ui::button`, `settings_shell::foot_button`); `graphics_style::button` and `screen_draw::button` only paint, and registering one part of a screen ends its crosshair, so register all of it.
 - **Render passes keep HDR's light.** A pass that reads, filters or redraws the world's picture (upscaling,
   anti-aliasing, sharpening, frame generation, post effects, captures) follows [docs/hdr-passes.md](docs/hdr-passes.md).
+- **Tabular figures for live numbers.** In `launcher/`, apply `glass_ui::tabular` to updating percentages, timers and counts so surrounding text doesn't jitter ([docs/design-system.md](docs/design-system.md)).
 
 ## Don't lose time
 

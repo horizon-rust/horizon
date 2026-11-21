@@ -549,7 +549,7 @@ impl Launcher {
             .w(px(180.))
             .child(progress_bar(fraction.map(|_| self.bar), &t))
             .child(
-                ui::text(13., FontWeight::NORMAL, ink::QUIET)
+                ui::tabular(ui::text(13., FontWeight::NORMAL, ink::QUIET))
                     .flex_none()
                     .child(word),
             )

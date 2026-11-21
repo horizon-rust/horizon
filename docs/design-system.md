@@ -343,6 +343,13 @@ as `--glass-*`.
 - **Type**: Geist for everything; Bricolage Grotesque SemiBold for page, instance and dialog names,
   at the optical size a browser picks for them: `Bricolage Grotesque Display` (56) and
   `Bricolage Grotesque Heading` (28), cut by `tools/bake_bricolage.py`.
+- **OpenType features**: Apply `glass_ui::tabular` (OpenType `tnum` in GPUI) or
+  `font-variant-numeric: tabular-nums` (CSS) to live numbers — percentages, timers, download
+  counts and telemetry — so adjacent words and progress bars stay still as digits change, without
+  switching to monospace when a font lacks `tnum`. Theme and font authors can check custom UI
+  fonts in `HORIZON_LAUNCHER_PAGE=specimen` to see whether digits stay aligned, and use GPUI's
+  `.font_features(...)` for other OpenType features (`case`, `liga`, `frac`) in bundled TrueType
+  fonts.
 - **Icons**: Hugeicons' free set (MIT), the ones the mockup uses, stroked 1.6 in the text colour
   (`crates/horizon-theme/icons/glass/`, served as `icons/glass/<name>.svg`).
 

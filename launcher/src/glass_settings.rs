@@ -170,7 +170,7 @@ fn tile(lead: AnyElement, title: String, note: String, action: AnyElement) -> Di
                 .child(title),
         )
         .child(
-            ui::text(13., FontWeight::NORMAL, 0.6)
+            ui::tabular(ui::text(13., FontWeight::NORMAL, 0.6))
                 .mt(px(2.))
                 .truncate()
                 .child(note),

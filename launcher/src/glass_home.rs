@@ -363,7 +363,7 @@ impl Launcher {
                 horizon_launcher::developer_install::instance_status(tag, backend::is_prepared(tag))
             });
         // A soft dark scrim keeps the line readable over the brightest sky (a low sun, snow).
-        ui::text(15., FontWeight::NORMAL, ink::STRONG)
+        ui::tabular(ui::text(15., FontWeight::NORMAL, ink::STRONG))
             .mt(px(10.))
             .ml(px(-10.))
             .px(px(10.))
@@ -441,7 +441,7 @@ impl Launcher {
                 }
                 (_, true, _) => Some((
                     tr("Preparing").into(),
-                    horizon_launcher::mojang::progress().map(|(d, n)| d as f32 / n.max(1) as f32),
+                    home::download_progress().map(|(d, n)| d as f32 / n.max(1) as f32),
                 )),
                 (_, _, Some(_)) => Some((
                     self.play_step
@@ -601,7 +601,7 @@ impl Launcher {
                         .bg(accent),
                 )
                 .child(
-                    div()
+                    ui::tabular(div())
                         .relative()
                         .flex()
                         .flex_1()

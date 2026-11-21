@@ -148,7 +148,7 @@ impl Launcher {
                     .justify_center()
                     .gap(px(2.))
                     .children(self.installing.as_ref().map(|(_, p)| {
-                        ui::text(13., FontWeight::NORMAL, ink::BODY).child(trf(
+                        ui::tabular(ui::text(13., FontWeight::NORMAL, ink::BODY)).child(trf(
                             "Installing Horizon… {percent}%",
                             &[(
                                 "percent",

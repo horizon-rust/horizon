@@ -558,6 +558,8 @@ impl Launcher {
         changed |= self.github_tick();
         changed |= self.native_log_read(cx);
         changed |= self.toast_tick();
+        changed |= home::getting_ready_live() && !motion::still();
+        changed |= specimen::wanted() && !motion::still();
         if let Some(sign_in) = &self.sign_in {
             if let Some(state) = sign_in_change(&mut self.sign_in_state, sign_in.state()) {
                 if let SignInState::Done(Ok(ref account)) = state {

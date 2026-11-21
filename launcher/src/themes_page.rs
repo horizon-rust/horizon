@@ -563,7 +563,7 @@ impl Launcher {
             .when(unused.is_some(), |d| d.opacity(0.4))
             .child(track)
             .child(
-                ui::text(13., FontWeight::NORMAL, 0.6)
+                ui::tabular(ui::text(13., FontWeight::NORMAL, 0.6))
                     .w(px(48.))
                     .text_right()
                     .child(shown),

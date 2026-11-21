@@ -218,7 +218,11 @@ impl Launcher {
                     .child(index_row(
                         n + 1,
                         tr("Launcher"),
-                        Some(plain(&launcher)),
+                        Some(
+                            crate::glass_ui::tabular(div())
+                                .child(launcher)
+                                .into_any_element(),
+                        ),
                         launcher_action,
                         &t,
                     ))

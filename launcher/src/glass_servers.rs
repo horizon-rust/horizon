@@ -235,7 +235,7 @@ impl Launcher {
                     .gap(px(8.))
                     .child(ui::dot(tone(&status)))
                     .child(
-                        ui::text(13., FontWeight::NORMAL, ink::SOFT)
+                        ui::tabular(ui::text(13., FontWeight::NORMAL, ink::SOFT))
                             .line_height(px(19.5))
                             .child(state),
                     ),
@@ -264,7 +264,7 @@ impl Launcher {
                                     .child(name),
                             )
                             .child(
-                                ui::text(14., FontWeight::NORMAL, ink::BODY)
+                                ui::tabular(ui::text(14., FontWeight::NORMAL, ink::BODY))
                                     .mt(px(12.))
                                     .line_height(px(21.))
                                     .truncate()

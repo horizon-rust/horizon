@@ -308,63 +308,67 @@ impl Launcher {
         if this.bench.is_some() {
             this.perf.keep_local_log(false);
         }
-        let tx = this.tx.clone();
-        let keychain_tx = this.tx.clone();
-        // Asking the keychain can block (D-Bus), so not on this thread.
-        let accounts = this.accounts.clone();
-        std::thread::spawn(move || {
-            let store = account::store();
-            let _ = keychain_tx.send(Msg::Keychain(account::no_keychain()));
-            let _ = keychain_tx.send(Msg::Owner(accounts.has_owner(store)));
-        });
-        std::thread::spawn(move || {
-            let reused = backend::reuse_prepared_everywhere();
-            if !reused.is_empty() {
-                let _ = tx.send(Msg::Reused(reused));
+        // The motion specimen is a local UI check; skip startup network, keychain and
+        // background install work while it is open.
+        if !specimen::wanted() {
+            let tx = this.tx.clone();
+            let keychain_tx = this.tx.clone();
+            // Asking the keychain can block (D-Bus), so not on this thread.
+            let accounts = this.accounts.clone();
+            std::thread::spawn(move || {
+                let store = account::store();
+                let _ = keychain_tx.send(Msg::Keychain(account::no_keychain()));
+                let _ = keychain_tx.send(Msg::Owner(accounts.has_owner(store)));
+            });
+            std::thread::spawn(move || {
+                let reused = backend::reuse_prepared_everywhere();
+                if !reused.is_empty() {
+                    let _ = tx.send(Msg::Reused(reused));
+                }
+            });
+            this.load_profile_heads();
+            this.load_auth_statuses(true);
+            this.fetch_startup_releases();
+            this.mods_auto_update();
+            this.fetch_links();
+            this.watch_shop(cx);
+            if home::getting_ready_preview() {
+                this.preparing = true;
+                this.play_when_prepared = this
+                    .selected()
+                    .cloned()
+                    .zip(this.selected_instance().map(|i| i.id.clone()));
             }
-        });
-        this.load_profile_heads();
-        this.load_auth_statuses(true);
-        this.fetch_startup_releases();
-        this.mods_auto_update();
-        this.fetch_links();
-        this.watch_shop(cx);
-        if home::getting_ready_preview() {
-            this.preparing = true;
-            this.play_when_prepared = this
-                .selected()
-                .cloned()
-                .zip(this.selected_instance().map(|i| i.id.clone()));
+            // `HORIZON_LAUNCHER_PAGE=new-instance`: the dialog open on Modded, for screenshots
+            // (`new-instance-horizon`, `new-instance-vanilla`: on those).
+            let kind = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
+                Ok("new-instance") => Some(new_instance::NewKind::Modded),
+                Ok("new-instance-horizon") => Some(new_instance::NewKind::Horizon),
+                Ok("new-instance-vanilla") => Some(new_instance::NewKind::Vanilla),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                this.open_instance_dialog(None);
+                this.pick_kind(kind, cx);
+            }
+            if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
+                this.sheet_tab = glass_sheet::SheetTab::from_env().unwrap_or_default();
+                this.open_instance_dialog(this.selected_instance().cloned());
+            }
+            if cfg!(debug_assertions)
+                && matches!(
+                    std::env::var("HORIZON_LAUNCHER_PAGE").as_deref(),
+                    Ok("wardrobe" | "shop")
+                )
+            {
+                this.wardrobe_preview();
+            }
+            // What the game and the launcher kept, if the player allows it and there is a server.
+            this.mod_preview_from_env();
+            telemetry::send_in_background();
+            telemetry::watch_playing(this.tx.clone());
+            telemetry::watch_official(this.tx.clone());
         }
-        // `HORIZON_LAUNCHER_PAGE=new-instance`: the dialog open on Modded, for screenshots
-        // (`new-instance-horizon`, `new-instance-vanilla`: on those).
-        let kind = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
-            Ok("new-instance") => Some(new_instance::NewKind::Modded),
-            Ok("new-instance-horizon") => Some(new_instance::NewKind::Horizon),
-            Ok("new-instance-vanilla") => Some(new_instance::NewKind::Vanilla),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            this.open_instance_dialog(None);
-            this.pick_kind(kind, cx);
-        }
-        if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
-            this.sheet_tab = glass_sheet::SheetTab::from_env().unwrap_or_default();
-            this.open_instance_dialog(this.selected_instance().cloned());
-        }
-        if cfg!(debug_assertions)
-            && matches!(
-                std::env::var("HORIZON_LAUNCHER_PAGE").as_deref(),
-                Ok("wardrobe" | "shop")
-            )
-        {
-            this.wardrobe_preview();
-        }
-        // What the game and the launcher kept, if the player allows it and there is a server.
-        this.mod_preview_from_env();
-        telemetry::send_in_background();
-        telemetry::watch_playing(this.tx.clone());
-        telemetry::watch_official(this.tx.clone());
         this
     }
 

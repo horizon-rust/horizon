@@ -92,7 +92,15 @@ impl Launcher {
                         )
                         .child(actions),
                 ),
-                None => centered(&waiting, &t).child(actions),
+                None => {
+                    let mid = centered(&waiting, &t);
+                    if self.installing.is_some() {
+                        crate::glass_ui::tabular(mid)
+                    } else {
+                        mid
+                    }
+                    .child(actions)
+                }
             };
             return div()
                 .flex()

@@ -890,9 +890,9 @@ impl Launcher {
                                 .min_w_0()
                                 .child(title),
                         )
-                        .children(
-                            right.map(|r| ui::text(12.5, FontWeight::NORMAL, ink::NOTE).child(r)),
-                        ),
+                        .children(right.map(|r| {
+                            ui::tabular(ui::text(12.5, FontWeight::NORMAL, ink::NOTE)).child(r)
+                        })),
                 )
         };
         match &self.self_update {

@@ -294,6 +294,20 @@ pub fn text(size: f32, weight: FontWeight, a: f32) -> Div {
         .text_color(white(a))
 }
 
+/// OpenType tabular figures (`tnum`): gives digits `0`–`9` equal advance width in bundled
+/// fonts that support it so live numbers do not shift surrounding text.
+pub fn tabular_nums() -> gpui::FontFeatures {
+    static TNUM: std::sync::OnceLock<gpui::FontFeatures> = std::sync::OnceLock::new();
+    TNUM.get_or_init(|| gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
+        .clone()
+}
+
+/// Enables OpenType tabular figures (`tnum`) on an element and its descendants without
+/// switching away from the UI font family.
+pub fn tabular<E: Styled>(el: E) -> E {
+    el.font_features(tabular_nums())
+}
+
 /// The widths text was laid out in, by key, as [`room`] recorded them on the last frame: what
 /// [`cut`] compares a text's own width against.
 pub type Rooms = Rc<RefCell<HashMap<SharedString, f32>>>;
@@ -1740,5 +1754,70 @@ mod hover_back_tests {
         let old = now - Duration::from_secs(1);
         assert!(back_phase(Some((true, old)), len).is_some());
         assert_eq!(back_phase(Some((false, old)), len), None);
+    }
+}
+
+/// Verifies GPUI's OpenType `tnum` pipeline end-to-end through the real OS font shaper rather
+/// than `NoopTextSystem` (which gives all glyphs equal width) or hand-rolled font table parsing.
+/// Custom fonts without `tnum` simply render unmodded; macOS is skipped because `MacPlatform`
+/// panics off the main thread in standard `cargo test` worker threads.
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "freebsd", target_os = "windows")
+))]
+mod tabular_shaping_tests {
+    use super::tabular_nums;
+    use gpui::{
+        px, Font, FontFeatures, FontWeight, SharedString, TextRun, TextSystem, WindowTextSystem,
+    };
+    use std::borrow::Cow;
+    use std::sync::Arc;
+
+    fn verify_shaping() {
+        let platform = gpui_platform::current_platform(cfg!(not(target_os = "windows")));
+        let text_system = Arc::new(TextSystem::new(platform.text_system()));
+        text_system
+            .add_fonts(vec![Cow::Borrowed(horizon_theme::fonts::GEIST_SEMIBOLD)])
+            .expect("load Geist SemiBold");
+        let shaper = WindowTextSystem::new(text_system);
+
+        let width_for = |text: &'static str, features: FontFeatures| {
+            let mut font = Font {
+                weight: FontWeight::SEMIBOLD,
+                ..gpui::font(horizon_theme::glass::FONT)
+            };
+            font.features = features;
+            let runs = [TextRun {
+                len: text.len(),
+                font,
+                ..Default::default()
+            }];
+            shaper
+                .shape_line(SharedString::from(text), px(16.), &runs, None)
+                .width
+        };
+
+        let prop_ones = width_for("1111%", FontFeatures::default());
+        let prop_eights = width_for("8888%", FontFeatures::default());
+        assert!(
+            prop_ones < prop_eights,
+            "expected proportional '1111%' ({prop_ones:?}) < '8888%' ({prop_eights:?})"
+        );
+
+        let tab_ones = width_for("1111%", tabular_nums());
+        let tab_eights = width_for("8888%", tabular_nums());
+        assert!(
+            (tab_ones - tab_eights).abs() < px(0.1),
+            "expected tabular '1111%' ({tab_ones:?}) == '8888%' ({tab_eights:?})"
+        );
+    }
+
+    #[test]
+    fn tabular_numbers_equalize_digit_widths_on_platform_text_system() {
+        if cfg!(target_os = "windows") {
+            std::thread::spawn(verify_shaping).join().unwrap();
+        } else {
+            verify_shaping();
+        }
     }
 }

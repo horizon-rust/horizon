@@ -234,13 +234,13 @@ impl Launcher {
         match &self.self_update {
             SelfUpdate::Downloading(version, f) => {
                 foot = foot.child(
-                    update(trf(
+                    crate::glass_ui::tabular(update(trf(
                         "Launcher {version}  {percent}%",
                         &[
                             ("version", version),
                             ("percent", &format!("{:.0}", f * 100.)),
                         ],
-                    ))
+                    )))
                     .child(
                         div()
                             .relative()

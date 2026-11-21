@@ -739,7 +739,7 @@ impl Launcher {
                             .items_center()
                             .gap(px(12.))
                             .child(
-                                text_in(34., pal.ink)
+                                ui::tabular(text_in(34., pal.ink))
                                     .line_height(px(36.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("{percent}%")),

@@ -149,7 +149,7 @@ impl Launcher {
                             .flex()
                             .child(progress_bar(Some(self.bar), &t)),
                     )
-                    .child(format!("{:.0}%", p * 100.)),
+                    .child(crate::glass_ui::tabular(div()).child(format!("{:.0}%", p * 100.))),
                 // A Stable update never replaces another download: it waits, and says so.
                 None if stable && self.stable_update_waits() => {
                     line.child(tr("Waiting for another download"))
@@ -238,7 +238,7 @@ impl Launcher {
                     action("play", Action::Main, &t)
                         .min_w(px(260.))
                         .cursor_default()
-                        .child(label(busy)),
+                        .child(crate::glass_ui::tabular(label(busy))),
                 )
                 .children(download.map(|_| {
                     action("download-cancel", Action::Quiet, &t)
@@ -553,14 +553,16 @@ impl Launcher {
                     .justify_between()
                     .gap(px(16.))
                     .child(
-                        shell::text(night::CAPTION, c(n.ink_soft))
+                        crate::glass_ui::tabular(shell::text(night::CAPTION, c(n.ink_soft)))
                             .min_w_0()
                             .truncate()
                             .child(doing),
                     )
-                    .children(
-                        left.map(|l| shell::text(night::CAPTION, c(n.muted)).flex_none().child(l)),
-                    ),
+                    .children(left.map(|l| {
+                        crate::glass_ui::tabular(shell::text(night::CAPTION, c(n.muted)))
+                            .flex_none()
+                            .child(l)
+                    })),
             )
             .child(
                 div()
@@ -579,15 +581,38 @@ impl Launcher {
 
 /// `HORIZON_LAUNCHER_PAGE=getting-ready` opens Home as if Play had been pressed on a version that
 /// downloads from Mojang, a third of the way through: for screenshots, nothing runs.
+/// `HORIZON_LAUNCHER_PAGE=getting-ready-live` (debug builds only) animates the preview progress
+/// continuously for before/after motion captures.
 pub(super) fn getting_ready_preview() -> bool {
     static PREVIEW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *PREVIEW
         .get_or_init(|| std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("getting-ready"))
+        || getting_ready_live()
+}
+
+/// `HORIZON_LAUNCHER_PAGE=getting-ready-live` (debug builds only) animates the preview progress.
+pub(super) fn getting_ready_live() -> bool {
+    static LIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *LIVE.get_or_init(|| {
+            std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("getting-ready-live")
+        })
 }
 
 /// The download under way, files done of how many.
-fn download_progress() -> Option<(usize, usize)> {
-    horizon_launcher::mojang::progress().or_else(|| getting_ready_preview().then_some((1754, 5160)))
+pub(super) fn download_progress() -> Option<(usize, usize)> {
+    horizon_launcher::mojang::progress().or_else(|| {
+        if getting_ready_live() && !crate::motion::still() {
+            const TOTAL: usize = 5160;
+            const CYCLE_SECS: f32 = 10.0;
+            static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+            let t =
+                (START.get_or_init(Instant::now).elapsed().as_secs_f32() % CYCLE_SECS) / CYCLE_SECS;
+            Some((((t * TOTAL as f32).round() as usize).min(TOTAL), TOTAL))
+        } else {
+            getting_ready_preview().then_some((1754, 5160))
+        }
+    })
 }
 
 /// The time `total - done` files take at the pace of `done - from` in `spent`: none for the
