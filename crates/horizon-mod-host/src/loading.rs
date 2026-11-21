@@ -10,6 +10,7 @@ pub fn main_with(
 ) {
     horizon_engine_slots::install_seal(mod_points::__private::seal)
         .expect("engine seal provider must be installed once before startup");
+    install_native_profile_spans();
     // Platform instrumentation must precede registration and the first mod guard.
     if let Err(error) = mod_api::__private::initialize() {
         eprintln!("Horizon: refusing startup because mod instrumentation is unavailable: {error}");
@@ -212,4 +213,31 @@ pub fn main_with(
         },
         startup,
     );
+}
+
+fn install_native_profile_spans() {
+    mod_api::__private::install_profile_spans(|name| Box::new(horizon_client::spans::guard(name)));
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_mod_scope_reaches_the_game_profiler() {
+        use horizon_client::spans;
+        super::install_native_profile_spans();
+        spans::record_here(true);
+        {
+            let _outer = spans::guard("outer");
+            let _inner = mod_api::profiling::guard("mod_tick_section");
+            assert!(spans::take_raw().is_empty());
+        }
+        let recorded = spans::take_raw();
+        spans::record_here(false);
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(
+            (recorded[0].name, recorded[0].depth),
+            ("mod_tick_section", 1)
+        );
+        assert_eq!((recorded[1].name, recorded[1].depth), ("outer", 0));
+    }
 }
