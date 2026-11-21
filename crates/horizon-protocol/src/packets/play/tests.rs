@@ -1438,3 +1438,34 @@ fn jigsaw_packets_round_trip() {
         Serverbound::decode,
     );
 }
+
+#[test]
+fn a_signature_index_vanilla_never_sends_is_refused() {
+    // MessageSignature.Packed: 0 means a full signature follows, anything else indexes the
+    // last-seen cache (one less than what is written).
+    let mut w = Writer::new();
+    w.varint(-1);
+    assert!(PackedSignature::read(&mut Reader::new(&w.data)).is_err());
+
+    let mut w = Writer::new();
+    w.varint(0);
+    w.bytes(&[7; 256]);
+    assert_eq!(
+        PackedSignature::read(&mut Reader::new(&w.data)),
+        Ok((-1, Some(vec![7; 256])))
+    );
+
+    let mut w = Writer::new();
+    w.varint(4);
+    assert_eq!(
+        PackedSignature::read(&mut Reader::new(&w.data)),
+        Ok((3, None))
+    );
+
+    // A marker and the bytes that go with it, or the writer would send a body the reader takes
+    // differently: an index carries nothing, and a full signature carries its 256 bytes.
+    assert!(PackedSignature::validate(&(0, Some(vec![0; 256]))).is_err());
+    assert!(PackedSignature::validate(&(-1, None)).is_err());
+    assert!(PackedSignature::validate(&(-1, Some(vec![0; 256]))).is_ok());
+    assert!(PackedSignature::validate(&(0, None)).is_ok());
+}
