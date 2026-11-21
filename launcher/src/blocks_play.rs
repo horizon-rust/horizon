@@ -442,31 +442,44 @@ impl Launcher {
 
     /// The last preparation's error, with what can be done about it: Reinstall a version deleted
     /// while the window was open, or Download from Mojang when the Minecraft folders lack a
-    /// library of the game.
+    /// library of the game. An instance whose pinned version isn't installed (and isn't
+    /// installing) gets the same notice without a press first: it never plays another version.
     fn prepare_notice(&self, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
-        let error = self.prepare_error.clone()?;
-        let busy = self.preparing || self.installing.is_some();
-        let action = match self.prepare_fix.clone().filter(|_| !busy) {
+        let installing = self.installing.as_ref().map(|(tag, _)| tag.as_str());
+        let pin = self
+            .selected_instance()
+            .and_then(|i| i.missing_pin(&self.installed))
+            .filter(|pin| Some(*pin) != installing);
+        let (error, fix) = match (self.prepare_error.clone(), pin) {
+            (Some(error), _) => (error, self.prepare_fix.clone()),
+            (None, Some(pin)) => (
+                backend::version_gone(&self.version_name(pin)),
+                Some(PrepareFix::Reinstall(pin.to_owned())),
+            ),
+            (None, None) => return None,
+        };
+        let busy = self.preparing || installing.is_some();
+        let action = match fix.filter(|_| !busy) {
             Some(PrepareFix::Reinstall(tag)) => self.release_to_install(&tag).map(|release| {
                 button("prepare-reinstall", "Reinstall", Kind::Secondary, &t).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.prepare_error = None;
                         this.prepare_fix = None;
-                        this.install(&release);
+                        this.reinstall(&release);
                         cx.notify();
                     },
                 ))
             }),
-            Some(PrepareFix::Mojang) => Some(
+            Some(PrepareFix::Mojang(tag)) => Some(
                 button(
                     "prepare-mojang",
                     "Download from Mojang",
                     Kind::Secondary,
                     &t,
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.prepare(backend::MinecraftFrom::Mojang);
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.prepare_version(tag.clone(), backend::MinecraftFrom::Mojang);
                     cx.notify();
                 })),
             ),

@@ -1074,6 +1074,19 @@ pub fn gone(tags: &[&str]) -> Option<(String, Vec<String>)> {
     gone_from(&versions_dir(), tags)
 }
 
+/// The installed versions read again when `tag` is installed after all: another launcher or the
+/// command line may take a version's mark away for a moment while it replaces it, so Reinstall
+/// looks once more before downloading it.
+pub fn installed_again(tag: &str) -> Option<Vec<String>> {
+    installed_again_in(&versions_dir(), tag)
+}
+
+fn installed_again_in(versions: &Path, tag: &str) -> Option<Vec<String>> {
+    gone_from(versions, &[tag])
+        .is_none()
+        .then(|| installed_in(versions))
+}
+
 fn gone_from(versions: &Path, tags: &[&str]) -> Option<(String, Vec<String>)> {
     let gone = tags
         .iter()
@@ -2521,8 +2534,18 @@ pub fn preparer(
             own
         } else {
             // Reused game files need only the assets: a folder missing libraries still has them.
-            let resolved =
-                sources::resolve(minecraft, &pins, &known, &linked, !reused, &fetch, log);
+            // Otherwise a library this version already imported needn't be in the folder.
+            let imported = prepare::artifacts::Lock::read(&dir).map(|lock| lock.directory);
+            let whole = imported.as_ref().ok().filter(|_| !reused);
+            let resolved = sources::resolve(
+                minecraft,
+                &pins,
+                &known,
+                &linked,
+                whole.map(PathBuf::as_path),
+                &fetch,
+                log,
+            );
             if reused {
                 assets_folder(resolved, &chosen, &version, log)
             } else {
@@ -5421,7 +5444,7 @@ pub fn {f}("
         let fetch = |_: &str| Ok(manifest.to_vec());
         let lines = std::cell::RefCell::new(Vec::new());
         let log = |line: String| lines.borrow_mut().push(line);
-        let resolved = sources::resolve(&instance, &pins, &[], &linked, false, &fetch, &log);
+        let resolved = sources::resolve(&instance, &pins, &[], &linked, None, &fetch, &log);
         let folder = assets_folder(resolved, &instance, "26.3", &log);
         assert_eq!(folder, linked);
         assert!(folder.join("assets/indexes/34.json").is_file());
@@ -5429,7 +5452,7 @@ pub fn {f}("
         // Nothing found: the chosen folder, and a line saying what the game will lack.
         let empty = dir.join("empty");
         fs::create_dir_all(&empty).unwrap();
-        let resolved = sources::resolve(&empty, &pins, &[], &linked, false, &fetch, &log);
+        let resolved = sources::resolve(&empty, &pins, &[], &linked, None, &fetch, &log);
         assert_eq!(assets_folder(resolved, &empty, "26.3", &log), empty);
         assert!(lines.borrow().last().unwrap().contains("will be silent"));
         fs::remove_dir_all(&dir).unwrap();
@@ -8419,6 +8442,14 @@ pub fn {f}("
         assert_eq!(installed, ["scratch-b"]);
         settings.keep_installed_selection(&installed);
         assert_eq!(settings.selected.as_deref(), Some("scratch-b"));
+
+        // Back before Reinstall was pressed (another process replacing it): the list again.
+        assert_eq!(installed_again_in(&versions, "scratch-a"), None);
+        fs::create_dir_all(versions.join("scratch-a")).unwrap();
+        fs::write(versions.join("scratch-a").join(COMPLETE), b"").unwrap();
+        let mut again = installed_again_in(&versions, "scratch-a").unwrap();
+        again.sort();
+        assert_eq!(again, ["scratch-a", "scratch-b"]);
 
         // The whole `versions` folder gone: nothing left to select.
         fs::remove_dir_all(&versions).unwrap();

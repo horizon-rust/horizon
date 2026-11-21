@@ -453,9 +453,11 @@ impl Launcher {
                                     .filter(|_| e.starts_with("Exited with"));
                                 tail.map_or(e.clone(), |t| format!("{e}: {t}"))
                             });
-                            self.prepare_fix = (self.prepare_error.is_some()
-                                && backend::prepare_offers_mojang())
-                            .then_some(PrepareFix::Mojang);
+                            self.prepare_fix = prepare_fix_after(
+                                self.prepare_error.is_some(),
+                                backend::prepare_offers_mojang(),
+                                tag.as_deref(),
+                            );
                             // Deleted while it was being prepared: said as Prepare says it.
                             if let Some(tag) =
                                 tag.as_deref().filter(|_| self.prepare_error.is_some())
@@ -591,6 +593,14 @@ fn prepare_outcome(
     error.or_else(|| tag.filter(|tag| !ready(tag)).map(not_prepared_after))
 }
 
+/// What the error of the preparation of `tag` offers: the download from Mojang when the folders
+/// lacked a library ([`backend::prepare_offers_mojang`]), for that version even if another is
+/// selected by the time it is pressed.
+fn prepare_fix_after(failed: bool, offers_mojang: bool, tag: Option<&str>) -> Option<PrepareFix> {
+    tag.filter(|_| failed && offers_mojang)
+        .map(|tag| PrepareFix::Mojang(tag.to_owned()))
+}
+
 /// What Home says when a preparation ended without an error but `tag` still isn't prepared: the
 /// game can't start, and the button alone would only offer the same step again.
 fn not_prepared_after(tag: &str) -> String {
@@ -603,6 +613,16 @@ fn not_prepared_after(tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mojang_download_offer_keeps_the_version_that_failed() {
+        assert_eq!(
+            prepare_fix_after(true, true, Some("v-a")),
+            Some(PrepareFix::Mojang("v-a".into()))
+        );
+        assert_eq!(prepare_fix_after(true, false, Some("v-a")), None);
+        assert_eq!(prepare_fix_after(false, true, Some("v-a")), None);
+    }
 
     #[test]
     fn a_preparation_that_leaves_its_version_unprepared_says_so() {

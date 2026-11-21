@@ -162,7 +162,7 @@ fn an_owner_gets_the_official_layout_with_this_systems_libraries() {
         &[],
         &scratch("unused"),
         // Its libraries are checked by this system's rules: the download above is Linux's.
-        cfg!(target_os = "linux"),
+        cfg!(target_os = "linux").then_some(dir.join("imported").as_path()),
         &|url| server.fetch(url),
         &|_| {},
     );

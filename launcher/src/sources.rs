@@ -372,11 +372,17 @@ pub enum Resolved {
 }
 
 /// The library missing from `found`, when its version file is the pinned one and lists one its
-/// `libraries` lack. A folder whose version file Horizon can't read here (another launcher's
-/// rewrite, fetched from Mojang later) is kept, as before: the import names what it lacks.
-fn missing_library(found: &Found) -> Option<PathBuf> {
+/// `libraries` lack and that isn't already imported, checksum-valid, into `imported` (Prepare
+/// keeps such a copy, so the folder still prepares offline). A folder whose version file Horizon
+/// can't read here (another launcher's rewrite, fetched from Mojang later) is kept, as before:
+/// the import names what it lacks.
+fn missing_library(found: &Found, imported: &Path) -> Option<PathBuf> {
     let manifest = found.manifest.as_ref()?;
-    horizon_platform::prepare::artifacts::missing_library(&found.base.join("libraries"), manifest)
+    horizon_platform::prepare::artifacts::missing_library(
+        &found.base.join("libraries"),
+        manifest,
+        Some(imported),
+    )
 }
 
 /// What Home says when the only folders with the game lack one of its libraries (`file`).
@@ -391,15 +397,17 @@ pub fn incomplete(version: &str, file: &str) -> String {
 /// chosen folder when it is one, else the files found in the chosen folder, a folder above it
 /// (a launcher's instance folder may be chosen, and the launcher root above a Prism or MultiMC
 /// `instances` folder is looked in too) or any launcher's default folder, linked into `linked`.
-/// With `whole`, a folder whose pinned version file lists a library it lacks is passed over for
-/// the next one, as Prepare prefers a complete folder (#13872): the official launcher's download
-/// that stopped after the jar would otherwise be the one handed to Prepare, which then fails.
+/// With `whole` (the folder the version's import keeps its files in), a folder whose pinned
+/// version file lists a library it lacks, and that import doesn't already hold, is passed over
+/// for the next one, as Prepare prefers a complete folder (#13872): the official launcher's
+/// download that stopped after the jar would otherwise be the one handed to Prepare, which then
+/// fails. None when the game's files are reused and only the assets are needed.
 pub fn resolve(
     chosen: &Path,
     pins: &Pins,
     known: &[(&'static str, PathBuf)],
     linked: &Path,
-    whole: bool,
+    whole: Option<&Path>,
     fetch: Fetch,
     log: &dyn Fn(String),
 ) -> Result<Resolved, String> {
@@ -408,7 +416,7 @@ pub fn resolve(
     let mut incomplete = None;
     let mut look = |dir: &Path| {
         let found = find(dir, pins)?;
-        let Some(library) = missing_library(&found).filter(|_| whole) else {
+        let Some(library) = whole.and_then(|imported| missing_library(&found, imported)) else {
             return Ok(found);
         };
         let file = library.file_name().unwrap_or_default().to_string_lossy();

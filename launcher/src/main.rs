@@ -218,8 +218,8 @@ struct Crash {
 enum PrepareFix {
     /// The version was deleted while the window was open: install it again.
     Reinstall(String),
-    /// The Minecraft folders lack a library of the game: download it from Mojang.
-    Mojang,
+    /// The Minecraft folders lack a library of the game: download the version's from Mojang.
+    Mojang(String),
 }
 
 /// The opening: the wordmark holds at least `OPENING_HOLD` (until the release

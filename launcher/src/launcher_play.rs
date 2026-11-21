@@ -25,11 +25,16 @@ impl Launcher {
         }
     }
 
-    /// The version Play starts: the selected instance's own, else the launcher's.
+    /// The version Play starts: the selected instance's own, else the launcher's. None while the
+    /// instance's pinned version isn't installed ([`instances::Instance::missing_pin`]): Home says
+    /// so, and its worlds never open in another version.
     pub(crate) fn selected(&self) -> Option<&String> {
-        self.selected_instance()
-            .and_then(|i| self.version_of(i))
-            .or_else(|| self.launcher_version())
+        match self.selected_instance() {
+            Some(i) if i.missing_pin(&self.installed).is_some() => None,
+            i => i
+                .and_then(|i| self.version_of(i))
+                .or_else(|| self.launcher_version()),
+        }
     }
 
     /// The launcher's version: what instances without one of their own play.
@@ -197,10 +202,25 @@ impl Launcher {
         false
     }
 
-    /// [`Self::prepare`] for `tag` rather than the selected version.
-    pub(crate) fn prepare_version(&mut self, tag: String, from: backend::MinecraftFrom) {
+    /// Reinstall from the notice of a version that is gone: unless it is back (another launcher or
+    /// the command line was only replacing it), then the list is read again and nothing else is
+    /// done.
+    pub(crate) fn reinstall(&mut self, release: &Release) {
+        match backend::installed_again(&release.tag) {
+            Some(installed) => {
+                self.installed = installed;
+                self.settings.keep_installed_selection(&self.installed);
+                backend::forget_prepared();
+            }
+            None => self.install(release),
+        }
+    }
+
+    /// [`Self::prepare`] for `tag` rather than the selected version. False when it didn't start:
+    /// the version is gone, and `prepare_error` says so.
+    pub(crate) fn prepare_version(&mut self, tag: String, from: backend::MinecraftFrom) -> bool {
         if !self.version_still_installed(&tag) {
-            return;
+            return false;
         }
         self.prepare_tag = Some(tag.clone());
         horizon_launcher::mojang::CANCEL.store(false, Ordering::Relaxed);
@@ -250,6 +270,7 @@ impl Launcher {
         self.preparing = true;
         self.prepare_started = Some(Instant::now());
         self.download_seen = None;
+        true
     }
 
     pub(crate) fn play(&mut self) {

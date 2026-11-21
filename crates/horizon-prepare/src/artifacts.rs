@@ -346,16 +346,29 @@ fn has_libraries(files: &GameFiles) -> bool {
 
 /// The first client library the version JSON at `manifest` lists for this OS that the folder
 /// `libraries` lacks, looked for as [`has_libraries`] does, so a launcher choosing between
-/// Minecraft folders never calls one incomplete that the import would take. None when every one
-/// is there, and when the file lists none this can read: a caller that can't tell keeps the
-/// folder.
-pub fn missing_library(libraries: &Path, manifest: &Path) -> Option<PathBuf> {
+/// Minecraft folders never calls one incomplete that the import would take. A library already
+/// imported, checksum-valid, into `imported` (a version's [`Lock::directory`]) counts as there:
+/// the import keeps that copy without reading the folder. None when every one is there, and
+/// when the file lists none this can read: a caller that can't tell keeps the folder.
+pub fn missing_library(
+    libraries: &Path,
+    manifest: &Path,
+    imported: Option<&Path>,
+) -> Option<PathBuf> {
     let manifest = read_json(manifest).ok()?;
     let artifacts = client_library_artifacts(&manifest).ok()?;
     artifacts.into_iter().find_map(|(name, artifact)| {
-        let (path, _) = artifact_fields(artifact).ok()?;
-        let found = library_in(libraries, name, &safe_relative(path)?);
-        (!runs_without(name) && !found.is_file()).then_some(found)
+        let (path, sha1) = artifact_fields(artifact).ok()?;
+        let relative = safe_relative(path)?;
+        let found = library_in(libraries, name, &relative);
+        let kept = || {
+            imported
+                .map(|dir| dir.join("libraries/client").join(&relative))
+                .is_some_and(|copy| {
+                    copy.is_file() && digest(&copy, "sha1").ok().as_deref() == Some(sha1)
+                })
+        };
+        (!runs_without(name) && !found.is_file() && !kept()).then_some(found)
     })
 }
 

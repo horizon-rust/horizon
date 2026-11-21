@@ -86,7 +86,7 @@ fn resolve_with(
         &pins(),
         known,
         linked,
-        true,
+        Some(&linked.join("imported")),
         &|url| mojang.fetch(url),
         &|_| {},
     )? {
@@ -456,7 +456,7 @@ fn the_known_folders_are_searched_after_the_chosen_one() {
         &pins(),
         &known,
         &linked,
-        true,
+        Some(&linked.join("imported")),
         &|url| mojang.fetch(url),
         &|line| logged.borrow_mut().push(line),
     );
@@ -629,8 +629,12 @@ fn each_system_has_its_launcher_folders() {
 #[test]
 fn a_folder_missing_a_library_is_passed_over() {
     // A made-up version file listing one library, the fixtures' `org/lib/1/lib-1.jar`.
-    let manifest = br#"{"id": "26.3", "libraries": [{"name": "org.lib:lib:1",
-        "downloads": {"artifact": {"path": "org/lib/1/lib-1.jar", "sha1": "00", "size": 3}}}]}"#;
+    let manifest = format!(
+        r#"{{"id": "26.3", "libraries": [{{"name": "org.lib:lib:1",
+        "downloads": {{"artifact": {{"path": "org/lib/1/lib-1.jar", "sha1": "{}", "size": 3}}}}}}]}}"#,
+        sha1_hex(b"lib")
+    );
+    let manifest = manifest.as_bytes();
     let pins = Pins::read(&serde_json::json!({ "minecraft": {
         "version": "26.3",
         "client_sha1": sha1_hex(CLIENT),
@@ -644,6 +648,7 @@ fn a_folder_missing_a_library_is_passed_over() {
     let whole = s.launcher("minecraft", "", "versions/26.3/26.3.jar");
     s.write("minecraft/versions/26.3/26.3.json", manifest);
     let mojang = Mojang::new(b"");
+    let imported = s.0.join("version/.local/minecraft/26.3");
     let pick = |known: &[(&'static str, PathBuf)], whole: bool| {
         let linked = s.0.join("linked");
         resolve(
@@ -651,7 +656,7 @@ fn a_folder_missing_a_library_is_passed_over() {
             &pins,
             known,
             &linked,
-            whole,
+            whole.then_some(imported.as_path()),
             &|u| mojang.fetch(u),
             &|_| {},
         )
@@ -674,5 +679,13 @@ fn a_folder_missing_a_library_is_passed_over() {
     }
     // Reused game files need only the assets: the folder is still used for them.
     assert_eq!(pick(&[], false), Resolved::Folder(partial.clone()));
+
+    // A copy the version's import already holds is no reason to pass the folder over, but only
+    // a checksum-valid one: Prepare keeps that copy and prepares offline.
+    let kept = "version/.local/minecraft/26.3/libraries/client/org/lib/1/lib-1.jar";
+    s.write(kept, b"not the library");
+    assert!(matches!(pick(&[], true), Resolved::NotFound(..)));
+    s.write(kept, b"lib");
+    assert_eq!(pick(&[], true), Resolved::Folder(partial.clone()));
     assert!(mojang.urls.lock().unwrap().is_empty());
 }
