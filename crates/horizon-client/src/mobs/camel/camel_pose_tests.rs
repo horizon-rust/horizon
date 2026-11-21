@@ -125,11 +125,19 @@ fn pressing_forward_during_the_kneel_waits_for_the_transition() {
         m.rider = Some(forward_rider());
         // 10 ticks into the 40-tick kneel.
         m.age += 10;
-        crate::mobs::equine::ridden_step(&mut m, crate::test_resources::server_loop_context());
+        crate::mobs::equine::ridden_step(
+            &mut m,
+            crate::test_resources::server_loop_context(),
+            None,
+        );
         let during_kneel = sitting(&m);
         // The kneel ends at 40: now the forward key stands it up.
         m.age += 30;
-        crate::mobs::equine::ridden_step(&mut m, crate::test_resources::server_loop_context());
+        crate::mobs::equine::ridden_step(
+            &mut m,
+            crate::test_resources::server_loop_context(),
+            None,
+        );
         outcome = Some((during_kneel, sitting(&m)));
     });
     if !ran {

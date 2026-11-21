@@ -1605,6 +1605,7 @@ mod tests {
             &mut m,
             &crate::game::test_server_load()
                 .loop_context(horizon_world::native_load_context::LoopSide::Server, []),
+            None,
         );
         assert_eq!(m.rider.expect("the rider stays on").jump, 0.0);
         assert_eq!(m.extra.anim_ticks, 40, "the dash clock");

@@ -2197,17 +2197,19 @@ fn mob_from_nbt_at(
         if m.extra.chested {
             m.extra.items = crate::save::decode_items(tag.get("Items"), 15);
         }
+        let mut loaded_jump_strength = false;
         if let Some(Tag::List(attrs)) = tag.get("attributes") {
             for a in attrs {
                 let (Some(id), Some(v)) = (text(a.get("id")), float(a.get("base"))) else {
                     continue;
                 };
                 if id == "minecraft:jump_strength" {
-                    m.extra.vector[0] = v;
+                    crate::mobs::equine::set_jump_strength(&mut m, v);
+                    loaded_jump_strength = true;
                 }
             }
         }
-        if m.extra.vector[0] <= 0.0 {
+        if !loaded_jump_strength && m.extra.vector[0] <= 0.0 {
             m.extra.vector[0] = if crate::mobs::equine::is_chested(m.species()) {
                 0.5
             } else {

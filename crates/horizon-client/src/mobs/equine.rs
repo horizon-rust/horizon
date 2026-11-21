@@ -383,7 +383,7 @@ pub fn breed_offspring(m: &mut Mob, partner: &Seen) -> Option<Offspring> {
 pub fn apply_offspring(child: &mut Mob, o: &Offspring) {
     set_base(child, Attr::MaxHealth, f64::from(o.attributes.max_health));
     child.health = o.attributes.max_health;
-    child.extra.vector[0] = o.attributes.jump;
+    set_jump_strength(child, o.attributes.jump);
     set_base(child, Attr::MovementSpeed, o.attributes.speed);
     child.extra.variant = o.variant;
     child.extra.variant2 = o.variant2;
@@ -802,8 +802,26 @@ fn is_wood_sound_type(sounds: &mod_api::BlockSoundType) -> bool {
         _ => false,
     }
 }
+/// `Entity.getBlockJumpFactor` of the blocks a ridden mount stands in or on.
+/// A caller with no world (`None`: the ride tests, which have no blocks around
+/// the mount) sees air, whose factor is 1.0.
+pub(super) fn block_jump_factor(m: &Mob, w: Option<&MobWorld>) -> f32 {
+    w.map_or(1.0, |w| m.block_jump_factor(w))
+}
+/// `Entity.getBlockSpeedFactor` of the blocks a ridden mount stands in or on,
+/// 1.0 without a world.
+pub(super) fn block_speed_factor(m: &Mob, w: Option<&MobWorld>) -> f32 {
+    w.map_or(1.0, |w| m.block_speed_factor(w))
+}
+/// `AbstractHorse.setOffspringAttribute` and the load of a saved base:
+/// `AttributeInstance.setBaseValue` for `JUMP_STRENGTH`, with the base the
+/// rider's client syncs (`vector[0]`) kept in step.
+pub fn set_jump_strength(m: &mut Mob, value: f64) {
+    m.extra.vector[0] = value;
+    set_base(m, Attr::JumpStrength, value);
+}
 /// The mount takes its rider's input (`getRiddenInput`, `tickRidden`).
-pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
+pub fn ridden_step(m: &mut Mob, context: &LoopContext, w: Option<&MobWorld>) {
     let Some(r) = m.rider else {
         return;
     };
@@ -813,7 +831,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
     }
     // AbstractNautilus.tickRidden turns half way toward the rider.
     if super::nautilus::is_nautilus(m.species()) {
-        return super::nautilus::ridden(m);
+        return super::nautilus::ridden(m, w);
     }
     if m.species() == Species::HappyGhast {
         return super::happy_ghast::ridden(m);
@@ -877,7 +895,7 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
         m.ai.zza = forward;
         if r.jump > 0.0 {
             let mut ev = Vec::new();
-            if super::camel::dash(m, context, r.jump, &mut ev)
+            if super::camel::dash(m, context, r.jump, &mut ev, w)
                 && let Some(rider) = m.rider.as_mut()
             {
                 rider.jump = 0.0;
@@ -903,8 +921,10 @@ pub fn ridden_step(m: &mut Mob, context: &LoopContext) {
     m.ai.xxa = r.strafe * 0.5;
     m.ai.zza = forward;
     if m.on_ground && r.jump > 0.0 {
-        // executeRidersJump
-        let impulse = m.extra.vector[0] as f32 * r.jump;
+        // executeRidersJump: getJumpPower(amount) up, a fifth of the input
+        // forward along the yaw. The jump strength, the block's jump factor
+        // and Jump Boost all go into the impulse.
+        let impulse = m.jump_power_with_factor(r.jump, block_jump_factor(m, w));
         m.velocity.y = f64::from(impulse);
         if forward > 0.0 {
             let (s, c) = (m.yaw.to_radians().msin(), m.yaw.to_radians().mcos());
@@ -1891,3 +1911,7 @@ mod goal_timing_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ridden_jump_tests.rs"]
+mod ridden_jump_tests;
