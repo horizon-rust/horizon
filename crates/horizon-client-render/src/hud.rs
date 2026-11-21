@@ -1417,17 +1417,18 @@ impl HudAtlas {
                     maps.iter().any(Option::is_some).then(|| Box::new(maps))
                 })
                 .flatten();
-            (gw <= 1024
-                && (gh <= 512
-                    || matches!(
-                        name.as_str(),
-                        "gui/title/background/panorama_0"
-                            | "gui/title/background/panorama_2"
-                            | "gui/title/background/panorama_3"
-                            | "gui/presets/isles"
-                    )
-                    || name.starts_with("font/")))
-            .then_some(((name, w, h, pixels), flags, gui_size, animated, maps))
+            // GUI sprites use the atlas's packing limit, including namespaced mod art.
+            let gui = name
+                .split_once(':')
+                .map_or(name.as_str(), |(_, path)| path)
+                .starts_with("gui/");
+            (gui || (gw <= 1024 && (gh <= 512 || name.starts_with("font/")))).then_some((
+                (name, w, h, pixels),
+                flags,
+                gui_size,
+                animated,
+                maps,
+            ))
         };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
@@ -3822,10 +3823,9 @@ mod tests {
         assert!(!atlas.sprites.contains_key("gems:item/ruby"));
         fs::remove_dir_all(&root).unwrap();
     }
-    /// A pack's particle sprite of any size packs whole, as vanilla's particle atlas stitches
-    /// it (a light shaft drawn from a 1024-wide texture); the cap on GUI textures stays.
+    /// Large particle and GUI sprites keep their full dimensions and pixels.
     #[test]
-    fn large_particle_sprites_pack_and_large_gui_textures_dont() {
+    fn large_particle_and_gui_sprites_pack_at_full_size() {
         let root =
             std::env::temp_dir().join(format!("horizon-atlas-big-particle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -3845,7 +3845,10 @@ mod tests {
         let rect = atlas.sprites["mypack:particle/light_rays/02"];
         assert_eq!(rect.texels((atlas.width, atlas.height)), (1024, 1024));
         assert_eq!(texel_at(&atlas, rect, 512, 512), [250, 240, 200, 255]);
-        assert!(!atlas.sprites.contains_key("gui/huge"));
+        let rect = atlas.sprites["gui/huge"];
+        assert_eq!((rect.w, rect.h), (2048, 64));
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (2048, 64));
+        assert_eq!(texel_at(&atlas, rect, 2047, 63), [1, 2, 3, 255]);
         fs::remove_dir_all(&root).unwrap();
     }
     /// OptiFine random entity variants outside `textures/` pack under the names
@@ -4785,6 +4788,60 @@ texture=wide",
         assert_eq!(atlas.sprites["mymod:gui/container/machine"].w, 176);
         assert!(atlas.sprites.contains_key("gui/container/furnace"));
         assert!(!atlas.sprites.contains_key("mymod:block/machine"));
+    }
+
+    #[test]
+    fn a_packaged_wide_gui_texture_survives_an_atlas_rebuild() {
+        use std::io::Write;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("example.hmod");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, 1230, 216);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&[19, 71, 131, 255].repeat(1230 * 216))
+            .unwrap();
+        writer.finish().unwrap();
+        zip.start_file(
+            "assets/example/textures/gui/title/panorama.png",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(&png).unwrap();
+        zip.finish().unwrap();
+
+        for _ in 0..2 {
+            let pack = crate::packs::Pack::mod_layer(
+                "example".into(),
+                crate::packs::Source::Zip(archive.clone()),
+            );
+            let source = crate::packs::resources(ResourceSource::default(), &[pack]).unwrap();
+            let atlas = HudAtlas::build(&source).unwrap();
+            let rect = atlas.sprites["example:gui/title/panorama"];
+            assert_eq!((rect.w, rect.h), (1230, 216));
+            assert_eq!(texel_at(&atlas, rect, 1229, 215), [19, 71, 131, 255]);
+            let mut batch = HudBatch::scratch([320, 240]);
+            batch.sprite_scaled(
+                &atlas,
+                "example:gui/title/panorama",
+                0.0,
+                0.0,
+                320.0,
+                240.0,
+                u32::MAX,
+            );
+            assert_eq!(batch.vertices.len(), 6);
+        }
+        let without_mod = HudAtlas::build(&ResourceSource::default()).unwrap();
+        assert!(
+            !without_mod
+                .sprites
+                .contains_key("example:gui/title/panorama")
+        );
     }
     #[test]
     fn the_default_textures_keep_a_4096_wide_atlas() {
