@@ -118,6 +118,7 @@ impl Launcher {
                     self.starting_instance = None;
                     let stop = self.pre_launch_stop.take();
                     let cmd = horizon_launcher::launch::unless_stopped(cmd, stop.as_deref());
+                    self.move_front_game_back();
                     let spawned = cmd.and_then(|(cmd, vars)| {
                         self.client_vars = vars;
                         backend::spawn(Job::Client, cmd, self.tx.clone())
@@ -158,6 +159,7 @@ impl Launcher {
                     let stop = self.pre_launch_stop.take();
                     match horizon_launcher::launch::unless_stopped(*prepared, stop.as_deref()) {
                         Ok(cmd) => {
+                            self.move_front_game_back();
                             self.client_home = cmd.get_current_dir().map(|d| d.to_path_buf());
                             match backend::spawn(Job::Client, cmd, self.tx.clone()) {
                                 Ok(r) => {
@@ -456,6 +458,7 @@ impl Launcher {
                             );
                             self.native_look_again(ended.as_deref(), error.as_deref());
                         }
+                        Job::Client if self.background_game_ended() => {}
                         Job::Client => {
                             // The exit thread reaped the game; its child keeps the status.
                             let native_crash = self

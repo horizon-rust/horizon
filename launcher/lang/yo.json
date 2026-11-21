@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Ipò iṣẹ́ ṣíṣe ń fa pánẹ́lì lile, láìsí gíláàsì tàbí ìdàrú.",
   "This theme's night draws solid panels, without glass or blur.": "Òru àkórí yìí ń fa pánẹ́lì lile, láìsí gíláàsì tàbí ìdàrú.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Ṣiṣe ọpọlọpọ ẹda ni ẹẹkan",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Ṣere le bẹrẹ ẹda miiran nigba ti ere kan n lọ. Duro pari ere ẹda ti a yan."
 }

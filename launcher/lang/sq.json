@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Modaliteti i performancës vizaton panele të ngurta, pa xhami as mjegullim.",
   "This theme's night draws solid panels, without glass or blur.": "Nata e kësaj teme vizaton panele të ngurta, pa xhami as mjegullim.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Ekzekuto disa instanca njëkohësisht",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Luaj mund të nisë një instancë tjetër ndërsa një lojë është në ekzekutim. Ndalo përfundon lojën e instancës së zgjedhur."
 }

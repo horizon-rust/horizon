@@ -385,7 +385,7 @@ impl Launcher {
     fn play_group(&mut self, tag: &str, ready: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let accent = ui::color(self.look.accent);
-        let running = self.client.is_some();
+        let running = self.selected_running();
         let follows = self
             .selected_instance()
             .is_some_and(|i| i.follows_horizon());
@@ -620,9 +620,7 @@ impl Launcher {
                         .id("play")
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            if let Some(client) = &this.client {
-                                client.kill();
-                            }
+                            this.stop_selected();
                             cx.notify();
                         })),
                 ),

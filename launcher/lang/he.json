@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "מצב ביצועים מצייר פאנלים אחידים, בלי זכוכית ובלי טשטוש.",
   "This theme's night draws solid panels, without glass or blur.": "הלילה של ערכת הנושא הזו מצייר פאנלים אחידים, בלי זכוכית ובלי טשטוש.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "הפעלת כמה מופעים בו־זמנית",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "בזמן שמשחק פועל, „שחק” יכול להפעיל מופע נוסף. „עצור” מסיים את המשחק של המופע הנבחר."
 }

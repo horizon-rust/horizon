@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Modo de desempenho desenha painéis sólidos, sem vidro nem desfoque.",
   "This theme's night draws solid panels, without glass or blur.": "A noite deste tema desenha painéis sólidos, sem vidro nem desfoque.",
   "The server gets a copy: your single-player world stays as it is.": "O servidor recebe uma cópia: seu mundo de um jogador permanece como está.",
-  "You have no single-player world yet: play one first, or choose New world.": "Você ainda não tem um mundo de um jogador: jogue um primeiro ou escolha Novo mundo."
+  "You have no single-player world yet: play one first, or choose New world.": "Você ainda não tem um mundo de um jogador: jogue um primeiro ou escolha Novo mundo.",
+  "Run several instances at once": "Executar várias instâncias ao mesmo tempo",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Jogar pode iniciar outra instância enquanto um jogo está rodando. Parar encerra o jogo da instância selecionada."
 }

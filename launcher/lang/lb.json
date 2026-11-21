@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Leeschtungsmodus zeecht massiv Panneauen, ouni Glas oder Blur.",
   "This theme's night draws solid panels, without glass or blur.": "D'Nuecht vun dësem Thema zeecht massiv Panneauen, ouni Glas oder Blur.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Méi Instanzen gläichzäiteg lafe loossen",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Spillen kann eng aner Instanz starten, während e Spill leeft. Stoppen schléisst d'Spill vun der gewielter Instanz."
 }

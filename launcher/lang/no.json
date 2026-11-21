@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Ytelsesmodus tegner ensfargede paneler, uten glass eller uskarphet.",
   "This theme's night draws solid panels, without glass or blur.": "Natten til dette temaet tegner ensfargede paneler, uten glass eller uskarphet.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Kjør flere instanser samtidig",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Spill kan starte en annen instans mens et spill kjører. Stopp avslutter spillet til den valgte instansen."
 }

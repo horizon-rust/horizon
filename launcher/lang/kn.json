@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "ಕಾರ್ಯಕ್ಷಮತೆ ಮೋಡ್ ಗಾಜು ಅಥವಾ ಮಸುಕಿಲ್ಲದೆ ಘನ ಪ್ಯಾನೆಲ್‌ಗಳನ್ನು ಚಿತ್ರಿಸುತ್ತದೆ.",
   "This theme's night draws solid panels, without glass or blur.": "ಈ ಥೀಮ್‌ನ ರಾತ್ರಿ ಗಾಜು ಅಥವಾ ಮಸುಕಿಲ್ಲದೆ ಘನ ಪ್ಯಾನೆಲ್‌ಗಳನ್ನು ಚಿತ್ರಿಸುತ್ತದೆ.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "ಒಂದೇ ಸಮಯದಲ್ಲಿ ಹಲವು ಇನ್‌ಸ್ಟೆನ್ಸ್‌ಗಳನ್ನು ಚಲಾಯಿಸಿ",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "ಆಟ ನಡೆಯುತ್ತಿರುವಾಗ ಆಡು ಇನ್ನೊಂದು ಇನ್‌ಸ್ಟೆನ್ಸ್ ಪ್ರಾರಂಭಿಸಬಹುದು. ನಿಲ್ಲಿಸು ಆಯ್ಕೆಮಾಡಿದ ಇನ್‌ಸ್ಟೆನ್ಸ್‌ನ ಆಟವನ್ನು ಕೊನೆಗೊಳಿಸುತ್ತದೆ."
 }

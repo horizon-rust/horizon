@@ -87,6 +87,7 @@ mod scrollbar;
 mod servers_page;
 #[cfg(windows)]
 mod setup_page;
+mod several_games;
 mod shell;
 mod shortcut_page;
 mod specimen;
@@ -493,6 +494,8 @@ struct Launcher {
     client_run: Option<(String, Instant)>,
     /// The running game's instance variables, for its post-exit command.
     client_vars: horizon_launcher::launch::Vars,
+    /// Games a newer one moved out of the front, still running (`several_games.rs`).
+    background: Vec<several_games::BackgroundGame>,
     /// Settings' Game arguments field: the line, whether it has focus, and its focus handle.
     args_input: line_edit::LineEdit,
     args_focused: bool,

@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Modo rendemento debuxa paneis sólidos, sen vidro nin desenfoque.",
   "This theme's night draws solid panels, without glass or blur.": "A noite deste tema debuxa paneis sólidos, sen vidro nin desenfoque.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Executar varias instancias á vez",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Xogar pode iniciar outra instancia mentres se executa un xogo. Deter remata o xogo da instancia seleccionada."
 }

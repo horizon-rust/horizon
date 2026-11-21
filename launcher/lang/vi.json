@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Chế độ hiệu suất vẽ bảng đặc, không kính, không độ mờ.",
   "This theme's night draws solid panels, without glass or blur.": "Ban đêm của chủ đề này vẽ bảng đặc, không kính, không độ mờ.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Chạy nhiều phiên bản cùng lúc",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Chơi có thể khởi động một phiên bản khác khi một trò chơi đang chạy. Dừng sẽ kết thúc trò chơi của phiên bản đã chọn."
 }

@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "성능 모드는 유리나 흐림 없이 단색 패널을 그립니다.",
   "This theme's night draws solid panels, without glass or blur.": "이 테마의 밤은 유리나 흐림 없이 단색 패널을 그립니다.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "여러 인스턴스를 동시에 실행",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "게임이 실행 중일 때도 플레이로 다른 인스턴스를 시작할 수 있습니다. 중지는 선택한 인스턴스의 게임을 종료합니다."
 }

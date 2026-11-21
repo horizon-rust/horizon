@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "パフォーマンスモードは、ガラスやぼかしのない無地のパネルを描きます。",
   "This theme's night draws solid panels, without glass or blur.": "このテーマの夜は、ガラスやぼかしのない無地のパネルを描きます。",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "複数のインスタンスを同時に実行",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "ゲームの実行中でも、プレイで別のインスタンスを起動できます。停止は選択中のインスタンスのゲームを終了します。"
 }

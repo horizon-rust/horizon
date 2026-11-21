@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Ke kaha ka ʻano hana i nā pā paʻa, me ka ʻole o ke aniani a me ka blur.",
   "This theme's night draws solid panels, without glass or blur.": "Ke kaha ka pō o kēia kumuhana i nā pā paʻa, me ka ʻole o ke aniani a me ka blur.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "E holo i kekahi mau kope i ka manawa hoʻokahi",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Hiki iā Pāʻani ke hoʻomaka i kekahi kope ʻē aʻe ʻoiai e holo ana kekahi pāʻani. Hoʻopau ʻo Hoʻōki i ka pāʻani o ke kope i koho ʻia."
 }

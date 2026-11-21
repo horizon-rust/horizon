@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "性能模式绘制纯色面板，不带玻璃或模糊效果。",
   "This theme's night draws solid panels, without glass or blur.": "此主题的夜间模式绘制纯色面板，不带玻璃或模糊效果。",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "同时运行多个实例",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "游戏运行时，“开始游戏”可以启动另一个实例。“停止”会结束所选实例的游戏。"
 }

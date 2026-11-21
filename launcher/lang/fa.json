@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "حالت عملکرد پنل‌های یکدست می‌کشد، بدون شیشه یا تاری.",
   "This theme's night draws solid panels, without glass or blur.": "شب این پوسته پنل‌های یکدست می‌کشد، بدون شیشه یا تاری.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "اجرای چند نمونه به‌طور هم‌زمان",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "در حین اجرای یک بازی، «بازی» می‌تواند نمونهٔ دیگری را اجرا کند. «توقف» بازی نمونهٔ انتخاب‌شده را پایان می‌دهد."
 }

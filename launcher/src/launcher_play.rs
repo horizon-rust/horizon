@@ -241,7 +241,7 @@ impl Launcher {
                 .take()
                 .filter(|(flag, _)| *flag == "--server")
                 .map(|(_, ip)| ip);
-            if self.client.is_some() || self.starting_client.is_some() {
+            if self.game_blocks_start() {
                 return;
             }
             self.starting_pack = None;
@@ -315,10 +315,10 @@ impl Launcher {
     }
 
     /// Whether `tag` can start now ([`starts_now`]): prepared, no preparation under way, no game
-    /// running or starting.
+    /// starting, and none running unless several may (`several_games::game_blocks`).
     pub(crate) fn can_start(&self, tag: &str) -> bool {
-        let running = self.client.is_some() || self.starting_client.is_some();
-        starts_now(backend::is_prepared(tag), self.preparing, running)
+        let blocked = self.game_blocks_start();
+        starts_now(backend::is_prepared(tag), self.preparing, blocked)
     }
 
     /// Whether the selected instance's version can start now, from a shortcut (a server's Join,
@@ -332,7 +332,7 @@ impl Launcher {
     /// would (no game running or starting).
     pub(crate) fn can_join_selected(&self) -> bool {
         match self.selected_instance() {
-            Some(i) if i.java.is_some() => self.client.is_none() && self.starting_client.is_none(),
+            Some(i) if i.java.is_some() => !self.game_blocks_start(),
             _ => self.can_start_selected(),
         }
     }

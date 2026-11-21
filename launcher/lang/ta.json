@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "செயல்திறன் பயன்முறை கண்ணாடி அல்லது மங்கல் இன்றி திட பேனல்களை வரையும்.",
   "This theme's night draws solid panels, without glass or blur.": "இந்தக் கருப்பொருளின் இரவு கண்ணாடி அல்லது மங்கல் இன்றி திட பேனல்களை வரையும்.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "ஒரே நேரத்தில் பல நிகழ்வுகளை இயக்கு",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "ஒரு விளையாட்டு இயங்கும்போது விளையாடு இன்னொரு நிகழ்வைத் தொடங்கலாம். நிறுத்து தேர்ந்தெடுத்த நிகழ்வின் விளையாட்டை முடிக்கும்."
 }

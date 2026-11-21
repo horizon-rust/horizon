@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Mòde performància dessenha de panèls solids, sens veire nimai flou.",
   "This theme's night draws solid panels, without glass or blur.": "La nuèch d'aqueste tèma dessenha de panèls solids, sens veire nimai flou.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Aviar mantuna instància a l'encòp",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Jogar pòt aviar una autra instància pendent qu'un jòc s'executa. Arrestar acaba lo jòc de l'instància seleccionada."
 }

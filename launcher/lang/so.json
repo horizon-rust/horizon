@@ -1369,5 +1369,7 @@
   "Performance mode draws solid panels, without glass or blur.": "Qaabka waxqabadka wuxuu sawiraa baalas adag, oo aan muraayad ama khafiifyeyn lahayn.",
   "This theme's night draws solid panels, without glass or blur.": "Habeenka mowduucan wuxuu sawiraa baalas adag, oo aan muraayad ama khafiifyeyn lahayn.",
   "The server gets a copy: your single-player world stays as it is.": "The server gets a copy: your single-player world stays as it is.",
-  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world."
+  "You have no single-player world yet: play one first, or choose New world.": "You have no single-player world yet: play one first, or choose New world.",
+  "Run several instances at once": "Hal mar ku socodsii dhowr nuqul",
+  "Play can start another instance while a game runs. Stop ends the selected instance's game.": "Ciyaar waxay bilaabi kartaa nuqul kale inta ciyaar socoto. Jooji waxay dhammaysaa ciyaarta nuqulka la doortay."
 }

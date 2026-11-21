@@ -213,7 +213,7 @@ impl Launcher {
     /// A sidebar row's state line and its dot (the mockup's `statusOf`), from what the launcher
     /// knows of the instance.
     fn row_state(&self, i: &Instance) -> (Tone, String) {
-        let running = running_ids(self.client.is_some(), self.client_run.as_ref());
+        let running = self.running_ids();
         let phase = row_phase(&i.id, &running, self.starting_instance.as_deref());
         if phase == Some(RowPhase::Running) {
             return (Tone::Live, tr("Running").into());

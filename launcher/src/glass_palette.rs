@@ -143,7 +143,7 @@ impl Launcher {
                 self.select_instance(&instance);
                 self.go(Page::Play);
                 // Play only when the Play button would; otherwise the page says what it needs.
-                let running = self.client.is_some() || self.starting_client.is_some();
+                let running = self.game_blocks_start();
                 let prepared = self.selected().is_some_and(|t| backend::is_prepared(t));
                 if instance.java.is_some() || starts_now(prepared, self.preparing, running) {
                     self.play();
