@@ -43,3 +43,8 @@ The launcher uses its pinned Rust toolchain, not the player's Rust installation.
 compiler flags, Cargo configuration and target settings from the player's environment. Build
 inputs and outputs stay in managed launcher storage. On Windows the build tools require paths
 the linker can open; the launcher chooses a managed ASCII path when necessary.
+
+Crates an older Cargo packaged carry file times from 1970, which FAT32 and exFAT, the usual
+formats of portable drives, can't store. When the build folder is on such a drive, Cargo's home
+moves to `%ProgramData%\horizon-launcher-<id>\cargo`, named for the build folder. The Storage page
+doesn't list that folder; uninstalling removes it with the data.

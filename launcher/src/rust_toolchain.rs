@@ -558,9 +558,60 @@ pub fn root() -> PathBuf {
     backend::build_dir().join("rust")
 }
 
-/// The Cargo home of native builds (downloaded crates, horizon-mixins), never the player's own.
+/// The Cargo home of native builds (downloaded crates, horizon-mixins), never the player's own:
+/// `<build dir>/cargo`, unless files there can't take the times Cargo unpacks crates with
+/// ([`takes_cargo_times`]), which only Windows refuses.
 pub fn cargo_home() -> PathBuf {
-    backend::build_dir().join("cargo")
+    let build = backend::build_dir();
+    let takes_times = !cfg!(windows) || takes_cargo_times(&build);
+    cargo_home_in(
+        &build,
+        takes_times,
+        std::env::var_os("ProgramData").map(PathBuf::from),
+    )
+}
+
+/// [`cargo_home`] for the build folder `build`. One that can't take Cargo's times keeps its
+/// crates in a folder of ProgramData's named for it (`backend::ascii_build_dir`, as for a build
+/// folder the tools can't read), on the system drive, which takes them.
+fn cargo_home_in(build: &Path, takes_times: bool, program_data: Option<PathBuf>) -> PathBuf {
+    if takes_times {
+        return build.join("cargo");
+    }
+    backend::ascii_build_dir(build, program_data).join("cargo")
+}
+
+/// Whether files in `dir` take the time Cargo sets on the files it generated into a crate it unpacks
+/// (`Cargo.toml`, `.cargo_vcs_info.json`): 1970-01-01, one second in, in crates an older Cargo
+/// packaged (`itoa` 0.4.8, `cargo-platform` 0.1.9; newer ones carry 2006-07-24). FAT32's and
+/// exFAT's times start in 1980, and Windows refuses an earlier one ("The parameter is incorrect",
+/// os error 87), so no such crate unpacks on a drive formatted so, as portable drives often are
+/// (#16702). Asked of a scratch file in `dir`, named for this call alone: threads asking at once
+/// would otherwise share one file, and a name another call is deleting can't be created. A folder
+/// where none can be made is taken to take it.
+fn takes_cargo_times(dir: &Path) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PROBES: AtomicU64 = AtomicU64::new(0);
+    let probe = dir.join(format!(
+        ".cargo-time-probe-{}-{}",
+        std::process::id(),
+        PROBES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let Ok(file) = fs::File::create(&probe) else {
+        return true;
+    };
+    let set = file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1));
+    drop(file);
+    let _ = fs::remove_file(&probe);
+    time_taken(set)
+}
+
+/// What setting the probe's time says about its folder: only Windows' answer for a time the
+/// volume can't store (os error 87, what FAT32 and exFAT give) moves the Cargo home. A probe that
+/// fails for another reason keeps it in the build folder, so a folder only the player can write
+/// to never sends Cargo's configuration to a shared one.
+fn time_taken(set: std::io::Result<()>) -> bool {
+    !matches!(set, Err(error) if error.raw_os_error() == Some(87))
 }
 
 fn dir_for(host: &Host) -> PathBuf {
@@ -1351,6 +1402,57 @@ mod tests {
             Some(toolchain.dir.join("bin"))
         );
         assert!(get("CARGO_HOME").flatten().unwrap().ends_with("cargo"));
+    }
+
+    /// #16702: a build folder on FAT32 or exFAT, as on many portable drives, can't take the 1970
+    /// file times crates unpack with (Windows refuses them: os error 87), so its crates go to a
+    /// folder of ProgramData's of its own, on the system drive.
+    #[test]
+    fn a_build_folder_that_cant_take_cargos_file_times_keeps_its_crates_elsewhere() {
+        let build = Path::new(r"E:\Games\Horizon-data\launcher");
+        let public = PathBuf::from(if cfg!(windows) {
+            r"C:\ProgramData"
+        } else {
+            "/data"
+        });
+        assert_eq!(
+            cargo_home_in(build, true, Some(public.clone())),
+            build.join("cargo")
+        );
+        let home = cargo_home_in(build, false, Some(public.clone()));
+        assert_eq!(home.parent().and_then(Path::parent), Some(public.as_path()));
+        assert!(home.ends_with("cargo"), "{}", home.display());
+        let other = Path::new(r"F:\Horizon\launcher");
+        assert_ne!(
+            home,
+            cargo_home_in(other, false, Some(public)),
+            "one per folder"
+        );
+    }
+
+    /// An ordinary drive takes Cargo's file times, so its crates stay in the build folder, and
+    /// asking leaves the folder as it was.
+    #[test]
+    fn a_folder_on_an_ordinary_drive_takes_cargos_file_times() {
+        let dir = std::env::temp_dir().join(format!("horizon-cargo-times-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(takes_cargo_times(&dir));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "the probe is gone");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Only the answer FAT32 and exFAT give for a time they can't store moves the Cargo home; a
+    /// probe refused for another reason keeps it in the build folder.
+    #[test]
+    fn only_a_time_the_drive_cant_store_moves_the_cargo_home() {
+        assert!(time_taken(Ok(())));
+        assert!(!time_taken(Err(std::io::Error::from_raw_os_error(87))));
+        assert!(
+            time_taken(Err(std::io::Error::from_raw_os_error(5))),
+            "access denied"
+        );
+        assert!(time_taken(Err(std::io::Error::other("anything else"))));
     }
 
     /// #16718: the Settings page's proxy reaches the build's Cargo, which downloads the crates and
