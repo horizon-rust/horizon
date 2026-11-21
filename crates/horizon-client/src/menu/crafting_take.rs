@@ -43,6 +43,14 @@ impl Menu {
             }
             return;
         }
+        if self.state.slots[s].role == Role::ModResult {
+            // A mod result slot's `onTake`: what the mod hands out for the take.
+            if self.state.mod_result_hook && env.loop_context.side() == LoopSide::Server {
+                let slot = self.state.slots[s].index as u32;
+                self.state.mod_result_takes.push((slot, taken.clone()));
+            }
+            return;
+        }
         if self.state.slots[s].role == Role::MerchantResult {
             self.merchant_check_take_achievements(taken);
             self.merchant_take(env);

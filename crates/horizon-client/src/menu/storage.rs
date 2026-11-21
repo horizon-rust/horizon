@@ -145,6 +145,12 @@ pub struct State {
     /// Stacks taken from brewing stand bottle slots, for
     /// `PlayerBrewedPotionEvent`.
     pub brewed_potion_takes: Vec<ItemStack>,
+    /// Set by a server caller when a mod listens: every stack taken from a
+    /// mod menu type's result slot then goes to `mod_result_takes`.
+    pub mod_result_hook: bool,
+    /// Stacks taken from a mod menu type's result slots, with their container
+    /// slot, for `menu_result_take`.
+    pub mod_result_takes: Vec<(u32, ItemStack)>,
     /// Set by a server caller when a mod listens: every
     /// `FurnaceResultSlot.checkTakeAchievements` then goes to `item_smelted`.
     pub item_smelted_hook: bool,

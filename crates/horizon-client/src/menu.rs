@@ -873,6 +873,8 @@ impl Menu {
                 merchant_remove_count: 0,
                 brewed: Vec::new(),
                 brewed_potion_hook: false,
+                mod_result_hook: false,
+                mod_result_takes: Vec::new(),
                 brewed_potion_takes: Vec::new(),
                 item_smelted_hook: false,
                 item_smelted: Vec::new(),
@@ -2346,9 +2348,11 @@ impl Menu {
                     return None;
                 }
             }
-            // ChestMenu.quickMoveStack over the mod's slots.
+            // ChestMenu.quickMoveStack over the mod's slots; a result's move ends with
+            // its `onTake`, as a furnace's does (`menu_result_take`).
             Kind::Mod(t) => {
                 check_count = false;
+                after_take = self.state.slots[index].role == Role::ModResult;
                 let n = t.slots;
                 if index < n {
                     if !self.move_to(env, &mut stack, n, total, true) {
@@ -4751,6 +4755,79 @@ pub(crate) mod tests {
             menu.click(env, 31, 0, Input::QuickMove).unwrap();
             assert_eq!((n(menu.slot(0)), n(menu.player_item(0))), (None, Some(3)));
         }
+    }
+
+    /// A take from a mod menu type's result slot, a pickup or a shift-click, is
+    /// recorded with its container slot for `menu_result_take` when a server
+    /// caller listens, and not otherwise.
+    #[test]
+    fn a_mod_menu_result_take_is_recorded_for_its_hook() {
+        let root = std::env::temp_dir().join(format!("horizon-mod-take-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        let items = Items::for_tests(Default::default());
+        let recipes = Recipes::load(
+            &root,
+            &items,
+            &PackOverlay::NONE,
+            &crate::test_resources::server_load(),
+        )
+        .unwrap();
+        let brewing = Brewing::load(&root, &items, &PackOverlay::NONE);
+        let _ = std::fs::remove_dir_all(&root);
+        let (banners, station_recipes) = (Banners::default(), Default::default());
+        let (enchantments, names) = (Default::default(), Default::default());
+        let env = &Env {
+            crafting_remainder: None,
+            player: None,
+            player_entity_id: None,
+            loop_context: &crate::test_resources::loop_context(LoopSide::Server),
+            items: &items,
+            recipes: &recipes,
+            brewing: &brewing,
+            banners: &banners,
+            station_recipes: &station_recipes,
+            enchantments: &enchantments,
+            names: &names,
+            trade: None,
+            maps: None,
+            limited_crafting: false,
+            can_equip: None,
+            known_recipes: None,
+            slot_rules: None,
+        };
+        let takes = |m: &Menu| -> Vec<(u32, String, u32)> {
+            m.mod_result_takes
+                .iter()
+                .map(|(slot, stack)| (*slot, stack.item.to_string(), stack.count))
+                .collect()
+        };
+        let menu = &mut Menu::new(mod_menu());
+        menu.creative = false;
+        menu.mod_result_hook = true;
+        // A pickup takes the result's two; a shift-click moves the next one.
+        menu.put(env, 3, stack("iron_ingot", 2));
+        menu.click(env, 3, 0, Input::Pickup).unwrap();
+        menu.carried = None;
+        menu.put(env, 3, stack("iron_ingot", 1));
+        menu.click(env, 3, 0, Input::QuickMove).unwrap();
+        assert_eq!(
+            takes(menu),
+            [
+                (3, "minecraft:iron_ingot".to_owned(), 2),
+                (3, "minecraft:iron_ingot".to_owned(), 1)
+            ]
+        );
+        // Taking from one of its other slots is no result take.
+        menu.mod_result_takes.clear();
+        menu.put(env, 0, stack("stick", 1));
+        menu.click(env, 0, 0, Input::Pickup).unwrap();
+        assert!(menu.mod_result_takes.is_empty());
+        // Without a listener nothing is kept.
+        let quiet = &mut Menu::new(mod_menu());
+        quiet.creative = false;
+        quiet.put(env, 3, stack("iron_ingot", 2));
+        quiet.click(env, 3, 0, Input::Pickup).unwrap();
+        assert!(quiet.mod_result_takes.is_empty());
     }
 
     /// A mod menu type laid out as `CraftingMenu`: the result in slot 0, the
