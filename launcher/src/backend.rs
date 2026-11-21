@@ -4386,6 +4386,7 @@ pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String>
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let direct = job == Job::Client && crate::refusals::runs_horizon_directly(&cmd);
     let mut child = play_log::spawn(&mut cmd)?;
     let stdin = child.stdin.take();
     let mut readers = Vec::new();
@@ -4419,7 +4420,7 @@ pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String>
         };
         let result = match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(s) => Err(crate::refusals::exit_error(job == Job::Client, s)),
+            Ok(s) => Err(crate::refusals::exit_error(direct, s)),
             Err(e) => Err(e.to_string()),
         };
         drop(runtime);

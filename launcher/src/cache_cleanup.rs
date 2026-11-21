@@ -461,7 +461,8 @@ fn delete_unit(
         .filter(|_| data != real_data)
         .map(|relative| real_data.join(relative));
     let path = rebased.as_deref().unwrap_or(path);
-    let registry = Registry::with_release(&real_data, Release::Close)?;
+    let registry = Registry::with_release(&real_data, Release::Close)
+        .map_err(|error| Error::from(error).on(&data))?;
     registry.remove_unit(path, |directory, is_directory| {
         Access::for_unit(path)?.check(proof)?;
         veto()?;
