@@ -1323,6 +1323,37 @@ status-heartbeat-interval=0
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn heartbeat_update_does_not_replace_unreadable_properties() {
+        let shared = shared();
+        let toml = shared.dir.join(crate::config::FILE);
+        std::fs::write(&toml, crate::config::TEMPLATE).unwrap();
+        let properties = shared.dir.join(crate::config::PROPERTIES);
+        // These fail to read even as root, but an atomic rename could still replace either.
+        for target in [crate::config::PROPERTIES, "missing.properties"] {
+            std::os::unix::fs::symlink(target, &properties).unwrap();
+
+            let (code, message) = status_heartbeat_interval(&shared, 30).unwrap_err();
+            assert_eq!(code, INTERNAL_ERROR);
+            let message = message.unwrap();
+            assert!(
+                message.contains(properties.to_string_lossy().as_ref()),
+                "{message}"
+            );
+            assert_eq!(
+                std::fs::read_link(&properties).unwrap().as_path(),
+                std::path::Path::new(target)
+            );
+            std::fs::remove_file(&properties).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&toml).unwrap(),
+            crate::config::TEMPLATE
+        );
+        std::fs::remove_dir_all(&shared.dir).unwrap();
+    }
+
     /// A set to 0 or less with no heartbeat running cancels nothing, so later sets still apply.
     #[test]
     fn a_heartbeat_never_started_can_still_be_set() {
