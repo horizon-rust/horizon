@@ -7474,6 +7474,32 @@ impl Renderer {
             {
                 return Ok(false);
             }
+            // Without HDR, the texture a float frame or a screenshot of a swapchain that can't
+            // be copied from is drawn into, for the image the swapchain was configured to give.
+            let image = match &self.offscreen {
+                _ if self.surface.is_some() => Some(readback::Image {
+                    size: wgpu::Extent3d {
+                        width: self.config.width,
+                        height: self.config.height,
+                        depth_or_array_layers: 1,
+                    },
+                    format: self.config.format,
+                    usage: self.config.usage,
+                }),
+                Some(offscreen) => Some(readback::Image {
+                    size: offscreen.size(),
+                    format: offscreen.format(),
+                    usage: offscreen.usage(),
+                }),
+                None => None,
+            };
+            let (format, screenshot) = (self.output.frame.format, self.screenshot.is_some());
+            if self.hdr.is_none()
+                && let Some(image) = image
+                && !self.readback.ready(&self.device, image, format, screenshot)
+            {
+                return Ok(false);
+            }
         }
         let started = Instant::now();
         if self.first_frame == FirstFrame::Acquire {
@@ -7612,14 +7638,6 @@ impl Renderer {
                     Some(f) => f.texture.clone(),
                     None => self.offscreen.clone().ok_or("no offscreen target")?,
                 };
-                let (format, screenshot) = (self.output.frame.format, self.screenshot.is_some());
-                if checks.is_none()
-                    && !self
-                        .readback
-                        .ready(&self.device, &image, format, screenshot)
-                {
-                    return Ok(false);
-                }
                 self.readback
                     .target(
                         &self.device,
