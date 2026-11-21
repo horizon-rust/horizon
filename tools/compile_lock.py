@@ -295,7 +295,7 @@ class Turn:
         self.waiting_held = False
 
     def yield_if_ahead(self):
-        """At a cargo-call boundary: a pull request's job holding the turn gives it back while a priority job is here
+        """At a cargo-call boundary: a pull request's job holding the turn gives it back while a priority job waits
         (see the module's text), then waits for it again with what is left of WAIT["pr"]. True when it gave the turn
         back. Without the turn held (the lock off or failed open included), without `waiting`, or for a priority role,
         it does nothing."""
@@ -382,7 +382,10 @@ class Turn:
                     self.say(f"waited {limit / 60:.0f} min, {share}; compiling without the turn while {blocker}")
                 return False
             if self.role in PRIORITY and not self.waiting_held and self.waiting is not None:
-                self.waiting_held = self.lock(self.waiting, self.fcntl.LOCK_SH)  # refused only for an instant
+                try:
+                    self.waiting_held = self.lock(self.waiting, self.fcntl.LOCK_SH)  # refused only for an instant
+                except OSError:
+                    pass  # optional, as at open: this job waits as on main, unseen by pull requests
             self.sleep(POLL)
         self.write_holder()
         waited = self.taken_at - started
