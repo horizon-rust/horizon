@@ -4300,6 +4300,8 @@ pub enum Job {
 pub struct Running {
     pub child: Arc<Mutex<Child>>,
     pub stdin: Option<ChildStdin>,
+    /// Set before `Msg::Exit` when the game refused its folder leases (exit 78).
+    pub leases_refused: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Launcher-owned tree-lock primitives and optional Windows runtime state.
@@ -4408,6 +4410,8 @@ pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String>
     }
     let child = Arc::new(Mutex::new(child));
     let waited = child.clone();
+    let leases_refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refused = leases_refused.clone();
     std::thread::spawn(move || {
         for r in readers {
             let _ = r.join();
@@ -4420,13 +4424,22 @@ pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String>
         };
         let result = match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(s) => Err(crate::refusals::exit_error(direct, s)),
+            Ok(s) => {
+                let exit = crate::refusals::exit_error(direct, s);
+                // Ordered before the send: the window reads it when the exit arrives.
+                refused.store(exit.leases_refused, std::sync::atomic::Ordering::SeqCst);
+                Err(exit.text)
+            }
             Err(e) => Err(e.to_string()),
         };
         drop(runtime);
         let _ = tx.send(Msg::Exit(job, result));
     });
-    Ok(Running { child, stdin })
+    Ok(Running {
+        child,
+        stdin,
+        leases_refused,
+    })
 }
 
 /// The launcher's appearance, as older launchers saved it: a theme is one look now, and a saved

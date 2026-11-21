@@ -45,26 +45,39 @@ fn direct(program: &OsStr, game: &OsStr, staged: Option<&Path>) -> bool {
     program == game || staged.is_some_and(|staged| staged.as_os_str() == program)
 }
 
+/// How a run ended badly: its words, and whether the game refused its folder leases. The kind
+/// travels beside the words so the window never reads it back from translated text.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ExitError {
+    pub text: String,
+    pub leases_refused: bool,
+}
+
 /// How a run that ended with `status` reads. A directly started game's lease refusal says
 /// what to do; the crash card adds where to report it ([`crash_help`]).
-pub fn exit_error(direct: bool, status: std::process::ExitStatus) -> String {
+pub fn exit_error(direct: bool, status: std::process::ExitStatus) -> ExitError {
     exit_text(direct, status.code(), &status.to_string())
 }
 
-fn exit_text(direct: bool, code: Option<i32>, status: &str) -> String {
-    if direct && code == Some(LEASES_REFUSED) {
-        return lease_refusal();
+fn exit_text(direct: bool, code: Option<i32>, status: &str) -> ExitError {
+    let leases_refused = direct && code == Some(LEASES_REFUSED);
+    let text = match leases_refused {
+        true => tr("Horizon stopped before starting because its folders weren't marked as in use. Press Play again.").into(),
+        false => format!("Exited with {status}"),
+    };
+    ExitError {
+        text,
+        leases_refused,
     }
-    format!("Exited with {status}")
 }
 
-fn lease_refusal() -> String {
-    tr("Horizon stopped before starting because its folders weren't marked as in use. Press Play again.").into()
-}
-
-/// Whether a run's error is the game's lease refusal.
-pub fn is_lease_refusal(error: &str) -> bool {
-    error == lease_refusal()
+/// The crash report a run that ended left, looked up by time with `lookup`. After a lease
+/// refusal the game never started, so a report the lookup finds is an earlier run's.
+pub fn crash_report<T>(leases_refused: bool, lookup: impl FnOnce() -> Option<T>) -> Option<T> {
+    if leases_refused {
+        return None;
+    }
+    lookup()
 }
 
 /// The crash card's line on what to report: with a crash report, without one, or after a lease
@@ -314,30 +327,45 @@ mod tests {
         );
         assert!(crash_help(false, false, true).contains("attach latest.log"));
         assert!(crash_help(true, false, false).contains("crash report file"));
-        assert!(is_lease_refusal(&exit_text(
-            true,
-            Some(78),
-            "exit code: 78"
-        )));
-        assert!(!is_lease_refusal("Exited with exit code: 78"));
     }
 
     #[test]
     fn only_the_games_code_78_reads_as_a_lease_refusal() {
-        let refused = exit_text(true, Some(78), "exit code: 78");
+        let generic = |text: &str| ExitError {
+            text: text.into(),
+            leases_refused: false,
+        };
         assert_eq!(
-            refused,
-            "Horizon stopped before starting because its folders weren't marked as in use. Press Play again."
+            exit_text(true, Some(78), "exit code: 78"),
+            ExitError {
+                text: "Horizon stopped before starting because its folders weren't marked as in use. Press Play again.".into(),
+                leases_refused: true,
+            }
         );
         assert_eq!(
             exit_text(false, Some(78), "exit code: 78"),
-            "Exited with exit code: 78"
+            generic("Exited with exit code: 78")
         );
         assert_eq!(
             exit_text(true, Some(1), "exit code: 1"),
-            "Exited with exit code: 1"
+            generic("Exited with exit code: 1")
         );
-        assert_eq!(exit_text(true, None, "signal: 9"), "Exited with signal: 9");
+        assert_eq!(
+            exit_text(true, None, "signal: 9"),
+            generic("Exited with signal: 9")
+        );
+    }
+
+    #[test]
+    fn a_lease_refusal_never_shows_an_earlier_runs_crash_report() {
+        let earlier = Some(std::path::PathBuf::from("crash-reports/crash-earlier.txt"));
+        assert_eq!(
+            crash_report(true, || -> Option<std::path::PathBuf> {
+                panic!("looked up a report after a lease refusal")
+            }),
+            None
+        );
+        assert_eq!(crash_report(false, || earlier.clone()), earlier);
     }
 
     #[test]

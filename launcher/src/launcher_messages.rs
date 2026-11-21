@@ -461,9 +461,11 @@ impl Launcher {
                         }
                         Job::Client => {
                             // The exit thread reaped the game; its child keeps the status.
-                            let native_crash = self
-                                .client
-                                .take()
+                            let client = self.client.take();
+                            let leases_refused = client
+                                .as_ref()
+                                .is_some_and(|client| client.leases_refused.load(Ordering::SeqCst));
+                            let native_crash = client
                                 .and_then(|client| client.child.lock().ok()?.try_wait().ok()?)
                                 .is_some_and(backend::native_crash_exit);
                             // Any session file the game didn't read (it crashed first).
@@ -489,10 +491,12 @@ impl Launcher {
                             }
                             // The run's own game folder: an instance's or a pack's keeps its reports.
                             let home = self.client_home.clone().unwrap_or_else(backend::game_home);
-                            let report = self
-                                .client_started
-                                .take()
-                                .and_then(|since| backend::crash_report_since(&home, since));
+                            let since = self.client_started.take();
+                            let report =
+                                horizon_launcher::refusals::crash_report(leases_refused, || {
+                                    since
+                                        .and_then(|since| backend::crash_report_since(&home, since))
+                                });
                             let switched = if native_crash && report.is_none() {
                                 self.switched_after_start_crash()
                             } else {
@@ -506,9 +510,6 @@ impl Launcher {
                                     &[("crashed", crashed), ("api", api)],
                                 ));
                             } else if error.is_some() || report.is_some() {
-                                let leases_refused = error
-                                    .as_deref()
-                                    .is_some_and(horizon_launcher::refusals::is_lease_refusal);
                                 let summary = report
                                     .as_ref()
                                     .and_then(|p| std::fs::read_to_string(p).ok())
