@@ -64,7 +64,16 @@ fn parse_click_event_origin(
             .map(ClickEvent::OpenUrl),
         Some("change_page") => e
             .get("page")
-            .and_then(Value::as_i64)
+            .and_then(|v| {
+                v.as_i64().or_else(|| {
+                    let n = v.as_f64()?;
+                    (v.is_f64()
+                        && n.is_finite()
+                        && n.trunc() >= f64::from(i32::MIN)
+                        && n.trunc() <= f64::from(i32::MAX))
+                    .then_some(n as i64)
+                })
+            })
             .or_else(|| e.get("value").and_then(Value::as_i64))
             .or_else(|| {
                 e.get("value")

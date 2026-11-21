@@ -615,7 +615,7 @@ fn native_click(click: engine::ClickEvent) -> Result<Option<TextClick>, Error> {
         E::OpenFile(_) | E::Profiler(_) => return Ok(None),
     }))
 }
-fn captured_style(node: &Node<'_>) -> Result<TextStyle, Error> {
+fn captured_style(node: &Node<'_>, nbt: &ComponentNbt<'_>) -> Result<TextStyle, Error> {
     let mut style = TextStyle::default();
     match node.style {
         Style::Empty => {}
@@ -650,7 +650,8 @@ fn captured_style(node: &Node<'_>) -> Result<TextStyle, Error> {
                 .get("insertion")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            style.click = component::style_event_object(fields, "click_event", "clickEvent")
+            let event = component::style_event_object(fields, "click_event", "clickEvent");
+            style.click = event
                 .map(component::parse_click_event)
                 .transpose()
                 .map_err(error)?
@@ -658,6 +659,21 @@ fn captured_style(node: &Node<'_>) -> Result<TextStyle, Error> {
                 .map(native_click)
                 .transpose()?
                 .flatten();
+            if let (Some(event), Some(click)) = (event, &mut style.click) {
+                match click {
+                    TextClick::Custom { payload, .. } => {
+                        if let Some(tag) = event.get("payload").and_then(|value| nbt.read(value)) {
+                            *payload = Some(tag);
+                        }
+                    }
+                    TextClick::ShowDialog(dialog) => {
+                        if let Some(tag) = event.get("dialog").and_then(|value| nbt.read(value)) {
+                            *dialog = tag;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     style.hover = match &node.hover {
@@ -670,7 +686,10 @@ fn captured_style(node: &Node<'_>) -> Result<TextStyle, Error> {
             id: (*id).into(),
             count: *count,
             components: components
-                .map(json_nbt::json_to_tag)
+                .map(|value| {
+                    nbt.read(value)
+                        .map_or_else(|| json_nbt::json_to_tag(value), Ok)
+                })
                 .transpose()
                 .map_err(error)?,
         }),
@@ -719,7 +738,7 @@ fn captured_style(node: &Node<'_>) -> Result<TextStyle, Error> {
     }
     Ok(style)
 }
-fn captured_shallow(node: &Node<'_>) -> Result<Text, Error> {
+fn captured_shallow(node: &Node<'_>, nbt: &ComponentNbt<'_>) -> Result<Text, Error> {
     let meta = node
         .fields
         .map(|fields| {
@@ -798,7 +817,7 @@ fn captured_shallow(node: &Node<'_>) -> Result<Text, Error> {
             meta.insert("score".into(), score);
         }
     }
-    text.style = captured_style(node)?;
+    text.style = captured_style(node, nbt)?;
     Ok(text)
 }
 fn attach(text: &mut Text, relation: TextRelation, child: Text) {
@@ -829,6 +848,10 @@ fn attach(text: &mut Text, relation: TextRelation, child: Text) {
     }
 }
 fn capture(root: Source<'_>) -> Result<Text, Error> {
+    capture_with_nbt(root, &ComponentNbt::default())
+}
+
+fn capture_with_nbt(root: Source<'_>, nbt: &ComponentNbt<'_>) -> Result<Text, Error> {
     let nodes = plan(root)?;
     let mut ready: HashMap<Key, Text> = HashMap::new();
     for node in nodes {
@@ -838,7 +861,7 @@ fn capture(root: Source<'_>) -> Result<Text, Error> {
                 .map(|(child, _, _)| ready.remove(&child.key()).expect("child was built"))
                 .unwrap_or_default()
         } else {
-            match captured_shallow(&node) {
+            match captured_shallow(&node, nbt) {
                 Ok(value) => value,
                 Err(error) => {
                     for text in ready.into_values() {
@@ -874,6 +897,105 @@ pub fn style_hover(style: &engine::Style) -> Option<TextHover> {
 /// Capture an engine text without losing structured content or style.
 pub fn to_api(text: &engine::Text) -> Result<Text, TextFormError> {
     capture(Source::Engine(text))
+}
+
+/// A bounded component's JSON projection and the opaque NBT slots it may refer to.
+/// The component grammar only needs to see that these slots are present.
+#[derive(Default)]
+pub struct ComponentNbt<'a> {
+    slots: Vec<&'a Tag>,
+}
+
+impl<'a> ComponentNbt<'a> {
+    /// Match the writer's 64-container bound before walking recursive text fields.
+    pub fn project(tag: &'a Tag, limit: usize) -> Result<(Value, Self), Error> {
+        if !nbt::within_depth(tag, limit) {
+            return Err(Error::TooDeep);
+        }
+        let mut nbt = Self::default();
+        let value = nbt.component(tag)?;
+        Ok((value, nbt))
+    }
+
+    /// Capture a component after its projected JSON has passed the component grammar.
+    pub fn capture(&self, value: &Value) -> Result<Text, Error> {
+        capture_with_nbt(Source::Json(value), self)
+    }
+
+    fn stash(&mut self, tag: &'a Tag) -> Value {
+        let index = self.slots.len();
+        self.slots.push(tag);
+        // NBT projects no nested JSON booleans in opaque values, so an ordinary
+        // NBT payload cannot look like one of these slots.
+        Value::Array(vec![Value::Bool(true), Value::from(index)])
+    }
+
+    fn read(&self, value: &Value) -> Option<Tag> {
+        let [Value::Bool(true), index] = value.as_array()?.as_slice() else {
+            return None;
+        };
+        let index = usize::try_from(index.as_u64()?).ok()?;
+        self.slots.get(index).map(|tag| nbt::clone_tag(tag))
+    }
+
+    fn component(&mut self, tag: &'a Tag) -> Result<Value, Error> {
+        match tag {
+            Tag::List(values) => values
+                .iter()
+                .map(|tag| self.component(tag))
+                .collect::<Result<_, _>>()
+                .map(Value::Array),
+            Tag::Compound(fields) => fields
+                .iter()
+                .map(|(key, tag)| {
+                    let key = key.to_string().map_err(|_| Error::InvalidString)?;
+                    let value = match key.as_str() {
+                        "extra" | "with" | "separator" | "fallback" => self.component(tag)?,
+                        "click_event" | "hover_event" => self.event(tag, &key)?,
+                        "bold" | "italic" | "underlined" | "strikethrough" | "obfuscated"
+                        | "interpret" | "plain" | "hat" => {
+                            if let Some(flag) = horizon_client_core::component_codec::nbt_bool(tag)
+                            {
+                                Value::Bool(flag)
+                            } else {
+                                json_nbt::tag_to_json(tag).map_err(error)?
+                            }
+                        }
+                        _ => json_nbt::tag_to_json(tag).map_err(error)?,
+                    };
+                    Ok((key, value))
+                })
+                .collect::<Result<_, _>>()
+                .map(Value::Object),
+            _ => json_nbt::tag_to_json(tag).map_err(error),
+        }
+    }
+
+    fn event(&mut self, tag: &'a Tag, kind: &str) -> Result<Value, Error> {
+        let Tag::Compound(fields) = tag else {
+            return json_nbt::tag_to_json(tag).map_err(error);
+        };
+        let action = match tag.get("action") {
+            Some(Tag::String(action)) => action.to_string().map_err(|_| Error::InvalidString)?,
+            _ => String::new(),
+        };
+        fields
+            .iter()
+            .map(|(key, tag)| {
+                let key = key.to_string().map_err(|_| Error::InvalidString)?;
+                let value = match (kind, action.as_str(), key.as_str()) {
+                    ("click_event", "custom", "payload")
+                    | ("click_event", "show_dialog", "dialog")
+                    | ("hover_event", "show_item", "components") => self.stash(tag),
+                    ("hover_event", "show_text", "value")
+                    | ("hover_event", "show_entity", "name") => self.component(tag)?,
+                    _ => json_nbt::tag_to_json(tag).map_err(error)?,
+                };
+                Ok((key, value))
+            })
+            .collect::<Result<_, _>>()
+            .map(Value::Object)
+    }
 }
 
 fn discard_api_text(root: Text) {

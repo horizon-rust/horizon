@@ -1,6 +1,7 @@
 //! Owned item values. Registry-dependent validation belongs to the game's write boundary.
-use crate::ItemKey;
+use crate::{Host, ItemKey, Text, TextFormError};
 use horizon_core::nbt::{Compound, JavaString, Tag};
+use std::borrow::Cow;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -153,6 +154,7 @@ pub struct StackSplit {
 
 /// The most lore lines the item packet reader takes.
 const MAX_LORE_LINES: usize = 256;
+const CUSTOM_MODEL_DATA: &str = "minecraft:custom_model_data";
 
 impl ItemStack {
     /// Construct a nonempty stack. Registry maxima are validated by the game on writes.
@@ -272,6 +274,19 @@ impl ItemStack {
                 .patch
                 .get(&JavaString::from(component.id()))?,
         )
+    }
+    /// Borrow a patched value or fetch the prototype value, unless explicitly removed.
+    fn effective_component(&self, host: &dyn Host, id: &str) -> Option<Cow<'_, Tag>> {
+        if let Some(components) = &self.components {
+            let patch = components.as_nbt();
+            if patch.contains_key(&JavaString::from(format!("!{id}").as_str())) {
+                return None;
+            }
+            if let Some(value) = patch.get(&JavaString::from(id)) {
+                return Some(Cow::Borrowed(value));
+            }
+        }
+        host.item_default_component(self.item, id).map(Cow::Owned)
     }
     /// Replace a component value. Only stacks with a patch allocate component storage.
     pub fn set<C: Component>(&mut self, component: &C, value: C::Value) -> Result<(), StackError> {
@@ -419,6 +434,75 @@ impl ItemStack {
         }
         Some(stack)
     }
+    /// Reads the effective custom name (`minecraft:custom_name`), including a prototype
+    /// value. Returns None when the component is absent or explicitly removed.
+    pub fn display_name(&self, host: &dyn Host) -> Result<Option<Text>, TextFormError> {
+        self.effective_component(host, "minecraft:custom_name")
+            .map(|tag| read_display_text(host, &tag))
+            .transpose()
+    }
+    /// Reads the effective lore in order. An absent or removed component yields an empty
+    /// list. An invalid line or list yields an error.
+    pub fn lore(&self, host: &dyn Host) -> Result<Vec<Text>, TextFormError> {
+        let Some(tag) = self.effective_component(host, "minecraft:lore") else {
+            return Ok(Vec::new());
+        };
+        let lines = text_component_list(Some(&tag))?;
+        if lines.len() > MAX_LORE_LINES {
+            return Err(TextFormError::Malformed);
+        }
+        lines
+            .iter()
+            .map(|line| read_display_text(host, line))
+            .collect()
+    }
+    /// Reads the effective custom model data's floats in order. An absent or removed
+    /// component, or an omitted `floats` field, yields an empty list.
+    pub fn custom_model_data_floats(&self, host: &dyn Host) -> Result<Vec<f32>, TextFormError> {
+        let data = self.custom_model_data(host)?;
+        let floats = data.as_deref().and_then(|tag| tag.get("floats"));
+        match floats {
+            Some(Tag::ByteArray(values)) => {
+                Ok(values.iter().map(|v| f32::from(*v as i8)).collect())
+            }
+            Some(Tag::IntArray(values)) => Ok(values.iter().map(|v| *v as f32).collect()),
+            Some(Tag::LongArray(values)) => Ok(values.iter().map(|v| *v as f32).collect()),
+            other => text_component_list(other)?
+                .iter()
+                .map(|value| {
+                    // CustomModelData.CODEC reads all six numeric tag types as Java floats.
+                    Ok(match value {
+                        Tag::Byte(v) => f32::from(*v),
+                        Tag::Short(v) => f32::from(*v),
+                        Tag::Int(v) => *v as f32,
+                        Tag::Long(v) => *v as f32,
+                        Tag::Float(v) => f32::from_bits(*v),
+                        Tag::Double(v) => f64::from_bits(*v) as f32,
+                        _ => return Err(TextFormError::Malformed),
+                    })
+                })
+                .collect(),
+        }
+    }
+    /// Reads the effective custom model data's strings in order. An absent or removed
+    /// component, or an omitted `strings` field, yields an empty list.
+    pub fn custom_model_data_strings(&self, host: &dyn Host) -> Result<Vec<String>, TextFormError> {
+        let data = self.custom_model_data(host)?;
+        text_component_list(data.as_deref().and_then(|tag| tag.get("strings")))?
+            .iter()
+            .map(|value| match value {
+                Tag::String(value) => value.to_string().map_err(|_| TextFormError::InvalidString),
+                _ => Err(TextFormError::Malformed),
+            })
+            .collect()
+    }
+    fn custom_model_data(&self, host: &dyn Host) -> Result<Option<Cow<'_, Tag>>, TextFormError> {
+        let data = self.effective_component(host, CUSTOM_MODEL_DATA);
+        match data.as_deref() {
+            None | Some(Tag::Compound(_)) => Ok(data),
+            _ => Err(TextFormError::Malformed),
+        }
+    }
     /// Sets the stack's shown name and lore (`minecraft:custom_name`, `minecraft:lore`), as
     /// Bukkit's `ItemMeta.displayName` and `lore` do: None removes the name, an empty `lore`
     /// removes the lore. The texts become component NBT through the host
@@ -483,6 +567,23 @@ impl ItemStack {
     }
 }
 
+fn read_display_text(host: &dyn Host, tag: &Tag) -> Result<Text, TextFormError> {
+    host.text_from_nbt(tag)?.ok_or(TextFormError::Malformed)
+}
+
+/// NbtOps also exposes typed arrays as lists. A nonempty numeric array cannot
+/// supply text components or strings.
+fn text_component_list(tag: Option<&Tag>) -> Result<&[Tag], TextFormError> {
+    match tag {
+        Some(Tag::List(values)) => Ok(values),
+        None => Ok(&[]),
+        Some(Tag::ByteArray(v)) if v.is_empty() => Ok(&[]),
+        Some(Tag::IntArray(v)) if v.is_empty() => Ok(&[]),
+        Some(Tag::LongArray(v)) if v.is_empty() => Ok(&[]),
+        _ => Err(TextFormError::Malformed),
+    }
+}
+
 pub(crate) fn unsigned_tag(value: u32) -> Tag {
     i32::try_from(value).map_or_else(|_| Tag::Long(i64::from(value)), Tag::Int)
 }
@@ -521,6 +622,16 @@ mod tests {
     /// A host whose text NBT is the literal string, and which refuses "bad".
     struct TextNbt;
     impl crate::prelude::TextHost for TextNbt {
+        fn text_from_nbt(&self, tag: &Tag) -> Result<Option<Text>, TextFormError> {
+            match tag {
+                Tag::String(value) => value
+                    .to_string()
+                    .map(|value| Some(Text::literal(value)))
+                    .map_err(|_| TextFormError::InvalidString),
+                _ => Ok(None),
+            }
+        }
+
         fn text_to_nbt(&self, text: &crate::Text) -> Result<Tag, crate::TextFormError> {
             match &text.content {
                 crate::text::TextContent::Literal(s) if s == "bad" => {
@@ -588,6 +699,10 @@ mod tests {
     /// [`TextNbt`] over an item whose prototype supplies a name and a lore.
     struct Prototyped;
     impl crate::prelude::TextHost for Prototyped {
+        fn text_from_nbt(&self, tag: &Tag) -> Result<Option<Text>, TextFormError> {
+            TextNbt.text_from_nbt(tag)
+        }
+
         fn text_to_nbt(&self, text: &crate::Text) -> Result<Tag, crate::TextFormError> {
             TextNbt.text_to_nbt(text)
         }
@@ -597,8 +712,16 @@ mod tests {
             None
         }
         fn item_default_component(&self, _: ItemKey, id: &str) -> Option<Tag> {
-            matches!(id, "minecraft:custom_name" | "minecraft:lore")
-                .then(|| Tag::String("default".into()))
+            let text = || Tag::String("default".into());
+            match id {
+                "minecraft:custom_name" => Some(text()),
+                "minecraft:lore" => Some(Tag::List(vec![text()])),
+                CUSTOM_MODEL_DATA => Some(Tag::compound([
+                    ("floats", Tag::ByteArray(vec![255, 2])),
+                    ("strings", Tag::List(vec![text()])),
+                ])),
+                _ => None,
+            }
         }
     }
     impl crate::Host for Prototyped {
@@ -633,6 +756,155 @@ mod tests {
         let patch = named.components().unwrap().as_nbt();
         assert!(patch.contains_key(&JavaString::from("!minecraft:custom_name")));
         assert!(patch.contains_key(&JavaString::from("!minecraft:lore")));
+    }
+
+    #[test]
+    fn display_getters_read_defaults_overrides_and_explicit_removals() {
+        let mut stack = ItemStack::of(ItemKey(0));
+        assert_eq!(stack.display_name(&TextNbt), Ok(None));
+        assert_eq!(stack.lore(&TextNbt), Ok(vec![]));
+        assert_eq!(
+            stack.display_name(&Prototyped),
+            Ok(Some(Text::literal("default")))
+        );
+        assert_eq!(stack.lore(&Prototyped), Ok(vec![Text::literal("default")]));
+
+        let name = Text::literal("Prize");
+        let lore = [Text::literal("first"), Text::literal("second")];
+        stack.set_display(&Prototyped, Some(&name), &lore).unwrap();
+        assert_eq!(stack.display_name(&Prototyped), Ok(Some(name)));
+        assert_eq!(stack.lore(&Prototyped), Ok(lore.to_vec()));
+
+        stack.set_display(&Prototyped, None, &[]).unwrap();
+        assert_eq!(stack.display_name(&Prototyped), Ok(None));
+        assert_eq!(stack.lore(&Prototyped), Ok(vec![]));
+
+        stack
+            .set_components(Compound::from([
+                ("minecraft:custom_name".into(), Tag::String("patch".into())),
+                (
+                    "!minecraft:custom_name".into(),
+                    Tag::Compound(Compound::new()),
+                ),
+            ]))
+            .unwrap();
+        assert_eq!(stack.display_name(&Prototyped), Ok(None));
+    }
+
+    #[test]
+    fn display_getters_report_malformed_present_components() {
+        let mut stack = ItemStack::of(ItemKey(0));
+        stack
+            .set_component_value("minecraft:custom_name", Tag::Int(1))
+            .unwrap();
+        assert_eq!(
+            stack.display_name(&Prototyped),
+            Err(TextFormError::Malformed)
+        );
+        stack
+            .set_component_value("minecraft:lore", Tag::String("wrong".into()))
+            .unwrap();
+        assert_eq!(stack.lore(&Prototyped), Err(TextFormError::Malformed));
+        stack
+            .set_component_value(
+                "minecraft:lore",
+                Tag::List(vec![Tag::String("valid".into()), Tag::Int(1)]),
+            )
+            .unwrap();
+        assert_eq!(stack.lore(&Prototyped), Err(TextFormError::Malformed));
+    }
+
+    #[test]
+    fn model_data_getters_read_effective_ordered_lists() {
+        let mut stack = ItemStack::of(ItemKey(0));
+        assert_eq!(stack.custom_model_data_floats(&TextNbt), Ok(vec![]));
+        assert_eq!(stack.custom_model_data_strings(&TextNbt), Ok(vec![]));
+        assert_eq!(
+            stack.custom_model_data_floats(&Prototyped),
+            Ok(vec![-1.0, 2.0])
+        );
+        assert_eq!(
+            stack.custom_model_data_strings(&Prototyped),
+            Ok(vec!["default".into()])
+        );
+
+        stack
+            .set_component_value(
+                CUSTOM_MODEL_DATA,
+                Tag::compound([
+                    (
+                        "floats",
+                        Tag::List(vec![
+                            Tag::Byte(-1),
+                            Tag::Short(2),
+                            Tag::Int(3),
+                            Tag::Long(4),
+                            Tag::Float(5.5_f32.to_bits()),
+                            Tag::Double(6.25_f64.to_bits()),
+                        ]),
+                    ),
+                    (
+                        "strings",
+                        Tag::List(vec![Tag::String("z".into()), Tag::String("a".into())]),
+                    ),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(
+            stack.custom_model_data_floats(&Prototyped),
+            Ok(vec![-1.0, 2.0, 3.0, 4.0, 5.5, 6.25]),
+        );
+        assert_eq!(
+            stack.custom_model_data_strings(&Prototyped),
+            Ok(vec!["z".into(), "a".into()])
+        );
+
+        stack.remove_component_value(CUSTOM_MODEL_DATA, true);
+        assert_eq!(stack.custom_model_data_floats(&Prototyped), Ok(vec![]));
+        assert_eq!(stack.custom_model_data_strings(&Prototyped), Ok(vec![]));
+    }
+
+    #[test]
+    fn model_data_getters_distinguish_missing_fields_from_malformed_values() {
+        let mut stack = ItemStack::of(ItemKey(0));
+        stack
+            .set_component_value(CUSTOM_MODEL_DATA, Tag::Compound(Compound::new()))
+            .unwrap();
+        assert_eq!(stack.custom_model_data_floats(&Prototyped), Ok(vec![]));
+        assert_eq!(stack.custom_model_data_strings(&Prototyped), Ok(vec![]));
+
+        stack
+            .set_component_value(CUSTOM_MODEL_DATA, Tag::List(vec![]))
+            .unwrap();
+        assert_eq!(
+            stack.custom_model_data_floats(&TextNbt),
+            Err(TextFormError::Malformed)
+        );
+        assert_eq!(
+            stack.custom_model_data_strings(&TextNbt),
+            Err(TextFormError::Malformed)
+        );
+
+        stack
+            .set_component_value(
+                CUSTOM_MODEL_DATA,
+                Tag::compound([
+                    (
+                        "floats",
+                        Tag::List(vec![Tag::Int(1), Tag::String("wrong".into())]),
+                    ),
+                    ("strings", Tag::IntArray(vec![1])),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(
+            stack.custom_model_data_floats(&TextNbt),
+            Err(TextFormError::Malformed)
+        );
+        assert_eq!(
+            stack.custom_model_data_strings(&TextNbt),
+            Err(TextFormError::Malformed)
+        );
     }
 
     struct Number;

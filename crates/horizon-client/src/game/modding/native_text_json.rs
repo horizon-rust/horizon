@@ -65,6 +65,26 @@ mod tests {
         text.try_into_api().unwrap()
     }
 
+    #[test]
+    fn json_change_page_truncates_fractional_numbers() {
+        for page in ["2", "2.0", "2.5"] {
+            let json =
+                format!(r#"{{"text":"x","click_event":{{"action":"change_page","page":{page}}}}}"#);
+            let text = api(&component_from_json(&json).unwrap());
+            assert_eq!(text.style.click, Some(TextClick::ChangePage(2)));
+        }
+        let text = api(&component_from_json(
+            r#"{"text":"x","click_event":{"action":"change_page","page":2147483647.5}}"#,
+        )
+        .unwrap());
+        assert_eq!(text.style.click, Some(TextClick::ChangePage(i32::MAX)));
+        for page in ["0.5", "-1.5"] {
+            let json =
+                format!(r#"{{"text":"x","click_event":{{"action":"change_page","page":{page}}}}}"#);
+            assert!(component_from_json(&json).is_none());
+        }
+    }
+
     /// JSON and SNBT components keep their structure: styles, children, translations
     /// and click events; what is not one component is refused.
     #[test]

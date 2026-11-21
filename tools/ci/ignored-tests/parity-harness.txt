@@ -18,3 +18,4 @@ horizon-client-lib mobs::dragon_contacts::parity::contact_transcript tools/test_
 horizon-client-lib mobs::villager_brain::farming_tests::vanilla_farming_classification_matches_the_oracle tools/test_villager_farming_parity.py harness
 horizon-client-lib mobs::villager_brain::reputation_witness_tests::witnesses_use_sensor_candidates_radius_invisibility_and_cached_results tools/test_villager_witness_parity.py harness
 horizon-client-render packs::cache::tests::benchmark_real_resource_root HORIZON_OVERLAY_BENCH_VANILLA harness
+horizon-client game::native_text_nbt::tests::vanilla_nbt_oracle tools/test_native_text_nbt_parity.py harness

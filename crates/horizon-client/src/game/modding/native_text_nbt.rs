@@ -1,5 +1,8 @@
-//! `text_to_nbt`: a text as item components and block entities store it.
+//! Text as item components and block entities store it.
 use super::Game;
+use super::native_text_grammar::build;
+use crate::game::api_values::TryIntoApi;
+use horizon_client::command::Registries;
 use horizon_client::{api_text, lan::data::component_nbt};
 use horizon_core::nbt::{Tag, within_depth};
 use mod_api::{Text, TextFormError};
@@ -46,7 +49,36 @@ fn text_nbt(text: &Text) -> Result<Tag, TextFormError> {
     }
 }
 
+fn read_text_nbt(tag: &Tag, registries: &Registries) -> Result<Option<Text>, TextFormError> {
+    let (component, nbt) = api_text::ComponentNbt::project(tag, NBT_DEPTH)?;
+    build(&component, registries, true)
+        .map(|component| nbt.capture(&component))
+        .transpose()
+}
+
+/// A borrowed request for the generated host forwarder to convert directly to API text.
+pub(super) struct ReadNbt<'a> {
+    tag: &'a Tag,
+    registries: &'a Registries,
+}
+
+impl TryIntoApi for ReadNbt<'_> {
+    type Api = Option<Text>;
+    type Error = TextFormError;
+
+    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
+        read_text_nbt(self.tag, self.registries)
+    }
+}
+
 impl Game<'_> {
+    pub(super) fn text_from_nbt<'a>(&'a self, tag: &'a Tag) -> ReadNbt<'a> {
+        ReadNbt {
+            tag,
+            registries: &self.ui.registries,
+        }
+    }
+
     /// The text as item components store it; takes the mod's own text (`#[raw_text]`).
     pub(super) fn text_to_nbt(&self, text: &Text) -> Result<Tag, TextFormError> {
         text_nbt(text)
@@ -55,12 +87,51 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{component_nbt, component_to_nbt, text_nbt};
+    use super::{Registries, component_nbt, component_to_nbt, read_text_nbt, text_nbt};
     use horizon_client::text::Text;
     use horizon_core::nbt::Tag;
     use mod_api::text::{TextClick, TextHover};
     use mod_api::{Text as ApiText, TextFormError};
     use serde_json::json;
+
+    /// Driven by tools/test_native_text_nbt_parity.py against the pinned vanilla codec.
+    #[test]
+    #[ignore = "vanilla parity harness"]
+    fn vanilla_nbt_oracle() {
+        let cases =
+            std::fs::read_to_string(std::env::var("HORIZON_TEXT_NBT_CASES").unwrap()).unwrap();
+        let expected =
+            std::fs::read_to_string(std::env::var("HORIZON_TEXT_NBT_ORACLE").unwrap()).unwrap();
+        let cases: Vec<_> = cases.lines().collect();
+        let expected: Vec<_> = expected.lines().collect();
+        assert_eq!(cases.len(), expected.len());
+        for (source, expected) in cases.into_iter().zip(expected) {
+            let (tag, used) = horizon_core::nbt::parse_snbt(source).unwrap();
+            assert_eq!(used, source.len());
+            let text = read_text_nbt(&tag, &Registries::default()).unwrap();
+            fn pages(text: &ApiText, out: &mut Vec<i32>) {
+                if let Some(TextClick::ChangePage(page)) = &text.style.click {
+                    out.push(*page);
+                }
+                if let Some(TextHover::Text(hover)) = &text.style.hover {
+                    pages(hover, out);
+                }
+                for child in &text.children {
+                    pages(child, out);
+                }
+            }
+            let actual = match text {
+                None => "reject".to_owned(),
+                Some(text) => {
+                    let mut found = Vec::new();
+                    pages(&text, &mut found);
+                    let found = format!("{found:?}").replace(' ', "");
+                    format!("ok {found}")
+                }
+            };
+            assert_eq!(actual, expected, "{source}");
+        }
+    }
 
     /// A plain unstyled literal is its string, a styled one stays a compound: both forms of the same
     /// plain name are one component.
@@ -135,6 +206,9 @@ mod tests {
             text
         };
         let mut root = ApiText::literal("");
+        root.style.color = Some("gold".into());
+        root.style.bold = Some(true);
+        root.style.italic = Some(false);
         root.children = payloads
             .iter()
             .enumerate()
@@ -168,6 +242,7 @@ mod tests {
             .and_then(|event| event.get("value"))
             .expect("the hover text");
         assert_eq!(payload_of(hover).as_ref(), Some(&payloads[3]));
+        assert_eq!(read_text_nbt(&tag, &Registries::default()), Ok(Some(root)));
     }
 
     /// A payload as deep as the text check lets it pass still has to fit the NBT writer once it
@@ -186,6 +261,22 @@ mod tests {
         assert!(with(10).is_ok());
         assert!(with(62).is_ok());
         assert_eq!(with(63), Err(TextFormError::TooDeep));
+
+        let too_deep = Tag::compound([
+            ("text", Tag::String("x".into())),
+            (
+                "click_event",
+                Tag::compound([
+                    ("action", Tag::String("custom".into())),
+                    ("id", Tag::String("test:deep".into())),
+                    ("payload", deep(63)),
+                ]),
+            ),
+        ]);
+        assert_eq!(
+            read_text_nbt(&too_deep, &Registries::default()),
+            Err(TextFormError::TooDeep)
+        );
     }
 
     /// Only the slots this conversion made are restored: a `click_event` inside the opaque components of a
@@ -235,6 +326,84 @@ mod tests {
             assert_eq!(found, Some(&Tag::String(lookalike.into())), "{lookalike}");
             let real = extra[1].get("click_event").and_then(|e| e.get("payload"));
             assert_eq!(real, Some(&Tag::ByteArray(vec![9])));
+            assert_eq!(read_text_nbt(&tag, &Registries::default()), Ok(Some(root)));
         }
+    }
+
+    #[test]
+    fn reading_nbt_distinguishes_invalid_components_and_unrepresentable_text() {
+        let registries = Registries::default();
+        assert_eq!(read_text_nbt(&Tag::Int(1), &registries), Ok(None));
+        assert_eq!(
+            read_text_nbt(&Tag::compound([("text", Tag::Int(1))]), &registries),
+            Ok(None)
+        );
+        let invalid_string = Tag::String(horizon_core::nbt::JavaString(vec![0xd800]));
+        assert_eq!(
+            read_text_nbt(&invalid_string, &registries),
+            Err(TextFormError::InvalidString)
+        );
+        let payload = Tag::compound([
+            ("nan", Tag::Double(f64::NAN.to_bits())),
+            ("utf16", invalid_string),
+        ]);
+        let tag = Tag::compound([
+            ("text", Tag::String("click".into())),
+            (
+                "click_event",
+                Tag::compound([
+                    ("action", Tag::String("custom".into())),
+                    ("id", Tag::String("test:action".into())),
+                    ("payload", payload.clone()),
+                ]),
+            ),
+        ]);
+        assert_eq!(
+            read_text_nbt(&tag, &registries)
+                .unwrap()
+                .unwrap()
+                .style
+                .click,
+            Some(TextClick::Custom {
+                id: "test:action".into(),
+                payload: Some(payload),
+            })
+        );
+        let literal = ApiText::literal("§aPrize");
+        assert_eq!(
+            read_text_nbt(&text_nbt(&literal).unwrap(), &registries),
+            Ok(Some(literal))
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn the_native_host_round_trips_item_display_metadata() {
+        use super::super::native_entity_refs::tests::with_game;
+        use mod_api::{Host, Identifier, ItemStack};
+
+        with_game(|game| {
+            let host: &dyn Host = game;
+            let key = host
+                .item_key(&Identifier::parse("minecraft:stone").unwrap())
+                .unwrap();
+            let mut stack = ItemStack::of(key);
+            let mut name = ApiText::literal("Prize");
+            name.style.color = Some("gold".into());
+            name.style.bold = Some(true);
+            name.style.italic = Some(false);
+            let lore = [ApiText::literal("First"), ApiText::literal("Second")];
+            assert_eq!(
+                host.text_from_nbt(&host.text_to_nbt(&name).unwrap()),
+                Ok(Some(name.clone()))
+            );
+            assert_eq!(host.text_from_nbt(&Tag::Int(1)), Ok(None));
+            stack.set_display(host, Some(&name), &lore).unwrap();
+            assert_eq!(stack.display_name(host), Ok(Some(name)));
+            assert_eq!(stack.lore(host), Ok(lore.to_vec()));
+            stack.set_display(host, None, &[]).unwrap();
+            assert_eq!(stack.display_name(host), Ok(None));
+            assert_eq!(stack.lore(host), Ok(vec![]));
+        });
     }
 }

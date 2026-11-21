@@ -30,4 +30,10 @@ pub trait TextHost {
     #[access(Metadata)]
     #[raw_text]
     fn text_to_nbt(&self, text: &Text) -> Result<Tag, TextFormError>;
+    /// Side: both.
+    /// Reads a component from item or block entity NBT, including typed custom click
+    /// payloads. Returns None when the tag is not a component, and an error when it
+    /// exceeds 64 nested containers or cannot cross into the API text representation.
+    #[access(Metadata)]
+    fn text_from_nbt(&self, tag: &Tag) -> Result<Option<Text>, TextFormError>;
 }
