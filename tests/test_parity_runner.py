@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -17,6 +18,11 @@ from unittest import mock
 
 from tools import parity, parity_shard
 from tools.parity_shim import UNKEYED as UNKEYED_VARIABLES  # the JVM's and javac's own variables, never keyed
+
+
+def untimed(line):
+    """A prebuild line with its wall time as `Ns`: real subprocesses take what the machine gives them."""
+    return re.sub(r": \d+s, (\d+ crates? compiled)", r": Ns, \1", line)
 
 
 class ParityRunnerTests(unittest.TestCase):
@@ -328,7 +334,8 @@ class ParityRunnerTests(unittest.TestCase):
         """parity.prebuild over fake Cargo runs, one per name. Each records its arguments and, as Cargo does, writes a
         timing report named after it, except: "big" writes one of 407 bytes, "none" writes none, "fail-timings" fails
         with --timings and passes without, "slow-fail" does so after 1 s, "broken" always fails, "silent" always
-        fails without a word, "sleep" sleeps a minute, "missing" is no program at all.
+        fails without a word, "report-then-fail" writes its report, then fails with --timings (as Cargo does on a
+        build error) and passes without, "sleep" sleeps a minute, "missing" is no program at all.
 
         Returns the prebuild's result (or the exception it raised), the runs' arguments, the events (("print",
         line), ("released",) when the compile turn ends, ("finish",)), the state folder and the target folder."""
@@ -356,6 +363,8 @@ class ParityRunnerTests(unittest.TestCase):
                 (reports / "cargo-timing-20261121T000000Z.html").write_text("report " + name)
                 os.replace(reports / "cargo-timing-20261121T000000Z.html", reports / "cargo-timing.html")
                 (reports / "cargo-timing-20261121T000000Z.html").write_text("report " + name)
+            if name == "report-then-fail" and "--timings" in sys.argv:
+                sys.exit(1)
         """))
         state, target = temp / "parity-runner", temp / "parity-target"
         (target / "cargo-timings").mkdir(parents=True)
@@ -413,15 +422,15 @@ class ParityRunnerTests(unittest.TestCase):
 
     @staticmethod
     def printed(events):
-        return [event[1] for event in events if event[0] == "print"]
+        return [untimed(event[1]) for event in events if event[0] == "print"]
 
     def test_the_prebuild_keeps_no_timing_reports_without_its_switch(self):
         (built, _), runs, events, state, _ = self.prebuild_with_fake_cargo(["one", "fail-timings"], switch=False)
         self.assertTrue(built)
         self.assertEqual(runs, [["one"], ["fail-timings"]])
         printed = self.printed(events)
-        self.assertEqual(printed[:2], ["  cargo 1/2: dev one: 0s, 0 crates compiled",
-                                       "  cargo 2/2: dev fail-timings: 0s, 0 crates compiled"])
+        self.assertEqual(printed[:2], ["  cargo 1/2: dev one: Ns, 0 crates compiled",
+                                       "  cargo 2/2: dev fail-timings: Ns, 0 crates compiled"])
         self.assertTrue(printed[2].startswith("  machine: "), printed[2])
         self.assertEqual(printed[3:], ["  compiler cache: not in use, or its counts could not be read"])
         self.assertNotIn(("finish",), events)
@@ -443,10 +452,11 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertEqual((state.parent / "github-output").read_text(encoding="utf-8"),
                          "prebuild_timings=ready\n")
         cache = "compiler cache, change in the machine's whole sccache server since the last reading: not in use"
-        lines = ["cargo 1/3: dev one: 0s, 0 crates compiled", f"cargo 1/3 {cache}",
-                 "cargo 2/3: dev none: 0s, 0 crates compiled", f"cargo 2/3 {cache}",
-                 "cargo 3/3: dev three: 0s, 0 crates compiled", f"cargo 3/3 {cache}"]
-        self.assertEqual((folder / "prebuild-calls.txt").read_text(encoding="utf-8").splitlines(), lines)
+        lines = ["cargo 1/3: dev one: Ns, 0 crates compiled", f"cargo 1/3 {cache}",
+                 "cargo 2/3: dev none: Ns, 0 crates compiled", f"cargo 2/3 {cache}",
+                 "cargo 3/3: dev three: Ns, 0 crates compiled", f"cargo 3/3 {cache}"]
+        self.assertEqual([untimed(line) for line in
+                          (folder / "prebuild-calls.txt").read_text(encoding="utf-8").splitlines()], lines)
         printed = self.printed(events)
         self.assertEqual([line for line in printed if "--timings" in line], [])
         self.assertEqual([line.strip() for line in printed if line.strip() in lines], lines)
@@ -572,13 +582,25 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertEqual(runs, [["fail-timings", "--timings"], ["fail-timings"], ["one", "--timings"]])
         printed = self.printed(events)
         self.assertIn("  cargo 1/2: failed with --timings; run again without it, no timing report for it", printed)
-        self.assertIn("  cargo 1/2: dev fail-timings: 0s, 0 crates compiled", printed)
+        self.assertIn("  cargo 1/2: dev fail-timings: Ns, 0 crates compiled", printed)
         for names, failure in ((["broken"], "error: broken\n"), (["silent"], "")):
             with self.subTest(names):
                 (built, errors), runs, _, _, _ = self.prebuild_with_fake_cargo(names)
                 self.assertEqual(runs, [[names[0], "--timings"], names])
                 self.assertFalse(built, "a run failing again fails, whatever it printed")
                 self.assertEqual(errors, failure, "the second attempt's errors only")
+
+    def test_a_run_again_keeps_no_report_from_the_failed_attempt(self):
+        (built, _), runs, events, state, _ = self.prebuild_with_fake_cargo(["report-then-fail", "one"])
+        self.assertTrue(built)
+        self.assertEqual(runs, [["report-then-fail", "--timings"], ["report-then-fail"], ["one", "--timings"]])
+        # The failed attempt's report is fresh, but it isn't the call's: only the second call's is kept.
+        folder = state / "prebuild-timings-7-1"
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["cargo-02.html", "prebuild-calls.txt"])
+        calls = [untimed(line) for line in (folder / "prebuild-calls.txt").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(calls[0], "cargo 1/2: dev report-then-fail: Ns, 0 crates compiled")
+        self.assertIn("  cargo 1/2: failed with --timings; run again without it, no timing report for it",
+                      self.printed(events))
 
     def test_no_run_again_past_the_limit(self):
         class Timer:  # the limit's stop never comes: only the deadline itself says the limit has passed
@@ -625,7 +647,7 @@ class ParityRunnerTests(unittest.TestCase):
                 self.assertEqual(runs, [["one"]])
                 printed = self.printed(events)
                 self.assertTrue(printed[0].startswith(f"  prebuild timings: {why} ("), printed[0])
-                self.assertEqual(printed[1], "  cargo 1/1: dev one: 0s, 0 crates compiled")
+                self.assertEqual(printed[1], "  cargo 1/1: dev one: Ns, 0 crates compiled")
                 if folder.endswith("-working"):
                     self.assertFalse(os.path.lexists(state / "prebuild-timings-7-1"), "nothing published")
                 else:

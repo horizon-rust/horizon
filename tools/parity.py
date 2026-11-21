@@ -835,9 +835,10 @@ def prebuild(artifacts, jobs):
                 # --timings is added here only: the run's line and the harnesses' records keep the command as
                 # selected.
                 returncode, lines = build(timings.command(command) if timings else command)
-                output = lines
+                output, retried = lines, False
                 if returncode and timings and timings.on and not expired.is_set() \
                         and not (deadline and time.monotonic() >= deadline):
+                    retried = True
                     # Cargo fails a run whose timing report it could not write even when everything compiled: any
                     # failure is run once more without the report, and that attempt is the call's result (a real
                     # build error fails again, quickly).
@@ -855,7 +856,8 @@ def prebuild(artifacts, jobs):
                           f"{len(commands)} and was stopped there.", flush=True)
                     sys.exit(1)
                 if timings:
-                    timings.after_call(number, len(commands), summary)
+                    # A rerun's call keeps no report: one the failed attempt wrote isn't the call's.
+                    timings.after_call(number, len(commands), summary, keep=not retried)
             report(lambda: describe_machine(os.cpu_count(), load, machine_load()))
             report(lambda: describe_sccache(stats, sccache_stats(environment)))
     finally:
@@ -1100,14 +1102,16 @@ class PrebuildTimings:
             part.unlink(missing_ok=True)
             raise
 
-    def after_call(self, number, total, line):
-        """Keeps run `number`'s report and prints its compiler-cache line; both lines go to prebuild-calls.txt."""
+    def after_call(self, number, total, line, keep=True):
+        """Keeps run `number`'s report (with `keep`) and prints its compiler-cache line; both lines go to
+        prebuild-calls.txt."""
         if not self.on:
             return
         if line:
             self.calls.append(line)
         try:
-            self.keep_report(number)
+            if keep:
+                self.keep_report(number)
         except Exception as error:
             self.fail(f"no report kept for cargo {number}/{total}", error)
         # An unreadable server is not read again: each read can take its 10 s limit.
