@@ -1620,7 +1620,7 @@ mod retained;
 
 #[cfg(test)]
 #[path = "entity_tests.rs"]
-mod entity_tests;
+pub(in crate::gfx) mod entity_tests;
 
 #[cfg(test)]
 #[path = "terrain_tests.rs"]

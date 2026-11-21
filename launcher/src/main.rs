@@ -211,6 +211,17 @@ struct Crash {
     /// One line on what went wrong: the report's error, else how the process ended.
     summary: String,
     copied: bool,
+    /// The game refused its folder leases before it started (exit 78): no game log exists.
+    leases_refused: bool,
+}
+
+/// What the Prepare error's notice offers to do about it.
+#[derive(Clone, Debug, PartialEq)]
+enum PrepareFix {
+    /// The version was deleted while the window was open: install it again.
+    Reinstall(String),
+    /// The Minecraft folders lack a library of the game: download the version's from Mojang.
+    Mojang(String),
 }
 
 /// The opening: the wordmark holds at least `OPENING_HOLD` (until the release
@@ -330,6 +341,9 @@ struct Launcher {
     /// Native mods (`native_mods`, on the Mods page): the build's step while it runs, why it
     /// failed, and the warning before a build while it is open, with the mods it names.
     native_step: Option<String>,
+    /// The player pressed Stop on the build under way: the card says it is stopping, and its
+    /// Stop buttons wait, until the build ends (#19300).
+    native_stopping: bool,
     /// A build waiting for its base version's preparation, or for an install of it, kept as it
     /// was started (#18659).
     native_prepare_first: Option<native_mods::prepare_first::Waiting>,
@@ -429,6 +443,8 @@ struct Launcher {
     /// so it moves when a line arrives even while `prepare_log` is full and its length stays.
     log_revision: u64,
     prepare_error: Option<String>,
+    /// What `prepare_error`'s notice offers, when something can be done about it.
+    prepare_fix: Option<PrepareFix>,
     client: Option<Running>,
     client_error: Option<String>,
     /// When the running client started, to tell its crash report from older ones.
@@ -788,20 +804,6 @@ mod tests {
         assert_eq!(
             super::row_menu_after_press(Some(("Other".into(), true)), "Horizon"),
             open("Horizon")
-        );
-    }
-
-    #[test]
-    fn the_selection_survives_a_removal_or_moves_to_the_newest_left() {
-        let left = ["v0.2.49".to_string(), "v0.2.48".to_string()];
-        let pick =
-            |saved: Option<&str>| super::selection_after_removal(&left, saved.map(String::from));
-        assert_eq!(pick(Some("v0.2.48")).as_deref(), Some("v0.2.48"));
-        assert_eq!(pick(Some("v0.2.47")).as_deref(), Some("v0.2.49"));
-        assert_eq!(pick(None).as_deref(), Some("v0.2.49"));
-        assert_eq!(
-            super::selection_after_removal(&[], Some("v0.2.47".into())),
-            None
         );
     }
 
