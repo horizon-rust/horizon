@@ -36,6 +36,9 @@ pub struct Command {
     /// The operator level a player needs to run this usage (0: everyone).
     /// Shared prefixes stay visible when needed to reach a lower-level usage.
     pub level: u8,
+    /// The plain text a player below `level` is answered with, instead of vanilla's unknown
+    /// command, when they type this usage. `None` keeps vanilla's answer.
+    pub denied: Option<String>,
 }
 
 impl Command {
@@ -44,6 +47,7 @@ impl Command {
         Self {
             usage: usage.to_owned(),
             level: 0,
+            denied: None,
         }
     }
     /// The same, for operators of `level` and above.
@@ -51,7 +55,15 @@ impl Command {
         Self {
             usage: usage.to_owned(),
             level: level.min(4),
+            denied: None,
         }
+    }
+    /// The same usage, answering a player below its level with `text` (plain, unstyled), as
+    /// Paper's `messages.no-permission` answers a command it refuses. Only the first usage of a
+    /// command that sets a text answers for it; a usage's own level still decides who runs it.
+    pub fn denied_message(mut self, text: &str) -> Self {
+        self.denied = Some(text.to_owned());
+        self
     }
 }
 
