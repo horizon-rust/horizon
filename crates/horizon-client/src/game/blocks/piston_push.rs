@@ -223,12 +223,25 @@ impl Game<'_> {
             ),
         );
         let mut stuck = None;
+        // HoneyBlock.entityInside reaches every pushed entity; the kinds whose
+        // own tick applies block effects get it with their bubble columns below.
+        let honey_here = !self.creatures.projectiles[i].applies_block_effects();
         for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
             for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
                 for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
                     let name = &self.res.facts().get(self.world.block(x, y, z)).name;
                     if let Some(s) = horizon_client::projectiles::stuck_speed_of(name) {
                         stuck = Some(s);
+                    }
+                    if honey_here && &**name == "minecraft:honey_block" {
+                        self.creatures.projectiles.update(i, |p| {
+                            if p.honey_slide([x, y, z]) {
+                                p.fall_distance = 0.0;
+                                if let Some(arrow) = p.arrow.as_mut() {
+                                    arrow.fall_distance = 0.0;
+                                }
+                            }
+                        });
                     }
                 }
             }
@@ -256,16 +269,23 @@ impl Game<'_> {
             );
             let tops = self.creatures.projectiles.update(i, |p| {
                 p.bubble_surfaces.clear();
-                p.bubble_columns_since(from, |at| {
-                    horizon_client::motion::bubble_column_at(
-                        world,
-                        registry,
-                        facts,
-                        collision,
-                        BlockPos::new(at[0], at[1], at[2]),
-                    )
-                    .map(|c| (c.drag, c.surface))
-                });
+                p.bubble_columns_since(
+                    from,
+                    |at| {
+                        horizon_client::motion::bubble_column_at(
+                            world,
+                            registry,
+                            facts,
+                            collision,
+                            BlockPos::new(at[0], at[1], at[2]),
+                        )
+                        .map(|c| (c.drag, c.surface))
+                    },
+                    |at| {
+                        &*facts.get(world.block(at[0], at[1], at[2])).name
+                            == "minecraft:honey_block"
+                    },
+                );
                 std::mem::take(&mut p.bubble_surfaces)
             });
             if self.remote.is_none() {

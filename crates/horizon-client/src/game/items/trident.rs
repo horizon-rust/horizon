@@ -472,9 +472,25 @@ impl Game<'_> {
         let extinguished = {
             let rain = self.arrow_rain();
             // Block-contact hooks are already delivered by the game's inside pass.
+            let scene = self.arrow_scene(&rain);
+            let (fire_ticks, facts) = (t.fire_ticks, scene.facts);
+            // HoneyBlock.entityInside, at the end of the move; `doSlideMovement`
+            // resets the fall.
             let (ticks, extinguished) =
-                self.arrow_scene(&rain)
-                    .apply_block_effects(from, to, t.fire_ticks, |_, _, _| {});
+                scene.apply_block_effects(from, to, fire_ticks, |state, p, _| {
+                    if &*facts.get(state).name == "minecraft:honey_block"
+                        && let Some(v) = horizon_client::projectiles::honey_slide(
+                            t.velocity,
+                            to,
+                            t.on_ground,
+                            0.5,
+                            [p.x, p.y, p.z],
+                        )
+                    {
+                        t.velocity = v;
+                        t.fall_distance = 0.0;
+                    }
+                });
             t.fire_ticks = ticks;
             extinguished
         };
@@ -665,26 +681,26 @@ impl Game<'_> {
                 }
                 // ProjectileImpactEvent for the mob hit: a canceled one does
                 // nothing, and the trident stays where it would have hit.
-                let canceled_mob = hit_mob.is_some_and(|(id, d)| {
-                    // `at` is where the movement enters the mob's box.
+                // Where the movement enters the mob's box, fixed before the
+                // block effects (`AbstractArrow.stepMoveAndHit` keeps the hit
+                // result while honey changes the motion).
+                let hit_at = hit_mob.map(|(id, d)| {
                     let at = Vec3::new(
                         t.position.x + t.velocity.x * d,
                         t.position.y + t.velocity.y * d,
                         t.position.z + t.velocity.z * d,
                     );
+                    (id, at)
+                });
+                let canceled_mob = hit_at.is_some_and(|(id, at)| {
                     let from = t.position;
                     self.trident_block_effects(&mut t, from, at);
                     self.native_trident_impact(t.id, t.guest, Some(id), [0; 3], [0; 3], at)
                 });
                 if canceled_mob {
                     // No damage, sound or deflection: it flies on.
-                } else if let Some((id, d)) = hit_mob {
+                } else if let Some((id, at)) = hit_at {
                     // The trident stops where it met the box.
-                    let at = Vec3::new(
-                        t.position.x + t.velocity.x * d,
-                        t.position.y + t.velocity.y * d,
-                        t.position.z + t.velocity.z * d,
-                    );
                     t.position = at;
                     // `Breeze.deflection`: a trident is not a wind charge, so
                     // `PROJECTILE_DEFLECTION` turns it around. `onHit` does not

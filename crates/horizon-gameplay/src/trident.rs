@@ -357,9 +357,37 @@ impl ThrownTrident {
             self.shake = 7;
             return;
         }
+        let from = self.position;
         self.position = to;
-        // A trident's water inertia (0.99) equals the air drag.
-        self.velocity = self.velocity.scale(0.99);
+        // applyEffectsFromBlocks' honey (HoneyBlock.entityInside) along the
+        // move: the cells the final box (deflated by 1e-5F) swept through.
+        // `isAffectedByBlocks` is false without physics (a Loyalty return).
+        let eps = f64::from(1.0e-5_f32);
+        let bounds = Aabb::new(
+            Vec3::new(to.x - HALF, to.y, to.z - HALF),
+            Vec3::new(to.x + HALF, to.y + 2.0 * HALF, to.z + HALF),
+        )
+        .deflate(Vec3::new(eps, eps, eps));
+        for p in horizon_client::projectiles::swept_cells(from, to, bounds) {
+            let cell = [p.x, p.y, p.z];
+            if !self.no_physics
+                && w.honey(cell)
+                && let Some(v) = horizon_client::projectiles::honey_slide(
+                    self.velocity,
+                    to,
+                    self.on_ground,
+                    2.0 * HALF,
+                    cell,
+                )
+            {
+                self.velocity = v;
+                // `doSlideMovement` ends with `resetFallDistance`.
+                self.fall_distance = 0.0;
+            }
+        }
+        // A trident's water inertia (0.99) equals the air drag, a float in
+        // vanilla, as the server's tick has it.
+        self.velocity = self.velocity.scale(f64::from(0.99f32));
         if !self.no_physics && !self.no_gravity {
             self.velocity.y -= 0.05;
         }
@@ -665,6 +693,72 @@ mod tests {
         home.remote_tick(&Air, None);
         // atan2(-1, -1) = -135: a fifth of the way is -27.
         assert!((home.yaw + 27.0).abs() < 1e-5, "yaw {}", home.yaw);
+    }
+
+    /// A column of honey blocks at x 5, z 10, y 200..=209.
+    struct Honey;
+    impl ProjectileWorld for Honey {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn honey(&self, p: [i32; 3]) -> bool {
+            p[0] == 5 && p[2] == 10 && (200..=209).contains(&p[1])
+        }
+    }
+
+    /// A client's trident beside honey slides as the server's does
+    /// (`AbstractArrow.tick`'s `applyEffectsFromBlocks`, before its drag and
+    /// gravity): the values the official 26.3 server gives after one tick
+    /// (`projectile honey slide` harness group, 0.72 east of the centre).
+    #[test]
+    fn a_remote_trident_beside_honey_slides_down_it() {
+        let mut trident = ThrownTrident::remote(1, Vec3::new(6.22, 209.0, 10.5), 0.0, 0.0);
+        trident.velocity = Vec3::new(0.05, -0.6, 0.0);
+        trident.fall_distance = 6.0;
+        trident.remote_tick(&Honey, None);
+        assert_eq!(
+            trident.velocity,
+            Vec3::new(0.004650115179577094, -0.1761260036697388, 0.0)
+        );
+        // `HoneyBlock.doSlideMovement` ends with `resetFallDistance`.
+        assert_eq!(trident.fall_distance, 0.0);
+        let mut far = ThrownTrident::remote(1, Vec3::new(6.4, 209.0, 10.5), 0.0, 0.0);
+        far.velocity = Vec3::new(0.0, -0.6, 0.0);
+        far.fall_distance = 6.0;
+        far.remote_tick(&Honey, None);
+        assert_eq!(
+            far.velocity,
+            Vec3::new(0.0, -0.6 * f64::from(0.99f32) - 0.05, 0.0)
+        );
+        assert_eq!(far.fall_distance, 6.0);
+        // A returning trident has no physics: `isAffectedByBlocks` skips the
+        // honey (review on #14674).
+        let mut ghost = ThrownTrident::remote(1, Vec3::new(6.22, 209.0, 10.5), 0.0, 0.0);
+        ghost.no_physics = true;
+        ghost.velocity = Vec3::new(0.05, -0.6, 0.0);
+        ghost.fall_distance = 6.0;
+        ghost.remote_tick(&Honey, None);
+        assert_eq!(
+            ghost.velocity,
+            Vec3::new(0.05 * f64::from(0.99f32), -0.6 * f64::from(0.99f32), 0.0)
+        );
+        assert_eq!(ghost.fall_distance, 6.0);
+        // A diagonal move whose enclosing box holds the honey column but whose
+        // swept box never touches it (review on #14674): no slide.
+        let mut diagonal = ThrownTrident::remote(1, Vec3::new(5.5, 209.5, 6.5), 0.0, 0.0);
+        diagonal.velocity = Vec3::new(4.0, -0.5, 4.0);
+        diagonal.remote_tick(&Honey, None);
+        let drag = f64::from(0.99f32);
+        assert_eq!(
+            diagonal.velocity,
+            Vec3::new(4.0 * drag, -0.5 * drag - 0.05, 4.0 * drag)
+        );
     }
 
     /// Solid below y 100.
