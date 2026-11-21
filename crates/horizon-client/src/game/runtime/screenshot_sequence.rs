@@ -98,6 +98,7 @@ impl Game<'_> {
     fn sequence_scene(&mut self) -> Result<String> {
         let view = self.camera_view(1.0).ok_or("no camera")?;
         let (position, yaw, pitch) = self.native_camera_pose_now(1.0, view);
+        let roll = self.native_camera_roll_now(1.0);
         let renderer = self.renderer.as_ref().ok_or("no renderer")?;
         Ok(format!(
             "{:?}",
@@ -108,7 +109,8 @@ impl Game<'_> {
                 (
                     position.to_array().map(f64::to_bits),
                     yaw.to_bits(),
-                    pitch.to_bits()
+                    pitch.to_bits(),
+                    roll.to_bits()
                 ),
                 format!("{:?}", self.camera_type),
                 format!("{:?}", self.settings),

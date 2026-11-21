@@ -476,6 +476,12 @@ fn posed_camera(
     )
 }
 
+/// A mod's camera roll (`native_camera_roll`), in degrees: one that isn't finite is none.
+/// Neither bounded nor scaled by Distortion Effects, unlike a shake: it is the camera's pose.
+fn posed_roll(roll: f32) -> f32 {
+    if roll.is_finite() { roll } else { 0.0 }
+}
+
 /// The largest turn a shake gives, in degrees, on each axis.
 const SHAKE_MAX_DEGREES: f32 = 10.0;
 /// The largest offset a shake gives, in blocks, along each axis.
@@ -3406,6 +3412,14 @@ impl Game<'_> {
         posed
     }
 
+    /// The roll native mods draw this frame with (`native_camera_roll`), in degrees about
+    /// the view direction; 0 when no mod rolls it.
+    pub(super) fn native_camera_roll_now(&self, partial: f32) -> f32 {
+        let mut roll = 0.0;
+        self.native_camera_roll(partial, &mut roll);
+        posed_roll(roll)
+    }
+
     /// What native mods hand shader packs in this frame (`native_shader_params`),
     /// with values that aren't finite as 0.
     pub(super) fn native_shader_params_now(&self, partial: f32) -> [[f32; 4]; 8] {
@@ -4514,6 +4528,19 @@ mod tests {
             ),
             (glam::DVec3::new(1.0, 5.0, 3.0), 10.0, 20.0)
         );
+    }
+
+    /// A mod's roll is kept as it is, however far it turns (no shake bound, no Distortion
+    /// Effects scale), and one that isn't finite is none.
+    #[test]
+    fn a_mod_camera_roll_is_kept_unless_it_isnt_finite() {
+        use super::posed_roll;
+        for roll in [0.0, 22.5, -22.5, 90.0, -180.0, 720.0] {
+            assert_eq!(posed_roll(roll), roll);
+        }
+        for roll in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(posed_roll(roll), 0.0);
+        }
     }
 
     /// A shake is scaled by Distortion Effects, bounded on each axis, and a
