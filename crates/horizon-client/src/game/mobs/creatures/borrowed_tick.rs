@@ -56,6 +56,9 @@ fn route_player_events(
 
 pub(super) struct BorrowedMobTick<'a> {
     pub(super) mobs: &'a mut horizon_client::join_seq::JoinList<Mob>,
+    /// The clouds' mob doses due in this pass, given before the turn of the
+    /// first mob that joined after each (`potions/cloud_tick.rs`).
+    pub(super) doses: &'a mut super::super::potions::CloudDoses,
     pub(super) snapshot: &'a mut Vec<Seen>,
     pub(super) passenger_objects: &'a [Seen],
     pub(super) blocked: &'a std::collections::HashSet<u32>,
@@ -91,6 +94,7 @@ impl Game<'_> {
         let passenger_objects = state.passenger_objects;
         let mut blocked = std::borrow::Cow::Borrowed(state.blocked);
         let mut mobs = state.mobs.take_owned_pass();
+        let doses = state.doses;
         let mut snapshot = std::mem::take(state.snapshot);
         let mut events = std::mem::take(state.events);
         let mut dead = std::mem::take(state.dead);
@@ -198,6 +202,21 @@ impl Game<'_> {
                 let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
                 while cursor < original_len {
                     let slot = cursor;
+                    // A cloud that joined before this mob doses it now, at its place in the join
+                    // order (`potions/cloud_tick.rs`). A resumed pass has no dose left to give.
+                    if !resuming && positions.is_none() {
+                        self.run_cloud_doses(
+                            doses,
+                            &mut level,
+                            slot,
+                            &mut mobs,
+                            &keep,
+                            (&mut snapshot, &mut grid),
+                            &mut player_credit,
+                            &mut dead,
+                            &mut died,
+                        );
+                    }
                     let i = match &positions {
                         None => slot,
                         Some(positions) => {

@@ -1292,6 +1292,9 @@ impl Game<'_> {
         }
         self.init_sulfur_attribute_maps();
         let uuid = self.level.player_uuid;
+        // A cloud's mob doses go just before the first mob that joined after it
+        // (`potions/cloud_tick.rs`), so the walk is in join order.
+        self.order_mobs_for_cloud_doses();
         // LivingEntity.isPushable reads onClimbable live; a mob's cached one
         // is only refreshed by its own push step, so one that has not ticked
         // yet (the first tick after a load, a fresh spawn) or has moved since
@@ -1314,6 +1317,9 @@ impl Game<'_> {
         let mut mobs = self.mobs.lift();
         #[cfg(test)]
         super::entity::taken_pass_tests::after_take(self);
+        // The clouds whose doses wait for their place in the mob loop, out of the level
+        // while the mobs tick (`potions/cloud_tick.rs`).
+        let mut doses = self.take_cloud_doses();
         let mut dead = Vec::new();
         let mut corpses = Vec::new();
         let mut died = std::mem::take(&mut self.died);
@@ -1353,6 +1359,7 @@ impl Game<'_> {
         let lent = horizon_client::health::LentLevel::take(&mut self.world);
         let (lent, dispatch_panic) = self.tick_borrowed_creatures(borrowed_tick::BorrowedMobTick {
             mobs: &mut mobs,
+            doses: &mut doses,
             snapshot: &mut snapshot,
             passenger_objects: &passenger_objects,
             blocked: &blocked,
@@ -1395,11 +1402,11 @@ impl Game<'_> {
             bindings.retain(|id, _| live.contains(id));
             host.mob_players = bindings;
         }
-        // The mobs added during the tick (into the emptied `self.mobs`) come
-        // first, as `append` put them; with none, the ticked list goes back
-        // as it is instead of being copied into a new one, every mob a tick.
+        // The mobs added during the tick (into the emptied `self.mobs`) go after the ticked ones,
+        // as `EntityTickList.add` puts a new entity at the end of its linked map: they tick after
+        // them next tick too (`RestoreOrder::SurvivorsFirst`).
         self.mobs
-            .restore(mobs, horizon_client::join_seq::RestoreOrder::SpawnsFirst);
+            .restore(mobs, horizon_client::join_seq::RestoreOrder::SurvivorsFirst);
         if dispatch_panic.is_some() {
             // These death callbacks have not run, and the borrowed block writes
             // must still invalidate paths on the next attempted pass.
@@ -1412,6 +1419,7 @@ impl Game<'_> {
                 .extend(path_writes);
         }
         self.died = died;
+        self.finish_cloud_doses(doses);
         snapshot.clear();
         self.creatures.seen_buf = snapshot;
         self.creatures.ticked = ticked;
