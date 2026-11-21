@@ -10,30 +10,80 @@ const LEASES_REFUSED: i32 = 78;
 
 /// Whether `command` runs Horizon's own game with nothing in front of it. Only then is its exit
 /// code the game's: a Java instance, a wrapper or a Unix pre-launch script can end with 78 too.
+/// The launch plan's record of the game's command before wrappers (`run_leases::snapshot`)
+/// decides, not the program's name: a wrapper may be called like the client.
 pub(crate) fn runs_horizon_directly(command: &Command) -> bool {
+    if !crate::run_leases::is_horizon(command) {
+        return false;
+    }
+    let Ok(Some(game)) = crate::run_leases::game_snapshot(command) else {
+        return false;
+    };
     direct(
-        crate::run_leases::is_horizon(command),
         command.get_program(),
+        game.get_program(),
+        staged(command).as_deref(),
     )
 }
 
-fn direct(horizon: bool, program: &OsStr) -> bool {
-    // The installed client, or on Windows its staged copy: both keep the client's file name.
-    horizon && Path::new(program).file_name() == Some(OsStr::new(crate::backend::CLIENT))
+/// On Windows the game runs from its staged copy (`windows_runtime::redirect`).
+#[cfg(windows)]
+fn staged(command: &Command) -> Option<std::path::PathBuf> {
+    let slot = command
+        .get_envs()
+        .find(|(key, _)| *key == crate::windows_runtime::SLOT)?
+        .1?;
+    Some(Path::new(slot).join("game").join(crate::backend::CLIENT))
+}
+
+#[cfg(not(windows))]
+fn staged(_: &Command) -> Option<std::path::PathBuf> {
+    None
+}
+
+fn direct(program: &OsStr, game: &OsStr, staged: Option<&Path>) -> bool {
+    program == game || staged.is_some_and(|staged| staged.as_os_str() == program)
 }
 
 /// How a run that ended with `status` reads. A directly started game's lease refusal says
-/// what to do.
+/// what to do; the crash card adds where to report it ([`crash_help`]).
 pub fn exit_error(direct: bool, status: std::process::ExitStatus) -> String {
     exit_text(direct, status.code(), &status.to_string())
 }
 
 fn exit_text(direct: bool, code: Option<i32>, status: &str) -> String {
-    // The game refuses before its log starts, so the launcher's own log is the one to send.
     if direct && code == Some(LEASES_REFUSED) {
-        return tr("Horizon stopped before starting because its folders weren't marked as in use. Press Play again. If this repeats, open the Log tab, press Share log… and post the link on Discord.").into();
+        return lease_refusal();
     }
     format!("Exited with {status}")
+}
+
+fn lease_refusal() -> String {
+    tr("Horizon stopped before starting because its folders weren't marked as in use. Press Play again.").into()
+}
+
+/// Whether a run's error is the game's lease refusal.
+pub fn is_lease_refusal(error: &str) -> bool {
+    error == lease_refusal()
+}
+
+/// The crash card's line on what to report: with a crash report, without one, or after a lease
+/// refusal. The game refuses before its log starts, so then the launcher's log is the one to
+/// share; `glass` picks the label the look gives its tab (`home_tabs`, `glass_home_tabs`).
+pub fn crash_help(report: bool, refused: bool, glass: bool) -> String {
+    if refused {
+        let tab = if glass { tr("Log") } else { tr("Console") };
+        return trf(
+            "If this repeats, open the {tab} tab, press Share log… and post the link on Discord.",
+            &[("tab", tab)],
+        );
+    }
+    tr(if report {
+        "When you report it on Discord, attach the crash report file (or paste it with Copy report) and say what you were doing."
+    } else {
+        "The game ended without a crash report. When you report it on Discord, attach latest.log from the logs folder and say what you were doing."
+    })
+    .into()
 }
 
 fn shown(path: &Path) -> String {
@@ -74,20 +124,19 @@ fn unsupported_text(folder: Option<&Path>, data: &Path, environment: bool) -> St
 /// A refused entry at `path`: a link, or not the kind of entry expected there.
 pub(crate) fn unexpected_entry(path: &Path, data: &Path) -> String {
     let link = std::fs::symlink_metadata(path).is_ok_and(|meta| crate::native_cache::linked(&meta));
-    unexpected_text(path, data, link, data_from_environment())
+    unexpected_text(path, data, link)
 }
 
-fn unexpected_text(path: &Path, data: &Path, link: bool, environment: bool) -> String {
-    match (path == data && link, environment) {
-        (true, false) => trf(
-            "{folder} is a link. Choose the real folder in Settings > About > Data folder.",
-            &[("folder", &shown(path))],
-        ),
-        (true, true) => trf(
+fn unexpected_text(path: &Path, data: &Path, link: bool) -> String {
+    match path == data && link {
+        // Settings can't move a linked data folder either: relocation refuses a linked source
+        // (`validate_roots` in `data_location::migrate_locked`), so only the environment can
+        // point past it.
+        true => trf(
             "{folder} is a link. Set HORIZON_LAUNCHER_HOME to the real folder.",
             &[("folder", &shown(path))],
         ),
-        (false, _) => trf(
+        false => trf(
             "Refusing native cache cleanup at an unexpected file or link: {path}",
             &[("path", &path.display().to_string())],
         ),
@@ -209,24 +258,68 @@ mod tests {
 
     #[test]
     fn only_a_directly_started_horizon_game_owns_its_exit_code() {
-        let client = OsStr::new(crate::backend::CLIENT);
         let installed = Path::new("versions")
             .join("nightly")
             .join(crate::backend::CLIENT);
-        assert!(direct(true, client));
-        assert!(direct(true, installed.as_os_str()));
-        // A Java instance, a wrapper (gamemoderun) and the Unix pre-launch script (sh).
-        assert!(!direct(false, client));
-        assert!(!direct(true, OsStr::new("gamemoderun")));
-        assert!(!direct(true, OsStr::new("/bin/sh")));
+        let staged = Path::new("run")
+            .join("slot")
+            .join("game")
+            .join(crate::backend::CLIENT);
+        assert!(direct(installed.as_os_str(), installed.as_os_str(), None));
+        assert!(direct(
+            staged.as_os_str(),
+            installed.as_os_str(),
+            Some(&staged)
+        ));
+        // A wrapper named like the client, elsewhere, is still a wrapper.
+        let lookalike = Path::new("tools").join(crate::backend::CLIENT);
+        assert!(!direct(
+            lookalike.as_os_str(),
+            installed.as_os_str(),
+            Some(&staged)
+        ));
 
-        let mut command = Command::new(&installed);
-        assert!(!runs_horizon_directly(&command));
-        crate::run_leases::mark(&mut command, Path::new("versions/nightly"));
-        assert!(runs_horizon_directly(&command));
-        let mut wrapped = Command::new("gamemoderun");
-        crate::run_leases::mark(&mut wrapped, Path::new("versions/nightly"));
-        assert!(!runs_horizon_directly(&wrapped));
+        // As the launch plan leaves them: the game alone, a lookalike wrapper, the Unix
+        // pre-launch script, and a Java instance (never marked, so never snapshotted).
+        let mut game = Command::new(&installed);
+        crate::run_leases::mark(&mut game, Path::new("versions/nightly"));
+        crate::run_leases::snapshot(&mut game);
+        assert!(runs_horizon_directly(&game));
+        let around = |program: &Path| {
+            let mut out = Command::new(program);
+            for (key, value) in game.get_envs() {
+                if let Some(value) = value {
+                    out.env(key, value);
+                }
+            }
+            out
+        };
+        assert!(!runs_horizon_directly(&around(&lookalike)));
+        assert!(!runs_horizon_directly(&around(Path::new("/bin/sh"))));
+        let mut marked_only = Command::new(&installed);
+        crate::run_leases::mark(&mut marked_only, Path::new("versions/nightly"));
+        assert!(!runs_horizon_directly(&marked_only));
+        assert!(!runs_horizon_directly(&Command::new(&installed)));
+    }
+
+    #[test]
+    fn the_crash_card_names_the_tab_the_look_has() {
+        assert_eq!(
+            crash_help(false, true, true),
+            "If this repeats, open the Log tab, press Share log… and post the link on Discord."
+        );
+        assert_eq!(
+            crash_help(false, true, false),
+            "If this repeats, open the Console tab, press Share log… and post the link on Discord."
+        );
+        assert!(crash_help(false, false, true).contains("attach latest.log"));
+        assert!(crash_help(true, false, false).contains("crash report file"));
+        assert!(is_lease_refusal(&exit_text(
+            true,
+            Some(78),
+            "exit code: 78"
+        )));
+        assert!(!is_lease_refusal("Exited with exit code: 78"));
     }
 
     #[test]
@@ -234,7 +327,7 @@ mod tests {
         let refused = exit_text(true, Some(78), "exit code: 78");
         assert_eq!(
             refused,
-            "Horizon stopped before starting because its folders weren't marked as in use. Press Play again. If this repeats, open the Log tab, press Share log… and post the link on Discord."
+            "Horizon stopped before starting because its folders weren't marked as in use. Press Play again."
         );
         assert_eq!(
             exit_text(false, Some(78), "exit code: 78"),
@@ -269,18 +362,15 @@ mod tests {
             "A folder Horizon uses is on a file system it doesn't support. Keep the launcher's data and game folders on a local drive."
         );
 
+        // Settings can't move a linked data folder, with or without the override.
         assert_eq!(
-            unexpected_text(data, data, true, false),
-            "/home/player/.local/share/horizon-launcher is a link. Choose the real folder in Settings > About > Data folder."
-        );
-        assert_eq!(
-            unexpected_text(data, data, true, true),
+            unexpected_text(data, data, true),
             "/home/player/.local/share/horizon-launcher is a link. Set HORIZON_LAUNCHER_HOME to the real folder."
         );
         let generic = "Refusing native cache cleanup at an unexpected file or link: /home/player/.local/share/horizon-launcher";
-        assert_eq!(unexpected_text(data, data, false, false), generic);
+        assert_eq!(unexpected_text(data, data, false), generic);
         let inner = data.join("native");
-        assert!(unexpected_text(&inner, data, true, false).starts_with("Refusing native cache"));
+        assert!(unexpected_text(&inner, data, true).starts_with("Refusing native cache"));
 
         let game = Path::new("/home/player/games/survival");
         assert_eq!(

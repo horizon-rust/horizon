@@ -44,7 +44,7 @@ impl Registry {
 
 /// The game's own command, as `snapshot` recorded it before wrappers: its program and
 /// arguments, with the working directory and environment of `command`.
-fn game_snapshot(command: &Command) -> std::io::Result<Option<Command>> {
+pub(crate) fn game_snapshot(command: &Command) -> std::io::Result<Option<Command>> {
     let Some(encoded) = override_value(command, GAME).flatten() else {
         return Ok(None);
     };
@@ -549,7 +549,11 @@ pub(crate) fn publish(path: &Path) -> Result<(), Error> {
     }
     for unit in units {
         let directory = Dir::open_ambient_dir(&unit, cap_std::ambient_authority())?;
-        drop(registry.lock(&directory, LockMode::Shared)?);
+        drop(
+            registry
+                .lock(&directory, LockMode::Shared)
+                .map_err(|error| error.on(&unit))?,
+        );
     }
     Ok(())
 }

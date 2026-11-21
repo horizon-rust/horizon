@@ -506,6 +506,9 @@ impl Launcher {
                                     &[("crashed", crashed), ("api", api)],
                                 ));
                             } else if error.is_some() || report.is_some() {
+                                let leases_refused = error
+                                    .as_deref()
+                                    .is_some_and(horizon_launcher::refusals::is_lease_refusal);
                                 let summary = report
                                     .as_ref()
                                     .and_then(|p| std::fs::read_to_string(p).ok())
@@ -527,6 +530,7 @@ impl Launcher {
                                     report,
                                     summary,
                                     copied: false,
+                                    leases_refused,
                                 });
                             }
                         }
