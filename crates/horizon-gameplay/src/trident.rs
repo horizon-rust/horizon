@@ -37,6 +37,10 @@ pub struct ThrownTrident {
     pub pickup: Pickup,
     pub left_owner: bool,
     pub has_been_shot: bool,
+    /// `AbstractArrow.baseDamage`, `crit` and `PierceLevel` are persisted for tridents.
+    pub base_damage: f64,
+    pub critical: bool,
+    pub pierce_level: i8,
     pub owner_uuid: Option<[i32; 4]>,
     /// `Entity.isNoGravity`: `AbstractArrow.applyGravity` then skips the pull.
     pub no_gravity: bool,
@@ -107,6 +111,9 @@ impl ThrownTrident {
         self.pickup = n.pickup;
         self.left_owner = n.left_owner;
         self.has_been_shot = n.has_been_shot;
+        self.base_damage = n.base_damage;
+        self.critical = n.critical;
+        self.pierce_level = n.pierce_level;
         self.owner_uuid = n.owner;
         self.guest = None;
         self.no_gravity = n.no_gravity;
@@ -135,6 +142,9 @@ impl ThrownTrident {
                 pickup: self.pickup,
                 left_owner: self.left_owner,
                 has_been_shot: self.has_been_shot,
+                base_damage: self.base_damage,
+                critical: self.critical,
+                pierce_level: self.pierce_level,
                 owner: self.owner_uuid,
                 no_gravity: self.no_gravity,
                 on_ground: self.on_ground,
@@ -183,6 +193,9 @@ impl ThrownTrident {
             pickup: Pickup::Disallowed,
             left_owner: false,
             has_been_shot: false,
+            base_damage: 2.0,
+            critical: false,
+            pierce_level: 0,
             owner_uuid: None,
             no_gravity: false,
             on_ground: false,
