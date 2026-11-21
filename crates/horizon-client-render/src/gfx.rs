@@ -492,6 +492,7 @@ pub mod entity_skin;
 pub mod external;
 mod flat;
 mod frame_gen;
+pub(crate) mod frame_targets;
 mod frustum;
 mod gpu_culling;
 mod hdr;
@@ -1522,6 +1523,8 @@ pub struct Renderer {
     mirror_globals: wgpu::Buffer,
     mirror_group: wgpu::BindGroup,
     mirror: Option<MirrorTarget>,
+    /// The size the mirror's targets had no room at (#13624): not tried again there.
+    mirror_no_room: Option<[u32; 2]>,
     /// Native mods' world views' targets and pipelines, and the largest side the device gives one.
     world_views: world_views::Kept,
     world_view_side: u32,
@@ -1662,6 +1665,9 @@ pub struct Renderer {
     instance_capacity: u64,
     outline: wgpu::Buffer,
     depth: wgpu::TextureView,
+    /// The window's depth had no room at its size (`remake_depth`): window frames are skipped
+    /// until it does.
+    depth_missing: bool,
     sections: resident::Resident<SectionGpu>,
     lods: FxHashMap<crate::lod::TileKey, lod::Tile>,
     /// Far tiles' occlusion culling slots (`lod::Tile::cull_slot`): those
@@ -4500,6 +4506,7 @@ impl Renderer {
             mirror_globals,
             mirror_group,
             mirror: None,
+            mirror_no_room: None,
             world_views: views,
             world_view_side: max_side,
             entity_pipeline,
@@ -4604,6 +4611,7 @@ impl Renderer {
             instance_capacity,
             outline,
             depth,
+            depth_missing: false,
             sections: resident::Resident::default(),
             lods: FxHashMap::default(),
             lod_cull_free: Vec::new(),
@@ -4925,6 +4933,30 @@ impl Renderer {
             })
             .create_view(&Default::default())
     }
+    /// Makes the window's depth again at its size, the old one let go first (a 1x1 stand-in
+    /// holds its place) so the two are never held together. Without the room for it
+    /// (#13624) `depth_missing` says so, and window frames are skipped until a try finds room.
+    fn remake_depth(&mut self) -> bool {
+        use frame_targets::{Kind, made};
+        let small = wgpu::SurfaceConfiguration {
+            width: 1,
+            height: 1,
+            ..self.config.clone()
+        };
+        if let Some(stand_in) = made(&self.device, Kind::Depth, || {
+            Self::depth(&self.device, &small)
+        }) {
+            self.depth = stand_in;
+        }
+        let depth = made(&self.device, Kind::Depth, || {
+            Self::depth(&self.device, &self.config)
+        });
+        self.depth_missing = depth.is_none();
+        if let Some(depth) = depth {
+            self.depth = depth;
+        }
+        !self.depth_missing
+    }
     /// VSync on presents with Fifo, capped to the display's refresh rate in a
     /// window and in fullscreen alike; Horizon's present-mode setting applies
     /// only with VSync off (`window::chosen_present_mode`).
@@ -4972,7 +5004,12 @@ impl Renderer {
         } else {
             self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
         }
-        self.depth = Self::depth(&self.device, &self.config);
+        self.remake_depth();
+        // Effects that had no room try again at the new size (#13624).
+        self.frame_gen.no_room = false;
+        if let Some(oit) = &mut self.oit {
+            oit.no_room = false;
+        }
         if let Some(pipeline) = &mut self.external {
             pipeline.resize([width, height]);
         }
@@ -7255,7 +7292,18 @@ impl Renderer {
         let scaled = self.screenshot_size();
         let rendered = match scaled {
             Some(size) => self.draw_scaled_frame(frame, size),
-            None => self.draw_frame(frame, None, self.output),
+            // The backstop for a target made on demand that no fallback of its own covers
+            // (#13624): its error is warned of instead of reaching wgpu's handler, which
+            // panics. Native error scopes resolve at once, and the frame is still passed to
+            // the submit thread (`checks` stays `None`), whose errors these scopes don't see.
+            None => {
+                let checks = GpuChecks::push(&self.device);
+                let drawn = self.draw_frame(frame, None, self.output);
+                if let Some(error) = checks.pop() {
+                    frame_targets::frame_failed(&error);
+                }
+                drawn
+            }
         };
         self.finish_prepared_frame();
         // A frame that was not drawn still submits the section copies and
@@ -7424,6 +7472,20 @@ impl Renderer {
         if self.suspended {
             return Ok(false);
         }
+        // A window frame without the room for a target it draws into is skipped before it takes
+        // a swapchain image, and tried again on the next (#13624). A scaled screenshot's frame
+        // is under its own scopes (`checks`), which take it again at half the size.
+        if checks.is_none() {
+            if self.depth_missing && !self.remake_depth() {
+                return Ok(false);
+            }
+            let size = [self.config.width, self.config.height];
+            if let Some(hdr) = &mut self.hdr
+                && !hdr.ready(&self.device, size)
+            {
+                return Ok(false);
+            }
+        }
         let started = Instant::now();
         if self.first_frame == FirstFrame::Acquire {
             // Once: a minimized window acquires nothing for a while.
@@ -7458,7 +7520,7 @@ impl Renderer {
         // passes, HDR output without the HUD's layer (or the float frame HDR was started
         // with) or the title screen.
         let fg = self.frame_gen.on
-            && !(self.frame_gen.paused || self.frame_gen.refused)
+            && !(self.frame_gen.paused || self.frame_gen.refused || self.frame_gen.no_room)
             && (self.hdr.as_ref()).map_or(
                 self.output.frame.format == self.config.format.remove_srgb_suffix(),
                 hdr::Hdr::layered,
@@ -7475,18 +7537,33 @@ impl Renderer {
         // Waits for the submit thread since the last frame's present (this frame's uploads).
         let queued = self.queue.take_waited();
         let acquire = Instant::now();
-        let fg_frames = fg
-            .then(|| {
-                self.frame_gen.frames(
-                    &self.device,
+        // Its frames and world target are made here, before the frame is drawn: without the room
+        // for them (#13624) frame generation is off until the surface is configured again.
+        let fg_frames = if fg {
+            let config = self.surface_config();
+            let format = self.output.frame.format;
+            let (device, frame_gen) = (&self.device, &mut self.frame_gen);
+            let made = frame_targets::made(device, frame_targets::Kind::FrameGeneration, || {
+                let frames = frame_gen.frames(
+                    device,
                     &self.queue,
                     self.surface.as_ref(),
                     self.offscreen.as_ref(),
                     &self.window,
-                    &self.surface_config(),
-                )
-            })
-            .flatten();
+                    &config,
+                );
+                if frames.is_some() {
+                    frame_gen.world(device, &self.world_post, &self.config, format);
+                }
+                frames
+            });
+            if made.is_none() {
+                self.frame_gen.out_of_room();
+            }
+            made.flatten()
+        } else {
+            None
+        };
         // The present thread failed: this frame acquires as without frame generation.
         let fg = fg_frames.is_some();
         let mut fg_made = false;
@@ -7546,6 +7623,14 @@ impl Renderer {
                     Some(f) => f.texture.clone(),
                     None => self.offscreen.clone().ok_or("no offscreen target")?,
                 };
+                let (format, screenshot) = (self.output.frame.format, self.screenshot.is_some());
+                if checks.is_none()
+                    && !self
+                        .readback
+                        .ready(&self.device, &image, format, screenshot)
+                {
+                    return Ok(false);
+                }
                 self.readback
                     .target(
                         &self.device,
@@ -9630,7 +9715,12 @@ impl Renderer {
                 .filter(|_| scaled.is_some())
                 .unwrap_or([self.config.width, self.config.height]);
             let size = native_post::reflection_size(world);
-            if self.mirror.as_ref().is_none_or(|m| m.size != size) {
+            // Without the room for its targets (#13624) water draws without the reflection;
+            // the old ones go first, and that size is not tried again.
+            if self.mirror.as_ref().is_none_or(|m| m.size != size)
+                && self.mirror_no_room != Some(size)
+            {
+                self.mirror = None;
                 let target = |label: &'static str, format, usage| {
                     self.device
                         .create_texture(&wgpu::TextureDescriptor {
@@ -9649,20 +9739,24 @@ impl Renderer {
                         })
                         .create_view(&Default::default())
                 };
-                self.mirror = Some(MirrorTarget {
-                    size,
-                    color: target(
-                        "Water mirror",
-                        self.output.frame.format,
-                        wgpu::TextureUsages::RENDER_ATTACHMENT
-                            | wgpu::TextureUsages::TEXTURE_BINDING,
-                    ),
-                    depth: target(
-                        "Water mirror depth",
-                        wgpu::TextureFormat::Depth32Float,
-                        wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    ),
-                });
+                self.mirror =
+                    frame_targets::made(&self.device, frame_targets::Kind::Mirror, || {
+                        MirrorTarget {
+                            size,
+                            color: target(
+                                "Water mirror",
+                                self.output.frame.format,
+                                wgpu::TextureUsages::RENDER_ATTACHMENT
+                                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                            ),
+                            depth: target(
+                                "Water mirror depth",
+                                wgpu::TextureFormat::Depth32Float,
+                                wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            ),
+                        }
+                    });
+                self.mirror_no_room = self.mirror.is_none().then_some(size);
             }
             if let Some(mirror) = &self.mirror {
                 // Mirrored about y = `plane` (camera-relative).
@@ -9801,7 +9895,7 @@ impl Renderer {
             .filter(|_| !pack_draws_terrain);
         // Solid terrain through the visibility buffer (`visbuffer`): flat frames without a
         // pack drawing terrain, a material stage, a surface target or a shadow pass.
-        let vis_frame = flat_frame
+        let mut vis_frame = flat_frame
             && !msaa_on
             && !frame.title
             && !pack_terrain
@@ -9816,7 +9910,8 @@ impl Renderer {
             && self.visbuf.is_some();
         if vis_frame && let (Some(vis), Some(flat)) = (&mut self.visbuf, &self.flat) {
             let depth = world_depth.texture();
-            vis.fit(&self.device, [depth.width(), depth.height()], flat);
+            // Without the room for its IDs (#13624) solid terrain draws as without it.
+            vis_frame = vis.fit(&self.device, [depth.width(), depth.height()], flat);
         }
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -11676,9 +11771,24 @@ impl Renderer {
             let first = overlay.first_crosshair;
             pass.draw(0..4, first..first + overlay.crosshair);
         }
-        let menu_blur = frame
+        let wants_blur = frame
             .menu_blur
             .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
+        // Without the room for its targets (#13624) the menu draws over the frame unblurred;
+        // the next screen that blurs tries again.
+        let mut menu_blur = wants_blur;
+        if menu_blur.is_some() {
+            let format = self.output.frame.overlay_format;
+            let device = &self.device;
+            let software = is_software(self.info.device_type);
+            let size = [self.config.width, self.config.height];
+            let blur = self
+                .menu_blur
+                .get_or_insert_with(|| crate::menu_blur::MenuBlur::new(device, format, software));
+            if !blur.ready(device, size) {
+                menu_blur = None;
+            }
+        }
         let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
         self.hud.draw_range(
             encoder,
@@ -11729,7 +11839,9 @@ impl Renderer {
             if let Some(view) = &coverage {
                 hud_coverage::clear(encoder, view);
             }
-        } else if let Some(blur) = &mut self.menu_blur {
+        } else if wants_blur.is_none()
+            && let Some(blur) = &mut self.menu_blur
+        {
             blur.release();
         }
         self.hud.draw_range(
@@ -11750,8 +11862,9 @@ impl Renderer {
 }
 /// Out-of-memory and validation error scopes, popped together: the first error either caught.
 struct GpuChecks {
-    memory: wgpu::ErrorScopeGuard,
+    // Dropped (popped) in this order, the reverse of `push`'s: wgpu panics on any other.
     validation: wgpu::ErrorScopeGuard,
+    memory: wgpu::ErrorScopeGuard,
 }
 impl GpuChecks {
     fn push(device: &wgpu::Device) -> Self {

@@ -32,6 +32,9 @@ pub(super) struct EntityOutline {
     /// The silhouettes posed on the GPU: first vertex in the entity buffer, quads.
     posed: (u32, u32),
     targets: Option<Targets>,
+    /// The size its targets had no room at (#13624): not tried again there until no entity
+    /// glows.
+    no_room: Option<[u32; 2]>,
 }
 
 impl EntityOutline {
@@ -163,6 +166,7 @@ impl EntityOutline {
             quads: 0,
             posed: (0, 0),
             targets: None,
+            no_room: None,
         }
     }
 
@@ -193,6 +197,7 @@ impl EntityOutline {
         self.posed = posed;
         if self.quads == 0 && posed.1 == 0 {
             self.targets = None;
+            self.no_room = None;
             return;
         }
         let vertices = silhouettes.len() as u64;
@@ -208,9 +213,19 @@ impl EntityOutline {
                 bytemuck::cast_slice(silhouettes),
             );
         }
-        if self.targets.as_ref().is_some_and(|t| t.size == size) {
+        if self.targets.as_ref().is_some_and(|t| t.size == size) || self.no_room == Some(size) {
             return;
         }
+        // Without the room for them the outline is left out (`draw`); the old ones go first.
+        self.targets = None;
+        self.targets =
+            super::frame_targets::made(device, super::frame_targets::Kind::Outline, || {
+                self.targets_at(device, size)
+            });
+        self.no_room = self.targets.is_none().then_some(size);
+    }
+
+    fn targets_at(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
         let texture = |label| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -254,12 +269,12 @@ impl EntityOutline {
             group(&outline, &self.bilinear),
             group(&swap, &self.nearest),
         ];
-        self.targets = Some(Targets {
+        Targets {
             size,
             outline,
             swap,
             groups,
-        });
+        }
     }
 
     /// `LevelRenderer.executeOutline`, the post chain and `blitEntityOutline` onto `frame`.
