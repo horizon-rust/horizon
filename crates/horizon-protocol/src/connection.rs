@@ -663,13 +663,23 @@ impl ConnWriter {
             Some(client) => Ok(client.clientbound(body)?.map(std::borrow::Cow::Owned)),
         }
     }
+    /// The packet bodies, in the client's numbering, that [`Self::for_client`]'s last packet brought with it
+    /// (a boat's wood, an experience orb's value): they go after what it returned.
+    pub fn client_extras(&self) -> Vec<Vec<u8>> {
+        self.older_client
+            .as_ref()
+            .map_or_else(Vec::new, |client| client.take_extra())
+    }
     /// Send one packet body (VarInt id + payload).
     pub fn send(&mut self, body: &[u8]) -> Result<()> {
         if self.older_client.is_some() {
-            return match self.for_client(body)? {
-                Some(body) => self.send_contents(&self.contents(&body)?),
-                None => Ok(()),
-            };
+            if let Some(body) = self.for_client(body)? {
+                self.send_contents(&self.contents(&body)?)?;
+            }
+            for body in self.client_extras() {
+                self.send_contents(&self.contents(&body)?)?;
+            }
+            return Ok(());
         }
         if let Some(a) = self.adapter.clone() {
             if let Some(body) = a.serverbound(body)? {

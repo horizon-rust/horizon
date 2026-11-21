@@ -8,6 +8,7 @@ pub mod entity_type {
     pub const AREA_EFFECT_CLOUD: i32 = 3;
     pub const ARMADILLO: i32 = 4;
     pub const ARMOR_STAND: i32 = 5;
+    pub const ARROW: i32 = 6;
     pub const AXOLOTL: i32 = 7;
     pub const BAMBOO_CHEST_RAFT: i32 = 8;
     pub const BAMBOO_RAFT: i32 = 9;
@@ -28,6 +29,7 @@ pub mod entity_type {
     pub const COD: i32 = 27;
     pub const COMMAND_BLOCK_MINECART: i32 = 29;
     pub const COW: i32 = 30;
+    pub const CREAKING: i32 = 31;
     pub const CREEPER: i32 = 32;
     pub const DARK_OAK_BOAT: i32 = 34;
     pub const DARK_OAK_CHEST_BOAT: i32 = 35;
@@ -95,6 +97,7 @@ pub mod entity_type {
     pub const SNIFFER: i32 = 122;
     pub const SNOW_GOLEM: i32 = 124;
     pub const SPAWNER_MINECART: i32 = 125;
+    pub const SPECTRAL_ARROW: i32 = 126;
     pub const SPIDER: i32 = 127;
     pub const SPRUCE_BOAT: i32 = 128;
     pub const SPRUCE_CHEST_BOAT: i32 = 129;
@@ -104,6 +107,7 @@ pub mod entity_type {
     pub const TADPOLE: i32 = 134;
     pub const TNT_MINECART: i32 = 137;
     pub const TRADER_LLAMA: i32 = 138;
+    pub const TRIDENT: i32 = 139;
     pub const TROPICAL_FISH: i32 = 140;
     pub const TURTLE: i32 = 141;
     pub const VEX: i32 = 142;
