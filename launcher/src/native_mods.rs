@@ -1579,7 +1579,7 @@ fn source(revision: &str) -> Result<PathBuf, String> {
         horizon_platform::mod_package::index::native::PREBUILT_REPO
     );
     let partial = root().join("source").join(format!(".{revision}.partial"));
-    let top = unpack_archive(&archive, &partial, u64::MAX)?;
+    let top = unpack_archive_until(&archive, &partial, u64::MAX, &check_cancelled)?;
     fs::write(top.join(".horizon-revision"), revision).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&dir);
     fs::rename(&top, &dir).map_err(|e| e.to_string())?;
@@ -1590,9 +1590,16 @@ fn source(revision: &str) -> Result<PathBuf, String> {
 
 /// GitHub's archive (`.tar.gz`) at `url`, unpacked into the fresh folder `partial`: the archive's
 /// one top folder, which is returned. Links are left out; at most `limit` bytes are unpacked.
-fn unpack_source(reader: impl std::io::Read, partial: &Path) -> Result<(), String> {
+/// Unpacks the tar `reader` into `partial`, asking `stop` before each entry: its error ends the
+/// unpack word for word.
+fn unpack_source(
+    reader: impl std::io::Read,
+    partial: &Path,
+    stop: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
     let mut archive = tar::Archive::new(reader);
     for entry in archive.entries().map_err(|e| e.to_string())? {
+        stop()?;
         let mut entry =
             entry.map_err(|e| trf("Source interrupted: {error}", &[("error", &e.to_string())]))?;
         let kind = entry.header().entry_type();
@@ -1613,11 +1620,26 @@ fn unpack_source(reader: impl std::io::Read, partial: &Path) -> Result<(), Strin
 }
 
 pub(crate) fn unpack_archive(url: &str, partial: &Path, limit: u64) -> Result<PathBuf, String> {
+    unpack_archive_until(url, partial, limit, &|| Ok(()))
+}
+
+/// [`unpack_archive`] that asks `stop` before the download and for each file unpacked: its
+/// error ends it word for word, and `partial` is removed with what was unpacked so far.
+fn unpack_archive_until(
+    url: &str,
+    partial: &Path,
+    limit: u64,
+    stop: &dyn Fn() -> Result<(), String>,
+) -> Result<PathBuf, String> {
     use std::io::Read;
+    stop()?;
     let _ = fs::remove_dir_all(partial);
     fs::create_dir_all(partial).map_err(|e| e.to_string())?;
     let reader = flate2::read::GzDecoder::new(backend::get(url)?.into_reader()).take(limit);
-    unpack_source(reader, partial)?;
+    if let Err(error) = unpack_source(reader, partial, stop) {
+        let _ = fs::remove_dir_all(partial);
+        return Err(error);
+    }
     // The archive's one top folder (<repo>-<commit>/) is the source's root.
     fs::read_dir(partial)
         .map_err(|e| e.to_string())?
@@ -2111,6 +2133,7 @@ fn pipeline(
         }
         None
     } else {
+        check_cancelled()?;
         Some(sdk_cache::index(&sdk_base, &revision, &keys).map_err(refused)?)
     };
     let mut fitted: Vec<String> = Vec::new();
@@ -2272,6 +2295,7 @@ fn pipeline(
                 let sdk = match sdk {
                     Some(sdk) => sdk,
                     None => {
+                        check_cancelled()?;
                         fetched = sdk_cache::index(&sdk_base, &revision, &keys).map_err(refused)?;
                         &fetched
                     }
@@ -2297,6 +2321,7 @@ fn pipeline(
                             },
                         })
                     },
+                    &check_cancelled,
                 )
                 .map_err(refused)?
             }
@@ -2364,7 +2389,7 @@ fn pipeline(
     if let Some(game) = &prebuilt {
         let checking = std::time::Instant::now();
         linker()?;
-        let rust = rust_toolchain::install(|f| progress(Step::Rust(f)))?;
+        let rust = rust_toolchain::install_until(|f| progress(Step::Rust(f)), &check_cancelled)?;
         timed("Checking the Rust toolchain", checking)?;
         progress(Step::PrebuiltMods);
         let compiling = std::time::Instant::now();
@@ -2884,6 +2909,34 @@ mod tests {
         assert_eq!(done.shown(), done.label());
     }
 
+    /// A stop during a source's unpack ends it before the next file, as a cancelled build
+    /// (#19300).
+    #[test]
+    fn a_stopped_source_unpack_writes_no_further_file() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut archive = tar::Builder::new(Vec::new());
+        for path in ["top/one", "top/two"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive.append_data(&mut header, path, &b"x"[..]).unwrap();
+        }
+        let bytes = archive.into_inner().unwrap();
+        let asked = std::cell::Cell::new(0);
+        let stop = || {
+            asked.set(asked.get() + 1);
+            match asked.get() > 1 {
+                true => Err(CANCELLED.to_string()),
+                false => Ok(()),
+            }
+        };
+        let result = unpack_source(bytes.as_slice(), folder.path(), &stop);
+        assert_eq!(result.unwrap_err(), CANCELLED);
+        assert!(folder.path().join("top/one").is_file());
+        assert!(!folder.path().join("top/two").exists());
+    }
+
     #[test]
     fn source_archive_escape_is_refused_without_writing_outside() {
         let folder = tempfile::tempdir().unwrap();
@@ -2897,7 +2950,7 @@ mod tests {
         let bytes = archive.into_inner().unwrap();
         let inside = folder.path().join("inside");
         fs::create_dir(&inside).unwrap();
-        assert!(unpack_source(bytes.as_slice(), &inside).is_err());
+        assert!(unpack_source(bytes.as_slice(), &inside, &|| Ok(())).is_err());
         assert!(!folder.path().join("outside").exists());
     }
 

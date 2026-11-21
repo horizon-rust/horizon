@@ -146,6 +146,7 @@ impl Launcher {
             .map(|(id, ..)| id)
             .collect();
         self.native_step = Some(tr("Starting the build").into());
+        self.native_stopping = false;
         self.native_progress = None;
         // The first build downloads the compiler: the card says so, with its size.
         self.first_build = horizon_launcher::rust_toolchain::installed()
@@ -203,6 +204,13 @@ impl Launcher {
                 }
                 self.native_step = None;
                 self.native_done = Some(tr(native_mods::CANCELLED).into());
+            }
+            // A download or unpack under way can take a moment to see the stop: the card says
+            // so at once, and the build's later steps don't replace it.
+            None if self.native_step.is_some() => {
+                native_mods::cancel();
+                self.native_stopping = true;
+                self.native_step = Some(tr("Stopping the build…").into());
             }
             None => native_mods::cancel(),
         }
