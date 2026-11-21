@@ -4840,9 +4840,13 @@ impl Renderer {
 
     /// The index buffer of `quads` quads, for a frame that grows one: `None` where there was no
     /// room for it (#13624).
-    fn grown_quad_indices(&self, quads: u32) -> Option<wgpu::Buffer> {
-        frame_targets::made(&self.device, frame_targets::Kind::Buffers, || {
-            rt::query::written_quad_indices(&self.device, &self.queue, quads)
+    fn grown_quad_indices(
+        device: &wgpu::Device,
+        queue: &submit::Queue,
+        quads: u32,
+    ) -> Option<wgpu::Buffer> {
+        frame_targets::made(device, frame_targets::Kind::Buffers, || {
+            rt::query::written_quad_indices(device, queue, quads)
         })
     }
     fn offscreen_target(
@@ -9290,7 +9294,7 @@ impl Renderer {
             .unwrap_or(0);
         if max_static_section_quads > self.static_entity_index_quads {
             let quads = max_static_section_quads.next_power_of_two();
-            let Some(indices) = self.grown_quad_indices(quads) else {
+            let Some(indices) = Self::grown_quad_indices(&self.device, &self.queue, quads) else {
                 return self.abandon_frame(frame_targets::Abandoned::grown(
                     encoder,
                     copies,
@@ -9379,7 +9383,7 @@ impl Renderer {
                 .max(outlined / 4);
         if max_quads > self.index_quads {
             let quads = max_quads.next_power_of_two();
-            let Some(indices) = self.grown_quad_indices(quads) else {
+            let Some(indices) = Self::grown_quad_indices(&self.device, &self.queue, quads) else {
                 return self.abandon_frame(frame_targets::Abandoned::grown(
                     encoder,
                     copies,
@@ -11589,6 +11593,11 @@ impl Renderer {
             let (memory, validation) = finishing.errors();
             if frame_targets::frame_lost(memory, validation) {
                 // The belt's chunks closed on the dropped commands are freed, not recalled.
+                // Readbacks taken for the submit thread start all the same, as there: one
+                // never started would hold its slot for good.
+                if let Some(read) = after {
+                    read();
+                }
                 return self.abandon_frame(frame_targets::Abandoned {
                     encoder: None,
                     copies,

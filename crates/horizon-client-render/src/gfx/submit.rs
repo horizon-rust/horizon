@@ -84,24 +84,19 @@ impl Queue {
             .name("Render submit".into())
             .spawn(move || {
                 for Sent { job, first, device } in job_rx {
-                    // Error scopes are each thread's own, so the window's thread's do not see
-                    // this `finish` (#13624).
-                    let memory = device
-                        .as_ref()
-                        .map(|device| device.push_error_scope(wgpu::ErrorFilter::OutOfMemory));
-                    let commands = job.encoder.finish();
-                    let lost = memory.and_then(|memory| pollster::block_on(memory.pop()));
-                    let submission = match lost {
-                        None => queue.submit(first.into_iter().chain([commands])),
-                        // The frame is given up, as its commands may hold what failed: what
-                        // goes ahead of it is still submitted, and its image is presented as
-                        // wgpu clears an image nothing drew to.
-                        Some(error) => {
-                            drop(commands);
-                            super::frame_targets::warn_frame_lost(&error);
-                            queue.submit(first)
-                        }
-                    };
+                    let device = device.as_ref();
+                    let (commands, lost) = out_of_memory(device, || job.encoder.finish());
+                    // Given up where finishing it ran out of video memory (#13624), as its
+                    // commands may hold what failed: what goes ahead of it is still submitted,
+                    // its readbacks (`after`) still start, as one never started would hold its
+                    // slot for good, and its image is presented as wgpu clears an image nothing
+                    // drew to.
+                    let commands = lost.is_none().then_some(commands);
+                    let (submission, failed) =
+                        out_of_memory(device, || queue.submit(first.into_iter().chain(commands)));
+                    if let Some(error) = lost.or(failed) {
+                        super::frame_targets::warn_frame_lost(&error);
+                    }
                     if let Some(after) = job.after {
                         after();
                     }
@@ -199,6 +194,20 @@ impl Queue {
         self.wait();
         self.lock().as_mut().and_then(|l| l.landed.take())
     }
+}
+
+/// What `work` returns, and the out-of-memory error it ran into where `device` is given. Error
+/// scopes are each thread's own, so the window's thread's do not see the submit thread's work.
+fn out_of_memory<T>(
+    device: Option<&wgpu::Device>,
+    work: impl FnOnce() -> T,
+) -> (T, Option<wgpu::Error>) {
+    let Some(device) = device else {
+        return (work(), None);
+    };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let value = work();
+    (value, pollster::block_on(scope.pop()))
 }
 
 impl Deref for Queue {
