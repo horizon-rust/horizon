@@ -491,12 +491,13 @@ fn corner_offset(rel: u32, side: u32, du: u32, dw: u32) -> u32 {
 // `packed::packed_vertex`: corner `corner` of the record whose words are lo (0 to 2) and
 // hi (3 to 5).
 fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
+    let rect = (hi.z & 0x40000000u) != 0u;
     let orient = (hi.z >> 12u) & 0x3ffffu;
     let block = vec3(orient & 15u, (orient >> 4u) & 15u, (orient >> 8u) & 15u);
-    let axis = (orient >> 12u) & 3u;
+    let axis = select((orient >> 12u) & 3u, (hi.z >> 20u) & 3u, rect);
     let side = (orient >> 14u) & 1u;
-    let start = (orient >> 15u) & 3u;
-    let dir = (orient >> 17u) & 1u;
+    let start = select((orient >> 15u) & 3u, (hi.z >> 22u) & 3u, rect);
+    let dir = select((orient >> 17u) & 1u, (hi.z >> 24u) & 1u, rect);
     let step = (start + select(corner, 4u - corner, dir == 1u)) & 3u;
     let du = select(0u, 1u, step == 1u || step == 2u);
     let dw = select(0u, 1u, step >= 2u);
@@ -504,12 +505,23 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     // from the axis (0: the axis, 1: the next, 2: the one after) picks what it gets. Scalar
     // selects only: a vector select becomes GLSL's mix(uvec3, uvec3, bvec3), which old AMD
     // OpenGL drivers (Radeon HD 7400M, driver 15.301) resolve to the float overload and reject.
-    let offset = vec3(
-        corner_offset((3u - axis) % 3u, side, du, dw),
-        corner_offset((4u - axis) % 3u, side, du, dw),
-        corner_offset((5u - axis) % 3u, side, du, dw),
-    );
-    let pos = block + offset;
+    var base = block;
+    var plane = side;
+    var along_u = du;
+    var along_w = dw;
+    var scale = 1.0;
+    if rect {
+        base = vec3(0u);
+        plane = lo.y & 511u;
+        along_u = ((lo.y >> 9u) & 511u) + du * (((lo.y >> 27u) & 15u) + 1u);
+        along_w = ((lo.y >> 18u) & 511u) + dw * (((hi.z >> 16u) & 15u) + 1u);
+        scale = 0.0625;
+    }
+    let pos = vec3<f32>(base + vec3(
+        corner_offset((3u - axis) % 3u, plane, along_u, along_w),
+        corner_offset((4u - axis) % 3u, plane, along_u, along_w),
+        corner_offset((5u - axis) % 3u, plane, along_u, along_w),
+    )) * scale;
     let sel = lo.z >> 24u;
     let us = (sel >> (2u * corner)) & 1u;
     let vs = (sel >> (2u * corner + 1u)) & 1u;
@@ -521,10 +533,10 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     } else if corner == 1u {
         light = hi.y;
     } else if corner == 2u {
-        light = hi.y >> 12u;
+        light = hi.y >> select(12u, 16u, rect);
     }
-    light &= 0xfffu;
-    let packed_light = ((light & 63u) << 2u) | (((light >> 6u) & 63u) << 10u);
+    let cube_light = ((light & 63u) << 2u) | (((light >> 6u) & 63u) << 10u);
+    let packed_light = select(cube_light, light & 65535u, rect);
     let g = (lo.y >> (8u * corner)) & 255u;
     let t = lo.x;
     // Corners 1 to 3's own alpha (`packed::ALPHA_STEP` times the code; 0: word 0's).
@@ -537,9 +549,10 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
         code = (hi.y >> 27u) & 7u;
     }
     let alpha = select((code * 51u) << 24u, t & 0xff000000u, code == 0u);
-    let color = (g * ((t >> 16u) & 255u) / 255u) | ((g * ((t >> 8u) & 255u) / 255u) << 8u)
+    let tinted = (g * ((t >> 16u) & 255u) / 255u) | ((g * ((t >> 8u) & 255u) / 255u) << 8u)
         | ((g * (t & 255u) / 255u) << 16u) | alpha;
-    return ArenaCorner(bitcast<vec3<u32>>(vec3<f32>(pos)),
+    let color = select(tinted, t, rect);
+    return ArenaCorner(bitcast<vec3<u32>>(pos),
         vec3((u << 10u) | (v << 26u), (hi.x & 0xffffu) | (packed_light << 16u), color));
 }
 // `lod::packed::Face::vertices`: corner `corner` of the far record whose words are lo (0 to

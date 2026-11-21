@@ -18,6 +18,13 @@
 //! - word 4: corners 1 and 2's light, and corners 2 and 3's alpha codes;
 //! - word 5: corner 3's light, the face (block x, y, z, the axis it faces along, which side
 //!   of the block, and where and which way its corners go round), and `FULL` clear.
+//!
+//! Rectangular faces up to one block wide and tall can use the same record size when their
+//! positions are on the 1/16-block grid and their corners share RGBA. Bit 30 of word 5
+//! marks these records. Word 0 holds RGBA, word 1 holds the plane and lower U and W (nine
+//! bits each) followed by U's extent minus one (four bits), and word 2 uses the cube UV
+//! layout. Word 3 holds the layer and light 0, word 4 lights 1 and 2, and word 5 light 3
+//! followed by W's extent minus one, axis, starting corner and winding.
 use super::TerrainVertex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -28,6 +35,8 @@ pub const WHITE: u32 = 0xFF_FFFF;
 /// Word 5's bit of a quad kept as four vertices; word 0 is then the slots from the record
 /// to its first vertex.
 pub const FULL: u32 = 1 << 31;
+const RECT: u32 = 1 << 30;
+const GRID: u32 = 16;
 /// The step of a corner's own alpha (words 3 and 4's codes): 255 / 5.
 pub const ALPHA_STEP: u32 = 51;
 /// The draws' base vertex of a compact mesh: `PACKED_BASE + 4 * slot + corner` is a corner of
@@ -52,25 +61,36 @@ const ROUND: [[u32; 2]; 4] = [[0, 0], [1, 0], [1, 1], [0, 1]];
 /// `quad`'s record, if one gives back its four vertices exactly. `tint`: what the mesher
 /// multiplied its grey levels by (`UNKNOWN_TINT` when it does not say).
 pub fn pack_quad(quad: &[TerrainVertex; 4], tint: u32) -> Option<[u32; 6]> {
-    // Corners on the block grid of the section.
+    // Corners on the model's 1/16-block grid, within the section.
     let mut p = [[0u32; 3]; 4];
     for (to, v) in p.iter_mut().zip(quad) {
         for (c, &x) in to.iter_mut().zip(&v.pos) {
-            if !(0.0..=16.0).contains(&x) || x.fract() != 0.0 {
+            let grid = x * GRID as f32;
+            if !(0.0..=16.0).contains(&x) || grid.fract() != 0.0 {
                 return None;
             }
-            *c = x as u32;
+            *c = grid as u32;
         }
     }
     let axis = (0..3).find(|&a| p.iter().all(|c| c[a] == p[0][a]))?;
     let (u, w) = ((axis + 1) % 3, (axis + 2) % 3);
     let lo = [u, w].map(|k| p.iter().map(|c| c[k]).min().unwrap_or(0));
-    if lo.iter().any(|&l| l > 15) {
+    let hi = [u, w].map(|k| p.iter().map(|c| c[k]).max().unwrap_or(0));
+    let extent = [hi[0] - lo[0], hi[1] - lo[1]];
+    if extent.iter().any(|d| !(1..=GRID).contains(d)) {
+        return None;
+    }
+    let plane = p[0][axis];
+    let cube = [plane, lo[0], lo[1]].iter().all(|&v| v % GRID == 0) && extent == [GRID; 2];
+    if !cube && quad.iter().any(|v| v.color != quad[0].color) {
         return None;
     }
     let mut steps = [0u32; 4];
     for (step, c) in steps.iter_mut().zip(&p) {
-        let d = [c[u] - lo[0], c[w] - lo[1]];
+        if ![lo[0], hi[0]].contains(&c[u]) || ![lo[1], hi[1]].contains(&c[w]) {
+            return None;
+        }
+        let d = [u32::from(c[u] == hi[0]), u32::from(c[w] == hi[1])];
         *step = ROUND.iter().position(|r| *r == d)? as u32;
     }
     let (start, dir) = (0..8u32).map(|n| (n & 3, n >> 2)).find(|&(start, dir)| {
@@ -79,19 +99,6 @@ pub fn pack_quad(quad: &[TerrainVertex; 4], tint: u32) -> Option<[u32; 6]> {
             steps[i as usize] == (start + step) & 3
         })
     })?;
-    let plane = p[0][axis];
-    let mut block = [0u32; 3];
-    block[axis] = plane.min(15);
-    block[u] = lo[0];
-    block[w] = lo[1];
-    let side = plane - block[axis];
-    let orient = block[0]
-        | block[1] << 4
-        | block[2] << 8
-        | (axis as u32) << 12
-        | side << 14
-        | start << 15
-        | dir << 17;
     // UVs in 1/32 of the sprite, at most two values each way.
     let mut ranges = [[u32::MAX, 0u32]; 2];
     let mut uvs = [[0u32; 2]; 4];
@@ -116,25 +123,57 @@ pub fn pack_quad(quad: &[TerrainVertex; 4], tint: u32) -> Option<[u32; 6]> {
         }
     }
     let rect = ranges[0][0] | ranges[0][1] << 6 | ranges[1][0] << 12 | ranges[1][1] << 18;
-    // Light in steps of 4 (smooth light averages four levels of 16).
-    let mut light = [0u32; 4];
-    for (l, v) in light.iter_mut().zip(quad) {
-        let (sky, block) = (u32::from(v.light & 0xFF), u32::from(v.light >> 8));
-        if sky & 3 != 0 || block & 3 != 0 {
+    let mut light = quad.map(|v| u32::from(v.light));
+    let light_bits = if cube { 12 } else { 16 };
+    if cube {
+        // Smooth light averages four levels of 16. Whole faces use the 12-bit layout.
+        if light.iter().any(|l| l & 0x0303 != 0) {
             return None;
         }
-        *l = sky >> 2 | (block >> 2) << 6;
+        light = light.map(|l| (l & 255) >> 2 | (l >> 10) << 6);
     }
-    // The colour: each channel the grey level times the tint's, over 255.
-    let tint = if tint == UNKNOWN_TINT {
-        WHITE
+    let mut words = [
+        quad[0].color,
+        0,
+        rect | select << 24,
+        u32::from(quad[0].layer) | light[0] << 16,
+        light[1] | light[2] << light_bits,
+        light[3],
+    ];
+    if cube {
+        let plane = plane / GRID;
+        let mut block = [0u32; 3];
+        block[axis] = plane.min(15);
+        block[u] = lo[0] / GRID;
+        block[w] = lo[1] / GRID;
+        let side = plane - block[axis];
+        let orient = block[0]
+            | block[1] << 4
+            | block[2] << 8
+            | (axis as u32) << 12
+            | side << 14
+            | start << 15
+            | dir << 17;
+        words[5] |= orient << 12;
+        pack_cube_color(quad, tint, &mut words)?;
     } else {
-        tint & WHITE
-    };
+        words[1] = plane | lo[0] << 9 | lo[1] << 18 | (extent[0] - 1) << 27;
+        words[5] |= (extent[1] - 1) << 16 | (axis as u32) << 20 | start << 22 | dir << 24 | RECT;
+    }
+    let exact = (0..4).all(|c| {
+        let (a, b) = (packed_vertex(&words, c), quad[c]);
+        bytemuck::bytes_of(&a) == bytemuck::bytes_of(&b)
+    });
+    exact.then_some(words)
+}
+
+fn pack_cube_color(quad: &[TerrainVertex; 4], tint: u32, words: &mut [u32; 6]) -> Option<()> {
+    // Each colour channel is the grey level times the tint's channel, over 255.
+    let tint = tint & WHITE;
     let alpha = quad[0].color & 0xFF00_0000;
-    let mut grays = 0u32;
+    words[0] = tint | alpha;
     for (i, v) in quad.iter().enumerate() {
-        grays |= gray_of(v.color, tint)? << (8 * i);
+        words[1] |= gray_of(v.color, tint)? << (8 * i);
     }
     // Corners 1 to 3's alpha (a shader pack's `separateAo`: each corner's ambient occlusion,
     // multiples of 51 on a whole face): `ALPHA_STEP` times the code, 0 for corner 0's.
@@ -148,19 +187,9 @@ pub fn pack_quad(quad: &[TerrainVertex; 4], tint: u32) -> Option<[u32; 6]> {
             *code = a / ALPHA_STEP;
         }
     }
-    let words = [
-        tint | alpha,
-        grays,
-        rect | select << 24,
-        u32::from(quad[0].layer) | light[0] << 16 | codes[0] << 28,
-        light[1] | light[2] << 12 | codes[1] << 24 | codes[2] << 27,
-        light[3] | orient << 12,
-    ];
-    let exact = (0..4).all(|c| {
-        let (a, b) = (packed_vertex(&words, c), quad[c]);
-        bytemuck::bytes_of(&a) == bytemuck::bytes_of(&b)
-    });
-    exact.then_some(words)
+    words[3] |= codes[0] << 28;
+    words[4] |= codes[1] << 24 | codes[2] << 27;
+    Some(())
 }
 
 /// The tint's channels, as the mesher takes them for red, green and blue.
@@ -185,39 +214,63 @@ fn gray_of(color: u32, tint: u32) -> Option<u32> {
 /// Corner `corner` of the quad `words` holds, as terrain.wgsl's `packed_corner` expands it.
 pub fn packed_vertex(words: &[u32; 6], corner: usize) -> TerrainVertex {
     let [w0, w1, w2, w3, w4, w5] = *words;
+    let i = corner as u32;
+    let rect = w5 & RECT != 0;
+    let (pos, color) = if rect {
+        let axis = (w5 >> 20 & 3) as usize;
+        let [du, dw] = round_corner(i, w5 >> 22 & 3, w5 >> 24 & 1);
+        let mut pos = [0; 3];
+        pos[axis] = w1 & 511;
+        pos[(axis + 1) % 3] = (w1 >> 9 & 511) + du * ((w1 >> 27 & 15) + 1);
+        pos[(axis + 2) % 3] = (w1 >> 18 & 511) + dw * ((w5 >> 16 & 15) + 1);
+        (pos.map(|c| c as f32 / GRID as f32), w0)
+    } else {
+        cube_corner(words, i)
+    };
+    let select = w2 >> 24;
+    let us = select >> (2 * i) & 1;
+    let vs = select >> (2 * i + 1) & 1;
+    let uv = [w2 >> (6 * us) & 63, w2 >> (12 + 6 * vs) & 63].map(|k| (k << 10) as u16);
+    let light = if rect {
+        [w3 >> 16, w4, w4 >> 16, w5][corner] as u16
+    } else {
+        let light = [w3 >> 16, w4, w4 >> 12, w5][corner];
+        ((light & 63) << 2 | (light >> 6 & 63) << 10) as u16
+    };
+    TerrainVertex {
+        pos,
+        uv,
+        layer: (w3 & 0xFFFF) as u16,
+        light,
+        color,
+    }
+}
+
+fn round_corner(i: u32, start: u32, dir: u32) -> [u32; 2] {
+    ROUND[((start + if dir == 1 { 4 - i } else { i }) & 3) as usize]
+}
+
+fn cube_corner(words: &[u32; 6], i: u32) -> ([f32; 3], u32) {
+    let [w0, w1, _, w3, w4, w5] = *words;
     let orient = w5 >> 12 & 0x3_FFFF;
     let block = [orient & 15, orient >> 4 & 15, orient >> 8 & 15];
     let axis = (orient >> 12 & 3) as usize;
     let side = orient >> 14 & 1;
     let (start, dir) = (orient >> 15 & 3, orient >> 17 & 1);
-    let i = corner as u32;
-    let step = (start + if dir == 1 { 4 - i } else { i }) & 3;
-    let [du, dw] = ROUND[step as usize];
+    let [du, dw] = round_corner(i, start, dir);
     let mut pos = block;
     pos[axis] += side;
     pos[(axis + 1) % 3] += du;
     pos[(axis + 2) % 3] += dw;
-    let select = w2 >> 24;
-    let us = select >> (2 * i) & 1;
-    let vs = select >> (2 * i + 1) & 1;
-    let uv = [w2 >> (6 * us) & 63, w2 >> (12 + 6 * vs) & 63].map(|k| (k << 10) as u16);
-    let light = [w3 >> 16, w4, w4 >> 12, w5][corner] & 0xFFF;
-    let light = ((light & 63) << 2 | (light >> 6 & 63) << 10) as u16;
     let g = w1 >> (8 * i) & 255;
     let [r, gr, b] = channels(w0).map(|t| g * t / 255);
-    let code = [0, w3 >> 28 & 7, w4 >> 24 & 7, w4 >> 27 & 7][corner];
+    let code = [0, w3 >> 28 & 7, w4 >> 24 & 7, w4 >> 27 & 7][i as usize];
     let alpha = if code == 0 {
         w0 & 0xFF00_0000
     } else {
         (code * ALPHA_STEP) << 24
     };
-    TerrainVertex {
-        pos: pos.map(|c| c as f32),
-        uv,
-        layer: (w3 & 0xFFFF) as u16,
-        light,
-        color: r | gr << 8 | b << 16 | alpha,
-    }
+    (pos.map(|c| c as f32), r | gr << 8 | b << 16 | alpha)
 }
 
 thread_local! {
@@ -371,11 +424,37 @@ mod tests {
     }
 
     #[test]
+    fn flat_colored_partial_faces_share_one_record_each() {
+        for axis in 0..3 {
+            for order in [[0, 1, 2, 3], [2, 3, 0, 1], [0, 3, 2, 1]] {
+                let mut quad = top(order);
+                for (corner, v) in quad.iter_mut().enumerate() {
+                    let [x, _, z] = v.pos;
+                    v.pos[axis] = 16.0;
+                    v.pos[(axis + 1) % 3] = 14.5 + (z - 5.0) * 0.25;
+                    v.pos[(axis + 2) % 3] = 15.5 + (x - 3.0) * 0.5;
+                    v.color = 0x7FA2_170F;
+                    v.light = [0x3411, 0x011F, 0xC7EF, 0xD23B][corner];
+                }
+                let record = pack_quad(&quad, UNKNOWN_TINT).expect("partial rectangle packs");
+                for (corner, v) in quad.iter().enumerate() {
+                    assert!(same(&packed_vertex(&record, corner), v));
+                }
+                let quads = [quad; 4];
+                let packed = layout(quads.as_flattened(), &[UNKNOWN_TINT; 4]);
+                assert_eq!(std::mem::size_of_val(packed.as_slice()), 96);
+                assert_eq!(std::mem::size_of_val(&quads), 384);
+            }
+        }
+    }
+
+    #[test]
     fn quads_off_the_grid_or_the_steps_keep_their_vertices() {
-        // Half a block up: a slab's top.
+        // An otherwise eligible rectangle displaced off the 1/16-block grid.
         let mut slab = top([0, 1, 2, 3]);
         for v in &mut slab {
-            v.pos[1] = 8.5;
+            v.pos[1] = 8.51;
+            v.color = 0xFF09_4271;
         }
         assert!(pack_quad(&slab, TINT).is_none());
         // A UV between the 1/32 steps.
@@ -391,6 +470,7 @@ mod tests {
     #[test]
     fn a_quad_without_a_record_points_at_its_own_vertices() {
         let mut odd = top([0, 1, 2, 3]);
+        // The rectangle layout requires one shared color, so this tinted face spills.
         for v in &mut odd {
             v.pos[1] = 8.5;
         }

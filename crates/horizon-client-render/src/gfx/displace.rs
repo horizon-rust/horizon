@@ -872,7 +872,8 @@ mod tests {
     }
 
     /// The grid's quads, on each device here: those of sections in the compact layout (records
-    /// and a quad spilled to its own vertices, on two pages) are written out as the very words
+    /// for whole and partial faces and a quad spilled to its own vertices, on two pages) are
+    /// written out as the very words
     /// of their vertices, as a wide section's are copied (#16127). Where the vertex stage reads
     /// storage, each quad's look is where the section table says (`looks + q * stride`).
     #[test]
@@ -890,15 +891,19 @@ mod tests {
                 color: gray | gray << 8 | gray << 16 | 0xFF00_0000,
             })
         };
-        let section = |quads: std::ops::Range<u32>, slab: bool| {
+        let section = |quads: std::ops::Range<u32>, mixed: bool| {
             let mut v: Vec<TerrainVertex> = quads.flat_map(face).collect();
-            if slab {
-                // Half a block up: no record, its four vertices after the records.
+            if mixed {
+                // A slab packs, and an off-grid face spills after the records.
                 let mut half = face(13);
                 for c in &mut half {
                     c.pos[1] = 8.5;
                 }
-                v.extend(half);
+                let mut off_grid = face(14);
+                for c in &mut off_grid {
+                    c.pos[1] = 8.51;
+                }
+                v.extend(half.into_iter().chain(off_grid));
             }
             v
         };

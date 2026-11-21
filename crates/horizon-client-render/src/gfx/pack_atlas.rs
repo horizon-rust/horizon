@@ -563,25 +563,40 @@ uint hz_corner_offset(uint hz_rel, uint hz_side, uint hz_du, uint hz_dw) {\n    
     return hz_rel == 0u ? hz_side : (hz_rel == 1u ? hz_du : hz_dw);\n\
 }\n\
 void hz_record_corner(uvec3 hz_lo, uvec3 hz_hi, uint hz_k, out uvec3 hz_p, out uint hz_uv) {\n    \
+    bool hz_rect = (hz_hi.z & 0x40000000u) != 0u;\n    \
     uint hz_o = (hz_hi.z >> 12u) & 0x3ffffu;\n    \
     uvec3 hz_block = uvec3(hz_o & 15u, (hz_o >> 4u) & 15u, (hz_o >> 8u) & 15u);\n    \
-    uint hz_axis = (hz_o >> 12u) & 3u;\n    \
+    uint hz_axis = (hz_rect ? hz_hi.z >> 20u : hz_o >> 12u) & 3u;\n    \
     uint hz_side = (hz_o >> 14u) & 1u;\n    \
-    uint hz_step = (((hz_o >> 15u) & 3u) + (((hz_o >> 17u) & 1u) == 1u ? 4u - hz_k : hz_k)) & 3u;\n    \
+    uint hz_start = (hz_rect ? hz_hi.z >> 22u : hz_o >> 15u) & 3u;\n    \
+    uint hz_dir = (hz_rect ? hz_hi.z >> 24u : hz_o >> 17u) & 1u;\n    \
+    uint hz_step = (hz_start + (hz_dir == 1u ? 4u - hz_k : hz_k)) & 3u;\n    \
     uint hz_du = (hz_step == 1u || hz_step == 2u) ? 1u : 0u;\n    \
     uint hz_dw = hz_step >= 2u ? 1u : 0u;\n    \
+    float hz_scale = 1.0;\n    \
+    if (hz_rect) {\n        \
+        hz_block = uvec3(0u);\n        \
+        hz_side = hz_lo.y & 511u;\n        \
+        hz_du = ((hz_lo.y >> 9u) & 511u) + hz_du * (((hz_lo.y >> 27u) & 15u) + 1u);\n        \
+        hz_dw = ((hz_lo.y >> 18u) & 511u) + hz_dw * (((hz_hi.z >> 16u) & 15u) + 1u);\n        \
+        hz_scale = 0.0625;\n    \
+    }\n    \
     uvec3 hz_pos = hz_block + uvec3(hz_corner_offset((3u - hz_axis) % 3u, hz_side, hz_du, hz_dw),\n        \
         hz_corner_offset((4u - hz_axis) % 3u, hz_side, hz_du, hz_dw),\n        \
         hz_corner_offset((5u - hz_axis) % 3u, hz_side, hz_du, hz_dw));\n    \
     uint hz_sel = hz_lo.z >> 24u;\n    \
     uint hz_u = (hz_lo.z >> (6u * ((hz_sel >> (2u * hz_k)) & 1u))) & 63u;\n    \
     uint hz_v = (hz_lo.z >> (12u + 6u * ((hz_sel >> (2u * hz_k + 1u)) & 1u))) & 63u;\n    \
-    hz_p = floatBitsToUint(vec3(hz_pos));\n    \
+    hz_p = floatBitsToUint(vec3(hz_pos) * hz_scale);\n    \
     hz_uv = (hz_u << 10u) | (hz_v << 26u);\n\
 }\n\
 uvec2 hz_record_rest(uvec3 hz_lo, uvec3 hz_hi, uint hz_k) {\n    \
-    uint hz_l = hz_k == 0u ? hz_hi.x >> 16u : (hz_k == 1u ? hz_hi.y : (hz_k == 2u ? hz_hi.y >> 12u : hz_hi.z));\n    \
-    hz_l &= 0xfffu;\n    \
+    bool hz_rect = (hz_hi.z & 0x40000000u) != 0u;\n    \
+    uint hz_l = hz_k == 0u ? hz_hi.x >> 16u : (hz_k == 1u ? hz_hi.y\n        \
+        : (hz_k == 2u ? hz_hi.y >> (hz_rect ? 16u : 12u) : hz_hi.z));\n    \
+    if (hz_rect) {\n        \
+        return uvec2((hz_hi.x & 0xffffu) | ((hz_l & 0xffffu) << 16u), hz_lo.x);\n    \
+    }\n    \
     uint hz_pl = ((hz_l & 63u) << 2u) | (((hz_l >> 6u) & 63u) << 10u);\n    \
     uint hz_g = (hz_lo.y >> (8u * hz_k)) & 255u;\n    \
     uint hz_t = hz_lo.x;\n    \
@@ -891,6 +906,131 @@ mod midpoint_test;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_terrain_record_decodes_to_the_original_vertices_on_gpu() {
+        use crate::gfx::test_gpu;
+        use crate::mesher::{TerrainVertex, packed};
+
+        let positions = [
+            [4.25, 11.5, 16.0],
+            [3.25, 11.5, 16.0],
+            [3.25, 11.0, 16.0],
+            [4.25, 11.0, 16.0],
+        ];
+        let vertices: [_; 4] = std::array::from_fn(|i| TerrainVertex {
+            pos: positions[i],
+            uv: [[0, 32768], [32768, 32768], [32768, 16384], [0, 16384]][i],
+            color: 0xFA1E_8073,
+            light: [0x0109, 0x0823, 0x83EF, 0x19C1][i],
+            layer: 0x8134,
+        });
+        let [a, b, c, d, e, f] = packed::pack_quad(&vertices, packed::UNKNOWN_TINT).unwrap();
+        let wgsl = super::super::terrain_shader()
+            + &format!(
+                r#"
+@group(0) @binding(29) var<storage, read_write> decoded: array<u32>;
+@compute @workgroup_size(4)
+fn main(@builtin(local_invocation_index) i: u32) {{
+    let v = packed_corner(vec3({a}u, {b}u, {c}u), vec3({d}u, {e}u, {f}u), i);
+    let j = 6u * i;
+    decoded[j] = v.p.x;
+    decoded[j + 1u] = v.p.y;
+    decoded[j + 2u] = v.p.z;
+    decoded[j + 3u] = v.r.x;
+    decoded[j + 4u] = v.r.y;
+    decoded[j + 5u] = v.r.z;
+}}"#,
+            );
+        let glsl = format!(
+            r#"#version 450
+layout(local_size_x = 4) in;
+layout(set = 0, binding = 29, std430) buffer Decoded {{ uint hz_vertices[]; }};
+{CORNER_FN}
+void main() {{
+    uint i = gl_LocalInvocationIndex;
+    uvec3 lo = uvec3({a}u, {b}u, {c}u), hi = uvec3({d}u, {e}u, {f}u);
+    uvec3 pos;
+    uint uv;
+    hz_record_corner(lo, hi, i, pos, uv);
+    uvec2 rest = hz_record_rest(lo, hi, i);
+    uint j = 6u * i;
+    hz_vertices[j] = pos.x;
+    hz_vertices[j + 1u] = pos.y;
+    hz_vertices[j + 2u] = pos.z;
+    hz_vertices[j + 3u] = uv;
+    hz_vertices[j + 4u] = rest.x;
+    hz_vertices[j + 5u] = rest.y;
+}}"#,
+        );
+        let glsl = naga::front::glsl::Frontend::default()
+            .parse(
+                &naga::front::glsl::Options::from(naga::ShaderStage::Compute),
+                &glsl,
+            )
+            .expect("GLSL decoder parses");
+        let _gpu = test_gpu::lock();
+        let Some(adapter) = test_gpu::adapter() else {
+            return;
+        };
+        let (device, queue) = test_gpu::device(&adapter);
+        let size = std::mem::size_of_val(&vertices) as u64;
+        let buffer = |usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let output = buffer(wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let read = buffer(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+        for source in [
+            wgpu::ShaderSource::Wgsl(wgsl.into()),
+            wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(glsl)),
+        ] {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source,
+            });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 29,
+                    resource: output.as_entire_binding(),
+                }],
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            encoder.copy_buffer_to_buffer(&output, 0, &read, 0, size);
+            queue.submit([encoder.finish()]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            read.map_async(wgpu::MapMode::Read, .., move |result| {
+                tx.send(result).unwrap()
+            });
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            rx.recv().unwrap().unwrap();
+            assert_eq!(
+                &*read.get_mapped_range(..).unwrap(),
+                bytemuck::cast_slice::<_, u8>(&vertices)
+            );
+            read.unmap();
+        }
+    }
 
     /// Two arrays of 2x2 sprites, one layer split; each layer a colour of its own.
     #[test]
