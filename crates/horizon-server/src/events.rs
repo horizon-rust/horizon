@@ -71,18 +71,21 @@ impl Shared {
     }
 }
 
-/// Fetches the game's typed events (`server-events` on its control endpoint) while it runs.
+/// Fetches the game's typed events (`server-events` on its control endpoint) while it starts or runs.
 pub fn poll_game(shared: Arc<Shared>) {
     let _ = thread::Builder::new().name("events".into()).spawn(move || {
         let mut control: Option<(u32, engine::Control)> = None;
         let mut since = 0u64;
         loop {
             thread::sleep(POLL);
-            let (pid, running) = {
+            let (pid, pollable) = {
                 let state = shared.state.lock().unwrap();
-                (state.engine_pid, state.phase == Phase::Running)
+                (
+                    state.engine_pid,
+                    matches!(state.phase, Phase::Starting | Phase::Running),
+                )
             };
-            let (Some(pid), true) = (pid, running) else {
+            let (Some(pid), true) = (pid, pollable) else {
                 control = None;
                 continue;
             };

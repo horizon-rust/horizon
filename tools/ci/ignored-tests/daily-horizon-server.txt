@@ -22,6 +22,7 @@ horizon-server management::tests::a_login_is_an_activity_notification_and_the_he
 horizon-server management::tests::a_websocket_client_discovers_the_methods lib daily network
 horizon-server management::tests::notifications_go_to_every_client_as_vanilla_writes_them lib daily network
 horizon-server management::tests::over_tls_with_a_generated_keystore lib daily network
+horizon-server management::tests::startup_upgrade_events_reach_a_management_client lib daily network
 horizon-server management::tests::the_games_events_become_the_notifications_vanilla_sends lib daily network
 horizon-server management::tests::the_heartbeat_interval_can_change_while_the_server_runs lib daily slow
 horizon-server mcp::tests::protocol_and_tool_contracts_match_goldens lib daily child-process

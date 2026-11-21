@@ -48,6 +48,11 @@ pub(super) mod report;
 mod status;
 mod transfer;
 
+/// Records one of the management protocol's world-upgrade events for the supervisor to forward.
+pub(in crate::game) fn record_world_upgrade(kind: &str, fields: serde_json::Value) {
+    events::record_server(kind, fields);
+}
+
 /// What the tick loop tells `ServerWatchdog`: when the tick in progress was
 /// due (`getNextTickTime`), how long a tick is, and whether the server runs.
 struct Watchdog {
