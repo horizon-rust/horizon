@@ -361,11 +361,13 @@ class ParityMainTests(unittest.TestCase):
         # Right after the harnesses: the verdict steps that follow run only on a failure.
         self.assertEqual(index, harnesses + 1)
         self.assertLess(index, min(i for i, name in enumerate(names) if name and "verdict" in name))
-        # Only the folder the harness step's tools/parity.py published, as its output names it, and in it only the
-        # two kinds of file it holds.
+        # Only when the harness step's tools/parity.py says it published, and then this attempt's folder (which
+        # tools/parity.py names after PARITY_RUN_ID), never a path from the output, which cargo and the harnesses
+        # can write too; in it only the two kinds of file it holds.
         self.assertEqual(job["steps"][harnesses]["id"], "harnesses")
-        folder = "${{ steps.harnesses.outputs.prebuild_timings }}"
-        self.assertEqual(upload["if"], "${{ !cancelled() && steps.harnesses.outputs.prebuild_timings != '' }}")
+        folder = f".local/parity-runner/prebuild-timings-{job['env']['PARITY_RUN_ID']}"
+        self.assertEqual(upload["if"], "${{ !cancelled() && steps.harnesses.outputs.prebuild_timings == 'ready' }}")
+        self.assertNotIn("outputs", upload["with"]["path"])
         self.assertTrue(upload["continue-on-error"], "the artifact service never decides the run")
         self.assertEqual((upload["with"]["retention-days"], upload["with"]["if-no-files-found"]), (7, "ignore"))
         self.assertEqual(upload["with"]["path"].splitlines(), [f"{folder}/cargo-*.html", f"{folder}/prebuild-calls.txt"])

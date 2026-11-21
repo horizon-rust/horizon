@@ -1151,10 +1151,11 @@ class PrebuildTimings:
             if self.size() > PREBUILD_TIMINGS_CAP:
                 raise ValueError(f"over {PREBUILD_TIMINGS_CAP >> 20} MB")
             os.rename(self.folder, self.published)
-            # The upload step's signal: it uploads this folder only when this run published it.
+            # The upload step's signal: it uploads its own fixed path only when this run published it. A fixed value:
+            # cargo and the harnesses inherit GITHUB_OUTPUT, so the step trusts nothing else in the output.
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-                    output.write(f"prebuild_timings={self.published.resolve()}\n")
+                    output.write("prebuild_timings=ready\n")
         except Exception as error:
             self.fail("could not finish, no timings published", error)
             self.discard()

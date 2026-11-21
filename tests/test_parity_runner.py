@@ -439,9 +439,9 @@ class ParityRunnerTests(unittest.TestCase):
                          "the run that wrote none gets no report, neither its predecessor's nor an earlier run's")
         self.assertEqual(sorted(path.name for path in folder.iterdir()),
                          ["cargo-01.html", "cargo-03.html", "prebuild-calls.txt"])
-        # The upload step's signal: one output line naming the published folder.
+        # The upload step's signal: exactly one fixed output line.
         self.assertEqual((state.parent / "github-output").read_text(encoding="utf-8"),
-                         f"prebuild_timings={folder.resolve()}\n")
+                         "prebuild_timings=ready\n")
         cache = "compiler cache, change in the machine's whole sccache server since the last reading: not in use"
         lines = ["cargo 1/3: dev one: 0s, 0 crates compiled", f"cargo 1/3 {cache}",
                  "cargo 2/3: dev none: 0s, 0 crates compiled", f"cargo 2/3 {cache}",
@@ -669,7 +669,7 @@ class ParityRunnerTests(unittest.TestCase):
             timings.finish()
             self.assertFalse(os.path.lexists(timings.folder))
             self.assertEqual(Path(temp, "output").read_text(encoding="utf-8"),
-                             f"prebuild_timings={timings.published.resolve()}\n")
+                             "prebuild_timings=ready\n")
             sizes = {path.name: path.stat().st_size for path in timings.published.iterdir()}
             calls = (timings.published / "prebuild-calls.txt").read_text(encoding="utf-8")
         self.assertEqual(calls, "a" * 20 + "\ntiming reports left out to stay under 0 MB: cargo 02, 04\n")
