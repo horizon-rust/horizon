@@ -952,24 +952,23 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
         {
             return true;
         }
-        let started = job_stats::enabled().then(|| {
-            let kind = match &job.job {
-                Job::Generate(..) => 1,
-                Job::Decorate(..) => 2,
-                Job::Finish(..) => 3,
-                Job::Light(..) => 4,
-                Job::Mesh(..) => 5,
-                _ => 6,
-            };
-            // The other jobs (saves, light views, freed meshes) are many and short: counted, not
-            // timed, so the clock reads don't cost more than they do.
-            let cpu = if kind == 6 {
-                std::time::Duration::ZERO
-            } else {
-                crate::spans::thread_cpu().unwrap_or_default()
-            };
-            (kind, cpu)
-        });
+        let enabled = job_stats::enabled();
+        let kind = match &job.job {
+            Job::Generate(..) => 1,
+            Job::Decorate(..) => 2,
+            Job::Finish(..) => 3,
+            Job::Light(..) => 4,
+            Job::Mesh(..) => job_stats::MESH_KIND,
+            _ => job_stats::OTHER_KIND,
+        };
+        // The mesh job is timed always: the admission check in `complete_commit` prices columns
+        // from what the mesh jobs cost, and a statistic that only runs when someone turned it on
+        // would leave it cold. A mesh job costs a millisecond and more, so the two thread-CPU
+        // reads are a fraction of a percent of it; the other jobs (saves, light views, freed
+        // meshes) are many and short and stay counted, not timed, so their clock reads don't cost
+        // more than they do.
+        let started = (kind != job_stats::OTHER_KIND && (enabled || kind == job_stats::MESH_KIND))
+            .then(|| crate::spans::thread_cpu().unwrap_or_default());
         let _tag = horizon_threads::heap_tag(match &job.job {
             Job::Generate(..) => "stream.generate",
             Job::Decorate(..) => "stream.decorate",
@@ -990,20 +989,24 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
             },
             |local| self.run_job(job.job, local),
         );
-        if let Some((kind, started)) = started {
+        if enabled || started.is_some() {
             // A generation job that found the column saved loaded it.
             let kind = if kind == 1 && matches!(done, Some(Done::Generated(_))) {
                 0
             } else {
                 kind
             };
-            let nanos = if kind == 6 {
-                0
-            } else {
+            // The counted-only jobs read no clock at the end either.
+            let nanos = started.map_or(0, |started| {
                 let cpu = crate::spans::thread_cpu().unwrap_or_default();
                 cpu.saturating_sub(started).as_nanos() as u64
-            };
-            job_stats::add(kind, nanos);
+            });
+            if kind == job_stats::MESH_KIND {
+                job_stats::observe_mesh(nanos);
+            }
+            if enabled {
+                job_stats::add(kind, nanos);
+            }
         }
         if let Some(done) = done {
             self.shared.done.send(done);
@@ -1139,7 +1142,7 @@ mod forced_ring;
 mod mesh_job;
 mod relight_now;
 mod viewed_meshing;
-use bounded::nearest_first;
+use bounded::{MESH_SLICE_NANOS, fits, nearest_first};
 use dynamic_emission::light_region_ready;
 use forced_cover::ForcedCover;
 use mesh_job::{Faces, mesh_section};
@@ -1153,6 +1156,9 @@ impl Streaming {
         context: Arc<WorkerContext>,
         threads: usize,
     ) -> Self {
+        // The first thread-CPU read measures the time-stamp counter's rate on Windows and
+        // sleeps 20 ms: take it here, not inside the first mesh job.
+        let _ = crate::spans::thread_cpu();
         let shared = Arc::new(Shared {
             queue: Mutex::new(BinaryHeap::new()),
             context: RwLock::new(context.clone()),
@@ -2296,7 +2302,32 @@ impl Streaming {
         // them until the system swapped.
         let room = (self.workers * 32).saturating_sub(self.meshing.len() + self.upload_backlog);
         nearest_first(&mut candidates, room);
+        // The same queue also fits half a tick's meshing per worker,
+        // priced from what mesh jobs have cost lately (`job_stats`): a worker
+        // still inside one heavy column is not handed the next, so the tick's
+        // seven jobs don't all run past it, holding a 3x3 snapshot made stale
+        // for whoever reaches it last. `complete_commit` sits in the frame loop,
+        // not on the 20 Hz tick, so what the slice bounds is the work in flight —
+        // `left` is recomputed from `meshing`, which counts the jobs queued with
+        // the jobs running — and is no permission for one call: the same check
+        // binds at 20 and at 240 fps. Columns past the slice stay in
+        // `dirty_sections` — `take_column` runs only for an admitted one — and
+        // the next call asks for them again at the same rank. A pool with nothing
+        // in flight takes the first column however dear it is, or a column
+        // costlier than the whole slice would wait for room it can never have;
+        // until the estimate warms up `fits` prices nothing, and this is the room
+        // check it was (#18239).
+        let estimate = job_stats::mesh_cost_ns();
+        let slice = (self.workers as u64).saturating_mul(MESH_SLICE_NANOS);
         for (_, x, z, sections) in candidates.drain(..) {
+            let cost = estimate.map_or(0, |cost| cost.saturating_mul(sections.len() as u64));
+            // Recomputed per column on purpose: `meshing` grows as the loop
+            // admits, and that growth is what prices the sections just taken.
+            let left = estimate
+                .map(|cost| slice.saturating_sub((self.meshing.len() as u64).saturating_mul(cost)));
+            if !fits(left, cost, self.meshing.is_empty()) {
+                continue;
+            }
             let Some(region) = Self::region(world, x, z) else {
                 continue;
             };
