@@ -2,6 +2,23 @@ use super::*;
 use std::io::{BufRead, Write};
 use std::process::{Child, Stdio};
 
+#[cfg(unix)]
+#[test]
+fn registry_accepts_a_symlinked_relocated_launcher_data_root() {
+    let root = tempfile::tempdir().unwrap();
+    let actual = root.path().join("external-data");
+    let alias = root.path().join("launcher-data");
+    fs::create_dir(&actual).unwrap();
+    std::os::unix::fs::symlink(&actual, &alias).unwrap();
+
+    let registry = Registry::with_release(&alias, Release::Unlock).unwrap();
+    let tree = directory(&actual.join("game"));
+    drop(registry.lock(&tree, LockMode::Shared).unwrap());
+
+    assert!(actual.join("run-leases/gate").is_file());
+    assert!(alias.symlink_metadata().unwrap().file_type().is_symlink());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn spawn_errors_distinguish_missing_working_directory_and_program() {
