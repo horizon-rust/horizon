@@ -713,9 +713,11 @@ impl Game<'_> {
         if let Err((key, a)) = self.parse_macro_lines(f, &lines) {
             return Err(failure(&key, &a));
         }
-        if self.exec.functions.len() >= 128 {
-            return Ok(Outcome::NoReturn);
-        }
+        // `CallFunction.execute` queues the body one frame deeper with no depth
+        // limit: only the command quota (`ExecutionContext.runCommandQueue`)
+        // stops a recursion. The call nests on the native stack, so the thread
+        // that runs commands reserves the guest stack (`horizon-guest-stack`),
+        // which holds far more frames than the default command quota needs.
         self.exec.functions.push(f.id.clone());
         let outer = self.exec.returned.take();
         let level = std::mem::replace(&mut self.ui.registries.permission, self.fns.command_level());
@@ -819,11 +821,19 @@ impl Game<'_> {
         let source = self.command_source.unwrap_or_else(|| self.player_source());
         let mut out = Vec::new();
         for f in functions {
-            out.push(match self.run_function(&f, args, source)? {
+            let result = match self.run_function(&f, args, source)? {
                 Outcome::NoReturn => None,
                 Outcome::Value(v) => Some(v),
                 Outcome::Fail => Some(0),
-            });
+            };
+            out.push(result);
+            // `ExecuteCommand.addIsolatedCall` queues the tag's functions with
+            // `returnParentFrame`: a `return` (value or fail) runs
+            // `Frame.discard` on the isolated frame, so the tag's remaining
+            // functions never start.
+            if result.is_some() {
+                break;
+            }
         }
         Ok(out)
     }
@@ -3744,3 +3754,7 @@ mod schedule_reload_tests;
 #[cfg(test)]
 #[path = "functions/loading_tests.rs"]
 mod loading_tests;
+
+#[cfg(test)]
+#[path = "functions/recursion_tests.rs"]
+mod recursion_tests;
