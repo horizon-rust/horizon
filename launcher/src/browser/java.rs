@@ -98,11 +98,32 @@ pub fn check_file(
     if let Some(c) = read_check(&dir) {
         return Ok(c);
     }
-    let jar = source.fetch(file, &checks(home).join(".downloads"), progress)?;
+    let root = checks(home);
+    fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+    // Old and new browse workers can select the same jar. Lock its cache entry, then
+    // reread it so the second worker can reuse a verdict published while it waited.
+    let lock_path = dir.with_extension("lock");
+    let lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+    lock.lock()
+        .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+    if let Some(c) = read_check(&dir) {
+        return Ok(c);
+    }
+    // Files with the same name and different checksums can still be checked in parallel.
+    let download = tempfile::Builder::new()
+        .prefix(".download-")
+        .tempdir_in(&root)
+        .map_err(|e| format!("{}: {e}", root.display()))?;
+    let jar = source.fetch(file, download.path(), progress)?;
     let part = dir.with_extension("part");
     let _ = fs::remove_dir_all(&part);
     let result = check::check(&jar, &part);
-    let _ = fs::remove_file(&jar);
     let c = result.inspect_err(|_| {
         let _ = fs::remove_dir_all(&part);
     })?;
@@ -124,18 +145,47 @@ pub fn check_project(
     everything: bool,
     progress: &dyn Fn(f32),
 ) -> Result<(Version, Check), String> {
-    let versions = source.versions(project)?;
+    check_project_outcome(home, source, project, everything, progress).map_err(
+        |error| match error {
+            ProjectCheckError::NoEligibleFile(message) | ProjectCheckError::Failed(message) => {
+                message
+            }
+        },
+    )
+}
+
+#[derive(Debug)]
+pub enum ProjectCheckError {
+    /// The source answered successfully but has no downloadable version Horizon can use.
+    NoEligibleFile(String),
+    Failed(String),
+}
+
+/// As [`check_project`], with a separate outcome for a successful lookup without an eligible file.
+pub fn check_project_outcome(
+    home: &Path,
+    source: &dyn Source,
+    project: &Project,
+    everything: bool,
+    progress: &dyn Fn(f32),
+) -> Result<(Version, Check), ProjectCheckError> {
+    let versions = source
+        .versions(project)
+        .map_err(ProjectCheckError::Failed)?;
     let version = pick(Kind::Mod, &versions, everything)
         .cloned()
-        .ok_or_else(|| match versions.iter().find_map(|v| v.blocked.clone()) {
-            Some(why) => format!("{} can't be downloaded from here: {why}", project.title),
-            None => format!(
-                "{} has no Fabric, NeoForge or Forge version Horizon can port.",
-                project.title
-            ),
+        .ok_or_else(|| {
+            let reason = match versions.iter().find_map(|v| v.blocked.as_deref()) {
+                Some(why) => format!("{} can't be downloaded from here: {why}", project.title),
+                None => format!(
+                    "{} has no Fabric, NeoForge or Forge version Horizon can port.",
+                    project.title
+                ),
+            };
+            ProjectCheckError::NoEligibleFile(reason)
         })?;
     let file = version.file().expect("pick keeps versions with a file");
-    let check = check_file(home, source, file, progress)?;
+    let check = check_file(home, source, file, progress).map_err(ProjectCheckError::Failed)?;
     Ok((version, check))
 }
 
@@ -370,6 +420,11 @@ pub fn remove(home: &Path, entry: &Entry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browser::{SourceId, GAME};
+    use sha2::{Digest, Sha512};
+    use std::io::{Cursor, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
 
     #[test]
     fn the_on_list_keeps_other_lines() {
@@ -415,5 +470,165 @@ mod tests {
         );
         assert!(checked_dir(home, &file(None, Some("../../etc"))).is_none());
         assert!(checked_dir(home, &file(None, None)).is_none());
+    }
+
+    fn project() -> Project {
+        Project {
+            source: SourceId::Modrinth,
+            id: "fixture".into(),
+            slug: "fixture".into(),
+            title: "Fixture".into(),
+            summary: String::new(),
+            author: String::new(),
+            downloads: 0,
+            page: String::new(),
+            icon: None,
+            license: "MIT".into(),
+            kind: Kind::Mod,
+            game_versions: vec![GAME.into()],
+            loaders: vec!["fabric".into()],
+            blocked: None,
+        }
+    }
+
+    fn version(files: Vec<FileRef>) -> Version {
+        Version {
+            id: "fixture-version".into(),
+            number: "1.0".into(),
+            published: String::new(),
+            game_versions: vec![GAME.into()],
+            loaders: vec!["fabric".into()],
+            files,
+            required: Vec::new(),
+            blocked: None,
+        }
+    }
+
+    fn jar_file(bytes: &[u8]) -> FileRef {
+        FileRef {
+            url: "https://cdn.modrinth.com/data/fixture/versions/1/fixture.jar".into(),
+            name: "fixture.jar".into(),
+            size: bytes.len() as u64,
+            sha512: Some(format!("{:x}", Sha512::digest(bytes))),
+            sha256: None,
+            sha1: None,
+            primary: true,
+        }
+    }
+
+    struct FixtureSource {
+        listed: Result<Vec<Version>, String>,
+        download: Result<Vec<u8>, String>,
+        simultaneous: Option<Barrier>,
+        fetches: AtomicUsize,
+    }
+
+    impl Source for FixtureSource {
+        fn id(&self) -> SourceId {
+            SourceId::Modrinth
+        }
+
+        fn search(&self, _: &super::super::Query) -> Result<Vec<Project>, String> {
+            Ok(vec![project()])
+        }
+
+        fn project(&self, _: &str) -> Result<Project, String> {
+            Ok(project())
+        }
+
+        fn versions(&self, _: &Project) -> Result<Vec<Version>, String> {
+            if let Some(barrier) = &self.simultaneous {
+                barrier.wait();
+            }
+            self.listed.clone()
+        }
+
+        fn fetch(
+            &self,
+            file: &FileRef,
+            folder: &Path,
+            progress: &dyn Fn(f32),
+        ) -> Result<PathBuf, String> {
+            self.fetches.fetch_add(1, Ordering::Relaxed);
+            if self.simultaneous.is_some() {
+                // Leave time for the other worker to ask for the same uncached jar.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            let bytes = self.download.as_deref().map_err(Clone::clone)?;
+            super::super::download::save_from_anywhere(file, bytes, folder, progress)
+        }
+    }
+
+    #[test]
+    fn unavailable_files_are_distinct_from_lookup_and_download_failures() {
+        let home = tempfile::tempdir().unwrap();
+        let project = project();
+        let mut source = FixtureSource {
+            listed: Ok(vec![version(Vec::new())]),
+            download: Err("download timed out".into()),
+            simultaneous: None,
+            fetches: AtomicUsize::new(0),
+        };
+        let check = |source: &FixtureSource| {
+            check_project_outcome(home.path(), source, &project, false, &|_| {})
+        };
+        assert!(matches!(
+            check(&source),
+            Err(ProjectCheckError::NoEligibleFile(_))
+        ));
+        source.listed = Err("lookup timed out".into());
+        assert!(
+            matches!(check(&source), Err(ProjectCheckError::Failed(e)) if e == "lookup timed out")
+        );
+        assert_eq!(source.fetches.load(Ordering::Relaxed), 0);
+
+        source.listed = Ok(vec![version(vec![jar_file(b"fixture")])]);
+        assert!(
+            matches!(check(&source), Err(ProjectCheckError::Failed(e)) if e == "download timed out")
+        );
+        assert_eq!(source.fetches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn concurrent_browse_modes_reuse_the_same_jar_check() {
+        let home = tempfile::tempdir().unwrap();
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (path, bytes) in [
+            (
+                "fabric.mod.json",
+                br#"{"schemaVersion":1,"id":"fixture","version":"1.0","name":"Fixture"}"#
+                    .as_slice(),
+            ),
+            ("assets/fixture/models/item/sample.json", b"{}"),
+        ] {
+            zip.start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        let file = jar_file(&bytes);
+        let source = FixtureSource {
+            listed: Ok(vec![version(vec![file.clone()])]),
+            download: Ok(bytes),
+            simultaneous: Some(Barrier::new(2)),
+            fetches: AtomicUsize::new(0),
+        };
+        let check =
+            |everything| check_project(home.path(), &source, &project(), everything, &|_| {});
+        std::thread::scope(|threads| {
+            let compatible = threads.spawn(|| check(false));
+            let all = threads.spawn(|| check(true));
+            assert_eq!(
+                compatible.join().unwrap().unwrap().1.verdict,
+                Verdict::Works
+            );
+            assert_eq!(all.join().unwrap().unwrap().1.verdict, Verdict::Works);
+        });
+        assert_eq!(source.fetches.load(Ordering::Relaxed), 1);
+        assert_eq!(cached(home.path(), &file).unwrap().verdict, Verdict::Works);
+        assert!(!checked_dir(home.path(), &file)
+            .unwrap()
+            .with_extension("part")
+            .exists());
     }
 }

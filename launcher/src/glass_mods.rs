@@ -25,6 +25,37 @@ use horizon_theme::glass::{ink, radius};
 /// The project card's width (`lg:grid-cols-[minmax(0,1fr)_360px]`).
 const DETAIL: f32 = 360.;
 
+impl Mods {
+    /// The picked result, else the first. Unfiltered browsing can keep the last detail
+    /// card when a search finds nothing, as in the mockup.
+    pub(super) fn picked_project(&mut self) -> Option<Project> {
+        let shown = self.shown();
+        let mut listed = shown.iter().map(|&i| &self.results[i]);
+        let found = self
+            .picked
+            .as_ref()
+            .and_then(|id| listed.clone().find(|p| &p.id == id))
+            .or(listed.next())
+            .cloned();
+        match found {
+            Some(p) => {
+                self.shown = Some(p.clone());
+                Some(p)
+            }
+            None if self.modrinth_defaults.is_none()
+                && self.searched
+                && !self.searching
+                && self.error.is_none() =>
+            {
+                self.shown
+                    .clone()
+                    .filter(|p| p.kind == self.kind && p.source == self.source)
+            }
+            None => None,
+        }
+    }
+}
+
 impl Launcher {
     /// The search's placeholder: the registry's count when it is listed whole.
     pub(super) fn mods_placeholder(&self) -> SharedString {
@@ -396,14 +427,11 @@ impl Launcher {
             } else {
                 tr("The search didn't go through.")
             };
-            let mut actions = div().flex().flex_wrap().gap(px(8.)).child(
-                button("mods-retry", "Try again", Kind::Secondary, &t).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.mods_search(0);
-                        cx.notify();
-                    },
-                )),
-            );
+            let mut actions = div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .child(self.mods_search_retry_button(cx));
             if horizon {
                 actions = actions.child(
                     button(
@@ -461,36 +489,9 @@ impl Launcher {
         }
         let shown = m.shown();
         if shown.is_empty() {
-            let line = if !m.results.is_empty() {
-                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
-                    .to_string()
-            } else if m.searching || !m.searched {
-                tr("Searching…").to_string()
-            } else if let Some(target) = m.java_for(m.kind) {
-                trf(
-                    "Nothing found for {target}.",
-                    &[("target", &target.describe(m.kind))],
-                )
-            } else if !m.text.text().trim().is_empty() {
-                trf(
-                    "Nothing matches “{query}”.",
-                    &[("query", m.text.text().trim())],
-                )
-            } else if m.source == SourceId::Horizon {
-                tr("Nothing in Horizon's registry matches yet.").to_string()
-            } else if m.everything {
-                tr("Nothing found.").to_string()
-            } else {
-                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
-                    .to_string()
-            };
-            let line = ui::text(14., FontWeight::NORMAL, 0.6)
-                .px(px(16.))
-                .py(px(24.))
-                .child(line);
-            return self.glass_mods_more(div().flex().flex_col().child(line), cx);
+            return self.mods_empty_results(cx);
         }
-        let picked = self.mods_picked().map(|p| p.id.clone());
+        let picked = self.mods.picked_project().map(|p| p.id);
         // Registry pages add up behind More: only the rows near the view are built (`cull`).
         let (rows, scroll) = (
             self.mods.results_list.clone(),
@@ -630,60 +631,13 @@ impl Launcher {
             .flex()
             .flex_col()
             .child(rows.column(&scroll, total, 0., |_| false, row));
-        self.glass_mods_more(list, cx)
-    }
-
-    /// The list's More, under `list` while the source has more pages.
-    fn glass_mods_more(&self, mut list: Div, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        if self.mods.more {
-            let searching = self.mods.searching;
-            let offset = self.mods.results.len();
-            list = list.child(
-                div().flex().p(px(8.)).child(
-                    ui::quiet("mods-more", tr("More"), 36., &t)
-                        .when(searching, |d| d.opacity(0.5))
-                        .when(!searching, |d| {
-                            d.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.mods_search(offset);
-                                cx.notify();
-                            }))
-                        }),
-                ),
-            );
-        }
-        list
-    }
-
-    /// The picked result, else the first; when a search finds nothing, the card shown last stays
-    /// (the mockup's detail keeps its mod).
-    fn mods_picked(&mut self) -> Option<Project> {
-        let shown = self.mods.shown();
-        let m = &mut self.mods;
-        let mut listed = shown.iter().map(|&i| &m.results[i]);
-        let found = m
-            .picked
-            .as_ref()
-            .and_then(|id| listed.clone().find(|p| &p.id == id))
-            .or(listed.next())
-            .cloned();
-        match found {
-            Some(p) => {
-                m.shown = Some(p.clone());
-                Some(p)
-            }
-            None if m.searched && !m.searching && m.error.is_none() => m
-                .shown
-                .clone()
-                .filter(|p| p.kind == m.kind && p.source == m.source),
-            None => None,
-        }
+        self.mods_more(list, cx)
     }
 
     /// The picked project's card (`ModDetail`).
     fn glass_mod_detail(&mut self, instance: &str, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
-        let p = self.mods_picked()?;
+        let p = self.mods.picked_project()?;
         let icon = self.mods_icon(&p, 64.);
         let m = &self.mods;
         let support = m.support(&p);
