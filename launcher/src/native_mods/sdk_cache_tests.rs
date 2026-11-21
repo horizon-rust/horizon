@@ -285,6 +285,59 @@ fn a_stopped_download_ends_as_cancelled_and_keeps_nothing() {
     }
 }
 
+/// A slice request that fails while Stop is pending ends as cancelled, not as the server's
+/// answer (#19300).
+#[test]
+fn a_failed_request_while_stopping_ends_as_cancelled() {
+    use std::io::Write;
+    let fixture = Fixture::new();
+    let sdk = fixture.sdk(&[]).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = Base::Url(format!("http://{}", listener.local_addr().unwrap()));
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let _ = stream.read(&mut [0; 4096]);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        }
+    });
+    let asked = std::cell::Cell::new(0);
+    // Stop is pressed once the request is under way.
+    let stop = || {
+        asked.set(asked.get() + 1);
+        match asked.get() > 1 {
+            true => Err(super::super::CANCELLED.to_string()),
+            false => Ok(()),
+        }
+    };
+    let refusal = slices_in(
+        &fixture.scratch.path().join("prebuilt"),
+        &sdk,
+        &base,
+        Route::Api,
+        TRIPLE,
+        Side::Client,
+        &|_| {},
+        &stop,
+    )
+    .unwrap_err();
+    assert_eq!(refusal, Refusal::Cancelled);
+}
+
+/// The build data a build reads to judge its mods stops with the build (#19300).
+#[test]
+fn a_stopped_build_data_fetch_ends_as_cancelled() {
+    let fixture = Fixture::new();
+    let sdk = fixture.sdk(&[]).unwrap();
+    let stop = || Err(super::super::CANCELLED.to_string());
+    assert_eq!(
+        build_data(&sdk, &fixture.base(), &stop).unwrap_err(),
+        Refusal::Cancelled
+    );
+}
+
 #[test]
 fn the_api_route_fetches_its_two_slices_only_and_reuses_them_on_their_stamps() {
     let fixture = Fixture::new();

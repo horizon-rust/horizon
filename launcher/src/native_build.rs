@@ -145,6 +145,9 @@ impl Launcher {
             .into_iter()
             .map(|(id, ..)| id)
             .collect();
+        // Cleared here, on the window's thread before Stop shows, and not by the worker: a Stop
+        // pressed before the worker runs must still end this build.
+        native_mods::arm_cancel();
         self.native_step = Some(tr("Starting the build").into());
         self.native_stopping = false;
         self.native_progress = None;

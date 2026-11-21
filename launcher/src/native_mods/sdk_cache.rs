@@ -510,12 +510,17 @@ pub(super) fn surface(sdk: &Sdk, base: &Base) -> Result<mod_surface::Surface, Re
 }
 
 /// The folder of `sdk`'s build data (`points.json`, `internals.json`, `loops.json`,
-/// `functions.json`): unpacked once, then used again on its stamp.
-pub(super) fn build_data(sdk: &Sdk, base: &Base) -> Result<PathBuf, Refusal> {
+/// `functions.json`): unpacked once, then used again on its stamp. `stop` as [`slices`] asks it
+/// (a build's own check; planning outside a build never stops).
+pub(super) fn build_data(
+    sdk: &Sdk,
+    base: &Base,
+    stop: &dyn Fn() -> Result<(), String>,
+) -> Result<PathBuf, Refusal> {
     const NAME: &str = "build-data.tar.xz";
     let into = sdk.dir.join("build-data");
     let mut fetched = Fetched::default();
-    fetch_into(sdk, base, NAME, &into, &mut fetched, &|_| {}, &|| Ok(()))?;
+    fetch_into(sdk, base, NAME, &into, &mut fetched, &|_| {}, stop)?;
     Ok(into)
 }
 
@@ -735,8 +740,12 @@ fn fetch_into(
     let (archive, downloaded) = match base.local(&tag, name) {
         Some(path) => (path, None),
         None => {
-            let body = base
-                .open(&tag, name)
+            let opened = base.open(&tag, name);
+            // A request that failed while Stop was pending ends as the stop, not as its error.
+            if !matches!(opened, Ok(Some(_))) && stopped() {
+                return Err(Refusal::Cancelled);
+            }
+            let body = opened
                 .map_err(|unread| match unread {
                     Unread::Offline => Refusal::Offline {
                         build: build.clone(),

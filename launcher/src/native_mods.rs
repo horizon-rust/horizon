@@ -1382,6 +1382,13 @@ fn check_cancelled() -> Result<(), String> {
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
 
+/// Clears an earlier build's Stop. A build's starter calls it before the build's Stop can be
+/// pressed (the window, before it shows the card and spawns the worker), so a Stop pressed
+/// before the worker runs still ends that build; [`build_then`] doesn't clear it.
+pub fn arm_cancel() {
+    CANCEL.store(false, Ordering::Relaxed);
+}
+
 /// Stops the build under way: its command is killed and the build ends with [`CANCELLED`].
 pub fn cancel() {
     CANCEL.store(true, Ordering::Relaxed);
@@ -1641,9 +1648,14 @@ pub(super) fn unpack_archive_until(
     stop()?;
     let _ = fs::remove_dir_all(partial);
     fs::create_dir_all(partial).map_err(|e| e.to_string())?;
-    let reader = flate2::read::GzDecoder::new(backend::get(url)?.into_reader()).take(limit);
-    if let Err(error) = unpack_source(reader, partial, stop) {
+    let unpacked = backend::get(url).and_then(|response| {
+        let reader = flate2::read::GzDecoder::new(response.into_reader()).take(limit);
+        unpack_source(reader, partial, stop)
+    });
+    if let Err(error) = unpacked {
         let _ = fs::remove_dir_all(partial);
+        // A request that failed while Stop was pending ends as the stop, not as its error.
+        stop()?;
         return Err(error);
     }
     // The archive's one top folder (<repo>-<commit>/) is the source's root.
@@ -1846,6 +1858,7 @@ fn judge_all(
     projects: &[api::Project<'_>],
     sdk: &sdk_cache::Sdk,
     base: &sdk_cache::Base,
+    stop: &dyn Fn() -> Result<(), String>,
 ) -> Result<Vec<(String, fit::Verdict)>, sdk_cache::Refusal> {
     let mut surface: Option<std::rc::Rc<mod_surface::Surface>> = None;
     let mut catalog: Option<std::rc::Rc<internals::Catalog>> = None;
@@ -1862,7 +1875,7 @@ fn judge_all(
             },
             &mut || {
                 if catalog.is_none() {
-                    let dir = sdk_cache::build_data(sdk, base)?;
+                    let dir = sdk_cache::build_data(sdk, base, stop)?;
                     let read = internals::Catalog::read(&dir).map_err(|why| {
                         sdk_cache::Refusal::Refused {
                             build: sdk.shown(),
@@ -2145,7 +2158,8 @@ fn pipeline(
     let mut fitted: Vec<String> = Vec::new();
     if let Some(sdk) = &sdk {
         progress(Step::Checking(projects.len()));
-        let verdicts = judge_all(&projects, sdk, &sdk_base).map_err(|r| r.to_string())?;
+        let verdicts =
+            judge_all(&projects, sdk, &sdk_base, &check_cancelled).map_err(|r| r.to_string())?;
         let mut unusable = Vec::new();
         for (id, verdict) in verdicts {
             match verdict {
@@ -2550,6 +2564,7 @@ pub fn build(
     progress: impl Fn(Step),
     registry_consent: impl Fn(&RegistryInventory) -> bool,
 ) -> Result<String, Failed> {
+    arm_cancel();
     build_then(
         base,
         || Ok(folder.to_owned()),
@@ -2586,6 +2601,8 @@ fn build_turn(progress: &impl Fn(Step)) -> Result<std::sync::MutexGuard<'static,
         check_cancelled()?;
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
+    // A Stop pressed before this build's worker ran ends it here, not at its first command.
+    check_cancelled()?;
     require_consent()?;
     Ok(turn)
 }
@@ -2612,7 +2629,6 @@ pub fn build_then<R>(
     if let Err(error) = require_consent() {
         return deliver(Err(error));
     }
-    CANCEL.store(false, Ordering::Relaxed);
     let _turn = match build_turn(&progress) {
         Ok(turn) => turn,
         Err(error) => return deliver(Err(error)),
@@ -2975,7 +2991,8 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let partial = folder.path().join(".source.partial");
         let asked = std::cell::Cell::new(0);
-        // Asked once before the download, then before each entry: stops at the second entry.
+        // Asked once before the download, then before each entry: stops at the second entry
+        // (and is asked once more after the cleanup).
         let stop = || {
             asked.set(asked.get() + 1);
             match asked.get() > 2 {
@@ -2985,7 +3002,39 @@ mod tests {
         };
         let result = unpack_archive_until(&url, &partial, u64::MAX, &stop);
         assert_eq!(result.unwrap_err(), CANCELLED);
-        assert_eq!(asked.get(), 3);
+        assert_eq!(asked.get(), 4);
+        assert!(!partial.exists());
+    }
+
+    /// A request that fails while Stop is pending ends as the stop, with no partial folder
+    /// (#19300).
+    #[test]
+    fn a_failed_request_while_stopping_ends_as_the_stop() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/source.tar.gz", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.read(&mut [0; 4096]);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            }
+        });
+        let folder = tempfile::tempdir().unwrap();
+        let partial = folder.path().join(".source.partial");
+        let asked = std::cell::Cell::new(0);
+        // Stop is pressed once the request is under way.
+        let stop = || {
+            asked.set(asked.get() + 1);
+            match asked.get() > 1 {
+                true => Err(CANCELLED.to_string()),
+                false => Ok(()),
+            }
+        };
+        let result = unpack_archive_until(&url, &partial, u64::MAX, &stop);
+        assert_eq!(result.unwrap_err(), CANCELLED);
         assert!(!partial.exists());
     }
 
@@ -4656,6 +4705,40 @@ mod tests {
             result.map_err(String::from)
         );
         assert_eq!(*steps.borrow(), [Step::Waiting.label()]);
+    }
+
+    /// #19300: a Stop pressed after the window started a build but before its worker ran ends
+    /// that build before any step, rather than being cleared by it.
+    #[test]
+    fn a_stop_pressed_before_the_worker_runs_ends_the_build() {
+        let _guard = scratch_state();
+        let original = backend::Settings::load();
+        backend::Settings::load().allow_native_mods().unwrap();
+        arm_cancel();
+        cancel();
+        let steps = std::cell::RefCell::new(Vec::new());
+        let result = build_then(
+            "v0.0.0-not-installed",
+            || -> Result<PathBuf, String> { panic!("staged after Stop") },
+            false,
+            &instances::selected(),
+            None,
+            Asked {
+                caller: Caller::Window,
+                back_up: false,
+            },
+            |step| steps.borrow_mut().push(step.label()),
+            |_| false,
+            |result| result,
+        );
+        arm_cancel();
+        original.save().unwrap();
+        assert!(
+            matches!(&result, Err(Failed::Other(error)) if error == CANCELLED),
+            "{:?}",
+            result.map_err(String::from)
+        );
+        assert!(steps.borrow().is_empty(), "{:?}", steps.borrow());
     }
 
     /// #18669: native mods turned off in Storage while a build waits for the last cleanup stop
