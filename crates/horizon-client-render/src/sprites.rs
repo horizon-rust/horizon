@@ -175,12 +175,12 @@ pub struct Sprites {
     /// The one missing texture layer those share.
     overflow_layer: Option<u32>,
 }
-/// The most block sprite layers the renderer draws from: its arrays
-/// (`gfx::SPRITE_ARRAYS`) of the layers known before the GPU is (`gfx::sprite_split`,
-/// 2048 unless `HORIZON_SPRITE_SPLIT` asks for fewer). A GPU that holds fewer per array
-/// still refuses more, as before.
+/// The most block sprite layers the renderer draws from: the most arrays it binds
+/// (`gfx::MORE_SPRITE_ARRAYS`) of the layers known before the GPU is (`gfx::sprite_split`,
+/// 2048 unless `HORIZON_SPRITE_SPLIT` asks for fewer). A GPU that binds fewer arrays, or
+/// holds fewer layers per array, still refuses more, as before.
 pub fn max_layers() -> usize {
-    crate::gfx::SPRITE_ARRAYS as usize * crate::gfx::sprite_split() as usize
+    crate::gfx::MORE_SPRITE_ARRAYS as usize * crate::gfx::sprite_split() as usize
 }
 /// Layers [`Sprites::plan_within_capacity`] keeps free for what later loaders add
 /// (connected-texture tiles, run-time sprites).
