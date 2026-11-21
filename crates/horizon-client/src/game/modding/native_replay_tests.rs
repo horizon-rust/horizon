@@ -1056,7 +1056,7 @@ fn a_replacement_keeps_the_replay_whose_camera_edits_it_would_lose() {
             serde_json::from_slice(saved.camera_path().expect("a camera path")).unwrap();
         assert_eq!(
             saved.keyframes(),
-            [first.clone()],
+            std::slice::from_ref(&first),
             "the archive holds the edit"
         );
 
