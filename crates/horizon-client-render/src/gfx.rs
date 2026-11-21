@@ -4837,6 +4837,14 @@ impl Renderer {
     fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
         rt::query::quad_indices(device, quads)
     }
+
+    /// The index buffer of `quads` quads, for a frame that grows one: `None` where there was no
+    /// room for it (#13624).
+    fn grown_quad_indices(&self, quads: u32) -> Option<wgpu::Buffer> {
+        frame_targets::made(&self.device, frame_targets::Kind::Buffers, || {
+            rt::query::written_quad_indices(&self.device, &self.queue, quads)
+        })
+    }
     fn offscreen_target(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
@@ -9182,13 +9190,18 @@ impl Renderer {
             // A section without the room for its buffers (#13624) keeps what it had and is
             // uploaded again on a later frame: the catalog's revision waits for it.
             let mut missed = false;
-            let origin = |device: &wgpu::Device, origin: &[i32; 3]| {
+            // Unmapped and written through the queue: a buffer mapped at creation that found no
+            // room panics instead of reporting it.
+            let origin = |device: &wgpu::Device, queue: &submit::Queue, origin: &[i32; 3]| {
                 frame_targets::made(device, frame_targets::Kind::Buffers, || {
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("Static block-entity section origin"),
-                        contents: bytemuck::bytes_of(origin),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    })
+                        size: std::mem::size_of_val(origin) as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    queue.write_buffer(&buffer, 0, bytemuck::bytes_of(origin));
+                    buffer
                 })
             };
             let vertex_buffer = |device: &wgpu::Device, capacity: u64| {
@@ -9204,7 +9217,7 @@ impl Renderer {
                 if !self.static_entity_sections.contains_key(&snapshot.section) {
                     let capacity = vertices.next_power_of_two().max(4);
                     let (Some(origin_buffer), Some(buffer)) = (
-                        origin(&self.device, &snapshot.origin),
+                        origin(&self.device, &self.queue, &snapshot.origin),
                         vertex_buffer(&self.device, capacity),
                     ) else {
                         missed = true;
@@ -9276,9 +9289,18 @@ impl Renderer {
             .max()
             .unwrap_or(0);
         if max_static_section_quads > self.static_entity_index_quads {
-            self.static_entity_index_quads = max_static_section_quads.next_power_of_two();
-            self.static_entity_indices =
-                Self::quad_indices(&self.device, self.static_entity_index_quads);
+            let quads = max_static_section_quads.next_power_of_two();
+            let Some(indices) = self.grown_quad_indices(quads) else {
+                return self.abandon_frame(frame_targets::Abandoned::grown(
+                    encoder,
+                    copies,
+                    surface_frame,
+                    fg_frames,
+                    backstop,
+                ));
+            };
+            self.static_entity_index_quads = quads;
+            self.static_entity_indices = indices;
         }
         if !frame.visible_static_block_entity_sections.is_empty()
             && self.static_entity_camera != Some(frame.camera)
@@ -9356,8 +9378,18 @@ impl Renderer {
                 .max(frame.glowing.len() as u32 / 4)
                 .max(outlined / 4);
         if max_quads > self.index_quads {
-            self.index_quads = max_quads.next_power_of_two();
-            self.indices = Self::quad_indices(&self.device, self.index_quads);
+            let quads = max_quads.next_power_of_two();
+            let Some(indices) = self.grown_quad_indices(quads) else {
+                return self.abandon_frame(frame_targets::Abandoned::grown(
+                    encoder,
+                    copies,
+                    surface_frame,
+                    fg_frames,
+                    backstop,
+                ));
+            };
+            self.index_quads = quads;
+            self.indices = indices;
         }
         if let Some(b) = &frame.border {
             if b.rebuilt {
