@@ -4086,8 +4086,8 @@ impl Mob {
             amount,
             witch,
         );
-        // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
-        let absorbed = self.wolf_armor_absorbs(&source);
+        camel::actually_hurt(self);
+        let absorbed = self.wolf_armor_absorbs(&source); // Wolf.actuallyHurt's armor
         let mut knock = true;
         let window = cooldown;
         container.record_should_cause_side_effects(!window);
