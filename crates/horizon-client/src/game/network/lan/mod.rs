@@ -2425,11 +2425,9 @@ impl Game<'_> {
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(conn, *packet);
-                    if self
-                        .lan
-                        .as_ref()
-                        .is_some_and(|host| !host.commands.is_empty())
-                    {
+                    if self.lan.as_ref().is_some_and(|host| {
+                        !host.commands.is_empty() || host.hub.has_pending_chats()
+                    }) {
                         self.run_guest_commands();
                     }
                 }

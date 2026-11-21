@@ -177,7 +177,7 @@ impl Game<'_> {
             Some(Arg::Str(m)) => m.clone(),
             _ => String::new(),
         };
-        let message = self.expand_selectors(&raw);
+        let (message, _) = self.expand_selectors(&raw);
         let hover = text::Style {
             hover: Some(std::sync::Arc::new(Text::translate(
                 "chat.type.team.hover",

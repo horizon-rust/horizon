@@ -14,6 +14,7 @@ pub(super) mod extra;
 mod give;
 mod item_count;
 pub(in crate::game) mod items;
+mod message;
 mod misc;
 mod modprofile;
 mod place;
@@ -3894,7 +3895,7 @@ impl Game<'_> {
             Some(Arg::Str(s)) => s.clone(),
             _ => String::new(),
         };
-        let message = self.expand_selectors(&raw);
+        let (message, _) = self.expand_selectors(&raw);
         let name = self.source_display_name();
         // A player's command whose output is captured (a function, `execute …
         // run say`, the command harness) gets the announcement with that
@@ -3968,37 +3969,9 @@ impl Game<'_> {
         );
         Ok(1)
     }
-    /// MessageArgument: `@p`-style selectors in a message become names.
-    pub(super) fn expand_selectors(&mut self, raw: &str) -> Text {
-        let mut out = Text::empty();
-        let mut rest = raw;
-        while let Some(at) = rest.find('@') {
-            out.push(&rest[..at]);
-            let mut reader = Reader::new(&rest[at..]);
-            match (horizon_client::command::ArgType::Entity {
-                single: false,
-                players: false,
-            })
-            .parse(&mut reader, &self.ui.registries)
-            {
-                Ok(Arg::Entity(s)) if reader.cursor > 1 => {
-                    let found = self.select(&s);
-                    for (i, t) in found.iter().enumerate() {
-                        if i > 0 {
-                            out.push(", ");
-                        }
-                        out.push(self.target_name(*t));
-                    }
-                    rest = &rest[at + reader.cursor..];
-                }
-                _ => {
-                    out.push("@");
-                    rest = &rest[at + 1..];
-                }
-            }
-        }
-        out.push(rest);
-        out
+    /// MessageArgument: `@p`-style selectors in a message become names, and whether any.
+    pub(super) fn expand_selectors(&mut self, raw: &str) -> (Text, bool) {
+        message::expand_selectors(self, raw)
     }
 }
 /// Split at a separator outside brackets, braces and quotes.

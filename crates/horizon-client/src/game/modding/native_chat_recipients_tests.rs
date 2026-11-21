@@ -185,14 +185,17 @@ fn say_and_me_are_asked_per_receiver_and_a_whisper_is_not() {
             lines(&sender);
             lines(&other);
             assert!(game.guest_message_command(12, "say a secret", None));
+            game.run_guest_commands();
             assert_eq!(lines(&sender), 1);
             assert_eq!(lines(&other), 0, "/say, unsigned: hidden from guest 13");
             assert!(game.guest_message_command(12, "me waves", None));
+            game.run_guest_commands();
             assert_eq!(lines(&sender), 1);
             assert_eq!(lines(&other), 1, "/me: nothing hides it");
             assert_eq!(asked.lock().unwrap().len(), 4, "two lines, two receivers");
             asked.lock().unwrap().clear();
             assert!(game.guest_message_command(12, "msg guest13 a secret", None));
+            game.run_guest_commands();
             assert!(asked.lock().unwrap().is_empty(), "a whisper is not public");
             assert_eq!(lines(&other), 1, "and it reaches its target");
         });

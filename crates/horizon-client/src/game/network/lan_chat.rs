@@ -7,7 +7,10 @@ use horizon_client::{
     command::{Arg, ParseResults},
     lan::{
         data::component_nbt,
-        hub::{HostEvent, chat::ChatMessage},
+        hub::{
+            HostEvent,
+            chat::{ChatMessage, PendingChat},
+        },
     },
     text::{self, Text},
 };
@@ -178,11 +181,12 @@ impl Game<'_> {
         Some(())
     }
 
-    /// SayCommand, EmoteCommands and MsgCommand for a guest: chat to the
-    /// players, signed when the guest signed it (a disguised chat after an
-    /// unsigned command packet). False when the command is another one, or
-    /// one this can't run (selectors other than `@s` and `@a`), for the
-    /// game's dispatcher to handle.
+    /// SayCommand, EmoteCommands and MsgCommand for a guest: the chat to send,
+    /// signed when the guest signed it (a disguised chat after an unsigned
+    /// command packet), left on the guest for `send_guest_chats` once the hub
+    /// is back in `self.lan`. False when the command is another one, or one
+    /// this can't run (selectors other than `@s` and `@a`), for the game's
+    /// dispatcher to handle.
     pub(super) fn guest_message_command(
         &mut self,
         conn: u32,
@@ -211,7 +215,6 @@ impl Game<'_> {
                 .find(|(n, _)| n == argument)
                 .map(|(_, m)| m.clone())
         });
-        let mut events = Vec::new();
         let Some(host) = self.lan.as_mut() else {
             return false;
         };
@@ -266,24 +269,98 @@ impl Game<'_> {
                 }));
                 return true;
             }
-            host.hub.whisper(i, &targets, message, text);
+            host.hub.guests.update(i, |g| {
+                g.chat = Some(PendingChat {
+                    chat_type: None,
+                    text: text.clone(),
+                    targets,
+                    message,
+                });
+            });
         } else {
             let chat_type = if id == "say" {
                 "say_command"
             } else {
                 "emote_command"
             };
-            let (sender, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
-            let hidden = self.chat_hidden_from(sender, &name, text);
-            let Some(host) = self.lan.as_mut() else {
-                return false;
-            };
-            host.hub
-                .broadcast_command_chat(i, chat_type, message, text, &hidden, &mut events);
-        }
-        for event in events {
-            self.lan_log_event(event);
+            host.hub.guests.update(i, |g| {
+                g.chat = Some(PendingChat {
+                    chat_type: Some(chat_type),
+                    text: text.clone(),
+                    targets: Vec::new(),
+                    message,
+                });
+            });
         }
         true
     }
+
+    /// The message commands a guest's packet left on it (`PendingChat`): their
+    /// text resolved as the sender, which needs the hub back in `self.lan` for
+    /// the selectors to reach every player (MessageArgument.resolveComponent),
+    /// then the hub sends them.
+    pub(super) fn send_guest_chats(&mut self) {
+        while let Some((conn, chat)) = self.pending_chat() {
+            let PendingChat {
+                chat_type,
+                text,
+                targets,
+                message,
+            } = chat;
+            let events = self.for_player(super::commands::Target::Guest(conn), |g| {
+                let (resolved, parts) = g.expand_selectors(&text);
+                let mut events = Vec::new();
+                let Some(host) = g.lan.as_ref() else {
+                    return events;
+                };
+                let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+                    return events;
+                };
+                let hidden = if chat_type.is_some() {
+                    let (sender, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+                    let shown = resolved.plain();
+                    g.chat_hidden_from(sender, &name, &shown)
+                } else {
+                    Vec::new()
+                };
+                let Some(host) = g.lan.as_mut() else {
+                    return events;
+                };
+                match chat_type {
+                    Some(chat_type) => host.hub.broadcast_command_chat(
+                        i,
+                        chat_type,
+                        message,
+                        &resolved,
+                        parts,
+                        &hidden,
+                        &mut events,
+                    ),
+                    None => host.hub.whisper(i, &targets, message, &resolved, parts),
+                }
+                events
+            });
+            for event in events.unwrap_or_default() {
+                self.lan_log_event(event);
+            }
+        }
+    }
+
+    /// The next guest waiting to say its message command.
+    fn pending_chat(&mut self) -> Option<(u32, PendingChat)> {
+        let host = self.lan.as_mut()?;
+        let (i, conn) = host
+            .hub
+            .guests
+            .iter()
+            .enumerate()
+            .find(|(_, g)| g.chat.is_some())
+            .map(|(i, g)| (i, g.conn))?;
+        let chat = host.hub.guests.update(i, |g| g.chat.take())?;
+        Some((conn, chat))
+    }
 }
+
+#[cfg(test)]
+#[path = "lan_chat/lan_chat_tests.rs"]
+mod chat_command_tests;
