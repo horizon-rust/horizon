@@ -37,6 +37,8 @@ impl Game<'_> {
             Screen::WorldOptions => self.world_options_typing(),
             Screen::Creative => self.mod_browser_typing() || self.creative_screen.tab().search,
             Screen::BlockEditor => self.block_editor.as_ref().is_some_and(|s| s.text_focused()),
+            // The wardrobe's search box: the screen's one text field, focused while it is open.
+            Screen::Wardrobe => true,
             Screen::Inventory => {
                 self.mod_browser_typing() || self.recipe_search_focused() || self.station_typing()
             }
@@ -179,6 +181,7 @@ impl Game<'_> {
                 Screen::CommandBlock => self.command_block_type(text),
                 Screen::Social => self.social_type(text),
                 Screen::DebugOptions => self.debug_options_type(text),
+                Screen::Wardrobe => self.wardrobe_type(Some(text)),
                 Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
                 Screen::WorldOptions => self.world_options_text(Some(text)),
                 Screen::BlockEditor => self.block_editor_type(text),

@@ -934,6 +934,23 @@ impl Game<'_> {
         size: f32,
         offset_y: f32,
     ) {
+        self.draw_player_preview_worn(batch, x0, y0, x1, y1, size, offset_y, None);
+    }
+
+    /// The same preview, with an optional outfit override for the Wardrobe's
+    /// selected card. The game's own cosmetics cache is not touched.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn draw_player_preview_worn(
+        &self,
+        batch: &mut HudBatch,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        size: f32,
+        offset_y: f32,
+        worn: Option<&horizon_cosmetics::Worn>,
+    ) {
         let Some(m) = self.player_model.as_ref() else {
             return;
         };
@@ -994,6 +1011,9 @@ impl Game<'_> {
             240 | 240 << 8,
             &mut verts,
         );
+        // The Wardrobe's stage: while this one picture draws, the card being previewed dresses
+        // the own model (`cosmetics::set_preview`), without touching the game's own cache.
+        let _wardrobe_preview = super::cosmetics::preview(worn);
         let picture = horizon_hooks::players::Pass::Picture;
         self.own_layers_geometry(&m, picture, camera, 1.0, 240 | 240 << 8, &mut verts);
         // `WingsLayer` draws through `RenderTypes.armorCutoutNoCull`: the

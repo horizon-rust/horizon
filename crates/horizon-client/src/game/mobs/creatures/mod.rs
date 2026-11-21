@@ -3429,9 +3429,9 @@ impl Game<'_> {
                 | MobEvent::SchoolSize { .. }
                 | MobEvent::PufferfishSting { .. } => {}
                 e @ MobEvent::LeashBreak { at: Some(_), .. } => self.leash_break_event(e),
-                MobEvent::LeashBreak { mob, drop, sound, .. } => {
-                    self.tick_break_leash(mob, drop, sound)
-                }
+                MobEvent::LeashBreak {
+                    mob, drop, sound, ..
+                } => self.tick_break_leash(mob, drop, sound),
                 MobEvent::NotifyLeashHolder { holder } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == holder) {
                         horizon_client::mobs::happy_ghast::notify_leash_holder(m);

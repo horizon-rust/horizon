@@ -265,6 +265,8 @@ enum Screen {
     Win,
     /// DebugOptionsScreen, F3+F6 (game/interface/debug_options.rs).
     DebugOptions,
+    /// The in-game Wardrobe, Right Shift (game/wardrobe.rs).
+    Wardrobe,
     /// A screen of a native mod's own (`mod_screen_open`): it draws and
     /// takes its input through the screen hooks.
     Mod,
@@ -301,6 +303,7 @@ impl Screen {
             Screen::DialogWarning => "dialog_warning",
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
+            Screen::Wardrobe => "wardrobe",
             Screen::Mod => "mod",
             Screen::HudEditor => "hud_editor",
             Screen::Studio => "studio",
@@ -1597,8 +1600,10 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<horizon_client::skins::Resolver>,
     skin_slots: horizon_client::skins::SkinSlots,
-    /// Cosmetics on players (game/cosmetics.rs), off by default.
+    /// Cosmetics on players (game/interface/cosmetics/mod.rs), off by default.
     cosmetics: cosmetics::Cosmetics,
+    /// The in-game Wardrobe (game/wardrobe.rs): the launcher's outfit editor over the world.
+    wardrobe: wardrobe::Wardrobe,
     /// 3D skin layers: each player's outer layer as one slab per painted
     /// texel, built once per (skin, slim) (`mobs::skin_layers`).
     skin_3d: RefCell<skin_models::SkinModels>,
@@ -4688,6 +4693,15 @@ impl Game<'_> {
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         self.input_hud_begin();
         let mut batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+        // The wardrobe locker is a reading screen: at the vanilla GUI scale its text and cards are
+        // coarse blocks, so while it is open the whole frame renders at half that scale (twice the
+        // pixel grid) and everything, the HUD behind included, reads fine. Input keeps the vanilla
+        // GUI scale; the wardrobe's own click code converts.
+        if self.screen == Screen::Wardrobe {
+            batch.scale = (batch.scale / 2.0).max(1.0);
+            batch.width = (size[0] as f32 / batch.scale).ceil();
+            batch.height = (size[1] as f32 / batch.scale).ceil();
+        }
         batch.glint_colour = self.pvp_glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
@@ -5127,6 +5141,7 @@ impl Game<'_> {
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
+            Screen::Wardrobe => self.draw_wardrobe_screen(&mut batch),
             Screen::HudEditor => self.draw_hud_editor(&mut batch),
             Screen::Studio => {
                 self.draw_screen_phase(
@@ -9539,6 +9554,9 @@ impl Game<'_> {
                     if self.screen == Screen::Advancements {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
                     }
+                    if self.screen == Screen::Wardrobe && d != 0.0 {
+                        self.wardrobe_scroll(d);
+                    }
                 }
                 WindowEvent::MouseInput { state, button, .. } if self.command_prompt.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
@@ -9775,6 +9793,9 @@ impl Game<'_> {
                         }
                         Screen::DebugOptions if pressed && button == MouseButton::Left => {
                             self.debug_options_click()
+                        }
+                        Screen::Wardrobe if pressed && button == MouseButton::Left => {
+                            self.wardrobe_click()
                         }
                         Screen::DebugOptions if button == MouseButton::Left => {
                             self.debug_options_release()
@@ -10863,6 +10884,7 @@ impl<'a> Game<'a> {
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
             cosmetics: Default::default(),
+            wardrobe: Default::default(),
             skin_3d: Default::default(),
             trim_slots: Default::default(),
             cart_models: prepared.cart_models,

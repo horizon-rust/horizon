@@ -22,6 +22,7 @@ pub mod prefs;
 pub mod preview;
 pub mod trail;
 pub mod viewer;
+pub mod wardrobe;
 
 pub use emote::{
     BODY, Ease, Emote, Key, MAX_ALL_KEYS, MAX_KEYS, MAX_LENGTH, MAX_MOVE, MAX_ROOT_MOVE,

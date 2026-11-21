@@ -503,6 +503,7 @@ fn screen_ids_are_distinct_and_stable() {
         Screen::HudEditor,
         Screen::Studio,
         Screen::DebugOptions,
+        Screen::Wardrobe,
     ];
     let ids: Vec<&'static str> = all.iter().map(|screen| screen.id()).collect();
     let unique: BTreeSet<&'static str> = ids.iter().copied().collect();

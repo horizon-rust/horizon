@@ -339,6 +339,9 @@ pub(super) fn enabled() -> bool {
 #[derive(Default)]
 struct Seat {
     client: Option<Arc<horizon_cosmetics::Cosmetics>>,
+    /// The outfit the Wardrobe's stage draws (`preview`): the card being previewed, for the one
+    /// picture draw that asked, instead of what the account wears.
+    preview: Option<horizon_cosmetics::Worn>,
     /// Item files from a folder (`HORIZON_COSMETICS_LOCAL`).
     local: bool,
     /// Show my cosmetics on its way to the service.
@@ -414,6 +417,64 @@ struct Said {
 
 /// One [`Seat`] per splitscreen player.
 static SERVICES: Mutex<Vec<Seat>> = Mutex::new(Vec::new());
+
+/// The cosmetics service's client for the game's Wardrobe (`game/interface/wardrobe.rs`), whose
+/// changes go through `Cosmetics::set_worn`. None until the account is known and the service
+/// started.
+pub(crate) fn client() -> Option<Arc<horizon_cosmetics::Cosmetics>> {
+    service(|s| s.client.clone())
+}
+
+/// The Wardrobe's three switches, on the same lines as the Extras page's Cosmetics group: my own
+/// cosmetics shown, how much of other players', and whether their trails and auras show (the
+/// inverse of the stored line, `hide_fx`). The wardrobe saves `horizon-extras.txt` itself
+/// (`Extras::save` appends these lines).
+pub(crate) fn switches() -> (bool, Others, bool) {
+    service(|s| (s.settings.mine, s.others(), s.settings.hide_fx))
+}
+
+/// "Show my cosmetics", as the wardrobe's switch flips it; the wardrobe tells the service.
+pub(crate) fn set_mine(on: bool) {
+    service(|s| s.settings.mine = on);
+}
+
+/// Other players' cosmetics, one step on, as the Extras page's row cycles them.
+pub(crate) fn next_others() {
+    service(|s| {
+        let next = s.others().next();
+        s.settings.others = Some(next);
+    });
+}
+
+/// Other players' trails and auras, on (`true`) or hidden.
+pub(crate) fn set_auras(on: bool) {
+    service(|s| s.settings.hide_fx = !on);
+}
+
+/// The Wardrobe's stage outfit for the picture being drawn (`[`preview`]`'s guard).
+pub(super) struct Preview {
+    set: bool,
+}
+
+/// Sets what the Wardrobe's stage preview wears for the picture `worn` belongs to; dropping the
+/// guard takes it back out, so the game's own cosmetics cache is never touched. `worn` is the
+/// card's outfit plus the player's other worn items, or None for the account's own.
+pub(super) fn preview(worn: Option<&horizon_cosmetics::Worn>) -> Preview {
+    let worn = worn.cloned();
+    let set = worn.is_some();
+    if enabled() {
+        service(|s| s.preview = worn);
+    }
+    Preview { set }
+}
+
+impl Drop for Preview {
+    fn drop(&mut self) {
+        if self.set {
+            service(|s| s.preview = None);
+        }
+    }
+}
 
 /// Runs `f` on this seat's [`Seat`]. Never called inside itself.
 fn service<R>(f: impl FnOnce(&mut Seat) -> R) -> R {
@@ -720,7 +781,10 @@ impl Seat {
             (p.item.vertices > 0).then(|| (p.item.clone(), t, w))
         });
         let client = self.client.as_ref().filter(|_| bodies);
-        let worn = client.and_then(|c| worn_of(c, self.shows(own), || self.uuid_of(m)));
+        // The Wardrobe's stage: the card being previewed, on the own model of that one picture.
+        let preview = if own { self.preview.clone() } else { None };
+        let worn = preview
+            .or_else(|| client.and_then(|c| worn_of(c, self.shows(own), || self.uuid_of(m))));
         // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
         // matrix: the head, the body and the two arms at most.
         let mut bones: [Option<(Bone, [[f32; 4]; 4])>; 4] = [None; 4];

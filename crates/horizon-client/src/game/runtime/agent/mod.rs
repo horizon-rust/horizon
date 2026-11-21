@@ -473,6 +473,7 @@ impl Game<'_> {
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
+            Screen::Wardrobe => "wardrobe",
             Screen::Mod => "mod",
             Screen::HudEditor => "hud-editor",
             Screen::Studio => "studio",

@@ -63,6 +63,18 @@ pub fn set_listed(
     answer["listed"].as_bool().ok_or_else(|| "no answer".into())
 }
 
+/// Mojang keeps one joined server id per account: the game's wardrobe and its account switches
+/// take turns proving the same account, rather than racing each other's `join`.
+static SIGN_IN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Held for one sign-in of an account, whichever path asks ([`sign_in_for`], or the wardrobe's own
+/// `Service::sign_in`, which asks for the account's UUID and so has its own trip).
+pub(crate) fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    SIGN_IN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A session of the service's own for the account `name`; `join` tells Mojang that account joins
 /// the server id the service chose.
 fn sign_in(
@@ -83,6 +95,7 @@ fn sign_in_for(
     name: &str,
     join: &mut impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(String, u64), String> {
+    let _one_at_a_time = one_at_a_time();
     let start = service.call("POST", "/v1/auth/start", None, &json!({}))?;
     let server_id = start["server_id"].as_str().ok_or("no server id")?;
     join(server_id)?;

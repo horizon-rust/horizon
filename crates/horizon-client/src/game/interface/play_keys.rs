@@ -35,6 +35,13 @@ impl Game<'_> {
         {
             return Ok(());
         }
+        if self.wardrobe_toggle_key(key, raw) {
+            return Ok(());
+        }
+        if self.screen == Screen::Wardrobe && key == KeyCode::Backspace {
+            self.wardrobe_backspace();
+            return Ok(());
+        }
         if key == KeyCode::Escape && self.mod_browser_back() {
             return Ok(());
         }
@@ -94,6 +101,7 @@ impl Game<'_> {
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
+                Screen::Wardrobe => self.close_wardrobe(),
                 Screen::Mod => self.close_mod_screen(),
                 Screen::Studio => self.close_studio_screen(),
                 Screen::HudEditor => self.close_hud_editor(),

@@ -85,7 +85,8 @@ impl Screen {
             | Self::CommandBlock
             | Self::BlockEditor
             | Self::DebugOptions
-            | Self::HudEditor => true,
+            | Self::HudEditor
+            | Self::Wardrobe => true,
         }
     }
     /// `Screen.isAllowedInPortal`: `LocalPlayer.handlePortalTransitionEffect`
@@ -109,7 +110,8 @@ impl Screen {
             | Self::ServerLinks
             | Self::ConfirmLink
             | Self::DialogWarning
-            | Self::DebugOptions => true,
+            | Self::DebugOptions
+            | Self::Wardrobe => true,
             Self::Playing
             | Self::GameModeSwitcher
             | Self::Chat
@@ -1103,6 +1105,7 @@ mod tests {
             Screen::Stats,
             Screen::Advancements,
             Screen::WorldOptions,
+            Screen::Wardrobe,
         ] {
             assert!(screen.blurs_background(false));
             assert!(screen.blurs_background(true));
