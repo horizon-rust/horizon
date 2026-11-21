@@ -352,6 +352,10 @@ pub(super) trait LevelHost: Sized {
     ) -> bool {
         vanilla
     }
+    /// `spawn_position_check` for a natural spawn at `at`: whether a mod refuses it.
+    fn position_refused(_: &Level<'_, Self>, _: [f64; 3]) -> bool {
+        false
+    }
     /// `mob_spawn_position_check` for a spawn at `at`.
     fn position_check(
         _: &Level<'_, Self>,
@@ -402,6 +406,27 @@ impl LevelHost for &Game<'_> {
             SpawnCheck::Fail => false,
             _ => vanilla,
         }
+    }
+    fn position_refused(level: &Level<'_, Self>, at: [f64; 3]) -> bool {
+        if !mod_api::__private::listened(mod_api::HookId::SpawnPositionCheck) {
+            return false;
+        }
+        let Some(player) = nearest_player(&level.players, at[0], at[1], at[2])
+            .and_then(|nearest| level.game.player(nearest.uuid))
+        else {
+            return false;
+        };
+        let dimension = level.game.dim.id().to_owned();
+        let mut canceled = false;
+        level.game.native_spawn_position_check(
+            mod_api::__private::SpawnPositionCheckCall {
+                dimension: &dimension,
+                pos: at,
+                player,
+                canceled: &mut canceled,
+            },
+        );
+        canceled
     }
     /// Vanilla creates the mob before its position checks, so with a listener
     /// the mob a fresh spawn is about to create is created here, the way the
@@ -890,6 +915,9 @@ impl<H: LevelHost> NaturalLevel for Level<'_, H> {
         pending: spawn_selection::Pending,
     ) -> SpawnCheck {
         H::position_check(self, entity, reason, at, pending)
+    }
+    fn spawn_position_refused(&self, at: [f64; 3]) -> bool {
+        H::position_refused(self, at)
     }
     fn position_refused(&self) {
         if let Some(refused) = self.checked.take() {

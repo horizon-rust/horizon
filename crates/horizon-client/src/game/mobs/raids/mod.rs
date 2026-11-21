@@ -424,6 +424,11 @@ impl Game<'_> {
             }
             "raid_omen" => match self.raiding.omen_position.take() {
                 Some(at) => {
+                    // RaidTriggerEvent: a cancel makes no raid and keeps the omen.
+                    if self.raid_omen_trigger_cancelled(at) {
+                        self.raiding.omen_position = Some(at);
+                        return OmenTick::Continue;
+                    }
                     self.create_or_extend_raid(at, Some(e.amplifier));
                     OmenTick::Remove
                 }
@@ -431,6 +436,22 @@ impl Game<'_> {
             },
             _ => OmenTick::Continue,
         }
+    }
+    /// `raid_omen_trigger`: whether a mod stops the player's Raid Omen from starting or extending
+    /// a raid at `at`.
+    fn raid_omen_trigger_cancelled(&mut self, at: [i32; 3]) -> bool {
+        let Some(player) = self.native_acting_player() else {
+            return false;
+        };
+        let dimension = self.dim.id().to_owned();
+        let mut canceled = false;
+        self.native_raid_omen_trigger(mod_api::__private::RaidOmenTriggerCall {
+            dimension: &dimension,
+            pos: at,
+            player,
+            canceled: &mut canceled,
+        });
+        canceled
     }
     /// The Raid Omen sound when the effect is first added
     /// (`MobEffect.onEffectAdded`: at the player's feet).

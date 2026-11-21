@@ -29,10 +29,18 @@ impl LevelAccess for GameLevel<'_> {
     ) -> Arc<horizon_world::level::data::Sounds> {
         self.part_place_sound_type(pos, state, sounds)
     }
-    fn allow_hopper_pickup_item(&self, pos: BlockPos, item: &str, count: u32) -> bool {
+    fn allow_hopper_pickup_item(&self, pos: BlockPos, item: &str, count: u32, entity: u32) -> bool {
         let mut cancel = false;
         if self.native_authoritative {
             self.native_hopper_pickup_item(self.dimension, pos, item, count, &mut cancel);
+            self.native_hopper_pickup_item_detail(
+                self.dimension,
+                pos,
+                item,
+                count,
+                entity,
+                &mut cancel,
+            );
         }
         !cancel
     }

@@ -372,6 +372,11 @@ pub trait NaturalLevel: SpawnLevel {
     /// The position check just asked refused the mob: what the level made
     /// for it is dropped.
     fn position_refused(&self) {}
+    /// `spawn_position_check`: whether server mods refuse a natural spawn at `at`, for the
+    /// player nearest to it. Asked before vanilla's position checks and draws for that spot.
+    fn spawn_position_refused(&self, _at: [f64; 3]) -> bool {
+        false
+    }
     /// Whether server mods hear `potential_spawns`.
     fn spawn_hooks(&self) -> bool {
         false
@@ -1372,6 +1377,9 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
                 continue;
             };
             if !right_distance(l, chunk, [x, y, z], distance) {
+                continue;
+            }
+            if l.spawn_position_refused([xx, f64::from(y), zz]) {
                 continue;
             }
             if current.is_none() {

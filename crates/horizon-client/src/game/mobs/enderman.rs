@@ -213,7 +213,7 @@ impl Game<'_> {
         }
         self.process_level_events()?;
         if changed {
-            self.native_entity_change_block(mob, &kind, pos, &from, &to);
+            self.entity_changed_block(mob, &kind, pos, &from, &to);
         }
         Ok(())
     }

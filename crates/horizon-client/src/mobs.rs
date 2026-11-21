@@ -3939,6 +3939,8 @@ impl Mob {
             victim,
             &mut container,
         ) {
+            // LivingDamageEvent.Post hears the canceled hit too, as its own hook.
+            level.damage_post_cancelled(crate::health::Hurting::Mob(self, &source), &container);
             // Ghast.hurtServer: true for a reflected fireball whatever
             // super.hurtServer did.
             return reflected;

@@ -1389,6 +1389,20 @@ pub(super) fn damage_post(
     HitLevel(level).native_living_damage_post(entity, kind, &source, &snapshot);
 }
 
+/// `native_living_damage_post_cancelled` for the damage code.
+pub(super) fn damage_post_cancelled(
+    level: DamageLevel<'_>,
+    hurting: Hurting<'_>,
+    container: &DamageContainer,
+) {
+    if !mod_api::__private::listened(mod_api::HookId::LivingDamagePostCancelled) {
+        return;
+    }
+    let (entity, kind, source) = hurt_server_args(hurting, level.attack());
+    let snapshot = (*container).try_into_api().expect("scalar damage snapshot");
+    HitLevel(level).native_living_damage_post_cancelled(entity, kind, &source, &snapshot);
+}
+
 /// `native_living_shield_block` for the damage code. Its one
 /// caller. The hurt entity and the source are named as the damage hook names them.
 pub(super) fn shield_block(
@@ -1526,6 +1540,7 @@ pub(super) const DAMAGE_HOOKS: DamageHooks = DamageHooks {
     incoming: Some(incoming_damage),
     pre: Some(damage_pre),
     post: Some(damage_post),
+    post_cancelled: Some(damage_post_cancelled),
     knockback: Some(knockback),
     totem: Some(use_totem),
     shield: Some(shield_block),
@@ -2498,7 +2513,7 @@ impl Game<'_> {
         let to = facts.get(state).name.clone();
         self.level_set(pos, state)?;
         if let Some(kind) = kind {
-            self.native_entity_change_block(mob, &kind, pos, &from, &to);
+            self.entity_changed_block(mob, &kind, pos, &from, &to);
         }
         Ok(())
     }

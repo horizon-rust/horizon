@@ -247,6 +247,14 @@ pub trait PlayersBackend {
     #[access(WorldOnly)]
     fn player_container_menu(&self, player: PlayerRef) -> Option<MenuRef>;
     /// Side: server.
+    /// Lends the menu `player` has open, whatever it is: crafting tables, merchants, workstations,
+    /// lecterns and menus with hidden slots included, which `player_container_menu` refuses. It reads
+    /// the menu's slots and cursor, as `menu_slot` and `menu_carried` do. `None` for a stale or
+    /// unavailable player, a client, and a player with no menu open. Read-only; the handle is valid
+    /// for the moment of the call only.
+    #[access(WorldOnly)]
+    fn player_open_menu_slots(&self, player: PlayerRef) -> Option<MenuRef>;
+    /// Side: server.
     /// Every group the player waits on and its ticks left, ordered by
     /// group.
     #[access(WorldOnly)]

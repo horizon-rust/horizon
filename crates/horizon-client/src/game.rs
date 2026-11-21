@@ -4399,7 +4399,36 @@ impl Game<'_> {
             to,
             cancel: &mut cancel,
         });
-        cancel
+        cancel || self.turtle_egg_trample_cancelled(player, position, from)
+    }
+    /// `turtle_egg_trample`: whether a mod keeps the turtle eggs a player's landing is about to
+    /// break (`TurtleEggBlock.fallOn`). Asked once per change the landing makes to the eggs.
+    fn turtle_egg_trample_cancelled(
+        &mut self,
+        player: Option<u128>,
+        position: BlockPos,
+        from: BlockStateId,
+    ) -> bool {
+        if !mod_api::__private::listened(mod_api::HookId::TurtleEggTrample)
+            || &*self.res.facts().get(from).name != "minecraft:turtle_egg"
+        {
+            return false;
+        }
+        let Some(entity) = player
+            .and_then(|uuid| self.player(uuid))
+            .map(|player| player.entity())
+        else {
+            return false;
+        };
+        let dimension = self.dim.id().to_owned();
+        let mut canceled = false;
+        self.native_turtle_egg_trample(mod_api::__private::TurtleEggTrampleCall {
+            dimension: &dimension,
+            pos: [position.x, position.y, position.z],
+            entity,
+            canceled: &mut canceled,
+        });
+        canceled
     }
     fn tick(&mut self) -> Result<()> {
         self.expire_client_cracks();

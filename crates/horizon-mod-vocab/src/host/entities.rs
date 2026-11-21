@@ -238,6 +238,12 @@ pub trait EntitiesBackend {
     /// 379.
     #[access(WorldOnly)]
     fn entity_on_ground(&self, entity: EntityRef) -> Option<bool>;
+    /// Side: server.
+    /// The blocks the entity has fallen since it last landed or was reset (`Entity.fallDistance`,
+    /// saved as `fall_distance`); negative after a rise. Server players, guests and mobs. None
+    /// for another kind, a client or a stale handle.
+    #[access(WorldOnly)]
+    fn entity_fall_distance(&self, entity: EntityRef) -> Option<f64>;
     /// Side: both.
     /// The entity's box (`Entity.getBoundingBox`): its lowest and highest
     /// corner. None for the kinds whose box Horizon doesn't keep (displays,
@@ -949,6 +955,13 @@ pub trait EntitiesBackendMut {
     /// Sets the mob's persistent glowing tag (`Entity.setGlowingTag`). Returns false for players and guests.
     #[access(WorldOnly)]
     fn entity_set_glowing(&mut self, entity: EntityRef, glowing: bool) -> bool;
+    /// Side: server.
+    /// Sets whether a mob keeps its place when nothing else holds it (`Mob.persistenceRequired`,
+    /// saved as `PersistenceRequired`): a persistent mob does not despawn on its own. False
+    /// clears the flag, so the mob can despawn again; vanilla's own `setPersistenceRequired`
+    /// only sets it. False for a player, a guest, the dragon, another kind or a stale handle.
+    #[access(WorldOnly)]
+    fn entity_set_persistent(&mut self, entity: EntityRef, persistent: bool) -> bool;
     /// Side: server.
     /// Turns a painting, item frame or glow item frame in place to face `direction`
     /// (`HangingEntity.setDirection`, `ItemFrame.setDirection`): its facing, the yaw and pitch

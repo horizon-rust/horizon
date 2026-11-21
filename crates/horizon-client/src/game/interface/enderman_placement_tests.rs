@@ -351,18 +351,19 @@ fn a_placement_listener_discarding_the_enderman_refuses_the_attempt() {
 #[test]
 #[ignore = "daily"]
 fn an_air_normalized_placement_empties_the_hand_without_a_block_change_notice() {
-    use mod_api::{EntityChangeBlockEvent, Hooks, ModEntry, ServerHost};
+    use mod_api::{EntityChangeBlockDetailEvent, Hooks, ModEntry, ServerHost};
     use mod_platform::testing::with_mods;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Changed(Arc<AtomicUsize>);
     #[mod_api::__subscriptions]
     impl Hooks for Changed {
-        fn entity_change_block(
+        fn entity_change_block_detail(
             &self,
             _: &mut dyn ServerHost,
-            event: &mut EntityChangeBlockEvent<'_>,
+            event: &mut EntityChangeBlockDetailEvent<'_>,
         ) {
+            assert_eq!(event.dimension, "minecraft:overworld");
             assert_eq!(event.from, "minecraft:air");
             assert_eq!(event.to, "minecraft:note_block");
             self.0.fetch_add(1, Ordering::SeqCst);

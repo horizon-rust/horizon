@@ -318,3 +318,8 @@ before, so each moves as it was and the cells they leave and enter end as air
 or a moving block, as does the arm. Writes outside the move stay. A move that
 `piston_pre` cancels and a client's replay of a move are not heard. A panic is
 contained and the move goes on.
+
+## Mobs breaking doors
+
+`entity_break_door_cancel` can cancel it; `entity_break_door` itself still only listens, after the door goes. A zombie or another mob that breaks a door is heard before the door is removed:
+a cancel leaves the door as it is, with no block change and no level event.

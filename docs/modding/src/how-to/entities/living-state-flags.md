@@ -24,6 +24,9 @@ beside the bed with the normal wake animation, teleport and pose sync; the usual
 occupying a bed or playing a wake animation. The next entity sync publishes the changed pose and bed to clients.
 Villagers use `start_sleeping`/`stop_sleeping`, not the raw player position setters.
 
+`entity_toggle_glide_cancel` can cancel the toggle; `entity_toggle_glide` itself still only listens, after the change. It runs for a guest only when the fall flying state would change, before the
+change is applied: a refused start leaves the guest not gliding, a refused stop leaves them gliding.
+
 ## Portals and leashes
 
 `EntityRef::portal_cooldown` takes `&dyn Host` and reads the remaining portal cooldown in ticks from the

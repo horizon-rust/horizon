@@ -473,8 +473,14 @@ pub trait LevelAccess: BlockEntityNeighbors {
         true
     }
 
-    /// Whether a hopper may pick up this dropped item stack. The default allows.
-    fn allow_hopper_pickup_item(&self, _pos: BlockPos, _item: &str, _count: u32) -> bool {
+    /// Whether a hopper may pick up this dropped item stack, the item entity `entity`. The default allows.
+    fn allow_hopper_pickup_item(
+        &self,
+        _pos: BlockPos,
+        _item: &str,
+        _count: u32,
+        _entity: u32,
+    ) -> bool {
         true
     }
     /// Whether `kind` may spread from `from` to `to`: a native mod may refuse

@@ -67,12 +67,27 @@ pub(super) fn finish(game: &mut Game<'_>, mut steps: Steps) {
     game.native_lifecycle.entity_sections.projectile_ids = steps.seen;
 }
 
+/// `ServerPlayer.teleport` to the absolute `to`, motion zeroed (no `relative` flags).
+#[allow(dead_code)]
 pub(super) fn teleport_player(game: &mut Game<'_>, to: Vec3) {
+    teleport_player_keeping(game, to, 0);
+}
+
+/// `ServerPlayer.teleport` with a position packet's `relative` flags: a set
+/// `DELTA_X`, `DELTA_Y` or `DELTA_Z` bit (0x20, 0x40, 0x80) keeps that
+/// component of the motion, the others zero it. `to` is absolute.
+pub(super) fn teleport_player_keeping(game: &mut Game<'_>, to: Vec3, relative: u32) {
     game.stop_riding();
     let from = game.player.as_ref().map(|player| player.position);
     if let Some(player) = game.player.as_mut() {
+        let keep = |bit: u32, value: f64| if relative & bit != 0 { value } else { 0.0 };
+        let motion = player.velocity;
         player.position = to;
-        player.velocity = Vec3::ZERO;
+        player.velocity = Vec3::new(
+            keep(0x20, motion.x),
+            keep(0x40, motion.y),
+            keep(0x80, motion.z),
+        );
         player.fall_distance = 0.0;
         player.impulse.reset();
         player.teleported = true;

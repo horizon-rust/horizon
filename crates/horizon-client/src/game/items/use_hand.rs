@@ -624,6 +624,17 @@ impl Game<'_> {
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
+        // What a placement here replaces: the clicked block when it is replaceable, else the one
+        // beside it on the clicked face (`BlockPlaceContext.getClickedPos`).
+        let replaced_candidates = mod_api::__private::listened(mod_api::HookId::BlockPlaced)
+            .then(|| {
+                let at = ctx.clicked_pos;
+                let beside = at.offset(hit.face[0], hit.face[1], hit.face[2]);
+                [
+                    (at, self.world.block(at.x, at.y, at.z)),
+                    (beside, self.world.block(beside.x, beside.y, beside.z)),
+                ]
+            });
         let outcome = if self.player_place_canceled(&ctx) {
             PlaceOutcome::Failed
         } else {
@@ -673,6 +684,18 @@ impl Game<'_> {
         }
         let placer = self.native_acting_player();
         self.block_item_placed(&stack, placer, pos, &ctx);
+        if let Some(candidates) = replaced_candidates
+            && let Some((_, replaced)) = candidates.into_iter().find(|(at, _)| *at == pos)
+        {
+            let dimension = self.dim.id().to_owned();
+            self.native_block_placed(crate::game::native_hooks::BlockPlacedCall {
+                player: placer,
+                dimension: &dimension,
+                pos: [pos.x, pos.y, pos.z],
+                placed: self.world.block(pos.x, pos.y, pos.z),
+                replaced,
+            });
+        }
         // BlockItem.place's SUCCESS: the client swings with its own prediction.
         self.swing_arm_predicted();
         // BlockItem.place's sound is among the level events;

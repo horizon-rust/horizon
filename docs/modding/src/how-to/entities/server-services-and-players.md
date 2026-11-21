@@ -101,6 +101,10 @@ UTF-16 units, values of 32767 and signatures of 1024. A list past a limit is
 refused and the login's own properties are sent. `player_login` follows later and
 can still refuse the player.
 
+`entity.fall_distance(host)` (`entity_fall_distance`) returns the blocks a server player, a guest or a mob has fallen since it last landed or was reset, negative after a rise, as Paper's `Entity#getFallDistance` does. Other kinds, a client and a stale handle give `None`.
+
+`entity.set_persistent(host, persistent)` (`entity_set_persistent`) sets or clears a mob's persistence, the flag that keeps a mob from despawning on its own and that a save writes as `PersistenceRequired`. Vanilla's own setter only sets it; `false` clears it, which Paper's `Entity#setPersistent(false)` does. It returns `false`, changing nothing, for a player, a guest, the dragon or a stale handle.
+
 ## Messages and visibility
 
 Send a message with `player.tell(host, text)`, `player.action_bar(host, text)` or

@@ -295,6 +295,19 @@ impl Game<'_> {
                         item.stack.count as i32,
                         [item.position.x, item.position.y, item.position.z],
                     );
+                    let mut cancel = false;
+                    self.native_item_despawn_detail(
+                        item.id,
+                        &item.stack.item,
+                        item.stack.count as i32,
+                        [item.position.x, item.position.y, item.position.z],
+                        &mut cancel,
+                    );
+                    if cancel {
+                        // Paper's cancel: another 6000 ticks (5 minutes) of life.
+                        item.age = 0;
+                        alive = true;
+                    }
                 }
             }
             if !alive || removed[i] {
@@ -1071,6 +1084,9 @@ mod escape_tests {
 #[cfg(test)]
 #[path = "tests/item_cactus_damage_tests.rs"]
 mod item_cactus_damage_tests;
+#[cfg(test)]
+#[path = "tests/item_despawn_cancel_tests.rs"]
+mod item_despawn_cancel_tests;
 #[cfg(test)]
 #[path = "tests/thrown_items_tests.rs"]
 mod thrown_items_tests;
