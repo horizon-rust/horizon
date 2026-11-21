@@ -421,16 +421,14 @@ impl Launcher {
             .is_some_and(|i| self.native_for.as_deref() == Some(i.id.as_str()));
         let building = mine && self.native_step.is_some();
         // Native mods that changed since the last build: Play builds them first, one button.
-        let needs_build = !building
-            && self
-                .selected_instance()
-                .filter(|i| i.java.is_none())
-                .is_some_and(|i| {
-                    matches!(
-                        self.native_state_of(i),
-                        native_status::State::NotBuilt | native_status::State::Outdated
-                    )
-                });
+        let mods = self
+            .selected_instance()
+            .filter(|i| i.java.is_none() && !building);
+        let mod_state = mods.and_then(|i| self.native_state_of(i, cx));
+        let needs_build = matches!(
+            mod_state,
+            Some(native_status::State::NotBuilt | native_status::State::Outdated)
+        );
         let busy: Option<(SharedString, Option<f32>)> =
             match (installing, self.preparing, &self.starting_client) {
                 (Some(p), _, _) => Some((tr("Updating").into(), Some(p))),
@@ -461,6 +459,12 @@ impl Launcher {
                     self.native_progress
                         .map(|p| build_mode::percent(Some(p)) as f32 / 100.),
                 )),
+                _ if wait_for_mod_scan(running, mods.is_some() && mod_state.is_none())
+                    && ready
+                    && update.is_none() =>
+                {
+                    Some((tr("Reading the mods…").into(), None))
+                }
                 // One build at a time: another instance's build first, and this one says whose.
                 _ if needs_build && self.native_step.is_some() => Some((
                     trf(
@@ -1277,9 +1281,20 @@ fn launch_command(id: &str) -> String {
     format!("horizon-launcher play --instance {id}")
 }
 
+fn wait_for_mod_scan(running: bool, pending: bool) -> bool {
+    !running && pending
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_scan_delays_play_but_keeps_stop_available() {
+        assert!(wait_for_mod_scan(false, true));
+        assert!(!wait_for_mod_scan(true, true));
+        assert!(!wait_for_mod_scan(false, false));
+    }
 
     #[test]
     fn an_edition_tab_goes_to_that_editions_instance_played_last() {
