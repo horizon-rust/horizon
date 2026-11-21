@@ -67,7 +67,7 @@ pub(super) fn finish(game: &mut Game<'_>, mut steps: Steps) {
     game.native_lifecycle.entity_sections.projectile_ids = steps.seen;
 }
 
-pub(super) fn teleport_player(game: &mut Game<'_>, to: Vec3) {
+pub(in crate::game) fn teleport_player(game: &mut Game<'_>, to: Vec3) {
     game.stop_riding();
     let from = game.player.as_ref().map(|player| player.position);
     if let Some(player) = game.player.as_mut() {

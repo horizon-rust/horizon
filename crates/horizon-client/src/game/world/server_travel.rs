@@ -2549,3 +2549,10 @@ mod hold_tests;
 #[cfg(test)]
 #[path = "server_travel/changed_dimension_tests.rs"]
 mod changed_dimension_tests;
+
+#[path = "server_travel/pearl_owner.rs"]
+pub(super) mod pearl_owner;
+
+#[cfg(test)]
+#[path = "server_travel/pearl_owner_tests.rs"]
+mod pearl_owner_tests;

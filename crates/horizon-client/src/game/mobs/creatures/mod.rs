@@ -24,7 +24,7 @@ mod pufferfish_player;
 mod residency;
 #[cfg(test)]
 mod retained_limits_tests;
-mod section_steps;
+pub(in crate::game) mod section_steps;
 #[cfg(test)]
 #[path = "../../creatures/spawn_egg_mob_tests.rs"]
 mod spawn_egg_mob_tests;
@@ -4814,8 +4814,23 @@ impl Game<'_> {
     }
     /// `projectile_hit` for a projectile the guest `conn` shot, run as them;
     /// as the host's when they have left.
-    fn guest_projectile_hit(&mut self, conn: u32, p: &Projectile, hit: Hit) -> Result<()> {
-        let result = self.as_guest(conn, |g| g.projectile_hit(p, hit));
+    pub(super) fn guest_projectile_hit(
+        &mut self,
+        conn: u32,
+        p: &Projectile,
+        hit: Hit,
+    ) -> Result<()> {
+        // A pearl takes its owner from their own level (ThrownEnderpearl.onHit).
+        let pearl = matches!(p.kind, ProjectileKind::EnderPearl);
+        let level = self
+            .lan
+            .as_ref()
+            .and_then(|host| host.hub.guest(conn))
+            .filter(|_| pearl)
+            .map(|g| super::Dim::from_id(&g.dimension));
+        let result = super::server_travel::pearl_owner::with_owner_level(level, || {
+            self.as_guest(conn, |g| g.projectile_hit(p, hit))
+        });
         // The mob hit now answers to the guest (LivingEntity.lastHurtByPlayer).
         if result.is_some()
             && self
@@ -5943,15 +5958,7 @@ impl Game<'_> {
                         let from = pl.position;
                         self.spawn_mob_raw("minecraft:endermite", [from.x, from.y, from.z], false);
                     }
-                    // ServerPlayer.teleport: removeVehicle before the placement.
-                    section_steps::teleport_player(self, to);
-                    self.hurt_player_by("minecraft:ender_pearl", damage);
-                    self.audio.play(
-                        "minecraft:entity.player.teleport",
-                        Some([to.x, to.y, to.z]),
-                        1.0,
-                        1.0,
-                    );
+                    self.pearl_takes_owner(to, damage);
                 }
                 if let Some(Who::Mob(id)) = p.owner {
                     self.mob_pearl_teleport(p, id, hit);
