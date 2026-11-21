@@ -204,6 +204,37 @@ fn clicking_seed_copies_the_raw_value_only_inside_the_link() {
 }
 
 #[test]
+fn shift_clicking_the_seed_link_has_the_value_to_type() {
+    let font = font();
+    let seed = i64::MIN;
+    let mut chat = Chat::default();
+    // The `/seed` line as the command builds it: the link is the message's argument.
+    add(
+        &mut chat,
+        &font,
+        Text::literal("Seed: ").append(Text::copyable(seed.to_string())),
+    );
+    let link = ClickEvent::CopyToClipboard(seed.to_string());
+    let mut linked = 0;
+    let mut x = 0.0;
+    while x < 400.0 {
+        if let Some(style) = chat.style_at(&font, 360, x, 315.0)
+            && style.click == Some(link.clone())
+        {
+            // ChatScreen.handleComponentClicked with Shift held types this into the box.
+            assert_eq!(
+                style.insertion.as_deref(),
+                Some(seed.to_string().as_str()),
+                "at {x}"
+            );
+            linked += 1;
+        }
+        x += 0.5;
+    }
+    assert!(linked > 0, "the seed number is a link");
+}
+
+#[test]
 fn click_targets_match_rendered_spans_when_scaled_wrapped_and_scrolled() {
     let font = font();
     let screenshot = ClickEvent::OpenFile("/tmp/My screenshots/世界.png".into());
