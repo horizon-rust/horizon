@@ -296,6 +296,9 @@ impl Game<'_> {
             self.toggles.screen_closed(options);
         } else {
             self.toggles.screen_opened(options);
+            // releaseAll lets go of keyDebugModifier too: a modifier held on a mouse
+            // button whose release a sign, book or dialog then takes is not left down.
+            self.debug_keys.modifier_down = false;
         }
         self.sync_toggle(0);
         self.sync_toggle(1);
