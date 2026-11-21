@@ -1045,10 +1045,9 @@ impl Game<'_> {
             }
             return true;
         }
-        let list = tags
-            .iter()
-            .map(|s| Tag::String(s.as_str().into()))
-            .collect();
+        // `Entity.entityTags` is a HashSet, saved in its iteration order.
+        let list = tags.iter().map(|s| Tag::String(s.as_str().into()));
+        let list = horizon_client::fastutil_order::hash_set_order(list, Tag::string_hash);
         set_key(raw, "Tags", Tag::List(list));
         true
     }

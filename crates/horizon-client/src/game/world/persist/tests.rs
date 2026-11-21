@@ -3,6 +3,23 @@ use super::*;
 
 include!("position_load_tests.rs");
 
+/// `Entity.entityTags` is a HashSet: a loaded mob's tags are kept once,
+/// in the set's iteration order, which `/data get entity` and saves show
+/// (#15158, mob_command_damage_vibration).
+#[test]
+fn loaded_tags_take_the_hash_set_order() {
+    let s = |v: &str| Tag::String(v.into());
+    let mut tag = Tag::compound([(
+        "Tags",
+        Tag::List(vec![s("h113_actor"), s("h113_stationary"), s("h113_actor")]),
+    )]);
+    Game::normalize_loaded_mob_tags(&mut tag);
+    assert_eq!(
+        tag.get("Tags"),
+        Some(&Tag::List(vec![s("h113_stationary"), s("h113_actor")]))
+    );
+}
+
 #[test]
 #[ignore = "daily"]
 fn neutral_load_restores_only_the_saved_live_target_with_or_without_listeners() {

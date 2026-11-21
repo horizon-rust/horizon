@@ -1184,8 +1184,8 @@ impl Game<'_> {
         };
         tags.retain(|tag| matches!(tag, Tag::String(_)));
         tags.truncate(1024);
-        let mut seen = HashSet::new();
-        tags.retain(|tag| seen.insert(tag.clone()));
+        // `entityTags` is a HashSet: deduplicated, and saved in its order.
+        tags = horizon_client::fastutil_order::hash_set_order(tags, Tag::string_hash);
         if !tags.is_empty() {
             raw.insert("Tags".into(), Tag::List(tags));
         }

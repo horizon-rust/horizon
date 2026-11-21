@@ -649,6 +649,15 @@ impl Game<'_> {
         }
     }
 
+    /// `Entity.teleport` moves a mob without `Entity.move`: no distance is
+    /// walked, so its next step counts from where it landed (#15158,
+    /// mob_command_damage_vibration: a `/tp` posted a STEP).
+    pub(in crate::game) fn sculk_mob_teleported(&mut self, id: u32, at: Vec3) {
+        if let Some(steps) = self.sculk.steps.get_mut(&Who::Mob(id)) {
+            steps.last = [at.x, at.y, at.z];
+        }
+    }
+
     /// `GameEvent.Context.of(entity, state)` for a non-living entity.
     pub(in crate::game) fn entity_event_context(
         &self,
