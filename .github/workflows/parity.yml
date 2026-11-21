@@ -92,6 +92,26 @@ jobs:
           python3 tools/prepare_output.py check --cache --base "$BASE_SHA"
       - name: The version constants are the pinned jar's
         run: python3 tools/gen_version_consts.py --check
+      - name: Prepared-resource portal pause and respawn regressions
+        env:
+          HORIZON_TEST_RESOURCES: ${{ github.workspace }}/.local/horizon-client/26.3
+        run: |
+          set -euo pipefail
+          tests=(
+            game::server_travel::tests::paused_server_pass_completes_a_loaded_command_arrival_without_ticking_portals
+            game::respawn_anchor::connected_spawnpoint_rotation_tests::command_forced_free_point_survives_guest_death_and_respawn_during_paused_server_pass
+            game::native_entity_refs::client_tests::a_client_reads_the_entities_and_menu_the_server_shows_it
+            game::command_harness::tests::arrival_settle_restores_the_level_on_success_and_error
+          )
+          for test in "${tests[@]}"; do
+            # --exact alone still succeeds with zero tests after a rename.
+            listed=$(cargo test --locked -p horizon-client --lib "$test" -- --ignored --exact --list)
+            if ! grep -Fxq "$test: test" <<< "$listed"; then
+              echo "::error::Required regression test not found: $test"
+              exit 1
+            fi
+            cargo test --locked -p horizon-client --lib "$test" -- --ignored --exact
+          done
       - name: The harnesses this change can affect
         env:
           PARITY_HOSTS: ''
