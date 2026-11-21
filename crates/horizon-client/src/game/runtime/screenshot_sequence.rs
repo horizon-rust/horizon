@@ -94,8 +94,10 @@ impl Game<'_> {
     }
 
     /// What a sequence's frames must share: the world, the camera, the settings, the pack and
-    /// the window's size.
-    fn sequence_scene(&mut self, roll: f32) -> Result<String> {
+    /// the window's size. The roll is the one this frame draws with (`sequence_frame_roll`), or
+    /// the last drawn frame's before the first.
+    fn sequence_scene(&mut self) -> Result<String> {
+        let roll = self.sequence_frame_roll.unwrap_or(self.posed_roll);
         let view = self.camera_view(1.0).ok_or("no camera")?;
         let (position, yaw, pitch) = self.native_camera_pose_now(1.0, view);
         let renderer = self.renderer.as_ref().ok_or("no renderer")?;
@@ -150,7 +152,7 @@ impl Game<'_> {
         if !picked.is_empty() && kind.is_none() {
             return Err("the shader pack isn't running (still loading, or it failed)".into());
         }
-        let scene = self.sequence_scene(self.posed_roll)?;
+        let scene = self.sequence_scene()?;
         let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
         renderer.reset_shader_pack_history();
         self.screenshot_sequence = Some(Sequence {
@@ -221,9 +223,12 @@ impl Game<'_> {
         } else {
             0.0
         };
-        match (refusal, self.sequence_scene(roll)) {
+        // Read once: the check below and the frame both use this roll.
+        self.sequence_frame_roll = Some(roll);
+        match (refusal, self.sequence_scene()) {
             (None, Ok(now)) if now == scene => {}
             (refusal, _) => {
+                self.sequence_frame_roll = None;
                 let reason = refusal.unwrap_or(
                     "the camera, world, settings, shader pack or window size changed while it ran",
                 );
@@ -240,7 +245,6 @@ impl Game<'_> {
             });
             renderer.screenshot_result = None;
         }
-        self.sequence_frame_roll = Some(roll);
         let drawn = self.render_frame();
         self.sequence_frame_roll = None;
         let renderer = self.renderer.as_mut().ok_or("no renderer")?;
