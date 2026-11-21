@@ -9352,8 +9352,11 @@ impl Game<'_> {
                         }
                     }
                 }
-                WindowEvent::MouseWheel { .. }
-                    if self.screen == Screen::Playing && self.replay.driver.is_some() => {}
+                WindowEvent::MouseWheel { delta, .. }
+                    if self.screen == Screen::Playing && self.replay.driver.is_some() =>
+                {
+                    self.replay_wheel(delta);
+                }
                 WindowEvent::MouseWheel { delta, .. } => {
                     let (raw_x, raw_y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),

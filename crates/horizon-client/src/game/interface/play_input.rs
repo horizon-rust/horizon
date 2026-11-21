@@ -310,6 +310,29 @@ impl Game<'_> {
             && self.sleeping.is_none()
             && self.player.is_some()
     }
+    /// The wheel in play while a replay plays: the recording's hotbar isn't the person's, so it
+    /// turns nothing, but a mod still hears it (`mouse_scrolling`), as a replay editor's
+    /// timeline does.
+    pub(super) fn replay_wheel(&mut self, delta: winit::event::MouseScrollDelta) {
+        let (raw_x, raw_y) = match delta {
+            winit::event::MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
+            winit::event::MouseScrollDelta::PixelDelta(p) => (p.x / 30.0, p.y / 30.0),
+        };
+        let discrete = self.settings.discrete_scroll;
+        let sensitivity = f64::from(self.settings.mouse_wheel_sensitivity);
+        let scaled = |v: f64| {
+            (if discrete {
+                horizon_client::mouse::java_signum(v)
+            } else {
+                v
+            }) * sensitivity
+        };
+        let (_, steps) = self
+            .mouse
+            .on_scroll(raw_x, raw_y, discrete, sensitivity)
+            .unwrap_or((0, (0, 0)));
+        self.hotbar_scroll_canceled([scaled(raw_x), scaled(raw_y)], [steps.0, steps.1]);
+    }
     /// A mod's `MouseScrolling` cancels the step about to turn the hotbar.
     pub(super) fn hotbar_scroll_canceled(&mut self, scroll: [f64; 2], steps: [i32; 2]) -> bool {
         let mut canceled = false;

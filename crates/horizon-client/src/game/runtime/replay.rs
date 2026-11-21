@@ -27,6 +27,15 @@ pub(super) struct Replay {
     pub(super) last_tick: Option<std::time::Instant>,
     pub(super) virtual_tick_ms: f32,
     recording_error_reported: bool,
+    /// The playing recording's id: its file name without `.mcpr`.
+    pub(super) recording: String,
+    /// Counts the replays opened, so a mod's close or seek reaches only the replay it was asked
+    /// of.
+    pub(super) generation: u64,
+    /// The position mods were last told of (`replay_advanced`); none until `replay_opened`.
+    pub(super) reported_ms: Option<u32>,
+    /// A mod's open, close or seek, run at the end of the frame (`native_replay_requests`).
+    pub(super) request: Option<super::native_replay::ReplayRequest>,
 }
 
 impl Replay {
@@ -494,6 +503,7 @@ impl Game<'_> {
             m.previous_limb_speed = m.limb_speed;
         }
         self.studio_replay_advanced();
+        self.announce_replay_advance();
         Ok(())
     }
 
@@ -718,7 +728,17 @@ impl Game<'_> {
         if self.replay.driver.is_none() {
             self.replay.previous_camera_type = Some(self.camera_type);
             self.replay.standalone = standalone;
+        } else {
+            // A replay opened over another: mods hear the old one close before the new one opens.
+            self.replay.driver = None;
+            self.replay.reported_ms = None;
+            let previous = std::mem::take(&mut self.replay.recording);
+            self.native_replay_closed(&previous);
         }
+        let recording = super::native_replay::recording_id(path);
+        self.replay.recording = recording.clone();
+        self.replay.generation += 1;
+        self.replay.reported_ms = None;
         self.replay.driver = Some(Box::new(driver));
         self.camera_type = horizon_client::camera::CameraType::FirstPerson;
         self.title = None;
@@ -730,6 +750,9 @@ impl Game<'_> {
         let _ = self.advance_studio_replay();
         self.reset_studio_playback_ticks();
         log::info!("Studio: Opened replay '{path}' ({duration_ms} ms, {packets} packets)");
+        // Mods hear of the clock's moves from here on, starting where this first frame left it.
+        self.replay.reported_ms = self.replay.driver.as_ref().map(|r| r.position_ms());
+        self.native_replay_opened(&recording, duration_ms, self.replay.standalone);
         Ok(json!({
             "ok": true,
             "duration_ms": duration_ms,
@@ -757,6 +780,9 @@ impl Game<'_> {
         }
         self.replay.last_tick = None;
         self.studio_replay_closed();
+        self.replay.reported_ms = None;
+        let recording = std::mem::take(&mut self.replay.recording);
+        self.native_replay_closed(&recording);
         self.replay.virtual_tick_ms = 0.0;
         self.capture(false);
         if standalone {
