@@ -49,6 +49,7 @@ log = "0.4"
 miniz_oxide = "0.8"
 naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "hlsl-out"] }
 half = "2"
+httpdate = "1"
 png = "0.18"
 # Project icons served by Modrinth are often WebP or JPEG rather than PNG, and
 # the pack browser showed nothing for those. Both are small pure-Rust decoders.

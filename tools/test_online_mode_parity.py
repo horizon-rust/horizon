@@ -84,6 +84,9 @@ class Services:
     def __init__(self):
         self.joined = {}
         self.log = []
+        self.throttle_next_join = None
+        self.throttled_join = None
+        self.next_join_at = None
         self.lock = threading.Lock()
         services = self
 
@@ -91,11 +94,13 @@ class Services:
             def log_message(self, *args):
                 pass
 
-            def reply(self, status, body=None):
+            def reply(self, status, body=None, retry_after=None):
                 data = b'' if body is None else json.dumps(body).encode()
                 self.send_response(status)
                 if body is not None:
                     self.send_header('Content-Type', 'application/json')
+                if retry_after is not None:
+                    self.send_header('Retry-After', str(retry_after))
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -137,6 +142,13 @@ class Services:
                 token, profile, server_id = body.get('accessToken'), body.get('selectedProfile'), body.get('serverId')
                 accepted = token in (GOOD, FORGET) and profile == PLAYER_UUID
                 with services.lock:
+                    if accepted and services.throttle_next_join is not None:
+                        throttle_body = services.throttle_next_join
+                        services.throttle_next_join = None
+                        services.throttled_join = (profile, server_id, time.monotonic())
+                        return self.reply(429, throttle_body or None, retry_after=1)
+                    if services.throttled_join is not None:
+                        services.next_join_at = time.monotonic()
                     services.log.append(('join', profile, server_id, accepted))
                     if token == GOOD and accepted:
                         services.joined[PLAYER] = server_id
@@ -196,6 +208,33 @@ def run_client(binary, build, port, label, token, discovery):
     got = json.loads(report.read_text())
     got['session file left'] = (directory / 'session.json').exists()
     return got
+
+
+def rate_limited_login(binary, build, port, services, discovery, error=None):
+    """Horizon retries through a new encrypted handshake after a session HTTP 429."""
+    services.take_log()
+    with services.lock:
+        services.throttle_next_join = {'error': error} if error else {}
+        services.throttled_join = None
+        services.next_join_at = None
+    label = 'rate-limited-with-body' if error else 'rate-limited'
+    got = run_client(binary, build, port, label, GOOD, discovery)
+    calls = [call for call in services.take_log() if call[0] in ('join', 'verify')]
+    with services.lock:
+        throttled = services.throttled_join
+        retried_at = services.next_join_at
+        services.throttled_join = services.next_join_at = None
+    assert got['error'] is None and got['chunks'] > 0, f'rate-limited login failed: {got["error"]}'
+    assert not got['session file left'], 'session file was not consumed'
+    assert throttled is not None and retried_at is not None, 'the retry did not contact the session service'
+    profile, stale_hash, throttled_at = throttled
+    assert retried_at - throttled_at >= 5, 'the retry missed the game server connection throttle floor'
+    assert len(calls) == 2, f'expected one join and one verification after the 429, got {len(calls)} calls'
+    assert calls[0][0] == 'join' and calls[0][1] == profile and calls[0][-1], 'the account changed on retry'
+    fresh_hash = calls[0][2]
+    assert fresh_hash != stale_hash, 'the retry reused the stale server handshake'
+    assert calls[1] == ('verify', PLAYER, fresh_hash, True), 'the server did not verify the retried login'
+    print(f'rate-limited login: played after two join requests and {retried_at - throttled_at:.2f}s')
 
 # The server's lines about the player, as both servers print them.
 PLAYER_LINE = re.compile(r'^\[\d\d:\d\d:\d\d\] \[([^\]]+)\]: (.*(?:Tester|Username|Disconnecting|verify username).*)$')
@@ -344,9 +383,13 @@ def run_side(label, command, binary, build, services, discovery):
               any("Couldn't find profile with name: nobody" in l for l in server.lines[mark:]), True)
         check('whitelist add: no such account', services.take_log(), [('lookup', 'nobody')])
         time.sleep(1)
+        transcript = player_lines(server.lines, starts)
+        if label == 'horizon':
+            rate_limited_login(binary, build, port, services, discovery)
+            rate_limited_login(binary, build, port, services, discovery, 'ForbiddenOperationException')
     finally:
         server.stop()
-    return checks, player_lines(server.lines, starts)
+    return checks, transcript
 
 
 def main():

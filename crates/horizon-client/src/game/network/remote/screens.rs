@@ -216,6 +216,9 @@ impl Game<'_> {
             return Ok(());
         };
         if horizon_client::ui::hovered(self.cursor, x, y, 200.0, 20.0) {
+            if let Some(remote) = &self.remote {
+                remote.session.cancel_login();
+            }
             self.audio.play_button_click();
             self.leave_server(None)?;
         }

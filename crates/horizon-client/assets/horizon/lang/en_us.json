@@ -482,6 +482,8 @@
   "Frame rate and frame times over the game, with a graph.": "Frame rate and frame times over the game, with a graph.",
   "horizon.multiplayer.finding_friend": "Finding your friend's world...",
   "horizon.multiplayer.not_signed_in": "This server is in online mode. Sign in with your Microsoft account in the Horizon launcher to join it.",
+  "horizon.multiplayer.waiting_for_mojang": "Waiting for Mojang…",
+  "horizon.multiplayer.join_rate_limited": "Mojang is limiting logins. Try again later.",
   "horizon.realms.not_signed_in": "Sign in with your Microsoft account in the Horizon launcher to play on Realms.",
   "horizon.multiplayer.incoming_too_large": "The server sent more at once than the game can hold (%s bytes)",
   "horizon.multiplayer.invalid_address": "Invalid server address: %s",

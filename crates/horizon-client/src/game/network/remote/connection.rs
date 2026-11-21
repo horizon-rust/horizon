@@ -111,6 +111,10 @@ impl Game<'_> {
             return Ok(());
         }
         self.join_world_rest()?;
+        // Deferred entry can be cancelled or fail. Only now can this login replace the old one.
+        if let Some(remote) = self.remote.as_ref().filter(|remote| !remote.joined) {
+            remote.session.cancel_login();
+        }
         self.client_logging_out();
         if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
             log::warn!("Horizon: could not join server: {error}");

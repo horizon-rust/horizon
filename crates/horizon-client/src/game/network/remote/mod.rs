@@ -21,6 +21,8 @@ mod use_item;
 mod block_entity_data;
 #[cfg(test)]
 mod block_entity_data_tests;
+#[cfg(test)]
+mod deferred_login_tests;
 use super::raw_backlog::Received;
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::render_tick::{mob_tracking_body, player_tracking_body};
