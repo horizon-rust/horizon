@@ -165,7 +165,14 @@ impl Game<'_> {
     fn water_level_above(&self, b: &Boat) -> f32 {
         let bb = b.bounds();
         let (lo, hi) = (bb.min_position(), bb.max_position());
-        let (y0, y1) = (hi.y.floor() as i32, hi.y.ceil() as i32);
+        // AbstractBoat.getWaterLevelAbove: ceil(maxY - lastYd). At this call
+        // site the boat's vertical velocity is still lastYd, so a boat falling
+        // into water scans up to the real surface instead of stopping one row
+        // short.
+        let (y0, y1) = (
+            hi.y.floor() as i32,
+            (hi.y - b.velocity.y).ceil() as i32,
+        );
         'rows: for y in y0..y1 {
             let mut height = 0.0f32;
             for x in lo.x.floor() as i32..hi.x.ceil() as i32 {
@@ -1798,6 +1805,43 @@ mod tests {
 
     fn boat() -> Boat {
         Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
+    }
+
+    /// `AbstractBoat.getWaterLevelAbove` scans up to `ceil(maxY - lastYd)`: a
+    /// boat falling into water must find the air row above the surface, not
+    /// stop a row short and seat itself a block too high.
+    #[test]
+    #[ignore = "daily"]
+    fn a_falling_boat_scans_up_to_the_water_surface() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+            );
+            let water = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:water")
+                .unwrap();
+            for x in 0..3 {
+                for z in 0..3 {
+                    // A water column: y=200 is full-height because water is
+                    // above it, so only the upper row can end the scan.
+                    game.world.set(x, 200, z, water).unwrap();
+                    game.world.set(x, 201, z, water).unwrap();
+                }
+            }
+            let mut b = boat();
+            b.position = Vec3::new(1.5, 200.0, 1.5);
+            b.velocity.y = -0.6;
+            let falling = game.water_level_above(&b);
+            b.velocity.y = 0.0;
+            assert!(
+                game.water_level_above(&b) > falling,
+                "the falling boat must scan to the air row above the water"
+            );
+        });
     }
 
     /// `controlBoat`'s push with `Mth`'s sine table (`(float) Math.sin(i /
