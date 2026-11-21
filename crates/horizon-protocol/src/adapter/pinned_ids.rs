@@ -123,6 +123,7 @@ pub mod entity_type {
     pub const ZOMBIFIED_PIGLIN: i32 = 158;
 }
 pub mod item {
+    pub const BARRIER: i32 = 577;
     pub const BLAST_FURNACE: i32 = 1508;
     pub const BOLT_ARMOR_TRIM_SMITHING_TEMPLATE: i32 = 1597;
     pub const CAMPFIRE: i32 = 1527;

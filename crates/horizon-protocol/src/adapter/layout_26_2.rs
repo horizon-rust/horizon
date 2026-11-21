@@ -7,6 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::ids::{self, Ids, Way, down_or_substitute};
+use super::pinned_ids::item::BARRIER;
 use crate::{
     Result, State,
     buf::{Codec, Reader, Writer},
@@ -132,7 +133,12 @@ fn advancements(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
             let mut d = Writer::new();
             d.nbt(&r.nbt()?);
             d.nbt(&r.nbt()?);
-            let icon = crate::item::Template::read(&mut r)?;
+            let mut icon = crate::item::Template::read(&mut r)?;
+            // An icon the client has no item for, nor a stand-in, would be written as an empty stack, which
+            // the clients through 1.21.1 refuse: a barrier, which every release has.
+            if down_or_substitute(ids.item, ids.substitutes.item, icon.item).is_none() {
+                icon = crate::item::Stack::new(BARRIER, 1);
+            }
             {
                 let _down = ids::renumbering(ids, Way::Down);
                 crate::item::Template::write(&icon, &mut d);
@@ -365,6 +371,51 @@ mod tests {
         let back = super::super::translate::tests_support::advancements_26_2(ids(), &body).unwrap();
         // Read back with 26.2's reader the icon is the pinned diamond again (926 in 26.2).
         assert_eq!(back, w.data);
+    }
+
+    /// An icon the client lacks and has no stand-in for (cinnabar, pinned 40) is a barrier, not an empty stack
+    /// (1.20.5 to 1.21.1 refuse one); an item with a stand-in or a number keeps its own.
+    #[test]
+    fn an_advancement_icon_without_a_counterpart_is_a_barrier() {
+        let ids = ServerVersion::V1_21_1.ids().unwrap();
+        let body = |icon: i32| {
+            let mut w = Writer::new();
+            w.bool(true);
+            w.varint(1);
+            w.string("minecraft:a");
+            w.bool(false);
+            w.bool(true);
+            w.nbt(&horizon_core::nbt::Tag::String("T".into()));
+            w.nbt(&horizon_core::nbt::Tag::String("D".into()));
+            crate::item::Template::write(&crate::item::Stack::new(icon, 1), &mut w);
+            w.varint(0);
+            w.i32(0);
+            w.varint(0);
+            w.bool(false);
+            w.f32(0.0);
+            w.f32(0.0);
+            w.varint(0);
+            w.varint(0);
+            w.bool(true);
+            advancements(ids, &w.data).unwrap()
+        };
+        // The icon after the two texts: count, item, no added, no removed (1.21.1 writes the count first).
+        let icon = |b: &[u8]| {
+            let mut r = Reader::new(b);
+            r.bool().unwrap();
+            r.varint().unwrap();
+            r.string(64).unwrap();
+            r.bool().unwrap();
+            r.bool().unwrap();
+            r.nbt().unwrap();
+            r.nbt().unwrap();
+            [(); 4].map(|_| r.varint().unwrap())
+        };
+        // 1.21.1's barrier is 443, stone is 1, the diamond 805.
+        assert_eq!(icon(&body(40)), [1, 443, 0, 0]);
+        assert_eq!(icon(&body(577)), [1, 443, 0, 0]);
+        assert_eq!(icon(&body(1)), [1, 1, 0, 0]);
+        assert_eq!(icon(&body(1012)), [1, 805, 0, 0]);
     }
 
     #[test]

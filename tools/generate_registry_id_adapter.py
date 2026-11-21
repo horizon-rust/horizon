@@ -90,7 +90,7 @@ PINNED_NAMES = {
         wither_skeleton wolf zoglin zombie zombie_horse zombie_nautilus zombie_villager zombified_piglin
     """.split(),
     "item": """
-        blast_furnace bolt_armor_trim_smithing_template campfire coast_armor_trim_smithing_template
+        barrier blast_furnace bolt_armor_trim_smithing_template campfire coast_armor_trim_smithing_template
         crafting_table dune_armor_trim_smithing_template eye_armor_trim_smithing_template
         flow_armor_trim_smithing_template furnace host_armor_trim_smithing_template
         raiser_armor_trim_smithing_template rib_armor_trim_smithing_template saddle
