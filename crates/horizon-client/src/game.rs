@@ -457,6 +457,8 @@ struct GameLevel<'w> {
     spill: &'w mut spill::Spill,
     /// Where the chunk tickets let blocks tick.
     tickets: horizon_client::ticket_levels::Levels,
+    /// Restricts scheduled ticks to the command oracle's entity-ticking area.
+    command_harness_scheduled_tick_range: bool,
     random_tick_sections: &'w mut horizon_client::random_tick_sections::RandomTickSections,
     /// Players with each chest open (a trapped chest's signal), also what a
     /// recount of the openers replaces (`ContainerOpenersCounter.recheckOpeners`).
@@ -1021,6 +1023,9 @@ struct Game<'a> {
     /// translucent pages wait for both before they shrink (`set_terrain_loading`).
     view_arrival: horizon_client::streaming::ViewArrival,
     options: Options,
+    /// Command parity uses the oracle's 5x5 ticking area for scheduled ticks too. Vanilla's
+    /// normal simulation ticket intentionally leaves scheduled ticks one chunk farther out.
+    command_harness_scheduled_tick_range: bool,
     player: Option<PlayerMotion>,
     spawn: Option<Vec3>,
     clock: FixedStep,
@@ -2846,6 +2851,7 @@ impl Game<'_> {
             pending: &mut self.pending,
             spill: &mut self.spill,
             tickets: self.tickets.levels(),
+            command_harness_scheduled_tick_range: self.command_harness_scheduled_tick_range,
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &mut self.lid_openers,
             open_containers: &open_containers,
@@ -10490,6 +10496,7 @@ impl<'a> Game<'a> {
             lod_covered_at: None,
             view_arrival: Default::default(),
             options,
+            command_harness_scheduled_tick_range: false,
             player: None,
             spawn: None,
             clock: FixedStep::default(),

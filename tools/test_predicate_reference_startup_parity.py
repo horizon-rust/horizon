@@ -340,7 +340,7 @@ def run_integrated(case, parent, binary, timeout):
         XDG_DATA_HOME=out / 'homes/xdg-data', XDG_CONFIG_HOME=out / 'homes/xdg-config',
         HORIZON_COMMAND_SCRIPT=script, HORIZON_COMMAND_OUTPUT=result,
         HORIZON_API_DISCOVERY='http://127.0.0.1:9/', HORIZON_PLAYER_NAME='PredicateProbe',
-        HORIZON_HARNESS_LOADED_FIXTURE='1', HORIZON_HARNESS_TIMEOUT=str(int(timeout)))
+        HORIZON_COMMAND_SIMULATION_DISTANCE='2', HORIZON_HARNESS_TIMEOUT=str(int(timeout)))
     command = [str(binary), '--resources', str(ROOT / '.local/horizon-client/26.3'),
                '--world', 'prg', '--seed', '121', '--radius', '2', '--headless']
     with (out / 'server.log').open('w', encoding='utf-8') as log:

@@ -628,6 +628,9 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    # Match the vanilla oracle's temporary 5x5 DRAGON ticket area without changing
+    # the simulation distance of other command-script harnesses.
+    env['HORIZON_COMMAND_SIMULATION_DISTANCE'] = '2'
     if synced:
         env.update(seed_agent.ENV)
     if args.raid_village_fixture and not args.raid_release_command_diagnostic:
@@ -635,7 +638,6 @@ def main():
     elif args.raid_release_command_diagnostic:
         env.pop('HORIZON_DEV_COMMANDS', None)
     if args.loaded_fixture:
-        env['HORIZON_HARNESS_LOADED_FIXTURE'] = '1'
         env['HORIZON_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
     run([binary, '--resources', Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES)), '--world', 'harness', '--seed', SEED, '--radius', 2 if args.loaded_fixture else 4], 'rust', game=True, cwd=rust_dir, env=env)
 

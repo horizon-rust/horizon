@@ -1,6 +1,18 @@
 //! The world behaviour adapter, kept beside the block operations it serves.
 use super::*;
 
+fn scheduled_tick_in_range(
+    tickets: &horizon_client::ticket_levels::Levels,
+    command_harness_scheduled_tick_range: bool,
+    chunk: horizon_core::position::ChunkPos,
+) -> bool {
+    if command_harness_scheduled_tick_range {
+        tickets.entity_ticking(chunk.x, chunk.z)
+    } else {
+        tickets.block_ticking(chunk.x, chunk.z)
+    }
+}
+
 impl LevelAccess for GameLevel<'_> {
     fn infiniburn(&self) -> Option<&horizon_world::level::data::BlockSet> {
         self.world.infiniburn.as_deref()
@@ -998,7 +1010,12 @@ impl LevelAccess for GameLevel<'_> {
     /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, a
     /// ticking chunk, and its entities loaded.
     fn is_ticking_chunk(&self, chunk: horizon_core::position::ChunkPos) -> bool {
-        self.tickets.block_ticking(chunk.x, chunk.z)
+        let in_range = scheduled_tick_in_range(
+            &self.tickets,
+            self.command_harness_scheduled_tick_range,
+            chunk,
+        );
+        in_range
             && ticking_chunk(self.world, chunk.x, chunk.z)
             && !self.world.entities_pending.contains(&(chunk.x, chunk.z))
     }
@@ -1168,5 +1185,42 @@ impl LevelAccess for GameLevel<'_> {
         {
             sulfur.waiting_countdown = -1;
         }
+    }
+}
+
+#[cfg(test)]
+mod command_harness_tick_range_tests {
+    use super::scheduled_tick_in_range;
+    use horizon_client::ticket_levels::{ChunkTickets, Sources};
+    use horizon_core::position::ChunkPos;
+
+    #[test]
+    fn command_harness_bounds_scheduled_ticks_without_changing_random_ticks() {
+        let mut manager = ChunkTickets::default();
+        manager.update(Some(Sources {
+            players: vec![(0, 0)],
+            view_distance: 8,
+            simulation_distance: 2,
+            ..Sources::default()
+        }));
+        let tickets = manager.levels();
+
+        assert!(scheduled_tick_in_range(
+            &tickets,
+            true,
+            ChunkPos::new(2, 0)
+        ));
+        assert!(!scheduled_tick_in_range(
+            &tickets,
+            true,
+            ChunkPos::new(3, 0)
+        ));
+        assert!(scheduled_tick_in_range(
+            &tickets,
+            false,
+            ChunkPos::new(3, 0)
+        ));
+        assert!(tickets.random_ticking(2, 0));
+        assert!(!tickets.random_ticking(3, 0));
     }
 }
