@@ -1976,9 +1976,14 @@ mod tests {
                 .map(|p| p.id)
                 .collect();
             ids.extend(
-                crate::datapack::discover_folder_with(&packs, validator)
-                    .into_iter()
-                    .map(|p| p.id),
+                crate::datapack::discover_folder_with(
+                    &packs,
+                    validator,
+                    &horizon_command::component::json::context::UnavailableContext,
+                )
+                .unwrap()
+                .into_iter()
+                .map(|p| p.id),
             );
             ids
         };

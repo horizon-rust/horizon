@@ -219,7 +219,7 @@ fn contributed_packs_are_discoverable_and_only_selected_resources_apply() {
             assert_eq!(data.len(), 1);
             let world = fixture.root.join("world");
             fs::create_dir(&world).unwrap();
-            let repository = data_repository(&world, &fixture.root, &data);
+            let repository = data_repository(&world, &fixture.root, &data).unwrap();
             assert!(horizon_client::datapack::enabled_ids(&world, &repository, &[]).is_empty());
             fs::write(
                 world.join("datapacks.json"),
@@ -237,7 +237,8 @@ fn contributed_packs_are_discoverable_and_only_selected_resources_apply() {
                 true,
                 &[],
                 &data,
-            );
+            )
+            .unwrap();
             let enabled = stack.enabled_packs().collect::<Vec<_>>();
             let store = DataStore::load(&enabled);
             assert_eq!(
@@ -378,7 +379,7 @@ fn required_packs_keep_their_priority_and_cannot_be_cleared() {
         );
         assert!(options.data_packs.contains(&"vanilla".into()));
         let world = fixture.root.join("world");
-        let repository = data_repository(&world, &fixture.root, &data);
+        let repository = data_repository(&world, &fixture.root, &data).unwrap();
         assert!(
             horizon_client::datapack::enabled_ids(&world, &repository, &[])
                 .contains(&fixture.data_id())
@@ -392,18 +393,18 @@ fn contributed_experiments_supply_the_chosen_world_flags() {
     fixture.add_feature_flag();
     with_finder_config(true, false, || {
         let data = data_packs(&fixture.sources());
-        let features = horizon_client::datapack::feature_repository(&fixture.root, &data);
+        let features = horizon_client::datapack::feature_repository(&fixture.root, &data).unwrap();
         assert_eq!(features.len(), 1);
         assert_eq!(features[0].id, fixture.data_id());
         let mut options = horizon_client::title::WorldOptions::default();
         options.set_additional_data_packs(data.into());
         assert_eq!(
-            options.enabled_features(&fixture.root),
+            options.enabled_features(&fixture.root).unwrap(),
             ["minecraft:vanilla"]
         );
         options.data_packs.push(fixture.data_id());
         assert_eq!(
-            options.enabled_features(&fixture.root),
+            options.enabled_features(&fixture.root).unwrap(),
             ["minecraft:trade_rebalance", "minecraft:vanilla"]
         );
     });
@@ -612,7 +613,7 @@ fn hidden_optional_data_pack_is_command_selectable_and_loads_its_function() {
 
         let world = fixture.root.join("world");
         fs::create_dir(&world).unwrap();
-        let repository = data_repository(&world, &fixture.root, &data);
+        let repository = data_repository(&world, &fixture.root, &data).unwrap();
         assert!(
             repository
                 .iter()
@@ -632,7 +633,8 @@ fn hidden_optional_data_pack_is_command_selectable_and_loads_its_function() {
             true,
             &[],
             &data,
-        );
+        )
+        .unwrap();
         let enabled = stack.enabled_packs().collect::<Vec<_>>();
         let store = DataStore::load(&enabled);
         assert_eq!(

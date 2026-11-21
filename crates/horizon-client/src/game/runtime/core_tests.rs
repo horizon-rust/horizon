@@ -44,7 +44,8 @@ fn reload_resolves_parts_against_reloaded_tags() {
             game.cmds.vanilla_disabled,
             &game.level.enabled_features,
             &game.pack.additional_data,
-        );
+        )
+        .unwrap();
         let root = game.options.resources.clone();
         let previous = std::sync::Arc::new(mod_api::DatapackRegistrySet::first(
             mod_api::DatapackCandidate::build(&[], &[]).unwrap(),

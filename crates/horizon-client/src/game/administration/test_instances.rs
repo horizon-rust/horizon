@@ -204,7 +204,7 @@ impl Game<'_> {
     /// until the next world opens; `/reload` and `/datapack` do not change it.
     /// It replaces the previous world's definitions and selector ids.
     pub(super) fn snapshot_test_defs(&mut self) {
-        let stack = super::functions::pack_stack(
+        let stack = match super::functions::pack_stack(
             &self.world_root,
             &self.options.resources,
             &self.pack.data_source,
@@ -212,7 +212,13 @@ impl Game<'_> {
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
             &super::pack_finders::data_packs(&self.mods),
-        );
+        ) {
+            Ok(stack) => stack,
+            Err(error) => {
+                log::error!("Horizon: test definitions: {error}");
+                return;
+            }
+        };
         let mut functions = mod_api::GameTestFunctions::default();
         self.native_register_game_tests(&mut functions);
         let mut defs = std::collections::HashMap::new();

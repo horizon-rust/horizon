@@ -1,5 +1,7 @@
 //! Title, world selection and world creation screens (TitleScreen,
 //! SelectWorldScreen, CreateWorldScreen layouts), drawn as HUD quads.
+#[path = "title/metadata.rs"]
+mod metadata;
 #[path = "title/preset_buttons.rs"]
 mod preset_buttons;
 use crate::{
@@ -12,6 +14,7 @@ use crate::{
 };
 use horizon_core::random::RandomSource;
 use horizon_world::datafix::world_upgrader::{self, WorldUpgrader};
+use metadata::metadata;
 pub(crate) use splash::choose_splash;
 use splash::{rolls_user_splash, splash_lines};
 use std::path::{Path, PathBuf};
@@ -970,6 +973,10 @@ impl Title {
         });
     }
     pub(crate) fn new_world(&self) -> Mode {
+        let options = match WorldOptions::for_new_world(&self.resources) {
+            Ok(options) => options,
+            Err(error) => return metadata::error_mode(error, Mode::Main),
+        };
         Mode::Create {
             name: lang::get_or("selectWorld.newWorld", "New World"),
             seed: String::new(),
@@ -977,7 +984,7 @@ impl Title {
             focus: 0,
             options: WorldOptions {
                 rules: crate::gamerules::GameRules::with_registry(self.rule_registry.clone(), &[]),
-                ..WorldOptions::for_new_world()
+                ..options
             },
         }
     }
@@ -1204,17 +1211,22 @@ impl Title {
     /// screen comes up first; anything else applies at once and the data
     /// is read again.
     pub fn offer_data_packs(&mut self, resources: &std::path::Path, ids: Vec<String>) {
-        let experimental =
-            crate::datapack::feature_repository(resources, &self.additional_data_packs)
-                .into_iter()
-                .any(|p| ids.contains(&p.id));
+        let packs = metadata!(
+            self,
+            crate::datapack::feature_repository(resources, &self.additional_data_packs),
+            ()
+        );
+        let experimental = packs.into_iter().any(|p| ids.contains(&p.id));
         if experimental {
-            *self.confirm_experiments.get_mut() =
-                Some(confirm_experiments::ConfirmExperimentsScreen::new(
+            *self.confirm_experiments.get_mut() = Some(metadata!(
+                self,
+                confirm_experiments::ConfirmExperimentsScreen::new(
                     resources,
                     &ids,
                     &self.additional_data_packs,
-                ));
+                ),
+                ()
+            ));
         } else {
             self.set_data_packs(ids);
             self.preparing = true;
@@ -1628,10 +1640,11 @@ impl Title {
         if !stem_asked {
             let issue = if crate::save::is_old_customized_world(&dir) {
                 Some(StemIssue::Customized)
-            } else if crate::save::world_gen_unstable(&dir) {
-                Some(StemIssue::Experimental)
             } else {
-                None
+                metadata!(log crate::datapack::metadata::with_root(&self.resources, true, |context| {
+                    crate::save::world_gen_unstable(&dir, context)
+                }))
+                .then_some(StemIssue::Experimental)
             };
             if let Some(stem) = issue {
                 self.set_mode(Mode::BackupBeforeUpgrade {
@@ -1921,8 +1934,9 @@ impl Title {
         };
         let (name, seed, creative, options) =
             (name.clone(), seed.clone(), *creative, options.clone());
-        let enabled_features = options.enabled_features(&self.resources);
-        let disabled: Vec<String> = crate::datapack::feature_packs(&self.resources)
+        let enabled_features = metadata!(self, options.enabled_features(&self.resources));
+        let packs = metadata!(self, crate::datapack::feature_packs(&self.resources));
+        let disabled: Vec<String> = packs
             .iter()
             .map(|pack| pack.id.clone())
             .filter(|id| !options.data_packs.contains(id))
@@ -2692,14 +2706,16 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                             return Action::None;
                         };
                         self.create_return_to_main = false;
-                        let mut options = WorldOptions::of_world(
+                        let options = WorldOptions::of_world(
                             &level,
                             world.commands,
                             &self.saves.join(&world.folder),
                             self.rule_registry.clone(),
+                            &self.resources,
                         );
+                        let mut options = metadata!(self, options);
                         options.set_additional_data_packs(self.additional_data_packs.clone());
-                        options.restore_feature_packs(&self.resources, &level);
+                        metadata!(self, options.restore_feature_packs(&self.resources, &level));
                         self.set_mode(Mode::Create {
                             name: level.name,
                             seed: level.seed.to_string(),
@@ -2832,9 +2848,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             // CreateWorldScreen.openGameRulesScreen over a copy of the rules.
             (Mode::Create { options, .. }, Some(29)) => {
-                let rules = options
-                    .rules
-                    .copy_with_features(&options.enabled_features(&self.resources));
+                let features = metadata!(self, options.enabled_features(&self.resources));
+                let rules = options.rules.copy_with_features(&features);
                 *self.rules.get_mut() = Some(RulesScreen::for_creation(&rules));
                 Action::None
             }
@@ -2896,10 +2911,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             // CreateWorldScreen.openExperimentsScreen: the feature packs the
             // jar ships, switched on or off.
             (Mode::Create { options, .. }, Some(30)) => {
-                let flags = experiments::repository_flags(
-                    &self.resources,
-                    &options.data_packs,
-                    &options.additional_data_packs,
+                let flags = metadata!(
+                    self,
+                    experiments::repository_flags(
+                        &self.resources,
+                        &options.data_packs,
+                        &options.additional_data_packs,
+                    )
                 );
                 *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
                 Action::None
@@ -3663,9 +3681,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     fn close_rules(&mut self, exit: Exit) {
         *self.rules.get_mut() = None;
         if let (Exit::Apply(changes), Mode::Create { options, .. }) = (exit, &mut self.mode) {
-            options.rules = options
-                .rules
-                .copy_with_features(&options.enabled_features(&self.resources));
+            let features = metadata!(log options.enabled_features(&self.resources), ());
+            options.rules = options.rules.copy_with_features(&features);
             for (name, value) in changes {
                 options.rules.set(&name, value);
             }

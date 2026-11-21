@@ -115,7 +115,18 @@ impl Game<'_> {
                         &self.pack.additional_data,
                     )
                 })
-                .unwrap_or_default();
+                .transpose();
+            // Pack metadata the screen cannot decode stops the preparation with its error.
+            let overrides = match overrides {
+                Ok(overrides) => overrides.unwrap_or_default(),
+                Err(error) => {
+                    if let Some(title) = self.title.as_mut() {
+                        title.finish_preparing();
+                        title.failed(error);
+                    }
+                    return;
+                }
+            };
             let data_source = self.pack.data_changes.clone();
             let job = horizon_guest_stack::builder()
                 .name("world-creation".into())

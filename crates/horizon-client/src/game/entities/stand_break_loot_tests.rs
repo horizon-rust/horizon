@@ -88,7 +88,8 @@ fn with_stick_table(game: &mut Game<'_>, name: &str) {
         false,
         &[],
         &[],
-    );
+    )
+    .unwrap();
     game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
     // World open warms the loot data with the world's packs (game.rs); the
     // break's roll reads that copy, here this test's own, so the stick reaches

@@ -1,6 +1,9 @@
 //! Data packs (`<world>/datapacks`: folders and zips with `pack.mcmeta`) and
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
+#[cfg(test)]
+mod discovery_tests;
+pub mod metadata;
 use crate::resource_source::ResourceSource;
 mod slot_sources;
 use crate::zip::Zip;
@@ -116,21 +119,28 @@ impl DataPack {
     }
 }
 /// The packs in `<world>/datapacks`, sorted by name.
-pub fn discover(world: &Path) -> Vec<DataPack> {
-    discover_folder(&world.join("datapacks"))
+pub fn discover(
+    world: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<Vec<DataPack>, metadata::AdmissionError> {
+    discover_folder(&world.join("datapacks"), context)
 }
 /// `FolderRepositorySource.loadPacks`: packs in Create World's temporary
 /// folder or a world's data-pack directory, with required folder metadata.
-pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
-    discover_folder_with(dir, &crate::packs::DirectoryValidator::game())
+pub fn discover_folder(
+    dir: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<Vec<DataPack>, metadata::AdmissionError> {
+    discover_folder_with(dir, &crate::packs::DirectoryValidator::game(), context)
 }
 /// [`discover_folder`] under an explicit `allowed_symlinks.txt` validator.
 pub(crate) fn discover_folder_with(
     dir: &Path,
     validator: &crate::packs::DirectoryValidator,
-) -> Vec<DataPack> {
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<Vec<DataPack>, metadata::AdmissionError> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut packs = Vec::new();
     for e in entries.flatten() {
@@ -149,7 +159,7 @@ pub(crate) fn discover_folder_with(
                 continue;
             }
         };
-        if path.is_dir() && folder_metadata_present(&path) {
+        if path.is_dir() && folder_metadata_present(&path, &format!("file/{name}"), context)? {
             packs.push(DataPack {
                 id: format!("file/{name}"),
                 source: ResourceSource::directory(path),
@@ -159,7 +169,11 @@ pub(crate) fn discover_folder_with(
             .file_name()
             .is_some_and(|n| n.to_string_lossy().ends_with(".zip"))
             && let Ok(z) = Zip::open(&path)
-            && z.contains("pack.mcmeta")
+            && metadata_present(
+                z.read("pack.mcmeta").ok().as_deref(),
+                &format!("file/{name}"),
+                context,
+            )?
         {
             packs.push(DataPack {
                 id: format!("file/{name}"),
@@ -169,37 +183,58 @@ pub(crate) fn discover_folder_with(
         }
     }
     packs.sort_by(|a, b| a.id.cmp(&b.id));
-    packs
+    Ok(packs)
 }
 /// `Pack.readPackMetadata`: even its fallback codec requires a pack section
 /// and description. Keep this folder gate separate from format compatibility
 /// and the existing interpretation of the description component.
-fn folder_metadata_present(path: &Path) -> bool {
-    let Some(meta) = std::fs::read(path.join("pack.mcmeta"))
-        .ok()
-        .and_then(|bytes| crate::packs::parse_meta(&bytes))
-    else {
-        return false;
-    };
-    meta.as_object()
-        .and_then(|root| root.get("pack"))
-        .and_then(serde_json::Value::as_object)
-        .and_then(|pack| pack.get("description"))
-        .is_some_and(|description| !description.is_null())
+fn metadata_present(
+    bytes: Option<&[u8]>,
+    id: &str,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<bool, metadata::AdmissionError> {
+    use horizon_command::component::json::Error;
+    match bytes
+        .map(|bytes| metadata::validate(bytes, context))
+        .unwrap_or(Err(Error::Invalid))
+    {
+        Ok(()) => Ok(true),
+        Err(Error::Invalid | Error::DecodeException) => Ok(false),
+        Err(reason) => Err(metadata::AdmissionError {
+            pack: id.to_owned(),
+            reason,
+        }),
+    }
+}
+fn folder_metadata_present(
+    path: &Path,
+    id: &str,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<bool, metadata::AdmissionError> {
+    metadata_present(
+        std::fs::read(path.join("pack.mcmeta")).ok().as_deref(),
+        id,
+        context,
+    )
 }
 /// The resources root's built-in feature packs (`ServerPacksSource`
 /// scanning the game's `data/minecraft/datapacks`): every folder with a
 /// `pack.mcmeta`, a feature pack (`PackSource.FEATURE`). Off until a world
 /// selects them.
-pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
+pub fn feature_packs_with_context(
+    resources: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<Vec<DataPack>, metadata::AdmissionError> {
     let Ok(entries) = std::fs::read_dir(resources.join("data").join("minecraft").join("datapacks"))
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut packs = Vec::new();
     for e in entries.flatten() {
         let path = e.path();
-        if path.join("pack.mcmeta").exists() {
+        if path.join("pack.mcmeta").exists()
+            && folder_metadata_present(&path, &e.file_name().to_string_lossy(), context)?
+        {
             let mut pack = DataPack {
                 id: e.file_name().to_string_lossy().into_owned(),
                 source: ResourceSource::directory(path),
@@ -233,22 +268,42 @@ pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
         }
     }
     packs.sort_by(|a, b| a.id.cmp(&b.id));
-    packs
+    Ok(packs)
 }
 /// The packs of `<world>/datapacks` plus the resources root's feature packs:
 /// the world's whole repository, as `PackRepository.reload` sees it.
-pub fn discover_with_features(world_root: &Path, resources: &Path) -> Vec<DataPack> {
-    let mut packs = discover(world_root);
-    packs.extend(feature_packs(resources));
-    packs
+pub fn discover_features_with_context(
+    world_root: &Path,
+    resources: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<Vec<DataPack>, metadata::AdmissionError> {
+    let mut packs = discover(world_root, context)?;
+    packs.extend(feature_packs_with_context(resources, context)?);
+    Ok(packs)
+}
+
+/// [`feature_packs_with_context`] under the resources root's text-component authority.
+pub fn feature_packs(resources: &Path) -> Result<Vec<DataPack>, metadata::AdmissionError> {
+    metadata::with_root(resources, true, |context| {
+        feature_packs_with_context(resources, context)
+    })
+}
+/// [`discover_features_with_context`] under the resources root's text-component authority.
+pub fn discover_with_features(
+    world: &Path,
+    resources: &Path,
+) -> Result<Vec<DataPack>, metadata::AdmissionError> {
+    metadata::with_root(resources, true, |context| {
+        discover_features_with_context(world, resources, context)
+    })
 }
 
 /// Built-in and contributed feature packs offered as world experiments.
 pub fn feature_repository(
     resources: &Path,
     additional: &[std::sync::Arc<DataPack>],
-) -> Vec<DataPack> {
-    let mut packs = feature_packs(resources);
+) -> Result<Vec<DataPack>, metadata::AdmissionError> {
+    let mut packs = feature_packs(resources)?;
     packs.extend(
         additional
             .iter()
@@ -259,7 +314,7 @@ pub fn feature_repository(
             })
             .map(|pack| (**pack).clone()),
     );
-    packs
+    Ok(packs)
 }
 
 // ---- Create World ------------------------------------------------------------
@@ -268,16 +323,27 @@ pub fn feature_repository(
 /// `mcworld-` folder): the folder's packs (`PackSource.WORLD`), the
 /// built-in one (`resources` holds its `pack.png`), and the feature packs
 /// of `resources` (`PackSource.FEATURE`), available at the bottom and off
-/// until picked — the Experiments.
-pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::PackInfo> {
+/// until picked — the Experiments. A pack whose metadata does not admit is
+/// not listed.
+pub fn screen_packs(
+    dir: &Path,
+    resources: &Path,
+) -> Result<Vec<crate::pack_screen::PackInfo>, metadata::AdmissionError> {
     use crate::{
         pack_screen::{Compat, PackInfo, Source, load_icon},
         packs::Position,
         text::{Style, Text},
     };
     let format = horizon_core::version::DATA_PACK_FORMAT;
+    let (admitted, features) = metadata::with_root(resources, true, |context| {
+        Ok((
+            discover_folder(dir, context)?,
+            feature_packs_with_context(resources, context)?,
+        ))
+    })?;
     let mut infos: Vec<PackInfo> = crate::packs::folder(dir, format)
         .into_iter()
+        .filter(|p| admitted.iter().any(|pack| pack.id == p.id))
         .map(|p| PackInfo {
             icon: p.icon_png().as_deref().and_then(load_icon),
             id: p.id,
@@ -308,10 +374,10 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
         fixed: false,
         hidden: false,
     });
-    for p in feature_packs(resources) {
+    for p in features {
         infos.extend(p.selection);
     }
-    infos
+    Ok(infos)
 }
 /// The folder of a game folder whose packs every new world there starts with: a modpack's profile
 /// keeps the packs of its data-only jars here (`horizon-port-pack`). Each world gets its own copy,
@@ -321,20 +387,26 @@ pub const NEW_WORLD_PACKS: &str = "new-world-datapacks";
 
 /// Create World's temporary pack folder holding `game_dir`'s [`NEW_WORLD_PACKS`], and their ids,
 /// to show them selected in the Data Packs screen. `None` when there are none.
-pub fn seed_create_world(game_dir: &Path) -> Option<(PathBuf, Vec<String>)> {
+pub fn seed_create_world(
+    game_dir: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<Option<(PathBuf, Vec<String>)>, metadata::AdmissionError> {
     let from = game_dir.join(NEW_WORLD_PACKS);
-    let ids: Vec<String> = discover_folder(&from).into_iter().map(|p| p.id).collect();
+    let ids: Vec<String> = discover_folder(&from, context)?
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
     if ids.is_empty() {
-        return None;
+        return Ok(None);
     }
     let seeded = temp_folder()
         .map_err(|e| e.to_string())
         .and_then(|dir| copy(&from, &dir).map(|()| dir));
     match seeded {
-        Ok(dir) => Some((dir, ids)),
+        Ok(dir) => Ok(Some((dir, ids))),
         Err(e) => {
             log::warn!("Horizon: data packs for new worlds: {e}");
-            None
+            Ok(None)
         }
     }
 }
@@ -476,8 +548,11 @@ pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), Stri
 /// world has none), and the selection its `datapacks.json` makes, lowest
 /// priority first (`WorldOpenFlows.recreateWorldData` keeps the world's `DataConfiguration`).
 /// The built-in pack is selected unless the world turned it off.
-pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
-    let packs = discover(world);
+pub fn for_recreate(
+    world: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> Result<(Option<PathBuf>, Vec<String>), metadata::AdmissionError> {
+    let packs = discover(world, context)?;
     // No flags here: the recreated world keeps the original's
     // `enabled_features`, and the flag-aware load re-adds the feature packs
     // it asks for (`for_recreate`'s selection only seeds the new world's
@@ -492,7 +567,7 @@ pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
         selected.insert(0, "vanilla".into());
     }
     if packs.is_empty() {
-        return (None, selected);
+        return Ok((None, selected));
     }
     let dir = temp_folder().ok().and_then(|dir| {
         if copy(&world.join("datapacks"), &dir).is_ok() {
@@ -502,7 +577,7 @@ pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
             None
         }
     });
-    (dir, selected)
+    Ok((dir, selected))
 }
 /// A file, or a folder and everything in it.
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
@@ -1324,7 +1399,11 @@ mod tests {
             r#"{"pack":{"description":"","pack_format":15}}"#,
         )
         .unwrap();
-        let packs = discover(&dir);
+        let packs = discover(
+            &dir,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         let refs: Vec<&DataPack> = packs.iter().collect();
         let ids: Vec<String> = dimension_stems(&refs).into_keys().collect();
         assert_eq!(ids, ["test:a/b", "test:pocket"]);
@@ -1348,7 +1427,11 @@ mod tests {
             r#"{"min_y":0,"height":64,"logical_height":64}"#,
         )
         .unwrap();
-        let packs = discover(&world);
+        let packs = discover(
+            &world,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         let mods = [overrides::ModDimension {
             id: "test:pocket".into(),
             stem: r#"{"type":"test:pocket"}"#.into(),
@@ -1537,16 +1620,14 @@ mod tests {
                 std::fs::write(dir.join("pack.mcmeta"), metadata).unwrap();
             }
         }
-        let packs = discover_folder(&root);
+        let packs = discover_folder(
+            &root,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         assert_eq!(
             packs.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
-            [
-                "file/bom",
-                "file/comment",
-                "file/description",
-                "file/full",
-                "file/numeric"
-            ]
+            ["file/bom", "file/comment", "file/description", "file/full"]
         );
         let store = DataStore::load(&packs.iter().collect::<Vec<_>>());
         assert_eq!(
@@ -1555,18 +1636,13 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            [
-                "h146:bom",
-                "h146:comment",
-                "h146:description",
-                "h146:full",
-                "h146:numeric"
-            ]
+            ["h146:bom", "h146:comment", "h146:description", "h146:full"]
         );
-        let numeric = packs.iter().find(|p| p.id == "file/numeric").unwrap();
-        let raw: serde_json::Value =
-            serde_json::from_slice(&numeric.read("pack.mcmeta").unwrap()).unwrap();
-        assert_eq!(raw["pack"]["description"], 42);
+        assert!(!packs.iter().any(|p| p.id == "file/numeric"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("numeric/pack.mcmeta")).unwrap(),
+            r#"{"pack":{"description":42}}"#
+        );
         // Builtin and feature construction still have their independent paths.
         let resources = root.join("resources");
         let feature = resources.join("data/minecraft/datapacks/feature");
@@ -1578,6 +1654,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             feature_packs(&resources)
+                .unwrap()
                 .iter()
                 .map(|p| p.id.as_str())
                 .collect::<Vec<_>>(),
@@ -1619,7 +1696,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("hz-new-world-packs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (game, world, old) = (root.join("game"), root.join("new"), root.join("old"));
-        assert!(seed_create_world(&game).is_none());
+        assert!(
+            seed_create_world(
+                &game,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+            .is_none()
+        );
         assert_eq!(install_new_world_packs(&game, &world), Ok(()));
         assert!(!world.join("datapacks").exists());
         for pack in ["void", "islands"] {
@@ -1628,18 +1712,37 @@ mod tests {
             std::fs::write(dir.join("pack.mcmeta"), r#"{"pack":{"description":""}}"#).unwrap();
             std::fs::write(dir.join("data/v/function/a.mcfunction"), "say a").unwrap();
         }
-        let (temp, ids) = seed_create_world(&game).unwrap();
+        let (temp, ids) = seed_create_world(
+            &game,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(ids, ["file/islands", "file/void"]);
         assert!(temp.join("void/data/v/function/a.mcfunction").is_file());
         let _ = std::fs::remove_dir_all(&temp);
         install_new_world_packs(&game, &world).unwrap();
-        let ids: Vec<String> = discover(&world).into_iter().map(|p| p.id).collect();
+        let ids: Vec<String> = discover(
+            &world,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
         assert_eq!(ids, ["file/islands", "file/void"]);
         // A world that exists already keeps the packs it has.
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("level.dat"), "").unwrap();
         install_new_world_packs(&game, &old).unwrap();
-        assert!(discover(&old).is_empty());
+        assert!(
+            discover(
+                &old,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+            .is_empty()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1680,7 +1783,11 @@ mod tests {
             "{\"enabled\":[\"file/b\",\"file/a\"],\"disabled\":[\"file/off\"]}",
         )
         .unwrap();
-        let packs = discover(&dir);
+        let packs = discover(
+            &dir,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         let enabled = enabled_ids(&dir, &packs, &[]);
         assert_eq!(enabled, ["file/b", "file/a"]);
         let enabled: Vec<&DataPack> = enabled
@@ -1796,7 +1903,11 @@ mod tests {
             "$say $(who) costs $5\n",
         );
         write("data/t/function/plain.mcfunction", "say plain\n");
-        let packs = discover(&dir);
+        let packs = discover(
+            &dir,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         let store = DataStore::load(&[&packs[0]]);
         for id in ["t:novar", "t:lone"] {
             assert!(!store.functions.contains_key(id), "{id} was registered");
@@ -1851,7 +1962,11 @@ mod tests {
             "{\"type\":\"minecraft:notice\",\"title\":\"Points\"}",
         );
         write("data/mine/dimension_type/pocket.json", "{\"min_y\":-128}");
-        let packs = discover(&dir);
+        let packs = discover(
+            &dir,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].id, "file/mypack");
         assert_eq!(packs[0].description(), "Hello");
@@ -2130,9 +2245,13 @@ mod tests {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.join("old.zip")).unwrap());
         zip.start_file("pack.mcmeta", zip::write::SimpleFileOptions::default())
             .unwrap();
-        std::io::Write::write_all(&mut zip, br#"{"pack":{"pack_format":48}}"#).unwrap();
+        std::io::Write::write_all(
+            &mut zip,
+            br#"{"pack":{"description":"old format control","pack_format":48}}"#,
+        )
+        .unwrap();
         zip.finish().unwrap();
-        let infos = screen_packs(&dir, &root);
+        let infos = screen_packs(&dir, &root).unwrap();
         let ids: Vec<&str> = infos.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["file/fns", "file/off", "file/old.zip", "vanilla"]);
         let compat: Vec<_> = infos.iter().map(|p| p.compat).collect();
@@ -2148,7 +2267,11 @@ mod tests {
         );
         let selected = ["vanilla", "file/old.zip", "file/fns"].map(String::from);
         install(&dir, &world, &selected).unwrap();
-        let packs = discover(&world);
+        let packs = discover(
+            &world,
+            &horizon_command::component::json::context::UnavailableContext,
+        )
+        .unwrap();
         let ids: Vec<&str> = packs.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["file/fns", "file/off", "file/old.zip"]);
         let saved: serde_json::Value =

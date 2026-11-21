@@ -69,7 +69,7 @@ fn datapack_damage_initial_snapshot_uses_the_prepared_worlds_features() {
         r#"{"enabled":["file/feature_damage"],"disabled":[]}"#,
     )
     .unwrap();
-    let packs = crate::datapack::discover_with_features(&world, &root);
+    let packs = crate::datapack::discover_with_features(&world, &root).unwrap();
     let snapshot = |features: &[String]| {
         let enabled = crate::datapack::enabled_ids(&world, &packs, features);
         let selected: Vec<_> = enabled

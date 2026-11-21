@@ -1,0 +1,8 @@
+# #14870: a data pack whose description is not a valid text component is not loaded, with the prepared 26.3 data.
+horizon-client game::functions::rich_metadata_context_tests::successful_command_pack_selection_uses_the_existing_order lib daily resources
+horizon-client game::functions::rich_metadata_context_tests::unavailable_metadata_authority_keeps_the_actual_loaded_store lib daily resources
+horizon-client game::functions::rich_metadata_context_tests::unavailable_metadata_authority_refuses_the_first_open lib daily resources
+horizon-client game::functions::rich_metadata_context_tests::unavailable_metadata_cannot_publish_command_pack_selection lib daily resources
+horizon-client game::functions::rich_metadata_tests::review_tests::review_codec_errors_and_patch_collisions_reach_loaded_game lib daily resources
+horizon-client game::functions::rich_metadata_tests::rich_description_admission_reaches_loaded_game_functions lib daily resources
+horizon-client game::world_loading::metadata_tests::pre_world_metadata_errors_propagate_without_empty_worldgen_fallback lib daily resources

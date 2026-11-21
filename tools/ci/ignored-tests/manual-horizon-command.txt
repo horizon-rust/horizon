@@ -1,0 +1,2 @@
+# horizon-command's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+horizon-command component::json::payload::tests::retained_metadata_payloads_match_the_pinned_oracle by-hand manual # #14870: needs H146_METADATA_ORACLE (the retained pinned Java metadata oracle), H146_REGISTRIES (a prepared command-registries.json) and H146_METADATA_OUTPUT

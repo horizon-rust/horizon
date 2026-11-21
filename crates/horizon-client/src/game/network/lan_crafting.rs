@@ -2319,7 +2319,8 @@ mod empty_ingredient_placement_tests {
                         false,
                         &[],
                         &[],
-                    );
+                    )
+                    .unwrap();
                     game.world_tables = game
                         .stage_world_tables(&stack, false, &resources)
                         .unwrap()

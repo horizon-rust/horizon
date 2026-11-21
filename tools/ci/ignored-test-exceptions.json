@@ -1182,5 +1182,13 @@
     "path": "crates/horizon-world/tests/it/world_io.rs",
     "reason": "microbenchmark; run with --ignored --nocapture",
     "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-horizon-world.txt: microbenchmark; run with --ignored --nocapture. Not selected by daily shards."
+  },
+  {
+    "package": "horizon-command",
+    "target": "lib",
+    "test": "component::json::payload::tests::retained_metadata_payloads_match_the_pinned_oracle",
+    "path": "crates/horizon-command/src/component/json/payload/tests.rs",
+    "reason": "requires the retained pinned metadata oracle and actual prepared catalog",
+    "rationale": "Existing explicit manual runner by-hand in tools/ci/ignored-tests/manual-horizon-command.txt: compares native metadata payloads with a retained pinned Java oracle supplied through H146_METADATA_ORACLE, which prepared resources do not contain. Not selected by daily shards."
   }
 ]

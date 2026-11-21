@@ -211,8 +211,8 @@ pub fn repository_flags(
     resources: &std::path::Path,
     enabled: &[String],
     additional: &[std::sync::Arc<crate::datapack::DataPack>],
-) -> Vec<Flag> {
-    crate::datapack::feature_repository(resources, additional)
+) -> Result<Vec<Flag>, crate::datapack::metadata::AdmissionError> {
+    Ok(crate::datapack::feature_repository(resources, additional)?
         .into_iter()
         // A mod's hidden pack stays out (`PackRegistration::hidden`); Done only touches the
         // listed packs, so a hidden one keeps its selection.
@@ -238,7 +238,7 @@ pub fn repository_flags(
                 title,
             }
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -274,7 +274,8 @@ mod tests {
             std::path::Path::new("/nonexistent/horizon-test-assets"),
             &["hidden".into(), "visible".into()],
             &[feature("hidden", true), feature("visible", false)],
-        );
+        )
+        .unwrap();
         assert_eq!(
             flags
                 .iter()

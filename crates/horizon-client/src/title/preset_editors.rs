@@ -101,7 +101,13 @@ impl WorldOptions {
         root: &Path,
         mod_data: Option<&crate::datapack::DataPack>,
     ) {
-        let packs = self.available_packs(root);
+        let packs = match self.available_packs(root) {
+            Ok(packs) => packs,
+            Err(error) => {
+                log::error!("Horizon: metadata context: {error}");
+                return;
+            }
+        };
         let mut selected: Vec<_> = self
             .data_packs
             .iter()

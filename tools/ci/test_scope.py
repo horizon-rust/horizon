@@ -32,6 +32,7 @@ HORIZON_CLIENT = [
     "docs/api/launch-reference.md", "docs/horizon-ctl-commands.md", "docs/modding/examples/src/worldgen.rs",
     "docs/parity/random-chance-seeded.jsonl", "packaging/executable_link.rs", "packaging/windows/exe.rs",
     "research-lock.json", "tests/fixture_support/item_resource_properties.rs", "tests/fixtures",
+    "tools/fixtures/rich_description_admission.json", "tools/fixtures/rich_description_review_cases.json",
     # shader_packs.rs tests load the sample pack.
     "crates/horizon-shader-api/packs/traced_shadows",
     # The registered slot-source test loads its pack and program.

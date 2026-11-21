@@ -201,7 +201,11 @@ fn jar_data_layers_merge_tags_and_replace_recipes_below_world_datapacks() {
         "say world",
     );
     let builtin = DataPack::from_source("vanilla".into(), resources.data().clone());
-    let world = datapack::discover(&f.0.join("world"));
+    let world = datapack::discover(
+        &f.0.join("world"),
+        &horizon_command::component::json::context::UnavailableContext,
+    )
+    .unwrap();
     let mut packs = vec![&builtin];
     packs.extend(world.iter());
     let store = DataStore::load(&packs);

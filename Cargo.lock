@@ -2067,6 +2067,8 @@ dependencies = [
  "horizon-items",
  "horizon-protocol",
  "horizon-world",
+ "indexmap",
+ "serde_json",
 ]
 
 [[package]]

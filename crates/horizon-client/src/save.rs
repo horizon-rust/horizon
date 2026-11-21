@@ -21,6 +21,8 @@ pub mod block_entity_encode;
 mod block_entity_order;
 mod far_regions;
 pub mod level_mods;
+#[cfg(test)]
+mod metadata_tests;
 mod respawn;
 mod writes;
 use writes::{Outstanding, Writer};
@@ -427,8 +429,11 @@ pub(crate) fn json_tag(value: &serde_json::Value) -> Tag {
 }
 /// The level stems the world's enabled data packs define, as `WorldOpenFlows.loadWorldStem`'s
 /// `datapackDimensions`.
-fn datapack_dimensions(world: &Path) -> Vec<(String, Tag)> {
-    let packs = crate::datapack::discover(world);
+fn datapack_dimensions(
+    world: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> std::result::Result<Vec<(String, Tag)>, crate::datapack::metadata::AdmissionError> {
+    let packs = crate::datapack::discover(world, context)?;
     let enabled_features = Level::read(world)
         .map(|l| l.enabled_features)
         .unwrap_or_default();
@@ -437,22 +442,25 @@ fn datapack_dimensions(world: &Path) -> Vec<(String, Tag)> {
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    crate::datapack::dimension_stems(&enabled)
+    Ok(crate::datapack::dimension_stems(&enabled)
         .into_iter()
         .map(|(id, json)| (id, json_tag(&json)))
-        .collect()
+        .collect())
 }
 /// `data.worldGenSettingsLifecycle() != Lifecycle.stable()` (`WorldDimensions.bake`): the known
 /// dimensions (the saved ones and the enabled data packs', a pack's replacing the saved one of
 /// its id) lack one of the three builtin ones, or have one that is not the vanilla one.
-pub fn world_gen_unstable(world: &Path) -> bool {
+pub fn world_gen_unstable(
+    world: &Path,
+    context: &dyn horizon_command::component::json::Context,
+) -> std::result::Result<bool, crate::datapack::metadata::AdmissionError> {
     let saved = world_gen_settings(world)
         .as_ref()
         .and_then(|s| s.get("dimensions"))
         .cloned();
-    let stems = datapack_dimensions(world);
+    let stems = datapack_dimensions(world, context)?;
     if saved.is_none() && stems.is_empty() {
-        return false;
+        return Ok(false);
     }
     let mut dimensions: std::collections::BTreeMap<String, Tag> = match saved {
         Some(Tag::Compound(saved)) => saved
@@ -468,10 +476,10 @@ pub fn world_gen_unstable(world: &Path) -> bool {
         "minecraft:the_nether",
         "minecraft:the_end",
     ];
-    builtin.iter().any(|key| !dimensions.contains_key(*key))
+    Ok(builtin.iter().any(|key| !dimensions.contains_key(*key))
         || dimensions
             .iter()
-            .any(|(key, dimension)| !dimension_is_vanilla_like(key, dimension))
+            .any(|(key, dimension)| !dimension_is_vanilla_like(key, dimension)))
 }
 /// Move a world saved by an older Horizon build (pre-26.3 layout with a
 /// DataVersion that keeps vanilla from upgrading it) into the 26.3 layout.
@@ -9240,13 +9248,27 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(!world_gen_unstable(&dir), "{preset:?}");
+            assert!(
+                !world_gen_unstable(
+                    &dir,
+                    &horizon_command::component::json::context::UnavailableContext
+                )
+                .unwrap(),
+                "{preset:?}"
+            );
             assert!(!is_old_customized_world(&dir));
             let _ = fs::remove_dir_all(dir);
         }
         // Without world_gen_settings there is nothing to ask about.
         let dir = gen_world("stem-none");
-        assert!(!world_gen_unstable(&dir) && !is_old_customized_world(&dir));
+        assert!(
+            !world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+                && !is_old_customized_world(&dir)
+        );
         let _ = fs::remove_dir_all(dir);
 
         let dir = gen_world("stem-edit");
@@ -9269,13 +9291,25 @@ mod tests {
                 ("biome", string("minecraft:plains")),
             ]);
         });
-        assert!(world_gen_unstable(&dir));
+        assert!(
+            world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         // The End on another dimension type.
         edit(&|tag| {
             let end = dimension(tag, "minecraft:the_end");
             *end.get_mut("type").unwrap() = string("minecraft:overworld");
         });
-        assert!(world_gen_unstable(&dir));
+        assert!(
+            world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         // Another noise settings in the Overworld is fine (amplified), in the Nether it is not.
         edit(&|tag| {
             let nether = dimension(tag, "minecraft:the_nether");
@@ -9285,7 +9319,13 @@ mod tests {
                 .get_mut("settings")
                 .unwrap() = string("minecraft:overworld");
         });
-        assert!(world_gen_unstable(&dir));
+        assert!(
+            world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         // A fourth dimension, and a missing builtin one.
         edit(&|tag| {
             if let Some(Tag::Compound(dimensions)) = tag.get_mut("dimensions") {
@@ -9293,13 +9333,25 @@ mod tests {
                 dimensions.insert("mypack:moon".into(), end);
             }
         });
-        assert!(world_gen_unstable(&dir));
+        assert!(
+            world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         edit(&|tag| {
             if let Some(Tag::Compound(dimensions)) = tag.get_mut("dimensions") {
                 dimensions.remove(&"minecraft:the_end".into());
             }
         });
-        assert!(world_gen_unstable(&dir));
+        assert!(
+            world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         // legacy_custom_options marks an old customized world.
         edit(&|tag| {
             if let Tag::Compound(map) = tag {
@@ -9316,7 +9368,13 @@ mod tests {
     fn world_stem_compatibility_reads_data_pack_dimensions() {
         let dir = gen_world("stem-datapack");
         write_world_gen_settings(&dir, 7, WorldGen::default()).unwrap();
-        assert!(!world_gen_unstable(&dir));
+        assert!(
+            !world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         let write = |pack: &str, file: &str, text: &str| {
             let path = dir.join("datapacks").join(pack).join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -9329,27 +9387,57 @@ mod tests {
             "data/mypack/dimension/moon.json",
             r#"{"type":"minecraft:the_end","generator":{"type":"minecraft:noise","settings":"minecraft:end","biome_source":{"type":"minecraft:the_end"}}}"#,
         );
-        assert!(world_gen_unstable(&dir));
+        assert!(
+            world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         // Disabled, it counts for nothing.
         fs::write(dir.join("datapacks.json"), r#"{"disabled":["file/p"]}"#).unwrap();
-        assert!(!world_gen_unstable(&dir));
+        assert!(
+            !world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         fs::remove_file(dir.join("datapacks.json")).unwrap();
         fs::remove_file(dir.join("datapacks/p/data/mypack/dimension/moon.json")).unwrap();
-        assert!(!world_gen_unstable(&dir));
+        assert!(
+            !world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         // A pack's Nether with another biome source replaces the saved vanilla one.
         write(
             "p",
             "data/minecraft/dimension/the_nether.json",
             r#"{"type":"minecraft:the_nether","generator":{"type":"minecraft:noise","settings":"minecraft:nether","biome_source":{"type":"minecraft:fixed","biome":"minecraft:plains"}}}"#,
         );
-        assert!(world_gen_unstable(&dir));
+        assert!(
+            world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         // And a vanilla-like one stays stable.
         write(
             "p",
             "data/minecraft/dimension/the_nether.json",
             r#"{"type":"minecraft:the_nether","generator":{"type":"minecraft:noise","settings":"minecraft:nether","biome_source":{"type":"minecraft:multi_noise","preset":"minecraft:nether"}}}"#,
         );
-        assert!(!world_gen_unstable(&dir));
+        assert!(
+            !world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -9383,7 +9471,13 @@ mod tests {
         assert!(needs_file_fixes(&dir));
         let read = world_gen_settings(&dir).expect("settings");
         assert!(read.get("dimensions").is_some());
-        assert!(!world_gen_unstable(&dir));
+        assert!(
+            !world_gen_unstable(
+                &dir,
+                &horizon_command::component::json::context::UnavailableContext
+            )
+            .unwrap()
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

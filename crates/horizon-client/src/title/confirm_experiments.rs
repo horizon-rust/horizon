@@ -57,8 +57,8 @@ impl ConfirmExperimentsScreen {
         resources: &std::path::Path,
         selected: &[String],
         additional: &[std::sync::Arc<crate::datapack::DataPack>],
-    ) -> Self {
-        let entries = crate::datapack::feature_repository(resources, additional)
+    ) -> Result<Self, crate::datapack::metadata::AdmissionError> {
+        let entries = crate::datapack::feature_repository(resources, additional)?
             .into_iter()
             .filter(|p| selected.contains(&p.id))
             .filter(|p| !p.features().is_empty())
@@ -84,12 +84,12 @@ impl ConfirmExperimentsScreen {
                 Entry { title, flags }
             })
             .collect();
-        Self {
+        Ok(Self {
             entries,
             pending: selected.to_vec(),
             details: false,
             in_world: false,
-        }
+        })
     }
     /// The message's lines (`MultiLineTextWidget` at 310; the text's own
     /// line breaks kept).

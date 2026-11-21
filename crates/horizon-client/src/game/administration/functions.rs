@@ -4,6 +4,12 @@
 mod loading;
 #[path = "functions/registry_graph.rs"]
 mod registry_graph;
+#[cfg(test)]
+#[path = "functions/rich_metadata_context_tests.rs"]
+mod rich_metadata_context_tests;
+#[cfg(test)]
+#[path = "functions/rich_metadata_tests.rs"]
+mod rich_metadata_tests;
 use super::{
     Game,
     commands::{
@@ -112,18 +118,20 @@ pub(super) fn pack_stack(
     vanilla_disabled: bool,
     enabled_features: &[String],
     additional: &[Arc<DataPack>],
-) -> PackStack {
+) -> Result<PackStack, datapack::metadata::AdmissionError> {
     let builtin = (!vanilla_disabled)
         .then(|| DataPack::from_source("vanilla".into(), builtin_source.clone()));
-    let packs = super::pack_finders::data_repository(world_root, resources, additional);
+    // A pack whose description does not decode is not discovered; an unavailable
+    // text-component authority fails the whole discovery.
+    let packs = super::pack_finders::data_repository(world_root, resources, additional)?;
     let enabled = datapack::enabled_ids(world_root, &packs, enabled_features);
-    PackStack {
+    Ok(PackStack {
         content: DataPack::from_source("horizon-content".into(), content_source.clone()),
         builtin,
         packs: packs.into_iter().map(Arc::new).collect(),
         enabled,
         tags: Default::default(),
-    }
+    })
 }
 
 /// The world's enabled packs' content files (`recipe/`, `loot_table/`,
@@ -260,6 +268,8 @@ impl Game<'_> {
             .as_ref()
             .map_or(&self.pack.data_changes, |root| root.data_changes());
         let additional = super::pack_finders::data_packs(&self.mods);
+        // A pack whose metadata cannot be decoded at all (no text-component authority) fails
+        // the load like a refused registry: nothing is published.
         let stack = pack_stack(
             &self.world_root,
             &resources,
@@ -268,7 +278,11 @@ impl Game<'_> {
             self.cmds.vanilla_disabled,
             enabled_features,
             &additional,
-        );
+        )
+        .map_err(|error| {
+            log::error!("Horizon: data pack reload: {error}");
+            ReloadStageError::DataSource(error.to_string())
+        })?;
         // `ReloadableServerRegistries.reload`: the candidate's registry references bind and
         // validate before anything is published, so a refusal keeps the live library, tables
         // and timer queue.
@@ -1414,7 +1428,7 @@ impl Game<'_> {
         // timers already in memory stay, and none come back from disk
         // (`ServerFunctionManager` keeps its queue over a pack change).
         let additional = super::pack_finders::data_packs(&self.mods);
-        let mut stack = pack_stack(
+        let mut stack = match pack_stack(
             &self.world_root,
             &self.options.resources,
             &self.pack.data_source,
@@ -1422,7 +1436,18 @@ impl Game<'_> {
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
             &additional,
-        );
+        ) {
+            Ok(stack) => stack,
+            // Metadata that cannot be decoded at all cancels the command with its error and
+            // keeps the selection it had.
+            Err(error) => {
+                self.fns.enabled = previous_enabled;
+                self.cmds.vanilla_disabled = previous_vanilla_disabled;
+                return Err(horizon_client::command::CommandError::new(Text::literal(
+                    error.to_string(),
+                )));
+            }
+        };
         stack.enabled =
             datapack::selected_ids(stack.packs.iter().map(Arc::as_ref), &self.fns.enabled);
         if let Err(error) = stack.validate() {
@@ -2911,7 +2936,8 @@ mod tests {
                 true,
                 &[],
                 &[],
-            );
+            )
+            .unwrap();
             let files = content_overlay(&stack);
             let (_, versions) = files.iter().find(|(id, _)| id == "recipe/x:r").unwrap();
             let last = versions.last().unwrap();
@@ -2974,7 +3000,8 @@ mod tests {
             true,
             &[],
             &[],
-        );
+        )
+        .unwrap();
         let files = overlay_files(
             &stack,
             vec![

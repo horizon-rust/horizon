@@ -2564,7 +2564,9 @@ fn the_single_biome_preset_is_customized_into_the_generator() {
         false,
         &dir,
         crate::gamerules::rule_registry(),
-    );
+        &dir,
+    )
+    .unwrap();
     assert_eq!(options.single_biome, "minecraft:jungle");
 }
 
@@ -2924,8 +2926,14 @@ fn recreate_rules_load_saved_values_and_default_new_rules() {
         RuleRegistry::with_mod_rules(&["example:machines".into()], &definitions(&["old", "new"]))
             .unwrap(),
     );
-    let options =
-        WorldOptions::of_world(&crate::save::Level::default(), false, &dir, current.clone());
+    let options = WorldOptions::of_world(
+        &crate::save::Level::default(),
+        false,
+        &dir,
+        current.clone(),
+        &dir,
+    )
+    .unwrap();
     assert!(Arc::ptr_eq(options.rules.registry(), &current));
     assert_eq!(options.rules.get("example:old"), Some(Value::Bool(false)));
     assert_eq!(options.rules.get("example:new"), Some(Value::Bool(true)));

@@ -147,10 +147,10 @@ pub(super) fn data_repository(
     world: &std::path::Path,
     resources: &std::path::Path,
     additional: &[std::sync::Arc<DataPack>],
-) -> Vec<DataPack> {
-    let mut packs = horizon_client::datapack::discover_with_features(world, resources);
+) -> Result<Vec<DataPack>, horizon_client::datapack::metadata::AdmissionError> {
+    let mut packs = horizon_client::datapack::discover_with_features(world, resources)?;
     packs.extend(additional.iter().map(|pack| (**pack).clone()));
-    packs
+    Ok(packs)
 }
 
 impl Game<'_> {

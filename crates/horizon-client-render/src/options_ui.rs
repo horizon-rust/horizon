@@ -2332,7 +2332,12 @@ impl OptionsUi {
         additional: Vec<crate::pack_screen::PackInfo>,
     ) {
         self.open_at(false, Page::Packs);
-        self.pack_infos = crate::datapack::screen_packs(&dir, &resources);
+        let Some(infos) =
+            crate::datapack::metadata::report(crate::datapack::screen_packs(&dir, &resources))
+        else {
+            return;
+        };
+        self.pack_infos = infos;
         self.pack_infos.extend(additional.iter().cloned());
         self.additional_data_pack_infos = additional;
         self.data_pack_resources = resources;
@@ -2356,7 +2361,13 @@ impl OptionsUi {
         if !changed {
             return;
         }
-        self.pack_infos = crate::datapack::screen_packs(dir, &self.data_pack_resources);
+        let Some(infos) = crate::datapack::metadata::report(crate::datapack::screen_packs(
+            dir,
+            &self.data_pack_resources,
+        )) else {
+            return;
+        };
+        self.pack_infos = infos;
         self.pack_infos
             .extend(self.additional_data_pack_infos.iter().cloned());
         if let Some(p) = self.pack_screen.take() {

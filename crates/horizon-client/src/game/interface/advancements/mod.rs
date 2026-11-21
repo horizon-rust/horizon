@@ -3371,7 +3371,8 @@ mod structure_tag_tests {
             false,
             &[],
             &[],
-        );
+        )
+        .unwrap();
         let (tables, _, _) = game.stage_world_tables(&stack, false, &root).unwrap();
         game.world_tables = tables;
         assert!(game.world_tables.is_some());
