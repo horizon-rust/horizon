@@ -1,4 +1,5 @@
 //! STRUCTURE_STARTS / STRUCTURE_REFERENCES for the chunk generator.
+use super::structure_terrain::{Answer, LandContext, Request};
 use super::{
     biome::BiomeId,
     block_feature::FeatureBlockBindings,
@@ -53,6 +54,8 @@ pub(super) struct StructureState {
     pub(super) fixed_biome: bool,
     /// `StructureRegistry::zone_reach`.
     zone_reach: i32,
+    /// The biome registry by name, for a `structure_terrain` provider's terrain.
+    biome_names: super::structure_terrain::BiomeNames,
 }
 
 /// generateRingPositions' biome searches, shared out. Vanilla runs each as
@@ -338,8 +341,10 @@ impl StructureState {
         }
         let bindings = data.structure_block_bindings()?;
         let zone_reach = registry.zone_reach();
+        let biome_names = super::structure_terrain::BiomeNames::new(data.biome_names());
         Ok(Some(Self {
             zone_reach,
+            biome_names,
             registry,
             resources: resources.clone(),
             bindings,
@@ -666,6 +671,53 @@ impl StructureState {
             let starts = self.saved_starts_at(context, chunk);
             return Some(self.starts.insert_first((chunk.x, chunk.z), starts));
         }
+        match self.terrain_answer(context, chunk, None) {
+            Answer::Vanilla => self.build_new_starts(context, chunk, wait),
+            Answer::NoStructures => Some(
+                self.starts
+                    .insert_first((chunk.x, chunk.z), Arc::new(Vec::new())),
+            ),
+            Answer::Terrain(terrain) => {
+                let mut land = LandContext::new(context, terrain, &self.biome_names);
+                self.build_new_starts(&mut land, chunk, wait)
+            }
+        }
+    }
+    /// What the `structure_terrain` providers answer for `chunk`.
+    fn terrain_answer(
+        &self,
+        context: &impl StartContext,
+        chunk: ChunkPos,
+        placing: Option<&str>,
+    ) -> Answer {
+        let structures = self.possible_sets.iter().flat_map(|&set| {
+            (self.registry.sets[set].structures.iter())
+                .map(|&(structure, _)| self.registry.structures[structure].name.as_str())
+        });
+        let mut names: Vec<&str> = Vec::new();
+        for name in structures {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let request = Request::new(
+            context.seed(),
+            chunk,
+            placing,
+            context.generation(),
+            names,
+            Some(&self.biome_names),
+        );
+        super::structure_terrain::answer(&request)
+    }
+    /// `build_starts` for a chunk with no starts built or saved: they are
+    /// built now, on `context`'s biomes and heights.
+    fn build_new_starts(
+        &self,
+        context: &mut impl super::structure::start::StartContext,
+        chunk: ChunkPos,
+        wait: bool,
+    ) -> Option<Starts> {
         // Ring searches enlist other workers and wait for them: never hold a
         // chunk-work lock while helping, even when this chunk has no starts.
         let rings = self.rings_for(context, chunk);
@@ -728,15 +780,27 @@ impl StructureState {
         chunk: ChunkPos,
     ) -> Option<StructureStart> {
         let index = (self.registry.structures.iter()).position(|s| s.name == structure)?;
-        try_generate(
-            &self.registry,
-            &self.resources,
-            &self.bindings,
-            context,
-            index,
-            chunk,
-            true,
-        )
+        match self.terrain_answer(context, chunk, Some(structure)) {
+            Answer::Vanilla => try_generate(
+                &self.registry,
+                &self.resources,
+                &self.bindings,
+                context,
+                index,
+                chunk,
+                true,
+            ),
+            Answer::NoStructures => None,
+            Answer::Terrain(terrain) => try_generate(
+                &self.registry,
+                &self.resources,
+                &self.bindings,
+                &mut LandContext::new(context, terrain, &self.biome_names),
+                index,
+                chunk,
+                true,
+            ),
+        }
     }
     /// Puts a saved start of `structure` in `chunk`, in place of the one
     /// this generator builds there from the same structure sets (a set
