@@ -580,8 +580,16 @@ impl Game<'_> {
             Target::Mob(id) => self.mob_command_name(id),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
+                // An ominous item spawner keeps its compound in its own `raw`.
                 let custom = super::native_entities::target_id(other)
-                    .and_then(|id| self.persist_raw(id))
+                    .and_then(|id| {
+                        self.persist_raw(id).or_else(|| {
+                            self.ominous_spawners
+                                .iter()
+                                .find(|s| s.id == id)
+                                .and_then(|s| s.raw.as_deref())
+                        })
+                    })
                     .and_then(|r| r.get("CustomName"));
                 if let Some(c) = custom {
                     return horizon_client::scoreboard::comp_text(
@@ -4886,20 +4894,25 @@ mod forced_respawn_tests {
         with_game(|game| {
             game.build_registries();
             game.set_allow_commands(true);
-            for pos in [[1_000_000, 1024, -1_000_000], [-29_999_999, -1024, 29_999_999]] {
+            for pos in [
+                [1_000_000, 1024, -1_000_000],
+                [-29_999_999, -1024, 29_999_999],
+            ] {
                 assert!(!game.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4)));
-                assert!(game.run_command(&format!(
-                    "setworldspawn {} {} {}",
-                    pos[0], pos[1], pos[2]
-                )));
+                assert!(
+                    game.run_command(&format!("setworldspawn {} {} {}", pos[0], pos[1], pos[2]))
+                );
                 assert_eq!(game.level.world_spawn, Some(pos));
             }
             let previous = game.level.world_spawn;
-            for pos in [[30_000_000, 64, 0], [0, 20_000_000, 0], [0, 64, -30_000_001]] {
-                assert!(!game.run_command(&format!(
-                    "setworldspawn {} {} {}",
-                    pos[0], pos[1], pos[2]
-                )));
+            for pos in [
+                [30_000_000, 64, 0],
+                [0, 20_000_000, 0],
+                [0, 64, -30_000_001],
+            ] {
+                assert!(
+                    !game.run_command(&format!("setworldspawn {} {} {}", pos[0], pos[1], pos[2]))
+                );
                 assert_eq!(game.level.world_spawn, previous);
             }
         });
