@@ -61,15 +61,30 @@ jobs:
           REPO: ${{ github.repository }}
           CLOSED: ${{ needs.sweep.outputs.closed }}
         run: |
-          # Every head the branch had, as cancel-on-close.yml does; its repository tells it from a fork's namesake.
-          jq -c '.[]' <<<"$CLOSED" | while read -r head; do
-            branch=$(jq -r .branch <<<"$head")
-            head_repo=$(jq -r .repo <<<"$head")
+          # Cancel only runs belonging to each auto-closed PR and created at or before close, so a same-branch PR
+          # targeting another base or a replacement PR opened after close is never touched.
+          jq -c '.[]' <<<"$CLOSED" | while read -r item; do
+            num=$(jq -r .number <<<"$item")
+            branch=$(jq -r .branch <<<"$item")
+            head_repo=$(jq -r .repo <<<"$item")
+            head_sha=$(jq -r .head <<<"$item")
+            closed_at=$(jq -r .closed_at <<<"$item")
             for status in queued in_progress waiting pending requested; do
               gh api -X GET "repos/$REPO/actions/runs" -f branch="$branch" -f event=pull_request -f status="$status" \
-                -f per_page=100 --jq '.workflow_runs[] | "\(.head_repository.full_name) \(.id)"'
-            done | while read -r run_repo id; do
-              if [ "$run_repo" = "$head_repo" ]; then echo "$id"; fi
+                -f per_page=100 \
+                --jq --arg repo "$head_repo" --arg sha "$head_sha" --arg closed "$closed_at" --argjson num "$num" '
+                  .workflow_runs[]
+                  | select(.head_repository.full_name == $repo)
+                  | select(.created_at <= $closed)
+                  | select(
+                      if (.pull_requests | length) > 0 then
+                        any(.pull_requests[]; .number == $num)
+                      else
+                        .head_sha == $sha
+                      end
+                    )
+                  | .id
+                '
             done
           done | sort -u | while read -r id; do
             gh run cancel -R "$REPO" "$id" || true

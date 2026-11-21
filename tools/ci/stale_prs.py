@@ -62,7 +62,7 @@ FIELDS = """
   author { login }
   headRepository { nameWithOwner }
   reviewRequests(first: 50) { nodes { requestedReviewer { ... on User { login } } } }
-  commits(last: 1) { nodes { commit { checkSuites(first: 20) { nodes { createdAt } } } } }
+  commits(last: 1) { nodes { commit { pushedDate checkSuites(first: 20) { nodes { createdAt updatedAt } } } } }
   reviewThreads(last: 50) { nodes { comments(last: 5) { nodes { publishedAt author { __typename } } } } }
   mergeQueueEntry { id }
   labels(first: 100) { nodes { name } }
@@ -70,7 +70,7 @@ FIELDS = """
     nodes { state submittedAt commit { oid } author { login __typename } }
   }
   %s
-  comments(last: %d) { nodes { createdAt author { login __typename } %s } }"""
+  comments(last: %d) { pageInfo { hasPreviousPage } nodes { createdAt author { login __typename } %s } }"""
 LIST = """query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: %d, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -98,10 +98,15 @@ def is_bot(node: dict) -> bool:
 
 
 def pushed_at(pr: dict) -> list[str]:
-    """When the head arrived: GitHub creates its check suites on the push. A commit's own date is when it was made,
-    which can be days before a push."""
+    """When the head arrived: `pushedDate` and check-suite timestamps (`updatedAt` updates even when GitHub reuses a
+    suite from another branch for an older SHA). A commit's own date can be days before a push."""
     head = (pr["commits"]["nodes"] or [{}])[-1].get("commit") or {}
-    return [s["createdAt"] for s in (head.get("checkSuites") or {}).get("nodes", [])]
+    out = [head["pushedDate"]] if head.get("pushedDate") else []
+    for suite in (head.get("checkSuites") or {}).get("nodes", []):
+        for key in ("createdAt", "updatedAt"):
+            if suite.get(key):
+                out.append(suite[key])
+    return out
 
 
 def last_activity(pr: dict) -> datetime:
@@ -161,20 +166,44 @@ def excluded(pr: dict) -> str | None:
     return None
 
 
-def notice_of(pr: dict) -> tuple[datetime, set[str], str] | str:
+def own_markers(pr: dict) -> list[tuple[datetime, set[str], str]]:
+    """Every trusted stale-prs marker comment by this workflow's token, oldest to newest."""
+    found = []
+    for c in pr["comments"]["nodes"]:
+        m = MARKER.search(c.get("body") or "")
+        if m and is_bot(c) and (c.get("author") or {}).get("login") == BOT:
+            found.append((when(c["createdAt"]), set(m.group(1).split(",")), m.group(2)))
+    return found
+
+
+def has_active_notice_without_label(pr: dict) -> bool:
+    """True when a prior run already posted a notice for this exact head after `last_activity` (e.g. comment
+    succeeded, then adding the `stale` label failed), so we only add the missing label and never post a duplicate."""
+    markers = own_markers(pr)
+    if not markers:
+        return False
+    at, _why, head = markers[-1]
+    return head == pr["headRefOid"] and at >= last_activity(pr)
+
+
+def notice_of(pr: dict) -> tuple[datetime, set[str], str] | None:
     """(when, reasons, head) of the notice that goes with the label now on: the workflow's token added the label
-    last, and its marker comment came after that; an older cycle's marker never counts. Otherwise "unclear" (a
-    person added the label) or "missing" (the token labelled it but the notice never arrived). Needs Api.pull."""
+    last, and its marker comment was posted with that label (just before or after it; an older cycle's marker never
+    counts). Returns None when a person or another workflow (such as `/label stale`) added the label without a
+    matching marker, or when the comment window is incomplete."""
     added = [e for e in pr.get("labelEvents", {}).get("nodes", [])
              if ((e.get("label") or {}).get("name") or "").lower() == LABEL]
     if not added or (added[-1].get("actor") or {}).get("login") != BOT:
-        return "unclear"
-    for c in reversed(pr["comments"]["nodes"]):
-        m = MARKER.search(c.get("body") or "")
-        if m and is_bot(c) and (c.get("author") or {}).get("login") == BOT:
-            at = when(c["createdAt"])
-            return (at, set(m.group(1).split(",")), m.group(2)) if at >= when(added[-1]["createdAt"]) else "missing"
-    return "missing"
+        return None
+    label_at = when(added[-1]["createdAt"])
+    # Notice is posted right before labelling (allow a small clock/API window, never an earlier cycle days ago).
+    earliest = label_at - timedelta(minutes=5)
+    for at, why, head in reversed(own_markers(pr)):
+        if at >= earliest:
+            return (at, why, head)
+        return None
+    # No marker in the last 100 comments (either `/label stale` added it, or the marker scrolled out): leave alone.
+    return None
 
 
 def labelled(pr: dict) -> bool:
@@ -182,20 +211,17 @@ def labelled(pr: dict) -> bool:
 
 
 def decide(pr: dict, now: datetime, days: dict) -> str:
-    """skip, warn, notice (labelled, notice missing), clear (take the label off), wait, close or unclear (labelled
-    by hand, left alone). A labelled pull request needs its comments' text: the list leaves it out, Api.pull reads
-    it."""
+    """skip, warn, clear (take the label off), wait, close or unclear (labelled without a matching workflow notice,
+    e.g. by a person or `/label stale`, left alone). A labelled pull request needs its comments' text: the list
+    leaves it out, Api.pull reads it."""
     if excluded(pr):
         return "clear" if labelled(pr) else "skip"
     now_reasons = reasons(pr, now, days)
     if not labelled(pr):
         return "warn" if now_reasons else "skip"
     notice = notice_of(pr)
-    if notice == "unclear":
+    if notice is None:
         return "unclear"
-    if notice == "missing":
-        # A warning whose comment failed after the label went on: post it now, or take the label off.
-        return "notice" if now_reasons else ("wait" if now_reasons is None else "clear")
     at, named, head = notice
     if pr["headRefOid"] != head or last_activity(pr) > at:
         return "clear"
@@ -302,8 +328,8 @@ class Api:
         self._write("label", "create", name, "-R", self.repo, "--color", color, "--description", description)
 
 
-# Clears free a pull request that moved, so they go first; closes before notices so a capped run still drains.
-ORDER = {"clear": 0, "close": 1, "notice": 2, "warn": 3}
+# Clears free a pull request that moved, so they go first; closes before warnings so a capped run still drains.
+ORDER = {"clear": 0, "close": 1, "warn": 2}
 
 
 def sweep(api, days: dict, max_actions: int, now: datetime | None = None, wait=time.sleep, log=print,
@@ -340,6 +366,14 @@ def sweep(api, days: dict, max_actions: int, now: datetime | None = None, wait=t
             if pr["state"] != "OPEN" or (action := decide(pr, now, days)) != planned:
                 done.setdefault("recheck", []).append(n)
                 continue
+            if (
+                action == "warn"
+                and not has_active_notice_without_label(pr)
+                and (pr.get("comments") or {}).get("pageInfo", {}).get("hasPreviousPage")
+            ):
+                # Comment window truncated without seeing our marker: skip rather than risk a duplicate notice.
+                done.setdefault("recheck", []).append(n)
+                continue
         done.setdefault(action, []).append(n)
         acted += 1
         why = sorted(reasons(pr, now, days) or ())
@@ -347,12 +381,13 @@ def sweep(api, days: dict, max_actions: int, now: datetime | None = None, wait=t
             f"{'' if api.apply else ' (dry run)'}")
         if not api.apply:
             continue
-        if action in ("warn", "notice"):
-            # The label first: if the comment fails, the next run finds the token's label without a notice and posts
-            # it (decide: notice), while a notice without the label would be posted again every day.
-            if action == "warn":
-                api.label(n)
-            api.comment(n, notice_text(api.repo, set(why), pr["headRefOid"], days))
+        if action == "warn":
+            # Comment first, then label: if labelling fails, the next run sees the marker for this head and only adds
+            # the label (never posting a duplicate), and a `/label stale` without our marker stays `unclear` instead
+            # of starting an auto-close cycle.
+            if not has_active_notice_without_label(pr):
+                api.comment(n, notice_text(api.repo, set(why), pr["headRefOid"], days))
+            api.label(n)
         elif action == "clear":
             api.unlabel(n)
         elif action == "close":
@@ -361,7 +396,13 @@ def sweep(api, days: dict, max_actions: int, now: datetime | None = None, wait=t
             api.close(n)
             if closed is not None and pr.get("headRepository"):
                 # A close by the workflow's token starts no workflow, so cancel-on-close.yml doesn't run for it.
-                closed.append({"branch": pr["headRefName"], "repo": pr["headRepository"]["nameWithOwner"]})
+                closed.append({
+                    "number": n,
+                    "branch": pr["headRefName"],
+                    "repo": pr["headRepository"]["nameWithOwner"],
+                    "head": pr["headRefOid"],
+                    "closed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                })
             api.comment(n, closing_text(api.repo, days))
         wait(WRITE_PAUSE_S)
     unknown = sum(1 for p in prs if p["mergeable"] == "UNKNOWN" and not excluded(p))

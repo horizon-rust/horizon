@@ -25,27 +25,31 @@ def notice(at, reasons=(sp.CONFLICT,), head=HEAD, login=sp.BOT):
 
 
 def pr(n=1, *, mergeable="CONFLICTING", idle=10, draft=False, base="main", queue=False, labels=(), review=None,
-       comments=(), head=HEAD, state="OPEN", label_at=None, label_by=sp.BOT, pushed=None, requested=(), threads=()):
+       comments=(), head=HEAD, state="OPEN", label_at=None, label_by=sp.BOT, pushed=None, suite_updated=None,
+       requested=(), threads=(), has_prev_comments=False):
     """An open pull request whose last commit is `idle` days old, pushed then unless `pushed` days ago; `review` is
     (days ago, commit it looked at); `requested` the logins asked to review; `threads` review-thread replies. A
-    `stale` label was added by `label_by` at `label_at`, by default a second before the newest marker."""
+    `stale` label was added by `label_by` at `label_at`, by default a second after the newest marker."""
     reviews = []
     if review:
         reviews.append({"state": "CHANGES_REQUESTED", "submittedAt": ago(review[0]), "commit": {"oid": review[1]},
                         "author": {"login": "reviewer", "__typename": "User"}})
+    suite = {"createdAt": ago(idle if pushed is None else pushed)}
+    if suite_updated is not None:
+        suite["updatedAt"] = ago(suite_updated)
     return {"number": n, "state": state, "isDraft": draft, "mergeable": mergeable, "baseRefName": base,
             "reviewDecision": "CHANGES_REQUESTED" if review else None, "headRefOid": head, "createdAt": ago(60),
             "authorAssociation": "CONTRIBUTOR", "author": {"login": "author"}, "headRefName": "topic",
             "headRepository": {"nameWithOwner": "fork/r"},
             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": login}} for login in requested]},
-            "commits": {"nodes": [{"commit": {"checkSuites": {"nodes": [
-                {"createdAt": ago(idle if pushed is None else pushed)}]}}}]},
+            "commits": {"nodes": [{"commit": {"pushedDate": ago(idle if pushed is None else pushed),
+                                              "checkSuites": {"nodes": [suite]}}}]},
             "reviewThreads": {"nodes": [{"comments": {"nodes": [reply]}} for reply in threads]},
             "mergeQueueEntry": {"id": "q"} if queue else None,
             "labels": {"nodes": [{"name": name} for name in labels]},
             "latestOpinionatedReviews": {"nodes": reviews},
             "timelineItems": {"nodes": [{"__typename": "PullRequestCommit", "commit": {"committedDate": ago(idle)}}]},
-            "comments": {"nodes": list(comments)},
+            "comments": {"pageInfo": {"hasPreviousPage": has_prev_comments}, "nodes": list(comments)},
             "labelEvents": {"nodes": [{"createdAt": label_at or label_time(comments), "actor": {"login": label_by},
                                        "label": {"name": "stale"}}] if "stale" in labels else []}}
 
@@ -54,7 +58,7 @@ def label_time(comments):
     markers = [c["createdAt"] for c in comments if sp.MARKER.search(c.get("body") or "")]
     if not markers:
         return ago(5)
-    return (sp.when(max(markers)) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (sp.when(max(markers)) + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def decide(p):
@@ -77,6 +81,8 @@ class TriggerTests(unittest.TestCase):
 
     def test_a_push_counts_from_when_it_arrived_not_when_the_commit_was_made(self):
         self.assertEqual(decide(pr(idle=10, pushed=1)), "skip")
+        # Fast-forward to an older SHA whose check suite was created days ago still updates suite updatedAt.
+        self.assertEqual(decide(pr(idle=10, pushed=10, suite_updated=1)), "skip")
 
     def test_a_reply_in_a_review_thread_counts_as_activity(self):
         self.assertEqual(decide(pr(idle=10, threads=[{"publishedAt": ago(1), "author": {"__typename": "User"}}])),
@@ -133,14 +139,15 @@ class NoticeTests(unittest.TestCase):
             self.assertEqual(decide(p), outcome)
 
     def test_an_earlier_cycles_notice_doesnt_count(self):
-        # Warned, cleared, labelled again: the old notice never starts the clock.
-        self.assertEqual(decide(pr(labels=["stale"], comments=[notice(ago(9))], label_at=ago(4))), "notice")
+        # Warned, cleared, labelled again without a fresh marker: left alone as unclear.
+        self.assertEqual(decide(pr(labels=["stale"], comments=[notice(ago(9))], label_at=ago(4))), "unclear")
         self.assertEqual(decide(pr(labels=["stale"], comments=[notice(ago(4))], label_by="someone")), "unclear")
 
-    def test_a_notice_that_failed_after_the_label_is_posted_next_run(self):
-        self.assertEqual(decide(pr(labels=["stale"])), "notice")
-        self.assertEqual(decide(pr(mergeable="MERGEABLE", labels=["stale"])), "clear")
-        self.assertEqual(decide(pr(mergeable="UNKNOWN", labels=["stale"])), "wait")
+    def test_triage_bot_label_without_marker_is_left_alone(self):
+        # `/label stale` via triage-command.yml uses github-actions without posting our marker: never auto-closes.
+        self.assertEqual(decide(pr(labels=["stale"])), "unclear")
+        self.assertEqual(decide(pr(mergeable="MERGEABLE", labels=["stale"])), "unclear")
+        self.assertEqual(decide(pr(mergeable="UNKNOWN", labels=["stale"])), "unclear")
 
     def test_an_exclusion_label_or_draft_clears(self):
         self.assertEqual(decide(pr(labels=["stale", "keep-open"], comments=[notice(ago(5))])), "clear")
@@ -167,12 +174,12 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual(decide(pr(labels=["stale"], label_by="someone", comments=[notice(ago(5))])), "unclear")
 
     def test_only_the_tokens_marker_counts(self):
-        # Someone else's marker is ignored: the token's label without its own notice gets one, never a close.
+        # Someone else's marker is ignored: a stale label without our own marker stays unclear, never closes.
         forged = notice(ago(5), login="mallory")
         forged["author"]["__typename"] = "User"
-        self.assertEqual(decide(pr(labels=["stale"], comments=[forged], label_at=ago(6))), "notice")
+        self.assertEqual(decide(pr(labels=["stale"], comments=[forged], label_at=ago(5))), "unclear")
         other = notice(ago(5), login="other-bot")
-        self.assertEqual(decide(pr(labels=["stale"], comments=[other], label_at=ago(6))), "notice")
+        self.assertEqual(decide(pr(labels=["stale"], comments=[other], label_at=ago(5))), "unclear")
 
     def test_the_notice_names_the_reason_and_the_head(self):
         text = sp.notice_text("o/r", {sp.CHANGES}, HEAD, DAYS)
@@ -232,7 +239,7 @@ class SweepTests(unittest.TestCase):
         api = FakeApi(self.mixed())
         done = sweep(api)
         self.assertEqual({k: v for k, v in done.items() if k != "skip"}, {"clear": [3], "close": [2], "warn": [1]})
-        self.assertEqual(api.calls, [("unlabel", 3), ("close", 2), ("comment", 2), ("label", 1), ("comment", 1)])
+        self.assertEqual(api.calls, [("unlabel", 3), ("close", 2), ("comment", 2), ("comment", 1), ("label", 1)])
 
     def test_dry_run_writes_nothing(self):
         api = FakeApi(self.mixed(), apply=False)
@@ -266,15 +273,27 @@ class SweepTests(unittest.TestCase):
             self.assertEqual(sweep(api)["recheck"], [1])
             self.assertEqual(api.calls, [])
 
-    def test_a_missing_notice_is_posted_without_labelling_again(self):
-        api = FakeApi([pr(1, labels=["stale"])])
-        self.assertEqual(sweep(api)["notice"], [1])
-        self.assertEqual(api.calls, [("comment", 1)])
+    def test_a_missing_label_after_notice_adds_only_the_label(self):
+        # If comment succeeded and labelling failed on a prior run, next run adds only the label (no duplicate).
+        api = FakeApi([pr(1, idle=10, comments=[notice(ago(1))])])
+        self.assertEqual(sweep(api)["warn"], [1])
+        self.assertEqual(api.calls, [("label", 1)])
+
+    def test_truncated_comment_window_skips_warning_to_avoid_duplicates(self):
+        api = FakeApi([pr(1, idle=10, has_prev_comments=True)])
+        self.assertEqual(sweep(api)["recheck"], [1])
+        self.assertEqual(api.calls, [])
 
     def test_closed_heads_are_handed_on_for_cancelling(self):
         closed = []
         sweep(FakeApi([pr(2, labels=["stale"], comments=[notice(ago(4))])]), closed=closed)
-        self.assertEqual(closed, [{"branch": "topic", "repo": "fork/r"}])
+        self.assertEqual(closed, [{
+            "number": 2,
+            "branch": "topic",
+            "repo": "fork/r",
+            "head": HEAD,
+            "closed_at": NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }])
         closed = []
         sweep(FakeApi([pr(2, labels=["stale"], comments=[notice(ago(4))])], apply=False), closed=closed)
         self.assertEqual(closed, [])
