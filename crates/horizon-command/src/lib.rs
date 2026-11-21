@@ -866,6 +866,42 @@ impl Dispatcher {
         }
         tree
     }
+    /// This tree without the command paths a player is refused (each path is the node names from
+    /// the root): the node ending a path stops running its command, and it leaves its parent once
+    /// nothing is below it, walking back up the same way. A node other usages still reach stays.
+    /// A path the tree lacks is skipped. It is the pruning a player's sent tree gets, for the
+    /// completions the server answers with.
+    pub fn without_paths(&self, paths: &[Vec<String>]) -> Self {
+        let mut tree = self.clone();
+        for path in paths {
+            let mut chain: Vec<(usize, usize)> = Vec::new();
+            let mut current = 0;
+            for name in path {
+                let next = tree.nodes[current]
+                    .children
+                    .iter()
+                    .copied()
+                    .find(|&child| tree.nodes[child].name() == name);
+                let Some(next) = next else {
+                    chain.clear();
+                    break;
+                };
+                chain.push((current, next));
+                current = next;
+            }
+            if chain.is_empty() {
+                continue;
+            }
+            tree.nodes[current].command = None;
+            for &(parent, child) in chain.iter().rev() {
+                if !tree.nodes[child].children.is_empty() || tree.nodes[child].command.is_some() {
+                    break;
+                }
+                tree.nodes[parent].children.retain(|&c| c != child);
+            }
+        }
+        tree
+    }
     fn add(&mut self, parent: usize, kind: NodeKind) -> usize {
         let name = match &kind {
             NodeKind::Literal(l) => l.clone(),

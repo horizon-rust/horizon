@@ -82,6 +82,31 @@ pub trait PlayersServerHost {
     /// [`Profiles::resolve_name`](crate::Profiles).
     #[access(WorldOnly)]
     fn profile_by_name(&self, name: &str) -> Option<GameProfile>;
+    /// Side: server.
+    /// Sends `player` their command tree again, as vanilla does on join, respawn, dimension
+    /// change and an operator change: the tree their permission level may use, with the mods' say
+    /// on it (a command whose check fails for them is left out). Only that player's client is sent
+    /// a packet. Call it when a mod's answers for that player change; the server checks every run
+    /// anyway, so a stale tree affects suggestions only. Refuses, sending nothing, with
+    /// `PlayerWorldRefusal`: `Client`, `Stale` (no such player in the server's list, or a handle of
+    /// an earlier open of the world) and `NoConnection` (a fake player).
+    #[access(WorldOnly)]
+    fn player_resend_command_tree(&mut self, player: PlayerRef) -> Result<(), PlayerWorldRefusal>;
+
+    /// Answers the permission node `node` for the player `uuid` through the one selected handler.
+    /// The built-in handler answers from the node's default, a custom one from its own policy.
+    /// Online and offline UUIDs are both accepted. Refuses with `Unregistered` for a node that is
+    /// not declared, `NotInitialized` before the server has gathered its nodes, and `InvalidInput`
+    /// for too many contexts or a badly named one. A handler's failure is `HandlerFailed`, never a
+    /// grant. Writes nothing, changes no operator level and does not fire
+    /// `permissions_changed`.
+    #[access(WorldOnly)]
+    fn permission_query(
+        &mut self,
+        node: &PermissionNode,
+        uuid: u128,
+        contexts: &[PermissionContext],
+    ) -> Result<PermissionValue, PermissionError>;
 }
 /// The client host's methods of the `players` area, implemented by the game and reached through [`crate::ClientHost`].
 #[horizon_mod_api_macros::host_area]

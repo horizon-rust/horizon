@@ -48,7 +48,8 @@ impl Game<'_> {
             return false;
         };
         host.hub.ops.insert(uuid, level);
-        host.hub.resend_commands();
+        // The new level changes what the permission nodes and the mods decide: asked again first.
+        self.resend_commands_filtered();
         true
     }
 }

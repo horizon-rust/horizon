@@ -2017,6 +2017,10 @@ struct Game<'a> {
     /// A dedicated server's operator, whitelist and ban lists, for `/op`,
     /// `/ban` and friends (`DedicatedPlayerList`).
     server_lists: Option<std::sync::Arc<std::sync::Mutex<dedicated::Lists>>>,
+    /// The permission nodes and handler of the open server: gathered when it starts, dropped when it stops.
+    permission_service: permission_service::PermissionService,
+    /// Whether a permission query is being answered, so one asked again is refused as recursive.
+    permission_query_state: native_permissions::QueryState,
     /// State of `/spectate`, `/posteffect`, `/debug`, `/waypoint` and friends.
     cmds: commands::extra::CommandExtras,
     /// The retained server reload listeners of the last successful reload.
@@ -11062,6 +11066,8 @@ impl<'a> Game<'a> {
             console_broadcast: None,
             rcon_source: false,
             server_lists: None,
+            permission_service: Default::default(),
+            permission_query_state: Default::default(),
             world_tables: None,
             server_loot: Default::default(),
             server_items: None,

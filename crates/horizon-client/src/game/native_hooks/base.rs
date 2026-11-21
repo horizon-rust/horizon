@@ -685,6 +685,7 @@ impl Game<'_> {
     /// Server teardown has finished, including the final save if possible.
     pub(in crate::game) fn native_server_stopped(&mut self, dedicated: bool) {
         self.fire_server_stopped(dedicated);
+        self.reset_permission_service();
     }
     /// The server opened its worlds and is about to tick (NeoForge's
     /// `ServerStartedEvent`): every level loaded, no player joined. Where

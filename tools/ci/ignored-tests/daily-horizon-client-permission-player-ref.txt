@@ -1,0 +1,2 @@
+# arismoko/horizon#1034 (permission nodes): a stale PlayerRef handle is an unknown player; the test reads the prepared 26.3 data.
+horizon-client game::native_permission_player_ref_tests::a_stale_handle_with_the_same_uuid_is_an_unknown_player_and_the_current_one_is_answered lib daily resources

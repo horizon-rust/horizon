@@ -950,6 +950,8 @@ impl Game<'_> {
         }
         let prepared = self.prepare_early_game_rules(opening.world?)?;
         self.native_server_about_to_start(false);
+        // An integrated server has no server.properties: the built-in handler answers.
+        self.gather_permission_nodes("");
         self.native_server_starting(false);
         self.native_lifecycle_open_started();
         // `load_world`, with the world `serve` started preparing.

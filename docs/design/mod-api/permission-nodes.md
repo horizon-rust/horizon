@@ -1,6 +1,6 @@
 # Permission nodes and handlers: proposed design
 
-**Status: the approved design for arismoko/horizon#1034 (merged in arismoko/horizon#2876); the build is arismoko/horizon#1034 and is not done.** The two gather hooks and the query API described here do not exist yet; the build follows this document. It does not change sound hooks or existing permissions.
+**Status: the approved design for arismoko/horizon#1034 (merged in arismoko/horizon#2876); layer 1-4 implemented in #17831.** Implemented by #17831: the two gather hooks, the query API, handler selection, the command-path requirement and the player command-tree resend. Not implemented yet, and described below as the design's contract only: mod-written default resolvers (a node's default is `NodeDefault` data, an operator level for a Boolean node or a value for any other, not code) and declared typed contexts with serialization contracts (a query checks only the number of contexts and the length of their keys). It does not change sound hooks or existing permissions.
 
 ## Boundary and existing contracts
 
@@ -21,7 +21,7 @@ Each node declares a mod-written default resolver receiving an optional online p
 On every logical server start, after levels load and before server-starting:
 
 1. Gather handler factories, including the built-in default factory. Duplicate handler ids are errors.
-2. Choose a factory by server configuration. No configured id selects the default. An unknown configured id selects the default with a diagnostic, rather than failing startup.
+2. Choose a factory by server configuration. No configured id selects the default. An unknown configured id does not fail startup: it is logged, the default handler still answers queries, and command usages that ask a node are refused (a handler was configured and none was selected).
 3. Gather typed nodes. Duplicate typed nodes or invalid mod input fail registration without panicking.
 4. Create the selected handler from the complete validated node set and publish the service atomically.
 
@@ -37,7 +37,7 @@ An unregistered node, invalid value, wrong-server online handle, handler error, 
 
 A mod command may declare a **per-path requirement** that consults the typed service with a typed node (never a bare string). It is the command's own requirement check, so vanilla's existing behaviour follows: a path whose check fails is left out of the command tree sent to that player and answers as unknown when typed. There is no separate hiding mechanism.
 
-Answer order for a command that declares a node: a configured handler's answer decides; with no handler configured the usage's operator level decides, as in vanilla; a handler error denies and is logged, and never falls back to the level. Vanilla's own commands, and mod commands without a node, are unchanged.
+Answer order for a command that declares a node: a configured handler's answer decides; with no handler configured the usage's operator level decides, as in vanilla; a failed permission setup or a configured handler no mod provided refuses the usage, so it never runs at a level; a handler error denies and is logged, and never falls back to the level. Vanilla's own commands, and mod commands without a node, are unchanged.
 
 One server host method resends a player's command tree (vanilla already resends it on join, respawn, dimension change and an operator change); a handler calls it when its answers change. The server rechecks on every run, so a stale tree affects suggestions only. This is built on top of the typed service (arismoko/horizon#3609).
 

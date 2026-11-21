@@ -1288,3 +1288,35 @@ fn the_derive_compiles_where_prelude_names_are_shadowed_and_means_the_same() {
         Reader::decode::<shadowed::Choice>(out.bytes()).unwrap_err()
     );
 }
+
+#[test]
+fn a_command_keeps_its_api_0_2_bytes_and_a_node_command_adds_its_own() {
+    // `register_commands` and `register_client_commands` share `Command`: it stays the two fields
+    // mods built for API 0.2 send. The node travels in `NodeCommand`, beside it.
+    let bytes = |put: &dyn Fn(&mut Writer)| {
+        let mut out = Writer::new();
+        put(&mut out);
+        out.bytes().to_vec()
+    };
+    assert_eq!(
+        bytes(&|out| out.put(&Command::op("pay <amount:integer>", 3))),
+        bytes(&|out| {
+            out.put(&"pay <amount:integer>".to_owned());
+            out.put(&3u8);
+        })
+    );
+    let node = PermissionNode {
+        name: "economy.pay".to_owned(),
+        value_type: PermissionValueType::Boolean,
+    };
+    let with_node = Command::new("pay").with_node(&node);
+    assert_eq!(with_node.command, Command::new("pay"));
+    assert_eq!(with_node.node, node);
+    assert_eq!(
+        bytes(&|out| out.put(&with_node)),
+        bytes(&|out| {
+            out.put(&Command::new("pay"));
+            out.put(&node);
+        })
+    );
+}

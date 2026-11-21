@@ -841,6 +841,11 @@ pub(super) fn emit<'a>(
         };
         // A trait mod's call is marked with the mod for a panic to name.
         let each = match &hook.owner {
+            // An answered replace hook asks only the mod the `owner` argument names: the other
+            // mods are not called, so they never see the event's arguments.
+            Some(owner) if answered => {
+                format!("super::entered_owned_with_id(HookId::{hook_id}, \"{name}\", {owner})")
+            }
             Some(owner) => format!("super::entered_owned(HookId::{hook_id}, \"{name}\", {owner})"),
             None if answered || hook.collect_validator.is_some() => {
                 format!("super::entered_with_id(HookId::{hook_id}, \"{name}\")")
@@ -2288,6 +2293,93 @@ fn main() {{
 "#
         );
         let dir = root.join("target/answered-collect-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("main.rs");
+        let binary = dir.join("main");
+        std::fs::write(&source, program).unwrap();
+        let output = std::process::Command::new("rustc")
+            .arg("--edition=2024")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let run = std::process::Command::new(binary).output().unwrap();
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn an_answered_replace_with_an_owner_calls_only_that_mod() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let hook = Hook {
+            name: "ask".into(),
+            contract: Contract::Replace,
+            out: Some("answer".into()),
+            answered_by_mod: true,
+            owner: Some("provider".into()),
+            ..Hook::sample(
+                "horizon_client::game::native_hooks::ask::Game<'_>::native_ask",
+                Side::Server,
+            )
+        };
+        let method: syn::ItemFn = syn::parse_quote! {
+            fn native_ask(&mut self, provider: &str, secret: u128, answer: &mut Option<Answered<u32>>) {
+                let _ = (provider, secret, answer);
+            }
+        };
+        let sources = emit(&root, std::iter::once(&hook), &[method], &[]).unwrap();
+        let (traits, dispatch) = (sources.traits, sources.dispatch);
+        // "first" answers everything it is asked, so only the filter keeps it from ending the
+        // query before the provider; every mod counts the times it was called.
+        let program = format!(
+            r#"
+#![allow(dead_code, unused_variables)]
+use std::sync::atomic::{{AtomicU32, Ordering}};
+struct Mod {{ id: &'static str, answer: u32, calls: AtomicU32 }}
+static MODS: [Mod; 3] = [
+    Mod {{ id: "first", answer: 1, calls: AtomicU32::new(0) }},
+    Mod {{ id: "provider", answer: 2, calls: AtomicU32::new(0) }},
+    Mod {{ id: "last", answer: 3, calls: AtomicU32::new(0) }},
+];
+fn listened(_: generated::HookId) -> bool {{ true }}
+fn entered_owned_with_id(_: generated::HookId, _: &str, owner: &str) -> impl Iterator<Item = (&'static str, &'static Mod)> {{
+    let owner = owner.to_owned();
+    MODS.iter().filter(move |m| m.id == owner).map(|m| (m.id, m))
+}}
+impl Mod {{ fn ask(&self, _: &mut dyn generated::ServerHost, _: &mut generated::AskEvent<'_>) -> Option<u32> {{ self.calls.fetch_add(1, Ordering::Relaxed); Some(self.answer) }} }}
+mod generated {{
+pub trait ServerHost {{}}
+impl ServerHost for () {{}}
+pub enum HookId {{ Ask }}
+#[derive(Debug, PartialEq)]
+pub struct Answered<T> {{ pub answer: T, pub mod_id: &'static str }}
+pub trait Hooks {{ {traits} }}
+{dispatch}
+}}
+use generated::Answered;
+fn main() {{
+    let mut answer = None;
+    generated::dispatch_ask(&mut (), "provider", 7, &mut answer);
+    assert_eq!(answer, Some(Answered {{ answer: 2, mod_id: "provider" }}));
+    let calls: Vec<u32> = MODS.iter().map(|m| m.calls.load(Ordering::Relaxed)).collect();
+    assert_eq!(calls, [0, 1, 0], "only the owner is called");
+    let mut none = None;
+    generated::dispatch_ask(&mut (), "absent", 7, &mut none);
+    assert_eq!(none, None);
+}}
+"#
+        );
+        let dir = root.join("target/answered-owner-test");
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("main.rs");
         let binary = dir.join("main");

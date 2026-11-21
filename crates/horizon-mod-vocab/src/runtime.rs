@@ -281,6 +281,31 @@ pub(crate) fn entered_with_id(
     entered_subscribers(hook_id, hook).map(|entry| (entry.id, &*entry.hooks))
 }
 
+/// [`entered_with_id`] for the one mod whose `[mod] id` is `owner`: the hook is not called on any
+/// other mod, so they are never handed what the event carries. For a hook that names the mod it
+/// asks (`owner = "<argument>"` with `answered_by = "mod"`).
+pub(crate) fn entered_owned_with_id<'a>(
+    hook_id: generated::HookId,
+    hook: &'static str,
+    owner: &'a str,
+) -> impl Iterator<Item = (&'static str, &'static dyn Hooks)> + 'a {
+    let mut crash_guard = crate::dispatch_scope::ModGuard::empty();
+    let scope = crate::dispatch_scope::snapshot();
+    listening(hook_id)
+        .filter(move |(_, entry)| entry.id == owner)
+        .map(move |(_, entry)| {
+            scope.replace(
+                &mut crash_guard,
+                crate::content::crash::ModCall {
+                    id: entry.id,
+                    hook,
+                    part: None,
+                },
+            );
+            (entry.id, &*entry.hooks)
+        })
+}
+
 /// A hook's enabled subscribers in dispatch order (descending priority, then dependency order),
 /// each marked as running `hook` until the next one is (or the loop ends), so a panic in it
 /// names the mod.

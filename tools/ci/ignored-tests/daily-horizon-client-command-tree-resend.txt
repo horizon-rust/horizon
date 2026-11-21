@@ -1,0 +1,5 @@
+# arismoko/horizon#1034 (permission nodes, layer 4): the command-tree resend tests read the prepared 26.3 data.
+horizon-client game::native_command_tree_resend_tests::a_client_cannot_resend_a_command_tree lib daily resources
+horizon-client game::native_command_tree_resend_tests::a_resend_from_inside_the_filter_pass_does_nothing lib daily resources
+horizon-client game::native_command_tree_resend_tests::each_resend_refusal_has_its_own_name_and_sends_nothing lib daily resources
+horizon-client game::native_command_tree_resend_tests::resend_reaches_only_the_named_player lib daily resources

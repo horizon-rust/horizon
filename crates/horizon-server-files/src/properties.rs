@@ -58,6 +58,9 @@ pub struct ServerProperties {
     pub spawn_protection: i32,
     pub op_permission_level: i32,
     pub function_permission_level: i32,
+    /// Id of the permission handler a mod provides (`permission-handler`); empty selects the
+    /// default handler. An id no mod provides selects the default, with a log line.
+    pub permission_handler: String,
     pub max_tick_time: i64,
     pub max_chained_neighbor_updates: i32,
     pub rate_limit: i32,
@@ -328,6 +331,7 @@ impl ServerProperties {
         let spawn_protection = r.int("spawn-protection", 16);
         let op_permission_level = r.permission("op-permission-level", 4);
         let function_permission_level = r.permission("function-permission-level", 2);
+        let permission_handler = r.string("permission-handler", "");
         let max_tick_time = r.long("max-tick-time", 60_000);
         let max_chained_neighbor_updates = r.int("max-chained-neighbor-updates", 1_000_000);
         let rate_limit = r.int("rate-limit", 0);
@@ -452,6 +456,7 @@ impl ServerProperties {
             spawn_protection,
             op_permission_level,
             function_permission_level,
+            permission_handler,
             max_tick_time,
             max_chained_neighbor_updates,
             rate_limit,
@@ -739,7 +744,15 @@ mod tests {
         assert!(secret.bytes().all(|b| b.is_ascii_alphanumeric()));
         assert!(stored.contains(&format!("\nmanagement-server-secret={secret}\n")));
         assert!(stored.ends_with("\nview-distance=10\nwhite-list=true\n"));
-        assert_eq!(stored.lines().count(), 71);
+        // Vanilla's 71 lines, plus Horizon's own `permission-handler` (empty selects the default handler).
+        assert!(stored.contains("\npermission-handler=\n"));
+        assert_eq!(
+            stored
+                .lines()
+                .filter(|line| !line.starts_with("permission-handler="))
+                .count(),
+            71
+        );
         assert!(p.random_seed);
         assert_eq!(p.seed, 7);
     }

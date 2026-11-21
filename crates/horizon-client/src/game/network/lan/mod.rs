@@ -3115,6 +3115,17 @@ impl Game<'_> {
             return;
         };
         host.hub.place_new_player(conn, &mut ctx);
+        // The first command tree: the permission nodes are asked now that the player is placed and
+        // `host.player` finds it, then the tree place_new_player left out is sent. A held arrival
+        // is not placed yet: it gets its tree once `confirm_arrival` places it.
+        if self
+            .lan
+            .as_ref()
+            .and_then(|host| host.hub.guest(conn))
+            .is_some_and(|g| g.placed)
+        {
+            self.send_tree_with_fresh_nodes(conn);
+        }
         self.bind_player_attachments(conn, false);
         if elsewhere && let Err(e) = self.enter_level(back) {
             log::error!("could not reopen {}: {e}", back.id());

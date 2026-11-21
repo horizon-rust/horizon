@@ -190,6 +190,18 @@ fn entered_with_id(
         (entry.id, hooks)
     })
 }
+fn entered_owned_with_id<'a>(
+    hook_id: HookId,
+    hook: &'static str,
+    owner: &'a str,
+) -> impl Iterator<Item = (&'static str, &'static dyn Hooks)> + 'a {
+    listening(hook_id)
+        .filter(move |(_, entry)| entry.id == owner)
+        .map(move |(_, entry)| {
+            let ((), hooks) = enter_listener(entry, hook);
+            (entry.id, hooks)
+        })
+}
 fn listening(hook_id: HookId) -> impl Iterator<Item = (bool, &'static ModEntry)> {
     MODS.get().into_iter().flat_map(move |installed| {
         installed

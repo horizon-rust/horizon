@@ -3,7 +3,11 @@
 //! before its functions load, and on each `/reload`. The tree lives on `Game`, so a function
 //! line naming a mod command parses with no hub; a hub, once there is one, takes that same tree.
 
-use super::{CommandArguments, Game, command_arguments, command_tree, register_dispatcher};
+use super::permission_gate::{self, NodeGate};
+use super::{
+    CommandArguments, Game, command_arguments, command_tree, command_tree_accepting,
+    register_dispatcher,
+};
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
@@ -16,6 +20,9 @@ pub(in crate::game) struct NativeCommands {
     pub(super) arguments: CommandArguments,
     /// The usages the mods registered, for the hub's tree with the moderation commands.
     usages: Vec<mod_api::Command>,
+    /// The command paths a permission node decides for each player (empty without a custom
+    /// permission handler).
+    pub(super) gate: NodeGate,
 }
 
 /// The session's state of the mods' commands.
@@ -26,6 +33,10 @@ pub(in crate::game) struct NativeCommandState {
     pub(in crate::game) registered: Option<NativeCommands>,
     /// Bumped each time the mods are asked; a hub holds the one it was given.
     generation: u64,
+    /// Whether the mods are being asked what each player's tree keeps (`native_filter_commands`).
+    /// `player_commands_sent` gets a mutable host, so it can resend a tree, which would ask again:
+    /// a resend made meanwhile is left to the pass that is running.
+    pub(in crate::game) filtering: bool,
 }
 
 impl NativeCommandState {
@@ -46,15 +57,23 @@ impl Game<'_> {
         if !self.is_logical_server() {
             return;
         }
-        let mut usages = Vec::new();
-        self.native_register_commands(&mut usages);
+        let mut registered = Vec::new();
+        self.native_register_commands(&mut registered);
+        let mut with_nodes = Vec::new();
+        self.native_register_node_commands(&mut with_nodes);
+        let policy = self.permission_service.node_policy();
+        let arguments = command_arguments();
+        let (usages, mut gate, gate_problems) =
+            permission_gate::split_usages(&registered, &with_nodes, policy, &arguments);
+        for p in gate_problems {
+            log::warn!("Horizon: a native mod's command was left out: {p}");
+        }
         let vanilla = horizon_client::command::vanilla::session_dispatcher(
             &self.level.rule_registry,
             features,
         );
-        let arguments = command_arguments();
         let hub = self.lan.as_ref().map(|host| &host.hub);
-        let (tree, levels, problems) = command_tree(
+        let (tree, levels, problems, rejected) = command_tree_accepting(
             &usages,
             |name| hub.is_some_and(|hub| hub.vanilla_command(name)) || vanilla.find(name).is_some(),
             &arguments,
@@ -62,6 +81,9 @@ impl Game<'_> {
         for p in problems {
             log::warn!("Horizon: a native mod's command was left out: {p}");
         }
+        // A usage the tree refused (a vanilla name, another kind, a usage that does not parse)
+        // must not leave its paths gated or hidden.
+        gate.without_usages(&rejected);
         let state = &mut self.native_commands;
         state.generation = state.generation.wrapping_add(1);
         state.registered = Some(NativeCommands {
@@ -69,6 +91,7 @@ impl Game<'_> {
             tree,
             arguments,
             usages,
+            gate,
         });
         self.ui.dispatcher.0 = Arc::new(vanilla);
         self.restore_native_commands();

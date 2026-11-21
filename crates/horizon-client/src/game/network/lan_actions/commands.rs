@@ -257,9 +257,21 @@ impl Game<'_> {
         else {
             return;
         };
+        // The paths a permission node refuses this player, which their sent tree leaves out.
+        let hidden_paths = host
+            .hub
+            .guest(conn)
+            .map(|g| g.hidden_command_paths.clone())
+            .unwrap_or_default();
         let skip = usize::from(text.starts_with('/'));
         let command = &text[skip..];
-        let d = self.ui.dispatcher.0.clone();
+        // The shared dispatcher has a gated usage at level zero, so completing from it would offer
+        // a denied path: complete from the player's own tree, the one their client was sent.
+        let d = if hidden_paths.is_empty() {
+            self.ui.dispatcher.0.clone()
+        } else {
+            std::sync::Arc::new(self.ui.dispatcher.0.without_paths(&hidden_paths))
+        };
         // Server players and lists, not the host's registries: a dedicated server has no local player.
         let triggers =
             super::super::scoreboard::trigger_objectives_for(&self.score.board, &player_name);

@@ -9,6 +9,11 @@
 //! server thread's), never on a client's.
 #[path = "native_server/argument_kinds.rs"]
 mod argument_kinds;
+#[path = "native_server/permission_gate.rs"]
+mod permission_gate;
+#[cfg(test)]
+#[path = "native_server/permission_gate_tests.rs"]
+mod permission_gate_tests;
 #[path = "native_server/registered_commands.rs"]
 mod registered_commands;
 #[cfg(test)]
@@ -155,6 +160,13 @@ fn usage_nodes(
     Ok(out)
 }
 
+/// Whether the node at `index` of a usage's nodes (`usage_nodes`) ends a runnable path: nothing
+/// follows it, or only optional nodes do. The command tree and the permission gate both ask it of
+/// the same nodes, so a gated path is the very path the tree makes executable.
+pub(super) fn runs_at(nodes: &[(String, Value, bool)], index: usize) -> bool {
+    nodes.get(index + 1).is_none_or(|next| next.2)
+}
+
 /// Native mods' commands as a root in the commands report's format
 /// (`lan::commands`, which sends each player what their level allows), and
 /// each command's traversal level: the lowest of its usages. A node is runnable where
@@ -166,19 +178,32 @@ pub(super) fn command_tree(
     vanilla: impl Fn(&str) -> bool,
     custom: &CommandArguments,
 ) -> (Value, HashMap<String, u8>, Vec<String>) {
+    let (tree, levels, problems, _) = command_tree_accepting(commands, vanilla, custom);
+    (tree, levels, problems)
+}
+
+/// [`command_tree`], and the indexes in `commands` of the usages it left out.
+pub(super) fn command_tree_accepting(
+    commands: &[mod_api::Command],
+    vanilla: impl Fn(&str) -> bool,
+    custom: &CommandArguments,
+) -> (Value, HashMap<String, u8>, Vec<String>, Vec<usize>) {
     let mut root: Map<String, Value> = Map::new();
     let mut levels: HashMap<String, u8> = HashMap::new();
     let mut problems = Vec::new();
-    for command in commands {
+    let mut rejected = Vec::new();
+    for (index, command) in commands.iter().enumerate() {
         let nodes = match usage_nodes(&command.usage, custom) {
             Ok(n) => n,
             Err(e) => {
                 problems.push(e);
+                rejected.push(index);
                 continue;
             }
         };
         if vanilla(&nodes[0].0) {
             problems.push(format!("`{}`: vanilla has /{}", command.usage, nodes[0].0));
+            rejected.push(index);
             continue;
         }
         // A rejected usage must not open an earlier executable prefix or lower its level.
@@ -208,11 +233,12 @@ pub(super) fn command_tree(
                 "`{}`: `{name}` is another kind in an earlier usage",
                 command.usage
             ));
+            rejected.push(index);
             continue;
         }
         let mut children = &mut root;
         for (i, (name, node, _)) in nodes.iter().enumerate() {
-            let runnable = nodes.get(i + 1).is_none_or(|n| n.2);
+            let runnable = runs_at(&nodes, i);
             let entry = children.entry(name.clone()).or_insert_with(|| {
                 let mut n = node.clone();
                 n["executable"] = false.into();
@@ -247,7 +273,7 @@ pub(super) fn command_tree(
     } else {
         json!({"type": "root", "children": root})
     };
-    (tree, levels, problems)
+    (tree, levels, problems, rejected)
 }
 
 /// Turns the working `level` into the report's `permissions`, and drops
@@ -1957,6 +1983,25 @@ impl Game<'_> {
     /// which sends the trees without what the mods took out: for `only`, or
     /// for every placed player.
     pub(super) fn native_filter_commands(&mut self, only: Option<u32>) {
+        // `player_commands_sent` can call `player_resend_command_tree`, which comes back here:
+        // asked again meanwhile, the running pass is the one that answers and sends.
+        if std::mem::replace(&mut self.native_commands.filtering, true) {
+            log::warn!(
+                "Horizon: player_commands_sent resent a command tree while it was asked; the running pass sends it"
+            );
+            return;
+        }
+        // A mod's panic unwinds through here: the flag must not stay set for later passes.
+        let passed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.filter_commands_pass(only);
+        }));
+        self.native_commands.filtering = false;
+        if let Err(payload) = passed {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    fn filter_commands_pass(&mut self, only: Option<u32>) {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
@@ -1968,6 +2013,7 @@ impl Game<'_> {
             .map(|g| (g.conn, g.uuid, g.name.clone()))
             .collect();
         for (conn, uuid, name) in players {
+            let hidden_paths = self.node_hidden_paths(uuid);
             let Some(host) = self.lan.as_ref() else {
                 return;
             };
@@ -1987,9 +2033,70 @@ impl Game<'_> {
             if let Some(host) = self.lan.as_mut() {
                 let _ = host.hub.update_guest(conn, |g| {
                     g.hidden_commands = names.into_iter().filter(|n| !kept.contains(n)).collect();
+                    g.hidden_command_paths = hidden_paths;
                 });
             }
         }
+    }
+
+    /// Asks the permission nodes again for the connection `conn` and stores what they refuse, so the
+    /// next tree it is sent (a dimension change, a respawn) does not reuse an earlier decision.
+    pub(super) fn native_refresh_node_paths(&mut self, conn: u32) {
+        let Some(uuid) = self
+            .lan
+            .as_ref()
+            .and_then(|host| host.hub.guest(conn))
+            .map(|g| g.uuid)
+        else {
+            return;
+        };
+        let hidden_paths = self.node_hidden_paths(uuid);
+        if let Some(host) = self.lan.as_mut() {
+            let _ = host
+                .hub
+                .update_guest(conn, |g| g.hidden_command_paths = hidden_paths);
+        }
+    }
+
+    /// Sends the guest on connection `conn` its command tree with the permission nodes asked
+    /// again first, for a tree a join, `Hub::change_level_with` or `Hub::respawn_with` left out:
+    /// the nodes see the player placed, in its new level. The guest is looked up again after
+    /// the nodes answered, since a handler may change the guest list (a fake player removed).
+    pub(super) fn send_tree_with_fresh_nodes(&mut self, conn: u32) {
+        self.native_refresh_node_paths(conn);
+        if let Some(host) = self.lan.as_ref()
+            && let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn)
+        {
+            host.hub.send_commands(i);
+        }
+    }
+
+    /// The gated command paths a permission node refuses this player (empty without a custom
+    /// permission handler): their tree leaves them out.
+    fn node_hidden_paths(&mut self, uuid: u128) -> Vec<Vec<String>> {
+        let Some(registered) = self.native_commands.registered.as_ref() else {
+            return Vec::new();
+        };
+        if registered.gate.is_empty() {
+            return Vec::new();
+        }
+        let gate = registered.gate.clone();
+        gate.denied_for(&mut permission_gate::GameNodes(self), uuid)
+    }
+
+    /// Whether a gated command path refuses the run. Its node is asked for the acting player; an
+    /// error or a non-player origin refuses it (`permission_gate::refuses`).
+    fn native_gate_refuses(&mut self, path: &[String], origin: &mod_api::CommandSource) -> bool {
+        let Some(node) = self
+            .native_commands
+            .registered
+            .as_ref()
+            .and_then(|registered| registered.gate.node(path))
+            .cloned()
+        else {
+            return false;
+        };
+        permission_gate::refuses(&mut permission_gate::GameNodes(self), &node, origin)
     }
 
     /// `Hub::resend_commands` with the mods' say on each tree.
@@ -2049,6 +2156,20 @@ impl Game<'_> {
     /// The shared command-node executor, also reached by functions and `execute`.
     pub(super) fn run_native_command(&mut self, context: Context) -> super::commands::R<i32> {
         use super::commands::err;
+        let path = permission_gate::path_names(&self.ui.dispatcher.0, &context.nodes);
+        // A refused gated path answers as an unknown command, as its tree leaves it out. It is
+        // asked before the arguments resolve, so a refused player never sees an argument error.
+        let gated = self
+            .native_commands
+            .registered
+            .as_ref()
+            .is_some_and(|registered| registered.gate.node(&path).is_some());
+        if gated {
+            let origin = self.native_command_origin(self.ui.registries.permission)?;
+            if self.native_gate_refuses(&path, &origin) {
+                return Err(err("command.unknown.command", &[]));
+            }
+        }
         let command = self.resolve_native_command(context)?;
         let origin = self.native_command_origin(self.ui.registries.permission)?;
         let mut ran = false;

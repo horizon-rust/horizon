@@ -15,6 +15,7 @@ horizon-mod-api-gen dispatch::stack_crossing_tests::per_block_routing_runtime_an
 horizon-mod-api-gen dispatch::stack_crossing_tests::unsubscribed_owned_values_never_convert_or_allocate lib daily child-process
 horizon-mod-api-gen dispatch::tests::a_worldgen_part_method_takes_the_worldgen_context_and_reads_the_published_table lib daily slow
 horizon-mod-api-gen dispatch::tests::an_answered_collect_names_the_mod_of_each_entry lib daily child-process
+horizon-mod-api-gen dispatch::tests::an_answered_replace_with_an_owner_calls_only_that_mod lib daily child-process
 horizon-mod-api-gen dispatch::tests::scoped_native_hook_uses_selected_host_and_game_hooks_keep_their_receiver lib daily slow
 horizon-mod-api-gen dispatch::tests::setting_changes_notify_only_the_owner lib daily slow
 horizon-mod-api-gen dispatch::tests::settings_boundary_owns_and_caches_values lib daily child-process

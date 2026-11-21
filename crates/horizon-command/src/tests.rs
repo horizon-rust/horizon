@@ -1836,3 +1836,73 @@ fn a_servers_own_profiler_keeps_its_node_and_is_not_horizons() {
     assert_eq!(offered, ["open"]);
     assert!(!vanilla::game_dispatcher().has_horizon_profiler());
 }
+
+/// `warp` (runs), `warp set <amount>` (runs) and `pay <target>` (runs), all open to everyone.
+fn paths_tree() -> Dispatcher {
+    let mut d = Dispatcher::new();
+    let warp = d.literal(0, "warp");
+    d.executes(warp, "warp");
+    let set = d.literal(warp, "set");
+    let amount = d.argument(set, "amount", ArgType::Word);
+    d.executes(amount, "warp_set");
+    let pay = d.literal(0, "pay");
+    let target = d.argument(pay, "target", ArgType::Word);
+    d.executes(target, "pay");
+    d
+}
+
+fn offered_at(tree: &Dispatcher, input: &str) -> Vec<String> {
+    let reg = reg();
+    let parse = tree.parse(input, &reg);
+    tree.client_suggestions(&parse, input.len(), &reg)
+        .1
+        .into_iter()
+        .map(|s| s.text)
+        .collect()
+}
+
+fn child_named(tree: &Dispatcher, parent: usize, name: &str) -> usize {
+    *tree.nodes[parent]
+        .children
+        .iter()
+        .find(|&&child| tree.nodes[child].name() == name)
+        .unwrap()
+}
+
+fn words(path: &[&str]) -> Vec<String> {
+    path.iter().map(|word| (*word).to_owned()).collect()
+}
+
+#[test]
+fn a_refused_path_is_not_suggested_and_a_branch_left_empty_goes_with_it() {
+    let tree = paths_tree();
+    assert_eq!(offered_at(&tree, ""), ["pay", "warp"]);
+    // `pay <target>` is refused: the literal has nothing left below it, so it is not offered.
+    let pruned = tree.without_paths(&[words(&["pay", "target"])]);
+    assert_eq!(offered_at(&pruned, ""), ["warp"]);
+    // The shared tree is not changed.
+    assert_eq!(offered_at(&tree, ""), ["pay", "warp"]);
+}
+
+#[test]
+fn a_refused_end_of_a_prefix_keeps_the_arguments_below_it_and_a_shared_prefix_stays() {
+    let tree = paths_tree();
+    // `warp set <amount>` is refused: `set` has nothing below it, `warp` still runs.
+    let pruned = tree.without_paths(&[words(&["warp", "set", "amount"])]);
+    assert_eq!(offered_at(&pruned, "warp "), Vec::<String>::new());
+    let warp = child_named(&pruned, 0, "warp");
+    assert!(pruned.nodes[warp].command.is_some());
+    // `warp` itself is refused: it stops running but `set <amount>` is still reached through it.
+    let pruned = tree.without_paths(&[words(&["warp"])]);
+    let warp = child_named(&pruned, 0, "warp");
+    assert!(pruned.nodes[warp].command.is_none());
+    assert_eq!(offered_at(&pruned, "warp "), ["set"]);
+}
+
+#[test]
+fn a_missing_path_changes_no_suggestion() {
+    let tree = paths_tree();
+    let pruned = tree.without_paths(&[words(&["nothing"]), words(&["warp", "nothing"])]);
+    assert_eq!(offered_at(&pruned, ""), ["pay", "warp"]);
+    assert_eq!(offered_at(&pruned, "warp "), ["set"]);
+}

@@ -1,0 +1,1 @@
+The collector permission_gather_nodes hands a mod: it calls `add` for each typed node it declares.
