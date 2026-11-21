@@ -652,6 +652,11 @@ impl Cull {
         pass.draw(0..36, 0..self.test_data.len() as u32);
     }
 
+    /// Lets the depth `bind_depth` bound go, before the window's is made again.
+    pub fn forget_depth(&mut self) {
+        self.depth_group = None;
+    }
+
     /// Before the world pass (`InShader`): the binding of the depth the
     /// world is drawn with this frame.
     pub fn bind_depth(&mut self, device: &wgpu::Device, depth: &wgpu::TextureView) {

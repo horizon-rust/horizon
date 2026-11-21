@@ -1664,10 +1664,9 @@ pub struct Renderer {
     instances: wgpu::Buffer,
     instance_capacity: u64,
     outline: wgpu::Buffer,
-    depth: wgpu::TextureView,
-    /// The window's depth had no room at its size (`remake_depth`): window frames are skipped
-    /// until it does.
-    depth_missing: bool,
+    /// `None` while it has no room at the window's size (`remake_depth`): window frames are
+    /// skipped until it does.
+    depth: Option<wgpu::TextureView>,
     sections: resident::Resident<SectionGpu>,
     lods: FxHashMap<crate::lod::TileKey, lod::Tile>,
     /// Far tiles' occlusion culling slots (`lod::Tile::cull_slot`): those
@@ -4610,8 +4609,7 @@ impl Renderer {
             instances,
             instance_capacity,
             outline,
-            depth,
-            depth_missing: false,
+            depth: Some(depth),
             sections: resident::Resident::default(),
             lods: FxHashMap::default(),
             lod_cull_free: Vec::new(),
@@ -4933,29 +4931,18 @@ impl Renderer {
             })
             .create_view(&Default::default())
     }
-    /// Makes the window's depth again at its size, the old one let go first (a 1x1 stand-in
-    /// holds its place) so the two are never held together. Without the room for it
-    /// (#13624) `depth_missing` says so, and window frames are skipped until a try finds room.
+    /// Makes the window's depth again at its size. The old one is let go first, occlusion
+    /// culling's binding of it too, so the two are never held together. Without the room for it
+    /// (#13624) there is none, and window frames are skipped until a try finds room.
     fn remake_depth(&mut self) -> bool {
-        use frame_targets::{Kind, made};
-        let small = wgpu::SurfaceConfiguration {
-            width: 1,
-            height: 1,
-            ..self.config.clone()
-        };
-        if let Some(stand_in) = made(&self.device, Kind::Depth, || {
-            Self::depth(&self.device, &small)
-        }) {
-            self.depth = stand_in;
+        self.depth = None;
+        if let Some(cull) = &mut self.cull {
+            cull.forget_depth();
         }
-        let depth = made(&self.device, Kind::Depth, || {
+        self.depth = frame_targets::made(&self.device, frame_targets::Kind::Depth, || {
             Self::depth(&self.device, &self.config)
         });
-        self.depth_missing = depth.is_none();
-        if let Some(depth) = depth {
-            self.depth = depth;
-        }
-        !self.depth_missing
+        self.depth.is_some()
     }
     /// VSync on presents with Fifo, capped to the display's refresh rate in a
     /// window and in fullscreen alike; Horizon's present-mode setting applies
@@ -7405,7 +7392,7 @@ impl Renderer {
         let surface = self.surface.take();
         let hdr = self.hdr.take_if(|_| !layered);
         let offscreen = std::mem::replace(&mut self.offscreen, target);
-        let window_depth = std::mem::replace(&mut self.depth, depth);
+        let window_depth = std::mem::replace(&mut self.depth, Some(depth));
         // The frame's own targets at `size` can run out of memory too.
         let drawn = frame_targets::in_screenshot(|| {
             self.draw_frame(frame, Some(GpuChecks::push(&self.device)), output)
@@ -7478,7 +7465,7 @@ impl Renderer {
         // a swapchain image, and tried again on the next (#13624). A scaled screenshot's frame
         // is under its own scopes (`checks`), which take it again at half the size.
         if checks.is_none() {
-            if self.depth_missing && !self.remake_depth() {
+            if self.depth.is_none() && !self.remake_depth() {
                 return Ok(false);
             }
             let size = [self.config.width, self.config.height];
@@ -9554,7 +9541,7 @@ impl Renderer {
         );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
-            None => (&view_target, &self.depth),
+            None => (&view_target, self.depth.as_ref().expect(WINDOW_DEPTH)),
         };
         if culling && let Some(cull) = &mut self.cull {
             cull.bind_depth(&self.device, world_depth);
@@ -11257,7 +11244,7 @@ impl Renderer {
             self.draw_world_views(&mut encoder, frame, globals, flat_frame, entity_quads);
             let (depth, depth_size) = match &scaled {
                 Some((_, depth)) => (depth, self.world_post.size().unwrap_or(size)),
-                None => (&self.depth, size),
+                None => (self.depth.as_ref().expect(WINDOW_DEPTH), size),
             };
             native_render::world_drawn(&mut native_render::WorldDrawn {
                 device: &self.device,
@@ -11594,7 +11581,7 @@ impl Renderer {
                 timestamp_writes: timing.as_mut().and_then(|t| t.writes("Hand")),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
+                    view: self.depth.as_ref().expect(WINDOW_DEPTH),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: hand_depth_store(layered),
@@ -11666,7 +11653,7 @@ impl Renderer {
             // window's size (100% scale); a smaller one doesn't fit the frame.
             let window = [self.config.width, self.config.height];
             let depth = if overlay.world_depth {
-                Some(&self.depth)
+                Some(self.depth.as_ref().expect(WINDOW_DEPTH))
             } else {
                 (self.world_post.depth_at(window)).filter(|_| overlay.msaa_depth)
             };
@@ -11752,7 +11739,7 @@ impl Renderer {
                 timestamp_writes: timing.as_mut().and_then(|t| t.writes("Crosshair")),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
+                    view: self.depth.as_ref().expect(WINDOW_DEPTH),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Discard,
@@ -11796,7 +11783,7 @@ impl Renderer {
             encoder,
             hud_target,
             coverage.as_ref(),
-            &self.depth,
+            self.depth.as_ref().expect(WINDOW_DEPTH),
             frame.hud,
             [self.config.width, self.config.height],
             0..blur_at,
@@ -11850,7 +11837,7 @@ impl Renderer {
             encoder,
             hud_target,
             coverage.as_ref(),
-            &self.depth,
+            self.depth.as_ref().expect(WINDOW_DEPTH),
             frame.hud,
             [self.config.width, self.config.height],
             blur_at..frame.hud.vertices.len() as u32,
@@ -11862,6 +11849,8 @@ impl Renderer {
         readback
     }
 }
+/// Window frames are drawn only once their depth is made (`remake_depth`).
+const WINDOW_DEPTH: &str = "the window's depth is made before its frames";
 /// Out-of-memory and validation error scopes, popped together: the first error either caught.
 struct GpuChecks {
     // Dropped (popped) in this order, the reverse of `push`'s: wgpu panics on any other.
