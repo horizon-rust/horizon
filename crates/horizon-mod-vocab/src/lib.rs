@@ -4,6 +4,9 @@
 #![deny(ambiguous_glob_reexports)]
 extern crate self as mod_api;
 
+// Named service keys (design issue #18867): the name rule; no host method yet.
+pub mod services;
+
 use std::sync::{Arc, OnceLock};
 
 use serde_json::{Map, Value};

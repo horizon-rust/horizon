@@ -1,0 +1,2 @@
+# horizon-rust/horizon: loaded_mod_ids lists the startup inventory; the test compares it with the inventory and a literal absent id.
+horizon-client game::native_loaded_mod_ids::tests::loaded_mod_ids_lists_the_startup_inventory lib daily resources

@@ -1,0 +1,2 @@
+ids = ["method:prelude::ConfigHost::game_protocol_version", "method:prelude::ConfigHost::protocol_name"]
+why = "Additive host methods game_protocol_version() -> i32 (SharedConstants.getProtocolVersion) and protocol_name(i32) -> Option<&str> (the name of this build's own protocol only). Available to native and WebAssembly mods."

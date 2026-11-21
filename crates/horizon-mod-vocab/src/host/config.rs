@@ -11,11 +11,26 @@ pub trait ConfigHost {
     /// Exact Minecraft version supported by this process.
     #[access(Metadata)]
     fn game_version(&self) -> &'static str;
+    /// The ids of every mod loaded at startup (`horizon-mod.toml` ids, native, wasm and content
+    /// packages), in dispatch order. Fabric's `FabricLoader.getAllMods` and NeoForge's `ModList`,
+    /// as Paper's `PluginManager.getPlugins` lists plugins; a mod is "enabled" in the sense of
+    /// Paper's `isPluginEnabled` when its id is in this list. Fixed for the process; a mod the
+    /// player turned off in Options > Mods (`on`) stays in the list.
+    #[access(Metadata)]
+    fn loaded_mod_ids(&self) -> Vec<String>;
     /// The engine's `DataVersion` written into level data and chunks.
     /// Constant on both sides, including before a world is open; this describes this
     /// game build, not the version of a remote server or an older save.
     #[access(Metadata)]
     fn server_data_version(&self) -> i32;
+    /// The network protocol number of this game build (`SharedConstants.getProtocolVersion()`, 777 for 26.3).
+    /// Constant on both sides, before a world is open.
+    #[access(Metadata)]
+    fn game_protocol_version(&self) -> i32;
+    /// The Minecraft version name of `protocol`, such as "26.3", for this build's own protocol number. None for any
+    /// other number: this build carries no names of older protocols.
+    #[access(Metadata)]
+    fn protocol_name(&self, protocol: i32) -> Option<&'static str>;
     /// Horizon version printed in crash reports.
     #[access(Metadata)]
     fn horizon_version(&self) -> &'static str;
@@ -95,6 +110,12 @@ pub trait ConfigServerHost {
     #[access(WorldOnly)]
     fn tick_stats(&self) -> (f32, f64);
     /// Side: server.
+    /// Whether the dedicated server runs in online mode (`online-mode` of server.properties,
+    /// Paper's `Bukkit.getOnlineMode`): its players sign in with their accounts. None off a
+    /// dedicated server and before it listens, so a client or an integrated game gives None.
+    #[access(WorldOnly)]
+    fn server_online_mode(&self) -> Option<bool>;
+    /// Side: server.
     /// The last 100 server ticks' durations in nanoseconds, as
     /// `MinecraftServer.getTickTimesNanos` lays them out: the tick numbered `n` at index
     /// `n % 100`, 0 where none was recorded yet. Sort a copy for percentiles; `tick_stats`
@@ -166,6 +187,15 @@ pub trait ConfigServerHost {
     /// keeps world data in level attachments.
     #[access(WorldOnly)]
     fn world_dir(&self) -> Option<PathBuf>;
+    /// Side: server.
+    /// The `latest.log` this run writes, absolute: the server's own on a dedicated server
+    /// (`logs/` beside `server.properties`). None when the run logs to the terminal only, which
+    /// is when another game holds that folder or the file could not be opened. The file is
+    /// read-only to a mod; `console_line` is the way to hear its lines as they are logged.
+    ///
+    /// Not on wasm: a path in the game's file system, which a wasm mod has none of.
+    #[access(Metadata)]
+    fn log_file(&self) -> Option<PathBuf>;
     /// Side: server. The calling mod's bulk files in the current save's
     /// `horizon-mod-data/<mod id>/`, copied, backed up and deleted with that
     /// save. Paths omit the mod id. Calls refuse with `NoWorld` before a

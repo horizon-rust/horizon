@@ -25,6 +25,10 @@ values are captured once, before mods register, and are the same for native and 
 the engine's constant `DataVersion` written into level data and chunks (`horizon_core::version::DATA_VERSION`),
 not a remote server's version or an older save's version.
 
+`game_protocol_version() -> i32` is the network protocol number of this build (`SharedConstants.getProtocolVersion()`,
+777 for 26.3). `protocol_name(protocol) -> Option<&str>` gives the Minecraft version name for that number, "26.3" for
+this build's own protocol and None for any other: this build carries no names of older protocols.
+
 ## Game tests
 
 Game tests are off by default. Turn them on with `--game-tests` on the game's command line (before or after

@@ -1,0 +1,2 @@
+# horizon-rust/horizon: server_online_mode reads the dedicated server's online-mode; the test runs off a dedicated server and expects None.
+horizon-client game::native_server_online_mode::tests::server_online_mode_is_none_off_a_dedicated_server lib daily resources

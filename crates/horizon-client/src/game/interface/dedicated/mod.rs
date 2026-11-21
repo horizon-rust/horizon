@@ -673,14 +673,26 @@ impl Lists {
             events::record(&kind, &e.user.name, e.user.id, serde_json::json!({}));
         });
         l.bans.watch(|change| {
+            let added = matches!(change, Change::Added(_));
             let (kind, e) = listed("bans", change);
             events::record(&kind, &e.user.name, e.user.id, ban_fields(&e));
+            crate::game::native_ban_changes::queue(
+                mod_api::BanListKind::Players,
+                added,
+                crate::game::native_server_bans::player_record(&e),
+            );
         });
         l.ip_bans.watch(|change| {
+            let added = matches!(change, Change::Added(_));
             let (kind, e) = listed("ip_bans", change);
             let mut fields = ban_fields(&e);
             fields["ip"] = e.user.clone().into();
             events::record_server(&kind, fields);
+            crate::game::native_ban_changes::queue(
+                mod_api::BanListKind::Ips,
+                added,
+                crate::game::native_server_bans::ip_record(&e),
+            );
         });
         // DedicatedPlayerList's constructor order and its LOGGER.warn lines.
         let warn = |what: &str, r: std::result::Result<(), String>| {

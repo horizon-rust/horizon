@@ -1783,6 +1783,10 @@ impl Game<'_> {
     pub(super) fn world_dir(&self) -> Option<PathBuf> {
         (!self.world_root.as_os_str().is_empty()).then(|| self.world_root.clone())
     }
+    /// The run's `latest.log` (`ConfigServerHost::log_file`), set once when the logger opens it.
+    pub(in crate::game) fn log_file(&self) -> Option<PathBuf> {
+        horizon_client::logging::latest_path()
+    }
 }
 
 /// Whether an orb at `position` (its box: 0.5 wide and high, standing on

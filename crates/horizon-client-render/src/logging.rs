@@ -109,6 +109,16 @@ pub fn crash_reports_dir(home: &Path) -> PathBuf {
     home.join("crash-reports")
 }
 
+/// The `latest.log` this run writes, once `init` opened it.
+static LATEST_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The `latest.log` this run writes, absolute: the server's own on a dedicated server, the
+/// game's otherwise. None before `init`, and when this run logs to the terminal only (another
+/// game holds the folder, or the file could not be opened).
+pub fn latest_path() -> Option<PathBuf> {
+    LATEST_PATH.get().cloned()
+}
+
 /// `2026-10-14-3.log.gz`
 pub fn archive_name(date: NaiveDate, index: u32) -> String {
     format!("{}-{index}.log.gz", date.format("%Y-%m-%d"))
@@ -572,7 +582,12 @@ impl Logger {
 pub fn init(home: &Path, main_thread: &'static str) {
     let dir = logs_dir(home);
     let file = match open_latest(&dir) {
-        Ok(Some(latest)) => Some(latest),
+        Ok(Some(latest)) => {
+            if let Ok(path) = std::path::absolute(dir.join("latest.log")) {
+                let _ = LATEST_PATH.set(path);
+            }
+            Some(latest)
+        }
         Ok(None) => {
             eprintln!(
                 "Horizon: another game is writing {}; this one logs to the terminal only",
@@ -909,6 +924,14 @@ mod tests {
             ("2026-10-14-7.log.gz".into(), "2026-10-14-6.log.gz".into())
         );
         assert_eq!(plan.archive, "2026-10-14-7.log.gz");
+    }
+
+    #[test]
+    fn latest_log_sits_in_the_logs_folder_of_the_home() {
+        assert_eq!(
+            logs_dir(Path::new("/games/h")).join("latest.log"),
+            PathBuf::from("/games/h/logs/latest.log")
+        );
     }
 
     #[test]

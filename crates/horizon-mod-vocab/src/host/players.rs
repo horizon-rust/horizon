@@ -64,6 +64,14 @@ pub trait PlayersServerHost {
         view: Option<u32>,
     ) -> Result<(), TerrainViewError>;
     /// Side: server.
+    /// Whether `uuid` has an entry on the dedicated server's whitelist (`white-list.json`), read
+    /// live (Bukkit's `OfflinePlayer.isWhitelisted`). It answers for the entry, not the gate: an
+    /// unlisted player is false even while the whitelist is off, and an entry stays true even when
+    /// the whitelist is off. False on a client, on an integrated server and anywhere no server list
+    /// is loaded. Read only; adding or removing entries is not part of this method.
+    #[access(WorldOnly)]
+    fn server_is_whitelisted(&self, uuid: u128) -> bool;
+    /// Side: server.
     /// The profile of the player with this UUID, as the server knows it,
     /// never asked of Mojang: an online player's whole profile (the properties
     /// the player list gives, so with those `player_set_profile_property` set),
@@ -82,6 +90,37 @@ pub trait PlayersServerHost {
     /// [`Profiles::resolve_name`](crate::Profiles).
     #[access(WorldOnly)]
     fn profile_by_name(&self, name: &str) -> Option<GameProfile>;
+    /// Side: server.
+    /// The entries of one of the dedicated server's ban lists, in the list's order: name bans
+    /// (`banned-players.json`, `BanListKind::Players`) or address bans (`banned-ips.json`,
+    /// `BanListKind::Ips`). An expired ban stays listed until the server next checks it, as
+    /// vanilla's list does. Read only: adding or removing a ban is not part of this method
+    /// (Paper's `Bukkit.getBanList(type).getEntries()`). Empty on a client, on an integrated
+    /// server and where no server list is loaded.
+    #[access(WorldOnly)]
+    fn server_ban_list(&self, kind: BanListKind) -> Vec<BanRecord>;
+    /// Side: server.
+    /// Adds a player to the dedicated server's whitelist (`whitelist.json`, saved at once), by UUID and name
+    /// (Paper's `OfflinePlayer.setWhitelisted(true)`). Returns true when the entry was added. Returns false,
+    /// changing nothing, when the UUID is already listed, when the name is not 1 to 16 ASCII letters, digits or
+    /// underscores, and where no server list is loaded (a client, an integrated server). An online player is not
+    /// kicked and the whitelist's on or off state is not changed.
+    #[access(WorldOnly)]
+    fn whitelist_add(&mut self, uuid: u128, name: &str) -> bool;
+    /// Side: server.
+    /// The entries of the dedicated server's whitelist (`whitelist.json`), in the list's order, each as a
+    /// profile with its UUID and name and no properties (the file keeps none). Read only, live: Paper's
+    /// `Bukkit.getWhitelistedPlayers()`. Empty on a client, on an integrated server and where no server list
+    /// is loaded.
+    #[access(WorldOnly)]
+    fn server_whitelist(&self) -> Vec<GameProfile>;
+    /// Side: server.
+    /// Removes a player from the dedicated server's whitelist by UUID (`whitelist.json`, saved at once), as
+    /// Paper's `OfflinePlayer.setWhitelisted(false)` does. Returns true when an entry was removed; false when
+    /// the UUID was not listed or no server list is loaded (a client, an integrated server). An online player
+    /// is not kicked and the whitelist's on or off state is not changed.
+    #[access(WorldOnly)]
+    fn whitelist_remove(&mut self, uuid: u128) -> bool;
 }
 /// The client host's methods of the `players` area, implemented by the game and reached through [`crate::ClientHost`].
 #[horizon_mod_api_macros::host_area]
