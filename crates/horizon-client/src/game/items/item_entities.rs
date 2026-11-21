@@ -629,21 +629,40 @@ impl Game<'_> {
         let mut gained = 0;
         let mut taken = Vec::new();
         if let Some((min, max)) = bounds {
-            orbs.retain_mut(|o| {
-                let touching = o.position.x + 0.25 > min[0]
+            let touching = |o: &horizon_client::entities::ExperienceOrb| {
+                o.position.x + 0.25 > min[0]
                     && o.position.x - 0.25 < max[0]
                     && o.position.y + 0.5 > min[1]
                     && o.position.y < max[1]
                     && o.position.z + 0.25 > min[2]
-                    && o.position.z - 0.25 < max[2];
-                if touching && self.xp_delay == 0 {
-                    // ExperienceOrb.playerTouch: one orb every 2 ticks; a
-                    // merged orb gives its value once per count.
-                    self.xp_delay = 2;
-                    gained += o.points();
-                    taken.push(o.clone());
-                    o.count -= 1;
-                    return o.count > 0;
+                    && o.position.z - 0.25 < max[2]
+            };
+            // Player.aiStep: Util.getRandom(orbs, this.random) — one of the
+            // orbs in range, picked from the player's own random, not the
+            // first one in join order.
+            let pick = if self.xp_delay == 0 {
+                let count = orbs.iter().filter(|o| touching(o)).count();
+                if count > 0 {
+                    random_source::entity().next_int_bound(count as i32).unwrap_or(0) as usize
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            let mut seen = 0;
+            orbs.retain_mut(|o| {
+                if touching(o) && self.xp_delay == 0 {
+                    if seen == pick {
+                        // ExperienceOrb.playerTouch: one orb every 2 ticks; a
+                        // merged orb gives its value once per count.
+                        self.xp_delay = 2;
+                        gained += o.points();
+                        taken.push(o.clone());
+                        o.count -= 1;
+                        return o.count > 0;
+                    }
+                    seen += 1;
                 }
                 true
             });
@@ -1098,5 +1117,38 @@ mod bob_tests {
             assert_eq!(bob(id, at, false), vanilla);
         }
         assert_ne!(bob(17, at, false), bob(22, at, false));
+    }
+}
+
+#[cfg(test)]
+mod orb_pickup_tests {
+    use super::*;
+    use crate::game::game_tests::tests::server_game;
+    use crate::motion::PlayerMotion;
+    use horizon_client::entities::ExperienceOrb;
+    use horizon_core::geometry::Vec3;
+
+    /// `Player.aiStep` picks `Util.getRandom(orbs, this.random)`, not the
+    /// first orb in the list. With two different values in range, repeated
+    /// pickups must yield both.
+    #[test]
+    #[ignore = "daily"]
+    fn a_player_picks_a_random_orb_not_the_first() {
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        let at = Vec3::new(2.5, 64.0, 2.5);
+        game.player = Some(PlayerMotion::new(game.motion, at).unwrap());
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..40 {
+            game.orbs.clear();
+            game.orbs.push(ExperienceOrb::new(11, at, Vec3::ZERO, 1));
+            game.orbs.push(ExperienceOrb::new(12, at, Vec3::ZERO, 7));
+            game.xp_delay = 0;
+            let before = game.experience.total;
+            game.tick_experience();
+            seen.insert(game.experience.total - before);
+        }
+        assert!(seen.contains(&1), "the 1-point orb was never picked");
+        assert!(seen.contains(&7), "the 7-point orb was never picked");
     }
 }
