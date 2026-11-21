@@ -516,8 +516,10 @@ impl Launcher {
                                             .iter()
                                             .rev()
                                             .find(|l| !l.trim().is_empty());
+                                        // A full sentence (a lease refusal) reads on into the line.
                                         error.as_ref().map(|e| {
-                                            tail.map_or(e.clone(), |t| format!("{e}: {t}"))
+                                            let gap = if e.ends_with('.') { " " } else { ": " };
+                                            tail.map_or(e.clone(), |t| format!("{e}{gap}{t}"))
                                         })
                                     })
                                     .unwrap_or_default();

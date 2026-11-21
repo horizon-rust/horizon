@@ -3519,13 +3519,13 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
         releases
             .iter()
             .find(|r| r.asset.is_some() && !r.prerelease)
-            .ok_or("No release has a build for this platform yet.")?
+            .ok_or_else(|| crate::refusals::no_build(None))?
     } else {
         release_selection::by_tag(&releases, tag)
             .ok_or_else(|| format!("No Horizon release is tagged {tag}."))?
     };
     if release.asset.is_none() {
-        return Err(format!("{} has no build for this platform.", release.tag));
+        return Err(crate::refusals::no_build(Some(&release.tag)));
     }
     let before = installed();
     let downgrade = nightly_downgrade(release, &before);
@@ -4333,9 +4333,10 @@ pub fn prepare_command(cmd: Command) -> Result<(Command, RuntimeGuard), String> 
             Vec::new()
         }
         Err(error @ crate::native_cache::Error::Io(_)) => {
-            return Err(crate::i18n::trf(
-                "{error}. Make sure your account can write to the game's and the launcher's folders, then try again.",
-                &[("error", &crate::native_mods::cache_error(error))],
+            return Err(crate::refusals::unwritable(
+                &crate::native_mods::cache_error(error),
+                cmd.get_current_dir(),
+                &data_dir(),
             ));
         }
         Err(error) => return Err(crate::native_mods::cache_error(error)),
@@ -4418,7 +4419,7 @@ pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String>
         };
         let result = match status {
             Ok(s) if s.success() => Ok(()),
-            Ok(s) => Err(format!("Exited with {s}")),
+            Ok(s) => Err(crate::refusals::exit_error(job == Job::Client, s)),
             Err(e) => Err(e.to_string()),
         };
         drop(runtime);

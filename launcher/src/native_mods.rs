@@ -492,13 +492,18 @@ pub fn cache_error(error: crate::storage::Error) -> String {
             "This version supplies resources to native build {build}. Remove that build first.",
             &[("build", &build)],
         ),
+        // Lease registries only ever open the data folder; it is the one to move.
         crate::native_cache::Error::UnsupportedFilesystem => {
-            tr("Game cache leases require a supported local filesystem.").into()
+            crate::refusals::unsupported_filesystem(&backend::data_dir())
         }
-        crate::native_cache::Error::Unsafe(path) => trf(
-            "Refusing native cache cleanup at an unexpected file or link: {path}",
-            &[("path", &path.display().to_string())],
-        ),
+        crate::native_cache::Error::Unsafe(path) => {
+            crate::refusals::linked_data(&path, &backend::data_dir()).unwrap_or_else(|| {
+                trf(
+                    "Refusing native cache cleanup at an unexpected file or link: {path}",
+                    &[("path", &path.display().to_string())],
+                )
+            })
+        }
         crate::native_cache::Error::Io(error) => trf(
             "Could not access the native build cache: {error}",
             &[("error", &error.to_string())],
