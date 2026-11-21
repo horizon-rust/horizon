@@ -264,9 +264,10 @@ impl Game<'_> {
         let uuid = uuid_from_text(name).filter(|_| name.len() == 36)?;
         self.target_with_uuid(uuid)
     }
-    /// `Entity.getTags` (the `Tags` list of the saved entity).
-    pub(super) fn tags_of(&self, t: Target) -> Vec<String> {
-        let raw = match t {
+    /// The saved compound an entity's components and command tags are read
+    /// from (`Entity.saveWithoutId`); `None` without one.
+    fn saved_entity(&self, t: Target) -> Option<&Tag> {
+        match t {
             Target::Mob(id)
             | Target::Item(id)
             | Target::Stand(id)
@@ -301,9 +302,13 @@ impl Game<'_> {
                 .iter()
                 .find(|f| f.id == id)
                 .and_then(|f| f.saved.as_ref().map(|s| &s.1)),
-            // A natural knot keeps no saved compound: it has no tags.
+            // A natural knot keeps no saved compound.
             Target::Knot(_) => None,
-        };
+        }
+    }
+    /// `Entity.getTags` (the `Tags` list of the saved entity).
+    pub(super) fn tags_of(&self, t: Target) -> Vec<String> {
+        let raw = self.saved_entity(t);
         match raw.and_then(|r| r.get("Tags")) {
             Some(Tag::List(l)) => l
                 .iter()
@@ -314,6 +319,16 @@ impl Game<'_> {
                 .collect(),
             _ => Vec::new(),
         }
+    }
+    /// `Entity.get(CUSTOM_DATA)`: the `data` compound of the saved entity.
+    /// An entity with no saved compound, or no `data` key, still has the empty
+    /// component (`CustomData.EMPTY`), so that is what it answers.
+    pub(super) fn custom_data_of(&self, t: Target) -> Option<Tag> {
+        let data = self.saved_entity(t).and_then(|raw| match raw.get("data") {
+            Some(Tag::Compound(data)) => Some(data.clone()),
+            _ => None,
+        });
+        Some(Tag::Compound(data.unwrap_or_default()))
     }
     /// The selector options that need the scoreboard or entity data: which
     /// of `candidates` pass `scores=`, `team=` and `tag=`.

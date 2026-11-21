@@ -33,8 +33,9 @@ pub struct State {
     pub celebrating: bool,
     /// The raid is active (`hasActiveRaid`); set by the game every tick.
     pub active_raid: bool,
-    /// A raid is active within 96 blocks (`ServerLevel.isRaided`); set by
-    /// the game every tick for vindicators.
+    /// A raid is active within 96 blocks (`ServerLevel.isRaided`), which
+    /// `Raider.hasRaid` and the vindicator door opening read; set by the
+    /// game every tick for every raider.
     pub raided: bool,
     /// The raid is won or lost (`Raid.isOver`), lost (`isLoss`).
     pub raid_over: bool,

@@ -12,6 +12,7 @@ use horizon_client::{
     advancements::{self as adv, EntityView, Frame, ItemView, Progress, Tree},
     hud::{HudBatch, rgba},
     items::ItemStack,
+    mobs::Who,
     text::{self, Style, Text},
     toasts::Slide,
 };
@@ -170,6 +171,26 @@ struct View<'a, 'g>(&'a Game<'g>);
 impl adv::World for View<'_, '_> {
     fn predicate(&self, id: &str) -> Option<&Value> {
         self.0.fns.store.predicates.get(id)
+    }
+    /// The entity a relation names (`TargetedEntityPredicate`): the local
+    /// player with every fact a player predicate may read, or a live mob by
+    /// id. The view names its own target rather than expanding it, so a
+    /// target pair that points at each other cannot recurse.
+    fn entity_view(&self, who: Who) -> Option<EntityView> {
+        use super::commands::Target;
+        match who {
+            Who::Player => self
+                .0
+                .player
+                .as_ref()
+                .map(|_| self.0.entity_view_asking(Target::Player, adv::FactsAsked::ALL)),
+            Who::Mob(id) => self
+                .0
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| self.0.mob_entity(m)),
+        }
     }
     fn dimension(&self) -> &str {
         self.0.dim.id()
@@ -349,6 +370,60 @@ pub(super) fn item_view(s: &ItemStack) -> ItemView {
         custom_data: None,
     }
 }
+/// An item in a numbered slot, with the stack's custom data so
+/// `ItemPredicate`'s `custom_data` tests as it does on mob equipment.
+pub(super) fn slot_item_view(s: &ItemStack) -> ItemView {
+    let mut view = item_view(s);
+    view.custom_data = Some(horizon_core::nbt::Tag::Compound(
+        s.custom_data().cloned().unwrap_or_default(),
+    ));
+    view
+}
+/// `ItemStack.EMPTY` as predicates see it: item `minecraft:air`, count 0.
+pub(super) fn empty_item_view() -> ItemView {
+    ItemView {
+        id: "minecraft:air".into(),
+        ..Default::default()
+    }
+}
+/// `Player.getSlot` for the slots this view can supply: the main inventory
+/// (0..36), the equipment slots (98, 99, 100..103, 105, 106), the carried
+/// stack (499) and the inventory menu's 2x2 crafting grid (500..504). The
+/// ender chest (200..227) and an open table's 3x3 grid are not projected.
+pub(super) fn player_slot_map(
+    inventory: &[Option<ItemStack>],
+    selected: usize,
+    armor: &[Option<ItemStack>; 4],
+    offhand: &Option<ItemStack>,
+    carried: &Option<ItemStack>,
+    craft_grid: &[Option<ItemStack>],
+    craft_size: usize,
+) -> BTreeMap<i32, ItemView> {
+    let mut slots = BTreeMap::new();
+    let empty = empty_item_view;
+    for (i, stack) in inventory.iter().take(36).enumerate() {
+        slots.insert(i as i32, stack.as_ref().map_or_else(empty, slot_item_view));
+    }
+    let held = inventory.get(selected).and_then(Option::as_ref);
+    let mut put = |id: i32, stack: Option<&ItemStack>| {
+        slots.insert(id, stack.map_or_else(empty, slot_item_view));
+    };
+    put(98, held);
+    put(99, offhand.as_ref());
+    put(100, armor[3].as_ref());
+    put(101, armor[2].as_ref());
+    put(102, armor[1].as_ref());
+    put(103, armor[0].as_ref());
+    put(105, None);
+    put(106, None);
+    put(499, carried.as_ref());
+    if craft_size == 2 {
+        for i in 0..4 {
+            put(500 + i, craft_grid.get(i as usize).and_then(Option::as_ref));
+        }
+    }
+    slots
+}
 impl Game<'_> {
     fn adv_path(&self) -> Option<std::path::PathBuf> {
         Some(super::stats::player_json(
@@ -477,7 +552,7 @@ impl Game<'_> {
     /// The predicate view of a command target.
     pub(super) fn entity_view_of(&self, t: super::commands::Target) -> EntityView {
         use super::commands::Target;
-        match t {
+        let mut view = match t {
             Target::Player => self.player_entity(),
             Target::Mob(id) => self
                 .mobs
@@ -494,6 +569,8 @@ impl Game<'_> {
                     position: g.position,
                     sneaking: g.sneaking,
                     input_sneak: g.input & 32 != 0,
+                    fall_flying: g.fall_flying,
+                    tick_count: Some(g.ticks as i32),
                     team: self
                         .score
                         .board
@@ -516,7 +593,10 @@ impl Game<'_> {
                 position: self.target_position(other).unwrap_or_default(),
                 ..EntityView::default()
             },
-        }
+        };
+        view.entity_tags = Some(self.tags_of(t).into_iter().collect());
+        view.custom_data = self.custom_data_of(t);
+        view
     }
     /// A `ContextAwarePredicate` for `this` at `origin`.
     pub(super) fn conditions_hold(
@@ -561,7 +641,7 @@ impl Game<'_> {
     }
     /// The player as a command's predicates see it: with what it looks at.
     pub(super) fn player_entity(&self) -> EntityView {
-        self.player_entity_looking(true)
+        self.player_entity_looking(true, true)
     }
     /// [`Self::entity_view_of`] for testing `predicate` (a predicate, a list
     /// of conditions or an item modifier): the player with the level,
@@ -631,7 +711,10 @@ impl Game<'_> {
     /// without the player's compound (building it needs `&mut self`).
     pub(super) fn player_entity_for_any(&self, triggers: &[&str]) -> EntityView {
         let tree = &self.adv.tree;
-        let mut me = self.player_entity_looking(triggers.iter().any(|t| tree.may_look(t)));
+        let mut me = self.player_entity_looking(
+            triggers.iter().any(|t| tree.may_look(t)),
+            triggers.iter().any(|t| tree.may_test_slots(t)),
+        );
         let asked = (triggers.iter()).fold(adv::FactsAsked::default(), |all, t| {
             all.or(tree.player_facts_asked(t))
         });
@@ -658,8 +741,9 @@ impl Game<'_> {
                 .then(|| self.level.recipe_book.recipes.clone()),
         }
     }
-    /// The player as predicates see it, with what it looks at when `looking`.
-    pub(super) fn player_entity_looking(&self, looking: bool) -> EntityView {
+    /// The player as predicates see it, with what it looks at when `looking`
+    /// and its numbered slots when a criterion may ask.
+    pub(super) fn player_entity_looking(&self, looking: bool, slots_asked: bool) -> EntityView {
         let Some(p) = self.player.as_ref() else {
             return EntityView::default();
         };
@@ -681,6 +765,17 @@ impl Game<'_> {
                         .map(|b| Box::new(self.boat_entity(b)))
                 })
         });
+        let slots = slots_asked.then(|| {
+            player_slot_map(
+                &self.inventory,
+                self.selected,
+                &self.armor,
+                &self.offhand,
+                &self.carried,
+                &self.craft_grid,
+                self.craft_size,
+            )
+        });
         EntityView {
             kind: "minecraft:player".into(),
             position: [p.position.x, p.position.y, p.position.z],
@@ -693,20 +788,34 @@ impl Game<'_> {
             swimming: p.pose == horizon_client::pose::Pose::Swimming,
             flying: p.flying,
             on_ground: p.ground.on_ground,
+            supporting_block: p.ground.supporting_block.map(|b| [b.x, b.y, b.z]),
+            in_water: p.fluids.was_touching_water,
+            fall_flying: p.fall_flying,
+            tick_count: Some(p.health.tick_count),
             equipment: eq,
+            slots: slots.unwrap_or_default(),
             vehicle,
             effects: self
                 .potions
                 .effects
                 .list
                 .iter()
-                .map(|e| {
-                    let id = horizon_client::brewing::namespaced(e.id);
-                    (id.to_owned(), e.amplifier, e.duration)
+                .map(|e| adv::EffectView {
+                    id: horizon_client::brewing::namespaced(e.id).to_owned(),
+                    amplifier: e.amplifier,
+                    duration: e.duration,
+                    ambient: e.ambient,
+                    visible: e.visible,
                 })
                 .collect(),
             gamemode: Some(self.mode.name().to_owned()),
             team: self.player_team().map(|t| t.name.clone()),
+            entity_tags: Some(
+                self.tags_of(super::commands::Target::Player)
+                    .into_iter()
+                    .collect(),
+            ),
+            custom_data: self.custom_data_of(super::commands::Target::Player),
             // Vanilla looks for it inside PlayerPredicate.matches whatever the
             // trigger; skipped for a trigger whose criteria can't ask.
             looking_at: looking
@@ -721,7 +830,14 @@ impl Game<'_> {
         Some(EntityView {
             kind: "minecraft:player".into(),
             position: [p.position.x, p.position.y, p.position.z],
+            supporting_block: p.ground.supporting_block.map(|b| [b.x, b.y, b.z]),
             gamemode: Some(self.mode.name().to_owned()),
+            entity_tags: Some(
+                self.tags_of(super::commands::Target::Player)
+                    .into_iter()
+                    .collect(),
+            ),
+            custom_data: self.custom_data_of(super::commands::Target::Player),
             ..Default::default()
         })
     }
@@ -739,6 +855,12 @@ impl Game<'_> {
                 .map(|m| self.mob_entity(m))
                 .chain(self.rider_entity(b.id))
                 .collect(),
+            entity_tags: Some(
+                self.tags_of(super::commands::Target::Boat(b.id))
+                    .into_iter()
+                    .collect(),
+            ),
+            custom_data: self.custom_data_of(super::commands::Target::Boat(b.id)),
             ..Default::default()
         }
     }
@@ -749,6 +871,14 @@ impl Game<'_> {
             position: [e.position.x, e.position.y, e.position.z],
             on_ground: e.on_ground,
             on_fire: e.fire_ticks > 0,
+            in_water: e.was_touching_water,
+            tick_count: Some(e.ticks as i32),
+            entity_tags: Some(
+                self.tags_of(super::commands::Target::Item(e.id))
+                    .into_iter()
+                    .collect(),
+            ),
+            custom_data: self.custom_data_of(super::commands::Target::Item(e.id)),
             ..Default::default()
         }
     }
@@ -783,6 +913,24 @@ impl Game<'_> {
                 view.custom_data = Some(horizon_core::nbt::Tag::Compound(data));
             }
         }
+        // `LivingEntity.getSlot`: the hands, armour, body and saddle. The
+        // view has all of them, so an empty one still counts as a real slot.
+        let mut slots = BTreeMap::new();
+        for (id, view) in [
+            (98, &equipment[0]),
+            (99, &equipment[1]),
+            (100, &equipment[5]),
+            (101, &equipment[4]),
+            (102, &equipment[3]),
+            (103, &equipment[2]),
+            (105, &equipment[6]),
+        ] {
+            slots.insert(id, view.clone().unwrap_or_else(empty_item_view));
+        }
+        slots.insert(
+            106,
+            slot(m.extra.slot_id(horizon_items::equipment::SADDLE)).unwrap_or_else(empty_item_view),
+        );
 
         let passengers: Vec<EntityView> = self
             .mobs
@@ -823,24 +971,69 @@ impl Game<'_> {
             on_fire: m.fire_ticks > 0,
             baby: m.is_baby(),
             on_ground: m.on_ground,
+            supporting_block: m.supporting,
+            in_water: m.fluids.in_water,
+            fall_flying: m.extra.fall_flying,
+            tick_count: Some(m.age as i32),
             equipment,
+            slots,
             // LivingEntity.getActiveEffectsMap supplies the active predicate instances.
             effects: m
                 .extra
                 .effects
                 .iter()
-                .map(|effect| {
-                    let (id, duration, amplifier) = (effect.id, effect.duration, effect.amplifier);
-                    let id = horizon_client::brewing::namespaced(id);
-                    (id.to_owned(), amplifier, duration)
+                .map(|effect| adv::EffectView {
+                    id: horizon_client::brewing::namespaced(effect.id).to_owned(),
+                    amplifier: effect.amplifier,
+                    duration: effect.duration,
+                    ambient: m.extra.ambient_effects.contains(&effect.id),
+                    visible: !m.extra.hidden_effects.contains(&effect.id),
                 })
                 .collect(),
+            sheep_sheared: (m.species() == horizon_client::mobs::Species::Sheep)
+                .then_some(m.extra.sheared),
+            // `AbstractCubeMob.getSize`; 0 is this codebase's "not sized"
+            // sentinel, so an unknown size fails instead of inventing one.
+            cube_size: (m.extra.size > 0
+                && matches!(
+                    m.species(),
+                    horizon_client::mobs::Species::Slime
+                        | horizon_client::mobs::Species::MagmaCube
+                        | horizon_client::mobs::Species::SulfurCube
+                ))
+            .then_some(m.extra.size),
+            raider: horizon_client::mobs::raider::is_raider(m.species()).then(|| adv::RaiderView {
+                has_raid: horizon_client::mobs::raider::in_raid(m)
+                    || horizon_client::mobs::raider::state(m).is_some_and(|s| s.raided),
+                is_captain: horizon_client::mobs::raider::is_captain(m),
+            }),
+            // `Villager.getVillagerData().type()` (also ZombieVillager's
+            // implicit `minecraft:villager/variant` component).
+            variant: matches!(
+                m.species(),
+                horizon_client::mobs::Species::Villager
+                    | horizon_client::mobs::Species::ZombieVillager
+            )
+            .then(|| {
+                let table = horizon_client::mobs::render::VILLAGER_TYPES;
+                format!(
+                    "minecraft:{}",
+                    table[m.extra.variant as usize % table.len()]
+                )
+            }),
             components: horizon_client::mobs::finalize::variant_component(m)
                 .map(|(id, value)| (id.to_owned(), value))
                 .into_iter()
                 .collect(),
+            entity_tags: Some(
+                self.tags_of(super::commands::Target::Mob(m.id))
+                    .into_iter()
+                    .collect(),
+            ),
+            custom_data: self.custom_data_of(super::commands::Target::Mob(m.id)),
             custom_name: m.custom_name_text.as_ref().map(Text::component),
             passengers,
+            targeted_entity: m.ai.target,
             nbt,
             team: self.mob_team_of(m).map(|t| t.name.clone()),
             ..Default::default()
@@ -2977,7 +3170,13 @@ mod tests {
         );
         assert_eq!(
             game.entity_view_of(Target::Mob(32300)).effects,
-            vec![("minecraft:speed".to_owned(), 2, -1)]
+            vec![adv::EffectView {
+                id: "minecraft:speed".into(),
+                amplifier: 2,
+                duration: -1,
+                ambient: false,
+                visible: false,
+            }]
         );
         assert!(matches(&game, 32300, speed_two));
         assert!(!matches(
@@ -3782,4 +3981,43 @@ pub(super) fn inventory_slots(
     slots.extend(armor.iter().rev().cloned());
     slots.push(offhand.clone());
     slots
+}
+
+#[cfg(test)]
+mod slots_tests {
+    use super::*;
+
+    /// `Player.getSlot`'s slots this view supplies: the inventory in its
+    /// vanilla ids, the hands and armour, the cursor and the 2x2 grid.
+    #[test]
+    fn player_slots_project_inventory_equipment_and_menu_slots() {
+        let mut inventory = vec![None; 36];
+        inventory[0] = Some(ItemStack::new("minecraft:bread", 2));
+        inventory[9] = Some(ItemStack::new("minecraft:diamond", 1));
+        let mut armor = [None, None, None, None];
+        armor[0] = Some(ItemStack::new("minecraft:iron_helmet", 1));
+        armor[3] = Some(ItemStack::new("minecraft:iron_boots", 1));
+        let offhand = Some(ItemStack::new("minecraft:torch", 3));
+        let carried = Some(ItemStack::new("minecraft:stick", 1));
+        let mut craft = vec![None; 9];
+        craft[0] = Some(ItemStack::new("minecraft:oak_planks", 4));
+
+        let slots = player_slot_map(&inventory, 0, &armor, &offhand, &carried, &craft, 2);
+
+        assert_eq!(slots[&0].id, "minecraft:bread");
+        assert_eq!(slots[&9].id, "minecraft:diamond");
+        assert_eq!(slots[&98].id, "minecraft:bread");
+        assert_eq!(slots[&99].id, "minecraft:torch");
+        assert_eq!(slots[&100].id, "minecraft:iron_boots");
+        assert_eq!(slots[&101].id, "minecraft:air");
+        assert_eq!(slots[&103].id, "minecraft:iron_helmet");
+        assert_eq!(slots[&105].id, "minecraft:air");
+        assert_eq!(slots[&106].id, "minecraft:air");
+        assert_eq!(slots[&499].id, "minecraft:stick");
+        assert_eq!(slots[&500].id, "minecraft:oak_planks");
+        assert!(
+            !slots.contains_key(&200),
+            "the ender chest is not projected"
+        );
+    }
 }
