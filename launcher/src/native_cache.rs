@@ -62,6 +62,45 @@ fn lock(path: &Path) -> Result<Locked, Error> {
     locked(file, LockMode::Exclusive)
 }
 
+/// The exclusive lock on the file `path`, checked as the build lease is (no link, nothing but a
+/// file), taken once it is free. It is polled, so `stop` can end the wait: `Ok(None)` then.
+pub(crate) fn waited(path: &Path, stop: &dyn Fn() -> bool) -> Result<Option<Locked>, Error> {
+    loop {
+        match lock(path) {
+            Ok(locked) => return Ok(Some(locked)),
+            Err(Error::Busy) => {}
+            Err(error) => return Err(error),
+        }
+        if stop() {
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The lock `name` beside the build lease, in the native root validated as [`Cache::acquire`]
+/// does, waited for. It never excludes the build lease itself.
+pub(crate) fn side_lock(build_dir: &Path, name: &str) -> Result<Locked, Error> {
+    let (root, _) = native_root(build_dir)?;
+    Ok(waited(&root.join(name), &|| false)?.expect("a wait that never stops ends locked"))
+}
+
+/// `<build_dir>/native`, made if missing and opened from the filesystem root without following
+/// a link.
+fn native_root(build_dir: &Path) -> Result<(PathBuf, Dir), Error> {
+    checked(build_dir, true)?;
+    fs::create_dir_all(build_dir)?;
+    let root = build_dir.canonicalize()?.join("native");
+    checked(&root, true)?;
+    fs::create_dir_all(&root)?;
+    let anchor = root.ancestors().last().expect("canonical root is absolute");
+    let mut directory = Dir::open_ambient_dir(anchor, cap_std::ambient_authority())?;
+    for component in root.strip_prefix(anchor).expect("root anchor").components() {
+        directory = directory.open_dir_nofollow(component.as_os_str())?;
+    }
+    Ok((root, directory))
+}
+
 pub(crate) fn locked(file: File, mode: LockMode) -> Result<Locked, Error> {
     horizon_platform::mod_package::locks::locked(file, mode).map_err(|error| match error {
         fs::TryLockError::WouldBlock => Error::Busy,
@@ -99,16 +138,7 @@ impl Cache {
     /// One cross-process lease covers staging, Cargo, installation/export and cleanup.
     /// OS locks release on exit, including a crash; a leftover lock file is not a busy marker.
     pub(crate) fn acquire(build_dir: &Path) -> Result<Self, Error> {
-        checked(build_dir, true)?;
-        fs::create_dir_all(build_dir)?;
-        let root = build_dir.canonicalize()?.join("native");
-        checked(&root, true)?;
-        fs::create_dir_all(&root)?;
-        let anchor = root.ancestors().last().expect("canonical root is absolute");
-        let mut directory = Dir::open_ambient_dir(anchor, cap_std::ambient_authority())?;
-        for component in root.strip_prefix(anchor).expect("root anchor").components() {
-            directory = directory.open_dir_nofollow(component.as_os_str())?;
-        }
+        let (root, directory) = native_root(build_dir)?;
         let lease = lock(&root.join(".build.lock"))?;
         Ok(Self {
             root,

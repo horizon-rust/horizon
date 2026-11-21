@@ -333,6 +333,52 @@ fn the_api_route_fetches_its_two_slices_only_and_reuses_them_on_their_stamps() {
     }
 }
 
+/// #19294: a build's Stop ends its wait for another fetch unpacking the same folder, and the
+/// folder is left to that fetch.
+#[test]
+fn stop_ends_a_wait_for_another_fetch_of_the_same_folder() {
+    let fixture = Fixture::new();
+    let sdk = fixture.sdk(&[]).unwrap();
+    let package = Package::at(
+        &fixture
+            .scratch
+            .path()
+            .join("prebuilt")
+            .join(format!("{COMMIT}-{TRIPLE}")),
+    );
+    fs::create_dir_all(package.runtime.parent().unwrap()).unwrap();
+    let mut lock = package.runtime.as_os_str().to_owned();
+    lock.push(".fetch.lock");
+    let other = crate::native_cache::waited(&PathBuf::from(lock), &|| false)
+        .unwrap()
+        .unwrap();
+    let (sent, got) = std::sync::mpsc::channel();
+    let (base, into) = (fixture.base(), package.runtime.clone());
+    std::thread::spawn(move || {
+        let mut fetched = Fetched::default();
+        let stopped = fetch_into(
+            &sdk,
+            &base,
+            &runtime(),
+            &into,
+            false,
+            &|| true,
+            &mut fetched,
+            &|_| {},
+        );
+        let _ = sent.send(stopped);
+    });
+    // Bounded: a wait Stop can't end must fail this test, not hang it.
+    let result = got.recv_timeout(std::time::Duration::from_secs(10));
+    drop(other);
+    let result = result.expect("Stop ended the wait");
+    assert!(
+        matches!(&result, Err(Refusal::Cache(why)) if why == super::super::CANCELLED),
+        "{result:?}"
+    );
+    assert!(!package.runtime.exists());
+}
+
 #[test]
 fn a_stamp_from_another_index_is_not_trusted() {
     let fixture = Fixture::new();

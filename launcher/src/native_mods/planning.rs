@@ -5,38 +5,33 @@ use super::*;
 pub fn routes(home: &Path, base: Option<&str>) -> Result<Routes, Failed> {
     require_consent()?;
     let _turn = check_turn()?;
-    let Some(folder) = stage_installed(home, root().join("installed.routes"))? else {
+    let Some(folder) = stage_installed(home, root().join(CHECKED))? else {
         return Ok(Routes::default());
     };
-    classify(&folder, base)
+    classify(&folder, base, &|| false)
 }
+
+/// Where the checks stage the installed mods. Not `installed.routes`, which an older launcher
+/// stages into under the build lease and would delete beside a check of this one.
+pub(super) const CHECKED: &str = "installed.checked";
 
 /// The route and update checks' own lock: they stage the installed mods into one folder, one
 /// check at a time. They never take the build lease, so a check fetching the SDK's files can't
 /// make a Build the player starts meanwhile wait or fail (#19294); the SDK's files are kept so
 /// that a check and a build can fetch them at once.
-fn check_turn() -> Result<fs::File, Failed> {
-    let native = root();
-    crate::native_cache::checked(&backend::build_dir(), true).map_err(cache_error)?;
-    fs::create_dir_all(&native).map_err(|e| format!("{}: {e}", native.display()))?;
-    crate::native_cache::checked(&native, true).map_err(cache_error)?;
-    let path = native.join("installed.routes.lock");
-    crate::native_cache::checked(&path, false).map_err(cache_error)?;
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.lock()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(file)
+fn check_turn() -> Result<crate::native_cache::Locked, Failed> {
+    crate::native_cache::side_lock(&backend::build_dir(), "installed.checked.lock")
+        .map_err(|error| cache_error(error).into())
 }
 
 /// Classification, shared by the checks and a build (under its lease). It reads and keeps the
-/// SDK's index, surface and build data, which need no build lease.
-pub(super) fn classify(folder: &Path, base: Option<&str>) -> Result<Routes, Failed> {
+/// SDK's index, surface and build data, which need no build lease. `stop` ends a wait for the
+/// SDK's build data another fetch is unpacking: a build's Stop; a check never stops.
+pub(super) fn classify(
+    folder: &Path,
+    base: Option<&str>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Routes, Failed> {
     let found = scan_bundles(folder)?;
     let mut result = Routes::default();
     let mut projects = Vec::new();
@@ -91,7 +86,7 @@ pub(super) fn classify(folder: &Path, base: Option<&str>) -> Result<Routes, Fail
             *slot = route;
         }
     };
-    match judge_all(&projects, &sdk, &sdk_base) {
+    match judge_all(&projects, &sdk, &sdk_base, stop) {
         Ok(verdicts) => {
             for (id, verdict) in verdicts {
                 let route = match &verdict {
@@ -151,7 +146,7 @@ pub struct UpdateCheck {
 pub fn update_check(home: &Path, to: &str) -> Result<UpdateCheck, Failed> {
     require_consent()?;
     let _turn = check_turn()?;
-    let found = match stage_installed(home, root().join("installed.routes"))? {
+    let found = match stage_installed(home, root().join(CHECKED))? {
         Some(folder) => scan_bundles(&folder)?,
         None => Vec::new(),
     };
@@ -167,7 +162,7 @@ pub fn update_check(home: &Path, to: &str) -> Result<UpdateCheck, Failed> {
     let sdk_base = sdk_cache::Base::from_env();
     let keys = horizon_release_sign::sdk_keys_for(backend::REPO);
     let sdk = sdk_cache::index(&sdk_base, &revision, &keys).map_err(|r| r.to_string())?;
-    let verdicts = judge_all(&projects, &sdk, &sdk_base).map_err(|r| r.to_string())?;
+    let verdicts = judge_all(&projects, &sdk, &sdk_base, &|| false).map_err(|r| r.to_string())?;
     let shown = sdk.shown();
     let unfit: Vec<LeftOut> = verdicts
         .iter()

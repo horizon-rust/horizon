@@ -382,7 +382,8 @@ fn lease(progress: &dyn Fn(Step)) -> Result<Result<crate::native_cache::Cache, S
     let mut waiting = false;
     loop {
         match crate::native_cache::Cache::acquire(&backend::build_dir()) {
-            Ok(cache) => return Ok(Ok(cache)),
+            // Stop pressed as the holder let go still ends the build here, before anything.
+            Ok(cache) => return check_cancelled().map(|()| Ok(cache)),
             Err(crate::native_cache::Error::Busy) => {}
             Err(error) => return Ok(Err(cache_error(error))),
         }
@@ -1405,6 +1406,11 @@ fn check_cancelled() -> Result<(), String> {
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
 
+/// Whether the player stopped the build under way: for waits that end on Stop.
+fn stopped() -> bool {
+    CANCEL.load(Ordering::Relaxed)
+}
+
 /// Stops the build under way: its command is killed and the build ends with [`CANCELLED`].
 pub fn cancel() {
     CANCEL.store(true, Ordering::Relaxed);
@@ -1841,6 +1847,7 @@ fn judge_all(
     projects: &[api::Project<'_>],
     sdk: &sdk_cache::Sdk,
     base: &sdk_cache::Base,
+    stop: &dyn Fn() -> bool,
 ) -> Result<Vec<(String, fit::Verdict)>, sdk_cache::Refusal> {
     let mut surface: Option<std::rc::Rc<mod_surface::Surface>> = None;
     let mut catalog: Option<std::rc::Rc<internals::Catalog>> = None;
@@ -1857,7 +1864,7 @@ fn judge_all(
             },
             &mut || {
                 if catalog.is_none() {
-                    let dir = sdk_cache::build_data(sdk, base)?;
+                    let dir = sdk_cache::build_data(sdk, base, stop)?;
                     let read = internals::Catalog::read(&dir).map_err(|why| {
                         sdk_cache::Refusal::Refused {
                             build: sdk.shown(),
@@ -2139,7 +2146,7 @@ fn pipeline(
     let mut fitted: Vec<String> = Vec::new();
     if let Some(sdk) = &sdk {
         progress(Step::Checking(projects.len()));
-        let verdicts = judge_all(&projects, sdk, &sdk_base).map_err(|r| r.to_string())?;
+        let verdicts = judge_all(&projects, sdk, &sdk_base, &stopped).map_err(|r| r.to_string())?;
         let mut unusable = Vec::new();
         for (id, verdict) in verdicts {
             match verdict {
@@ -2555,6 +2562,30 @@ pub fn build(
     )
 }
 
+/// [`build`] of the native mods turned on in `instance`, staged once the build has its turn and
+/// lease ([`build_then`]): a build queued behind another never replaces the shared staging folder
+/// that one builds from (#19294).
+pub fn build_installed(
+    base: &str,
+    instance: &Instance,
+    profile: Option<Profile>,
+    asked: Asked,
+    progress: impl Fn(Step),
+    registry_consent: impl Fn(&RegistryInventory) -> bool,
+) -> Result<String, Failed> {
+    build_then(
+        base,
+        || installed_mods(&instance.home),
+        true,
+        instance,
+        profile,
+        asked,
+        progress,
+        registry_consent,
+        |result| result,
+    )
+}
+
 /// Held by a build from start to the end of its cleanup, within this launcher (#18669).
 static BUILD_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -2631,7 +2662,7 @@ pub fn build_then<R>(
         let folder = stage()?;
         let folder = folder.as_path();
         let profile = select_build_profile(instance.native_profile, profile, || {
-            planning::classify(folder, Some(base))
+            planning::classify(folder, Some(base), &stopped)
                 .map_err(|error| Failed::Other(error.said(caller)))
         })?;
         let built = isolated(
@@ -2717,6 +2748,8 @@ pub fn build_server(
     CANCEL.store(false, Ordering::Relaxed);
     // Only the command line exports a server: its errors are already the command line's words.
     logged(String::clone, &progress, |cache| {
+        // Native mods turned off while this waited for the lease end it before anything.
+        require_consent().map_err(String::from)?;
         if output.symlink_metadata().is_ok() {
             return Err(trf(
                 "{path} already exists. Move it away, or build into another folder.",
@@ -2743,7 +2776,7 @@ pub fn build_server(
         }
         let lease = cache.map_err(str::to_owned)?;
         let profile = select_build_profile(Profile::default(), profile, || {
-            planning::classify(folder, Some(base))
+            planning::classify(folder, Some(base), &stopped)
         })?;
         let built = pipeline(
             lease,
@@ -4353,11 +4386,11 @@ mod tests {
             "[package]\nname='snapshot'\nversion='0.1.0'\n[dependencies]\nhorizon-client='0.1'\n",
         )
         .unwrap();
-        let preview = root().join("installed.routes");
+        let preview = root().join(planning::CHECKED);
         fs::create_dir_all(&preview).unwrap();
         let sentinel = preview.join("snapshot-sentinel");
         fs::write(&sentinel, b"retained").unwrap();
-        let plan = planning::classify(&folder, None).unwrap();
+        let plan = planning::classify(&folder, None, &|| false).unwrap();
         assert_eq!(plan.mods.len(), 1);
         assert_eq!(plan.mods[0].0, "snapshot");
         assert!(
@@ -4415,7 +4448,7 @@ mod tests {
             pinned_catalog_with_modules(&folder).err().unwrap(),
             expected
         );
-        let preview = root().join("installed.routes");
+        let preview = root().join(planning::CHECKED);
         fs::create_dir_all(&preview).unwrap();
         let marker = preview.join("permission-sentinel");
         fs::write(&marker, b"unchanged").unwrap();
@@ -4819,6 +4852,147 @@ mod tests {
             result.map_err(String::from)
         );
         assert_eq!(*steps.borrow(), [Step::Busy.label()]);
+    }
+
+    /// #19294: the command line's build of an instance's installed mods, queued behind a held
+    /// lease, stages them only once it has the lease: the shared staging folder the holder builds
+    /// from stays as it is while this one waits.
+    #[test]
+    fn a_queued_build_of_the_installed_mods_stages_them_only_once_it_has_the_lease() {
+        let _guard = scratch_state();
+        let original = backend::Settings::load();
+        backend::Settings::load().allow_native_mods().unwrap();
+        let incoming = installed_incoming();
+        fs::create_dir_all(&incoming).unwrap();
+        let sentinel = incoming.join("the-running-build-reads-this");
+        fs::write(&sentinel, b"kept").unwrap();
+        let held = crate::native_cache::Cache::acquire(&backend::build_dir()).unwrap();
+        let kept_while_waiting = std::cell::Cell::new(false);
+        let result = build_installed(
+            "v0.0.0-not-installed",
+            &instances::selected(),
+            None,
+            Asked {
+                caller: Caller::CommandLine,
+                back_up: false,
+            },
+            |step| {
+                if matches!(step, Step::Busy) {
+                    kept_while_waiting.set(sentinel.is_file());
+                    cancel();
+                }
+            },
+            |_| false,
+        );
+        drop(held);
+        CANCEL.store(false, Ordering::Relaxed);
+        original.save().unwrap();
+        let kept = fs::read(&sentinel);
+        let _ = fs::remove_dir_all(&incoming);
+        assert!(kept_while_waiting.get());
+        assert_eq!(kept.unwrap(), b"kept");
+        assert!(
+            matches!(&result, Err(Failed::Other(error)) if error == CANCELLED),
+            "{:?}",
+            result.map_err(String::from)
+        );
+    }
+
+    /// #19294: native mods turned off while a server export waits for a held lease end the
+    /// export once it has the lease, before anything is exported.
+    #[test]
+    fn a_server_export_checks_consent_again_once_it_has_the_lease() {
+        let _guard = scratch_state();
+        let original = backend::Settings::load();
+        backend::Settings::load().allow_native_mods().unwrap();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (held, holding) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _lease = crate::native_cache::Cache::acquire(&backend::build_dir()).unwrap();
+            held.send(()).unwrap();
+            let _ = released.recv_timeout(std::time::Duration::from_secs(30));
+        });
+        holding.recv().unwrap();
+        let scratch = dir("server-consent");
+        let output = scratch.join("server");
+        let result = build_server(
+            "v0.0.0-not-installed",
+            &scratch,
+            &output,
+            None,
+            false,
+            |step| {
+                if matches!(step, Step::Busy) {
+                    let mut settings = backend::Settings::load();
+                    settings.native_mods_allowed_at = None;
+                    settings.save().unwrap();
+                    release.send(()).unwrap();
+                }
+            },
+            |_| false,
+        );
+        holder.join().unwrap();
+        original.save().unwrap();
+        let exported = output.exists();
+        let _ = fs::remove_dir_all(scratch);
+        assert!(!exported);
+        let expected = String::from(Failed::NoConsent);
+        assert!(
+            matches!(&result, Err(Failed::Other(error)) if *error == expected),
+            "{:?}",
+            result.map_err(String::from)
+        );
+    }
+
+    /// #19294: Stop pressed while a build waits, just before the holder lets the lease go, still
+    /// ends the build before it stages anything.
+    #[test]
+    fn stop_as_the_lease_is_let_go_still_ends_the_build() {
+        let _guard = scratch_state();
+        let original = backend::Settings::load();
+        backend::Settings::load().allow_native_mods().unwrap();
+        let (waiting, waits) = std::sync::mpsc::channel::<()>();
+        let (held, holding) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let lease = crate::native_cache::Cache::acquire(&backend::build_dir()).unwrap();
+            held.send(()).unwrap();
+            if waits
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .is_ok()
+            {
+                // Inside the build's 100 ms pause between tries: Stop, then the lease goes.
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                cancel();
+                drop(lease);
+            }
+        });
+        holding.recv().unwrap();
+        let result = build_then(
+            "v0.0.0-not-installed",
+            || -> Result<PathBuf, String> { panic!("staged after Stop") },
+            false,
+            &instances::selected(),
+            None,
+            Asked {
+                caller: Caller::Window,
+                back_up: false,
+            },
+            |step| {
+                if matches!(step, Step::Busy) {
+                    waiting.send(()).unwrap();
+                }
+            },
+            |_| false,
+            |result| result,
+        );
+        holder.join().unwrap();
+        CANCEL.store(false, Ordering::Relaxed);
+        original.save().unwrap();
+        assert!(
+            matches!(&result, Err(Failed::Other(error)) if error == CANCELLED),
+            "{:?}",
+            result.map_err(String::from)
+        );
     }
 
     /// #18669: the command line's build of the installed mods whose lease can't be taken (not

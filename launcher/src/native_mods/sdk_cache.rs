@@ -515,12 +515,17 @@ pub(super) fn surface(sdk: &Sdk, base: &Base) -> Result<mod_surface::Surface, Re
 
 /// The folder of `sdk`'s build data (`points.json`, `internals.json`, `loops.json`,
 /// `functions.json`): unpacked once, then used again on its stamp.
-pub(super) fn build_data(sdk: &Sdk, base: &Base) -> Result<PathBuf, Refusal> {
+/// `stop` ends a wait for another fetch unpacking it ([`fetch_into`]).
+pub(super) fn build_data(
+    sdk: &Sdk,
+    base: &Base,
+    stop: &dyn Fn() -> bool,
+) -> Result<PathBuf, Refusal> {
     const NAME: &str = "build-data.tar.xz";
     let into = sdk.dir.join("build-data");
     let mut fetched = Fetched::default();
     // Route checks fetch it without the build lease, maybe beside a build: their own download.
-    fetch_into(sdk, base, NAME, &into, true, &mut fetched, &|_| {})?;
+    fetch_into(sdk, base, NAME, &into, true, stop, &mut fetched, &|_| {})?;
     Ok(into)
 }
 
@@ -615,7 +620,16 @@ fn slices_in(
     }
     progress(fetched);
     for (name, into) in &wanted {
-        fetch_into(sdk, base, name, into, false, &mut fetched, progress)?;
+        fetch_into(
+            sdk,
+            base,
+            name,
+            into,
+            false,
+            &super::stopped,
+            &mut fetched,
+            progress,
+        )?;
     }
     Ok(package)
 }
@@ -681,13 +695,16 @@ fn stamp_holds(sdk: &Sdk, name: &str, into: &Path) -> bool {
 /// `base` (downloaded beside `into` first when the base is not a folder), and, under
 /// `<into>.fetch.lock`, what is there is removed, the archive unpacked and stamped. A route check
 /// and a build may fetch the same folder at once (#19294): with `own_download` each downloads its
-/// own copy; only one at a time changes the folder, and one stamped meanwhile is kept.
+/// own copy; only one at a time changes the folder, and one stamped meanwhile is kept. `stop`
+/// ends the wait for that turn (a build's Stop) with [`super::CANCELLED`].
+#[allow(clippy::too_many_arguments)]
 fn fetch_into(
     sdk: &Sdk,
     base: &Base,
     name: &str,
     into: &Path,
     own_download: bool,
+    stop: &dyn Fn() -> bool,
     fetched: &mut Fetched,
     progress: &dyn Fn(Fetched),
 ) -> Result<(), Refusal> {
@@ -748,7 +765,7 @@ fn fetch_into(
             (file.clone(), Some(file))
         }
     };
-    let made = in_place(sdk, name, &archive, into, &stamp);
+    let made = in_place(sdk, name, &archive, into, &stamp, stop);
     if let Some(file) = downloaded {
         let _ = fs::remove_file(file);
     }
@@ -779,16 +796,23 @@ enum Made {
 
 /// The local half of [`fetch_into`], under `<into>.fetch.lock`: `archive` unpacked at `into` and
 /// stamped, unless another fetch stamped it while this one downloaded.
-fn in_place(sdk: &Sdk, name: &str, archive: &Path, into: &Path, stamp: &Path) -> Result<(), Made> {
+fn in_place(
+    sdk: &Sdk,
+    name: &str,
+    archive: &Path,
+    into: &Path,
+    stamp: &Path,
+    stop: &dyn Fn() -> bool,
+) -> Result<(), Made> {
     let mut path = into.as_os_str().to_owned();
     path.push(".fetch.lock");
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(PathBuf::from(path))
-        .map_err(Made::Cache)?;
-    lock.lock().map_err(Made::Cache)?;
+    let cache = |error| Made::Refused(Refusal::Cache(super::cache_error(error)));
+    let parent = into.parent().expect("a slice folder has a parent");
+    crate::native_cache::checked(parent, true).map_err(cache)?;
+    let Some(_lock) = crate::native_cache::waited(&PathBuf::from(path), stop).map_err(cache)?
+    else {
+        return Err(Made::Refused(Refusal::Cache(super::CANCELLED.into())));
+    };
     if stamp_holds(sdk, name, into) {
         return Ok(());
     }
