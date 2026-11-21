@@ -10,7 +10,7 @@
 /// `<name:kind>`, optional ones last in brackets `[name:kind]`:
 /// `pay <player:player> <amount:integer>`, `balance [player:player]`,
 /// `eco give <player:player> <amount:integer>`. Kinds: `word`, `text` (the
-/// rest of the line, last), `integer`, `number`, `boolean`, `player`, `players`,
+/// rest of the line, last), `integer`, `number`, `boolean`, `player`, `player_name` (a name, online or not, delivered as `String`), `players`,
 /// `entity`, `entities`, `item`, `block_pos`, `vec3` (a point, `Vec3Argument.vec3()`; delivered
 /// as `Vec3`), `id` (a free `namespace:path` identifier, delivered as that canonical string),
 /// `mod_id` (a loaded package id, delivered as a

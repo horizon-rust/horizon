@@ -13,13 +13,14 @@ use std::{
 
 /// The argument kinds a native usage may name, each with a [`parser`]; `resource:<registry>`
 /// and `mod_id` come on top.
-pub(super) const KINDS: [&str; 18] = [
+pub(super) const KINDS: [&str; 19] = [
     "word",
     "text",
     "integer",
     "number",
     "boolean",
     "player",
+    "player_name",
     "entity",
     "entities",
     "players",
@@ -175,6 +176,9 @@ pub(super) fn parser(kind: &str) -> Option<(&'static str, Value, ArgType)> {
                 ArgType::Entity { single, players },
             )
         }
+        // `GameProfileArgument`: a player's name, online or not, completed from the online
+        // players. The mod gets the typed name as a string, never a selector.
+        "player_name" => ("minecraft:game_profile", Value::Null, ArgType::GameProfile),
         "item" => ("minecraft:item_stack", Value::Null, ArgType::Item),
         "block_pos" => ("minecraft:block_pos", Value::Null, ArgType::BlockPos),
         // `Vec3Argument.vec3()` centres whole x and z on their block, `vec3(false)` does not.
@@ -409,6 +413,16 @@ mod tests {
         // Inside a two-byte character: no boundary to split the replacement on.
         let inside = mod_api::CommandSuggestion::new("é").replacing_from(1);
         assert!(suggestion_refusal("test:pattern", "é ", &inside).is_some());
+    }
+
+    #[test]
+    fn the_player_name_kind_is_vanillas_game_profile_parser() {
+        let (parser, properties, ty) =
+            super::parser("player_name").expect("the player_name kind has a parser");
+        assert_eq!(parser, "minecraft:game_profile");
+        assert_eq!(properties, Value::Null, "the parser takes no properties");
+        assert!(matches!(ty, ArgType::GameProfile), "{ty:?}");
+        assert!(KINDS.contains(&"player_name"));
     }
 
     #[test]

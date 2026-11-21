@@ -2096,6 +2096,10 @@ impl Game<'_> {
             let ty = parsed_type(&self.ui.dispatcher.0, &context.nodes, argument.range);
             let value = match argument.value {
                 Arg::Str(text) if matches!(ty, Some(ArgType::Nbt)) => nbt_value(&text)?,
+                // A `player_name` argument takes a name, never a selector.
+                Arg::Entity(_) if matches!(ty, Some(ArgType::GameProfile)) => {
+                    return Err(err("argument.entity.notfound.player", &[]));
+                }
                 Arg::Str(value) => Value::String(value),
                 Arg::Int(value) => Value::Integer(value),
                 Arg::Double(value) => Value::Number(value),
