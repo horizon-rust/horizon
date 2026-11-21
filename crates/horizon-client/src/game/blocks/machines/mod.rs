@@ -1188,9 +1188,9 @@ impl Game<'_> {
         }
     }
     /// `HopperBlockEntity.entityInside` for the item entities that moved this
-    /// tick: an item whose box meets the hopper's bowl (`Hopper.INSIDE`) and
-    /// its suck area runs `tryMoveItems` with that item as the pickup, in the
-    /// entity phase, before the hopper's own tick counts its cooldown down.
+    /// tick: an item whose box meets `Hopper.SUCK_AABB` runs `tryMoveItems`
+    /// with that item as the pickup, in the entity phase, before the hopper's
+    /// own tick counts its cooldown down.
     pub(super) fn hoppers_catch_items(&mut self) {
         let mut i = 0;
         while i < self.dropped.len() {
@@ -1216,14 +1216,15 @@ impl Game<'_> {
                         {
                             continue;
                         }
-                        // Hopper.INSIDE: the bowl, 2..14 wide and from 11/16 up.
+                        // Hopper.SUCK_AABB: the full-width column, 11/16 up
+                        // to two blocks high (`Block.column(16, 11, 32)`).
                         let (fx, fy, fz) = (f64::from(x), f64::from(y), f64::from(z));
-                        if lo.x < fx + 0.875
-                            && hi.x > fx + 0.125
-                            && lo.y < fy + 1.0
+                        if lo.x < fx + 1.0
+                            && hi.x > fx
+                            && lo.y < fy + 2.0
                             && hi.y > fy + 11.0 / 16.0
-                            && lo.z < fz + 0.875
-                            && hi.z > fz + 0.125
+                            && lo.z < fz + 1.0
+                            && hi.z > fz
                         {
                             found = Some((x, y, z));
                             break 'blocks;
@@ -2157,6 +2158,8 @@ mod brewing_fuel_transfer_tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_game;
     use horizon_client::brewing::BrewingStand;
+    use horizon_client::entities::ItemEntity;
+
     use mod_api::HostTransaction;
 
     struct PrepareProbe {
@@ -2259,6 +2262,52 @@ mod brewing_fuel_transfer_tests {
     #[ignore = "daily"]
     fn prepare_transfer_inventory_write_is_ejected() {
         check_prepare_transfer(true);
+    }
+
+    /// `HopperBlockEntity.entityInside` uses `Hopper.SUCK_AABB`, the full-width
+    /// column, not the old 12-wide bowl: with a solid block above (so the
+    /// block-tick pickup refuses), an item on the outer rim still goes in.
+    #[test]
+    #[ignore = "daily"]
+    fn a_hopper_catches_an_item_on_its_outer_rim() {
+        with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+            );
+            let (x, y, z) = (8, 64, 8);
+            let hopper = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:hopper")
+                .unwrap();
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            game.world.set(x, y, z, hopper).unwrap();
+            game.world.set(x, y + 1, z, stone).unwrap();
+            game.hoppers
+                .insert((x, y, z), super::HopperState::default());
+            game.world.block_entities.insert(
+                (x, y, z),
+                BlockEntity::Chest(vec![None; 5]),
+            );
+            let mut item = ItemEntity::new(
+                2,
+                ItemStack::new("minecraft:stone", 1),
+                Vec3::new(f64::from(x) - 0.05, f64::from(y) + 0.7, f64::from(z) + 0.5),
+                Vec3::ZERO,
+                0.0,
+            );
+            item.previous = Vec3::new(f64::from(x) - 0.1, f64::from(y) + 0.7, f64::from(z) + 0.5);
+            game.dropped.push(item);
+            game.hoppers_catch_items();
+            assert!(game.dropped.is_empty(), "the rim item was not taken");
+        });
     }
 
     #[test]
