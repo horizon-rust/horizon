@@ -94,12 +94,30 @@ impl Game<'_> {
     }
 
     /// What a sequence's frames must share: the world, the camera, the settings, the pack and
-    /// the window's size. The roll is the one this frame draws with (`sequence_frame_roll`), or
-    /// the last drawn frame's before the first.
+    /// the window's size, with the last drawn frame's roll.
     fn sequence_scene(&mut self) -> Result<String> {
-        let roll = self.sequence_frame_roll.unwrap_or(self.posed_roll);
+        self.sequence_scene_rolled(None)
+    }
+
+    /// [`Self::sequence_scene`] for the frame about to be drawn (`frame`: whether mods are asked
+    /// for its roll, else level), which keeps that roll for the frame (`sequence_frame_roll`).
+    /// The roll is asked after the pose: a mod hears `camera_pose` before `camera_roll`, as on
+    /// every frame.
+    fn sequence_scene_rolled(&mut self, frame: Option<bool>) -> Result<String> {
         let view = self.camera_view(1.0).ok_or("no camera")?;
         let (position, yaw, pitch) = self.native_camera_pose_now(1.0, view);
+        let roll = match frame {
+            None => self.posed_roll,
+            Some(asks) => {
+                let roll = if asks {
+                    self.native_camera_roll_now(self.clock.camera_fraction() as f32)
+                } else {
+                    0.0
+                };
+                self.sequence_frame_roll = Some(roll);
+                roll
+            }
+        };
         let renderer = self.renderer.as_ref().ok_or("no renderer")?;
         Ok(format!(
             "{:?}",
@@ -218,14 +236,10 @@ impl Game<'_> {
             sequence.scene.clone(),
         );
         let refusal = self.sequence_refusal();
-        let roll = if refusal.is_none() && !self.shows_panorama() && !self.studio.flying() {
-            self.native_camera_roll_now(self.clock.camera_fraction() as f32)
-        } else {
-            0.0
-        };
-        // Read once: the check below and the frame both use this roll.
-        self.sequence_frame_roll = Some(roll);
-        match (refusal, self.sequence_scene()) {
+        let asks = refusal.is_none() && !self.shows_panorama() && !self.studio.flying();
+        // Read once: the check and the frame both use this roll.
+        let now = self.sequence_scene_rolled(Some(asks));
+        match (refusal, now) {
             (None, Ok(now)) if now == scene => {}
             (refusal, _) => {
                 self.sequence_frame_roll = None;
