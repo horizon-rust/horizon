@@ -2,6 +2,7 @@
 """Compare Horizon core operations with both checksum-pinned vanilla game JARs."""
 
 import argparse
+import collections
 from collections import Counter
 import itertools
 import json
@@ -102,7 +103,60 @@ def verify_artifacts():
     return lock, jars, libraries
 
 
-def compare(reference, candidate):
+CONTEXT_LINE_LIMIT = 200
+CONTEXT_BLOCK_LIMIT = 4096
+
+
+def _context_line(stream):
+    """The next line of `stream` as (text cut to the print limit, full length), or None at its end. The
+    rest of a long line is skipped in bounded pieces, so one huge line cannot fill memory."""
+    head = stream.readline(CONTEXT_LINE_LIMIT + 1)
+    if not head:
+        return None
+    total = len(head)
+    if total > CONTEXT_LINE_LIMIT and not head.endswith('\n'):
+        while piece := stream.readline(1 << 16):
+            total += len(piece)
+            if piece.endswith('\n'):
+                break
+    return head[:CONTEXT_LINE_LIMIT], total
+
+
+def _show(number, line, marker=' '):
+    # repr escapes control characters (ESC, CR, bidi marks) and the indent keeps a line from
+    # starting with `::`, so a trace line cannot run a workflow command or a terminal escape in a CI log.
+    if line is None:
+        return f'  {marker} {number:>10}  (end of output)'
+    text, total = line
+    cut = f' ({total - len(text):,} more characters cut)' if total > len(text) else ''
+    return f'  {marker} {number:>10}  {text!r}{cut}'
+
+
+def _mismatch_context(line, before, left, right, expected, actual, context):
+    first = line - len(before)
+    rows = ['', f'Matching lines before it ({len(before)}, the same on both sides):' if before else
+            'No matching lines before it.']
+    rows += [_show(first + i, (text[:CONTEXT_LINE_LIMIT], len(text))) for i, text in enumerate(before)]
+    for side, mismatch, stream in [('vanilla', left, expected), ('Rust', right, actual)]:
+        rows.append(f'{side} from line {line}:')
+        shown = None if mismatch is None else (mismatch[:CONTEXT_LINE_LIMIT], len(mismatch))
+        rows.append(_show(line, shown, '>'))
+        if mismatch is not None:
+            for offset in range(1, context + 1):
+                following = _context_line(stream)
+                rows.append(_show(line + offset, following))
+                if following is None:
+                    break
+    block = '\n'.join(rows)
+    if len(block) > CONTEXT_BLOCK_LIMIT:
+        block = block[:CONTEXT_BLOCK_LIMIT].rsplit('\n', 1)[0] + f'\n  (context cut at {CONTEXT_BLOCK_LIMIT:,} characters)'
+    return block
+
+
+def compare(reference, candidate, context=0):
+    # `context` > 0 adds up to that many lines before and after a mismatch to the message. A harness
+    # may switch it on only when its trace lines are events the probe prints (coordinates, state ids,
+    # booleans, fixed words), not rows built from game files: the message lands in public CI logs.
     # Text mode retains cross-platform universal-newline behavior. Equal chunks
     # avoid a Python loop for every line in multi-gigabyte differential traces.
     count = 0
@@ -121,9 +175,14 @@ def compare(reference, candidate):
     # Preserve the existing exact first-line mismatch diagnostic. Mismatches are
     # exceptional; successful runs use only the bounded chunk buffers above.
     with reference.open(encoding='utf-8') as expected, candidate.open(encoding='utf-8') as actual:
+        before = collections.deque(maxlen=context)
         for line, (left, right) in enumerate(itertools.zip_longest(expected, actual), 1):
             if left != right:
-                raise AssertionError(f'Parity mismatch at output line {line}: vanilla={left!r}, Rust={right!r}')
+                message = f'Parity mismatch at output line {line}: vanilla={left!r}, Rust={right!r}'
+                if context > 0:
+                    message += _mismatch_context(line, before, left, right, expected, actual, context)
+                raise AssertionError(message)
+            before.append(left)
     raise AssertionError('Parity outputs changed during comparison')
 
 def run(command, **kwargs):
