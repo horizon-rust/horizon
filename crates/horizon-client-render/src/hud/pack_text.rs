@@ -45,6 +45,19 @@ pub(super) fn load_core(
     defines: &[&str],
     glue: &Glue,
 ) -> Option<Arc<CoreProgram>> {
+    load_core_with(root, defaults, name, defines, glue, &|_| false)
+}
+
+/// [`load_core`] for a pipeline whose shader names a block or sampler of its own beyond vanilla's,
+/// which `provided` lets through at its [`crate::core_shader::other_binding`].
+pub(super) fn load_core_with(
+    root: &ResourceSource,
+    defaults: &ResourceSource,
+    name: &str,
+    defines: &[&str],
+    glue: &Glue,
+    provided: &dyn Fn(&str) -> bool,
+) -> Option<Arc<CoreProgram>> {
     let read = |base: &ResourceSource, path: &str| base.read_to_string(path).ok();
     let own =
         |path: &str| read(root, path).filter(|text| read(defaults, path).as_ref() != Some(text));
@@ -61,7 +74,9 @@ pub(super) fn load_core(
         let path = format!("assets/{namespace}/{path}");
         read(root, &path).or_else(|| read(defaults, &path))
     };
-    match crate::core_shader::translate_core(&vertex, &fragment, defines, &include, glue) {
+    match crate::core_shader::translate_core_with(
+        &vertex, &fragment, defines, &include, glue, provided,
+    ) {
         Ok(program) => {
             log::info!("the resource pack's {name} shader is used");
             Some(Arc::new(program))
@@ -73,7 +88,7 @@ pub(super) fn load_core(
     }
 }
 
-/// The packs' core shaders the atlas carries (text, block outline, sky, stars).
+/// The packs' core shaders the atlas carries (text, block outline, sky, stars, lightmap).
 pub(super) fn load_shaders(
     atlas: &mut super::HudAtlas,
     root: &ResourceSource,
@@ -95,6 +110,15 @@ pub(super) fn load_shaders(
     atlas.text_shaders.see_through = world(
         &["IS_SEE_THROUGH"],
         &crate::gfx::core_text::SEE_THROUGH_GLUE,
+    );
+    // `LightmapInfo` is the lightmap pipeline's own uniform block, none of vanilla's shared ones.
+    atlas.lightmap_shader = load_core_with(
+        root,
+        defaults,
+        "lightmap",
+        &[],
+        &crate::gfx::core_lightmap::GLUE,
+        &|name| name == "LightmapInfo",
     );
 }
 
