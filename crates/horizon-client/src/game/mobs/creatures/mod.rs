@@ -5869,6 +5869,31 @@ impl Game<'_> {
                 self.item_burst(atp, "minecraft:egg");
             }
             (ProjectileKind::EnderPearl, hit) => {
+                // ThrownEnderpearl.onHit: 32 PORTAL particles at the impact,
+                // drawn from the pearl's own random before the teleport.
+                let mut random = p.random.0.clone();
+                let portal = horizon_client::particles::ParticleOptions::simple(
+                    horizon_client::particles::ParticleType::Portal,
+                );
+                for _ in 0..32 {
+                    let at = [
+                        p.position.x,
+                        p.position.y + random.next_double() * 2.0,
+                        p.position.z,
+                    ];
+                    let v = [random.next_gaussian(), 0.0, random.next_gaussian()];
+                    self.particles.add(&portal, at, v);
+                    self.lan_send_particles(super::lan_particles::QueuedParticle {
+                        dimension: self.dim.id(),
+                        options: portal.clone(),
+                        state: None,
+                        at,
+                        spread: [0.0; 3],
+                        speed: v,
+                        count: 1,
+                        randomization: 1,
+                    });
+                }
                 if let Hit::Entity {
                     who: Who::Player, ..
                 } = hit
