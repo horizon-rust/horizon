@@ -224,10 +224,13 @@ impl Game<'_> {
 
     pub(in crate::game) fn load_falling_transferred(
         &mut self,
-        tag: Tag,
+        mut tag: Tag,
         uuid: Option<[i32; 4]>,
         transferred: Option<crate::game::entity_initialization::TransferredEntityState>,
     ) {
+        // `Entity.load` reads `Tags` into the entity's set; the retained
+        // compound below is the only copy of them this kind keeps.
+        Self::normalize_loaded_tags(&mut tag);
         if let Some((state, position, velocity, age, fall_distance)) =
             entity_nbt::falling_block_from_nbt(&tag)
             && let Some(state) =
@@ -499,7 +502,7 @@ impl Game<'_> {
         // Structure mobs that generation left to finish: saves from before
         // they were finalized at placement, or a placement that could not.
         let mut tag = tag;
-        Self::normalize_loaded_mob_tags(&mut tag);
+        Self::normalize_loaded_tags(&mut tag);
         let mut finalize = false;
         if let Tag::Compound(c) = &mut tag {
             finalize = c.remove(&"horizon:finalize".into()).is_some();
