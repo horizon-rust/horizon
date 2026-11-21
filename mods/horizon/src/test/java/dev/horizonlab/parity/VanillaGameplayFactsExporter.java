@@ -49,6 +49,7 @@ public final class VanillaGameplayFactsExporter {
             o.addProperty("ignited_by_lava", state.ignitedByLava());
             o.addProperty("push", state.getPistonPushReaction().name());
             o.addProperty("offset", state.hasOffsetFunction());
+            o.addProperty("spawn_terrain_particles", state.shouldSpawnTerrainParticles());
             o.addProperty("full_collision", state.isCollisionShapeFullBlock(level, BlockPos.ZERO));
             o.addProperty("map_color", state.getMapColor(level, BlockPos.ZERO).col);
             // The outline (selection) shape without the random offset, as boxes

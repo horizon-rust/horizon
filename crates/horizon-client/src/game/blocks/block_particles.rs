@@ -78,10 +78,12 @@ impl Game<'_> {
             .map(|b| std::array::from_fn(|i| b[i] + offset[i % 3]))
             .collect()
     }
-
-    /// ClientLevel.addDestroyBlockEffect: a burst per outline box.
+    /// ClientLevel.addDestroyBlockEffect: a burst per outline box, unless the
+    /// block spawns no terrain particles (`BlockBehaviour.Properties.noTerrainParticles`).
     pub(super) fn destroy_particles(&mut self, pos: [i32; 3], state: BlockStateId) {
-        if self.settings.extras.hide_block_particles {
+        if self.settings.extras.hide_block_particles
+            || !self.res.facts().get(state).spawn_terrain_particles
+        {
             return;
         }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
@@ -96,25 +98,6 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
-    /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
-    pub(super) fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
-        if self.settings.extras.hide_block_particles {
-            return;
-        }
-        let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
-            return;
-        };
-        let boxes = self.particle_shape(pos, state);
-        // Keep client effects separate from the authoritative world RNG.
-        let r = self.particles.random();
-        let Some(p) = horizon_client::particles::breaking_position(r, pos, face, &boxes) else {
-            return;
-        };
-        let mut particle = Particle::terrain(r, p, [0.0; 3], sprite, tint);
-        particle.set_power(0.2);
-        particle.scale(0.6);
-        self.particles.push(particle);
-    }
     pub(super) fn particle_sprite(
         &self,
         state: BlockStateId,
@@ -146,6 +129,35 @@ impl Game<'_> {
             .unwrap_or(0xFFFFFF);
         Some((sprite, tint))
     }
+
+    /// ClientLevel.addBreakingParticles, behind `addBreakingBlockEffects`'
+    /// guard: one crumb on the face being mined, for a visible render shape
+    /// that spawns terrain particles.
+    pub(super) fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
+        if self.settings.extras.hide_block_particles {
+            return;
+        }
+        let facts = self.res.facts().get(state);
+        if facts.render_shape == horizon_client::blocks::RenderShape::Invisible
+            || !facts.spawn_terrain_particles
+        {
+            return;
+        }
+        let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
+            return;
+        };
+        let boxes = self.particle_shape(pos, state);
+        // Keep client effects separate from the authoritative world RNG.
+        let r = self.particles.random();
+        let Some(p) = horizon_client::particles::breaking_position(r, pos, face, &boxes) else {
+            return;
+        };
+        let mut particle = Particle::terrain(r, p, [0.0; 3], sprite, tint);
+        particle.set_power(0.2);
+        particle.scale(0.6);
+        self.particles.push(particle);
+    }
+
     /// `BlockTransformer.TransformParticle.send`: its level event.
     pub(super) fn transform_particle(&mut self, particle: &str, pos: [i32; 3]) {
         let source = self
@@ -159,6 +171,10 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/block_particles_tests.rs"]
+mod block_particles_tests;
 
 impl Game<'_> {
     /// The block's first up face (or any face) and its fixed tint, for block
