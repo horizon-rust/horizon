@@ -4,20 +4,40 @@
 //! falls, swims, flies or sleeps (`ServerPlayer.handleShoulderEntities`).
 use super::Game;
 use horizon_client::mobs::Species;
-use horizon_core::nbt::Tag;
+use horizon_core::nbt::{JavaString, Tag};
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use std::sync::OnceLock;
 
 const KEYS: [&str; 2] = ["ShoulderEntityLeft", "ShoulderEntityRight"];
 
+fn shoulder_keys() -> &'static [JavaString; 2] {
+    static KEYS_UTF16: OnceLock<[JavaString; 2]> = OnceLock::new();
+    KEYS_UTF16.get_or_init(|| [JavaString::from(KEYS[0]), JavaString::from(KEYS[1])])
+}
+
 /// A shoulder slot holds a parrot when its compound is not empty.
 fn occupied(extra: &Tag, key: &str) -> bool {
+    if let Tag::Compound(c) = extra
+        && c.is_empty()
+    {
+        return false;
+    }
     matches!(extra.get(key), Some(Tag::Compound(c)) if !c.is_empty())
+}
+
+fn occupied_compound(map: &horizon_core::nbt::Compound, key: &JavaString) -> bool {
+    matches!(map.get(key), Some(Tag::Compound(c)) if !c.is_empty())
 }
 
 /// `ServerPlayer.extractParrotVariant` for both slots: the variant of the
 /// parrot kept there (`Parrot.Variant.byId` clamps the saved `Variant`, 0
 /// when absent), `None` for an empty slot or another entity.
 pub(super) fn shoulder_variants(extra: Option<&Tag>) -> [Option<i32>; 2] {
+    if let Some(Tag::Compound(c)) = extra
+        && c.is_empty()
+    {
+        return [None, None];
+    }
     KEYS.map(|key| {
         let parrot = extra?.get(key)?;
         match parrot.get("id") {
@@ -77,27 +97,37 @@ impl Game<'_> {
     /// of a player who falls, swims, flies, sleeps, is hurt, dying, a
     /// spectator or spinning with a riptide.
     pub(super) fn handle_shoulder_entities(&mut self) {
-        for key in KEYS {
-            self.play_shoulder_entity_ambient_sound(key);
+        let Some(Tag::Compound(map)) = self.level.player_extra.as_ref() else {
+            return;
+        };
+        if map.is_empty() {
+            return;
+        }
+        let keys = shoulder_keys();
+        let occupied_mask = [
+            occupied_compound(map, &keys[0]),
+            occupied_compound(map, &keys[1]),
+        ];
+        if !occupied_mask[0] && !occupied_mask[1] {
+            return;
+        }
+        for (idx, key) in KEYS.into_iter().enumerate() {
+            if occupied_mask[idx] {
+                self.play_shoulder_entity_ambient_sound(key);
+            }
         }
         let Some(p) = self.player.as_ref() else {
             return;
         };
-        let any = self
-            .level
-            .player_extra
-            .as_ref()
-            .is_some_and(|e| KEYS.iter().any(|k| occupied(e, k)));
-        if any
-            && (p.fall_distance > 0.5
-                || p.fluids.was_touching_water
-                || p.flying
-                || p.spectator
-                || p.in_powder_snow
-                || p.auto_spin_attack_ticks > 0
-                || p.health.hurt.hurt_time > 0
-                || p.health.dead_or_dying()
-                || self.sleeping.is_some())
+        if p.fall_distance > 0.5
+            || p.fluids.was_touching_water
+            || p.flying
+            || p.spectator
+            || p.in_powder_snow
+            || p.auto_spin_attack_ticks > 0
+            || p.health.hurt.hurt_time > 0
+            || p.health.dead_or_dying()
+            || self.sleeping.is_some()
         {
             self.remove_entities_on_shoulder();
         }
@@ -111,9 +141,14 @@ impl Game<'_> {
         else {
             return;
         };
-        let silent = matches!(tag.get(&"Silent".into()), Some(Tag::Byte(b)) if *b != 0);
+        static SILENT_KEY: OnceLock<JavaString> = OnceLock::new();
+        static ID_KEY: OnceLock<JavaString> = OnceLock::new();
+        let silent = matches!(
+            tag.get(SILENT_KEY.get_or_init(|| JavaString::from("Silent"))),
+            Some(Tag::Byte(b)) if *b != 0
+        );
         let parrot = matches!(
-            tag.get(&"id".into()),
+            tag.get(ID_KEY.get_or_init(|| JavaString::from("id"))),
             Some(Tag::String(id)) if id.to_string_lossy() == "minecraft:parrot"
         );
         if tag.is_empty() || silent || self.world.random.next_int_bound(200).unwrap_or(1) != 0 {

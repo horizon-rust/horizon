@@ -83,6 +83,13 @@ impl Game<'_> {
     /// `elytra_glide` game event. Entity.checkFallDistanceAccumulation runs
     /// first: a glide that isn't diving keeps the fall distance at 1.
     pub(in crate::game) fn guest_glide_tick(&mut self, conn: u32, fell: f64) {
+        if self.lan.as_ref().is_none_or(|host| {
+            host.hub.guest(conn).is_none_or(|g| {
+                !g.fall_flying && g.motion.as_ref().is_none_or(|m| m.fall_fly_ticks == 0)
+            })
+        }) {
+            return;
+        }
         let Some(creative) = self.lan.as_mut().and_then(|host| {
             host.hub
                 .update_guest(conn, |g| {

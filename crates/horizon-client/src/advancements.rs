@@ -74,6 +74,26 @@ pub struct Tree {
     /// What the criteria of each trigger may ask of the player's level,
     /// statistics, advancements and recipes (`index_player_facts`).
     player_fact_triggers: HashMap<String, FactsAsked>,
+    /// Necessary pre-filters aligned with `by_trigger["minecraft:tick"]` so
+    /// unmet tick advancements are skipped before building an `EntityView`.
+    tick_filters: Vec<TickFilter>,
+}
+/// Necessary conjunctive requirements extracted from a `"minecraft:tick"`
+/// criterion's top-level player predicate. If any required flag or item slot is
+/// absent on the acting player, the full JSON predicate cannot pass.
+#[derive(Clone, Debug, Default)]
+pub struct TickFilter {
+    pub requires_sneaking: bool,
+    pub requires_sprinting: bool,
+    pub requires_swimming: bool,
+    pub requires_flying: bool,
+    pub requires_on_fire: bool,
+    pub requires_vehicle: bool,
+    pub requires_effects: bool,
+    /// Bitmask over `[mainhand, offhand, head, chest, legs, feet]`.
+    pub requires_equipment_mask: u8,
+    pub requires_stepping_on_block: Option<String>,
+    pub requires_location_block: Option<String>,
 }
 /// Which of `PlayerPredicate`'s level, `stats`, `advancements` and `recipes`
 /// a trigger's criteria may test: only those are filled in its player view.
@@ -238,6 +258,7 @@ impl Tree {
         tree.index_looking_at();
         tree.index_nbt();
         tree.index_player_facts();
+        tree.index_tick_filters();
         tree
     }
     /// Index the `recipe_unlocked` criteria by recipe: a grant that unlocks
@@ -342,6 +363,24 @@ impl Tree {
             .get(trigger)
             .copied()
             .unwrap_or_default()
+    }
+    /// Pre-compile necessary conjunctive filters aligned with `by_trigger["minecraft:tick"]`.
+    pub fn index_tick_filters(&mut self) {
+        self.tick_filters.clear();
+        let Some(list) = self.by_trigger.get("minecraft:tick") else {
+            return;
+        };
+        self.tick_filters.reserve(list.len());
+        for &(ai, ci) in list {
+            let conditions = self.list[ai].criteria[ci].conditions.read();
+            let mut filter = TickFilter::default();
+            collect_tick_player_filter(&conditions["player"], &mut filter);
+            self.tick_filters.push(filter);
+        }
+    }
+    /// Necessary pre-filters aligned with `by_trigger["minecraft:tick"]`.
+    pub fn tick_filters(&self) -> &[TickFilter] {
+        &self.tick_filters
     }
     /// The `recipe_unlocked` criteria that could pass for `recipe`, in tree
     /// order (the others name another recipe).
@@ -555,17 +594,25 @@ impl Progress {
     }
     /// `AdvancementProgress.isDone`.
     pub fn done(&self, a: &Advancement) -> bool {
-        !a.requirements.is_empty()
-            && a.requirements
-                .iter()
-                .all(|group| group.iter().any(|c| self.has(&a.id, c)))
+        if a.requirements.is_empty() {
+            return false;
+        }
+        let Some(got) = self.criteria.get(&a.id) else {
+            return false;
+        };
+        a.requirements
+            .iter()
+            .all(|group| group.iter().any(|c| got.contains_key(c)))
     }
     /// Completed requirement groups and their count (the screen's tooltip).
     pub fn counts(&self, a: &Advancement) -> (usize, usize) {
+        let Some(got) = self.criteria.get(&a.id) else {
+            return (0, a.requirements.len());
+        };
         let done = a
             .requirements
             .iter()
-            .filter(|g| g.iter().any(|c| self.has(&a.id, c)))
+            .filter(|g| g.iter().any(|c| got.contains_key(c)))
             .count();
         (done, a.requirements.len())
     }
@@ -622,7 +669,15 @@ pub trait World {
     /// Effective rain/thunder booleans, including the level's dimension rules.
     fn weather(&self) -> (bool, bool);
     fn biome(&self, pos: [i32; 3]) -> String;
+    /// Evaluate `f` with the biome id at `pos` without forcing a `String` allocation.
+    fn check_biome(&self, pos: [i32; 3], f: &mut dyn FnMut(&str) -> bool) -> bool {
+        f(&self.biome(pos))
+    }
     fn structures(&self, pos: [i32; 3]) -> Vec<String>;
+    /// True when any structure at `pos` satisfies `f`, without cloning the list per criterion.
+    fn any_structure(&self, pos: [i32; 3], f: &mut dyn FnMut(&str) -> bool) -> bool {
+        self.structures(pos).iter().any(|s| f(s))
+    }
     /// Block name and properties.
     fn block(&self, pos: [i32; 3]) -> (String, BTreeMap<String, String>);
     /// Legal values of the actual registered property, unavailable without registry access.
@@ -965,17 +1020,19 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
     {
         return false;
     }
-    if !v["biomes"].is_null() && !id_matches(&v["biomes"], "worldgen/biome", &w.biome(pos), w) {
+    if !v["biomes"].is_null()
+        && !w.check_biome(pos, &mut |b| {
+            id_matches(&v["biomes"], "worldgen/biome", b, w)
+        })
+    {
         return false;
     }
-    if !v["structures"].is_null() {
-        let here = w.structures(pos);
-        if !here
-            .iter()
-            .any(|s| id_matches(&v["structures"], "worldgen/structure", s, w))
-        {
-            return false;
-        }
+    if !v["structures"].is_null()
+        && !w.any_structure(pos, &mut |s| {
+            id_matches(&v["structures"], "worldgen/structure", s, w)
+        })
+    {
+        return false;
     }
     if let Some(b) = v["can_see_sky"].as_bool()
         && b != w.can_see_sky(pos)
@@ -1479,8 +1536,123 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
     references_valid(v, w) && conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
 }
 
+fn collect_tick_player_filter(v: &Value, filter: &mut TickFilter) {
+    match v {
+        Value::Array(list) => {
+            for item in list {
+                collect_tick_player_filter(item, filter);
+            }
+        }
+        Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
+            let ty = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(ty) {
+                "minecraft:all_of" => {
+                    for term in terms(v) {
+                        collect_tick_player_filter(term, filter);
+                    }
+                }
+                "minecraft:entity_properties"
+                    if o.get("entity")
+                        .and_then(Value::as_str)
+                        .is_none_or(|e| e == "this") =>
+                {
+                    collect_entity_filter(&v["predicate"], filter)
+                }
+                _ => {}
+            }
+        }
+        Value::Object(_) => collect_entity_filter(v, filter),
+        _ => {}
+    }
+}
+
+fn collect_entity_filter(predicate: &Value, filter: &mut TickFilter) {
+    let Some(o) = predicate.as_object() else {
+        return;
+    };
+    for (key, p) in o {
+        match &*full(key) {
+            "minecraft:flags" => {
+                if p["is_sneaking"].as_bool() == Some(true) {
+                    filter.requires_sneaking = true;
+                }
+                if p["is_sprinting"].as_bool() == Some(true) {
+                    filter.requires_sprinting = true;
+                }
+                if p["is_swimming"].as_bool() == Some(true) {
+                    filter.requires_swimming = true;
+                }
+                if p["is_flying"].as_bool() == Some(true) {
+                    filter.requires_flying = true;
+                }
+                if p["is_on_fire"].as_bool() == Some(true) {
+                    filter.requires_on_fire = true;
+                }
+            }
+            "minecraft:vehicle" if !p.is_null() => {
+                filter.requires_vehicle = true;
+            }
+            "minecraft:effects" if p.as_object().is_some_and(|m| !m.is_empty()) => {
+                filter.requires_effects = true;
+            }
+            "minecraft:equipment" => {
+                const SLOTS: [&str; 6] = ["mainhand", "offhand", "head", "chest", "legs", "feet"];
+                for (bit, slot) in SLOTS.iter().enumerate() {
+                    if !p[*slot].is_null() {
+                        filter.requires_equipment_mask |= 1 << bit;
+                    }
+                }
+            }
+            "minecraft:location" => {
+                if let Some(block) = p["block"]["blocks"].as_str()
+                    && !block.starts_with('#')
+                {
+                    filter.requires_location_block = Some(full(block).into_owned());
+                }
+            }
+            "minecraft:stepping_on" => {
+                if let Some(block) = p["block"]["blocks"].as_str()
+                    && !block.starts_with('#')
+                {
+                    filter.requires_stepping_on_block = Some(full(block).into_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn has_string_reference(v: &Value) -> bool {
+    match v {
+        Value::String(_) => true,
+        Value::Array(list) => list.iter().any(has_string_reference),
+        Value::Object(o) => {
+            let kind = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(kind) {
+                "minecraft:inverted" => has_string_reference(&v["term"]),
+                "minecraft:all_of" | "minecraft:any_of" => {
+                    terms(v).iter().any(has_string_reference)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Every named predicate `v` reaches is loaded, and none reaches itself.
 pub fn references_valid(v: &Value, w: &dyn World) -> bool {
+    if !has_string_reference(v) {
+        return true;
+    }
     predicate_references(v, w, &mut BTreeSet::new()).is_ok()
 }
 
