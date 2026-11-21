@@ -87,6 +87,7 @@ mod item_damage;
 pub use item_damage::ItemHits;
 mod item_environment;
 mod item_fall;
+mod item_fire;
 mod item_merge;
 mod item_move;
 mod item_no_physics;
@@ -369,6 +370,9 @@ pub struct ItemEnvironmentTick {
     /// The `entity_damage` events its block hits post at its own position
     /// (`ItemEntity.hurtServer`).
     pub damage_events: u32,
+    /// `Entity.applyEffectsFromBlocks` put the burning item out: water or rain
+    /// cleared its fire after it had burned, so the hiss plays.
+    pub extinguished: bool,
     /// `ItemStack.onDestroyed` of the damage that emptied the health: the
     /// stacks the destroyed item left, which `ItemUtils.onContainerDestroyed`
     /// adds to the level where it lay.
@@ -2619,6 +2623,7 @@ mod fire_environment_tests {
             facts,
             assets.registry,
             &can_hurt,
+            false,
             |_, damage| {
                 heard.push(damage.to_owned());
                 damage == "minecraft:lava"
@@ -2633,7 +2638,7 @@ mod fire_environment_tests {
         );
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
-        let first = wood.environment_tick(&world, facts, assets.registry, &can_hurt);
+        let first = wood.environment_tick(&world, facts, assets.registry, &can_hurt, false);
         assert!(first.alive && first.lava_hurt);
         assert!(
             !first.should_play_lava_hurt_sound(1),
@@ -2644,7 +2649,7 @@ mod fire_environment_tests {
             wood.fire_ticks > 0,
             "lava contact must ignite dropped items"
         );
-        let last = wood.environment_tick(&world, facts, assets.registry, &can_hurt);
+        let last = wood.environment_tick(&world, facts, assets.registry, &can_hurt, false);
         assert!(
             !last.alive && last.lava_hurt,
             "lethal lava damage still emits burn sound"
@@ -2655,7 +2660,7 @@ mod fire_environment_tests {
         );
         for _ in 0..40 {
             let (result, allocations) = horizon_threads::allocation_probe::measure(|| {
-                metal.environment_tick(&world, facts, assets.registry, &can_hurt)
+                metal.environment_tick(&world, facts, assets.registry, &can_hurt, false)
             });
             assert_eq!(
                 allocations.calls, 0,
@@ -2675,7 +2680,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let mut burning = make("minecraft:oak_planks");
-        let result = burning.environment_tick(&world, facts, assets.registry, &can_hurt);
+        let result = burning.environment_tick(&world, facts, assets.registry, &can_hurt, false);
         assert!(result.alive && !result.lava_hurt);
         assert!(burning.fire_ticks > 0);
         world
@@ -2690,7 +2695,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let mut soul = make("minecraft:oak_planks");
-        soul.environment_tick(&world, facts, assets.registry, &can_hurt);
+        soul.environment_tick(&world, facts, assets.registry, &can_hurt, false);
         assert_eq!(soul.health, 3);
         let mut stand = ArmorStand::new(2, at, 0.0);
         world
@@ -2807,9 +2812,9 @@ mod destroyed_bundle_environment_tests {
             was_touching_water: false,
         };
         // 5 health against 4 a tick: the first tick leaves 1 and nothing out.
-        let first = bundle.environment_tick(&world, facts, assets.registry, &can_hurt);
+        let first = bundle.environment_tick(&world, facts, assets.registry, &can_hurt, false);
         assert!(first.alive && first.spilled.is_empty());
-        let second = bundle.environment_tick(&world, facts, assets.registry, &can_hurt);
+        let second = bundle.environment_tick(&world, facts, assets.registry, &can_hurt, false);
         assert!(!second.alive);
         assert_eq!(
             second
