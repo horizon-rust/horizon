@@ -138,37 +138,24 @@ impl Game<'_> {
     }
     /// `ChestBlockEntity.playSound` for a chest the recheck closed.
     fn golem_chest_sound(&mut self, p: [i32; 3], open: bool) {
-        let name = self
-            .res
-            .facts()
-            .get(self.world.block(p[0], p[1], p[2]))
-            .name
-            .clone();
-        let base = name
-            .trim_start_matches("minecraft:")
-            .trim_start_matches("waxed_");
-        let kind = if !base.ends_with("copper_chest") {
-            "chest"
-        } else if base.starts_with("weathered") {
-            "copper_chest_weathered"
-        } else if base.starts_with("oxidized") {
-            "copper_chest_oxidized"
-        } else {
-            "copper_chest"
+        // `ChestBlockEntity.playSound`: only a `ChestBlock` has a hinge sound,
+        // and by its class a content block of a copper chest's template has
+        // that template's weather state too.
+        let state = self.world.block(p[0], p[1], p[2]);
+        let name = self.res.facts().get(state).name.clone();
+        let is_chest = self.res.behaviours().is_chest_block(state);
+        let Some(sound) =
+            horizon_client::mobs::transport_items::chest_hinge_sound(&name, is_chest, open)
+        else {
+            return;
         };
-        let side = if open { "open" } else { "close" };
         let at = [
             f64::from(p[0]) + 0.5,
             f64::from(p[1]) + 0.5,
             f64::from(p[2]) + 0.5,
         ];
         let pitch = self.world.random.next_float() * 0.1 + 0.9;
-        self.audio.play(
-            &format!("minecraft:block.{kind}.{side}"),
-            Some(at),
-            0.5,
-            pitch,
-        );
+        self.audio.play(sound, Some(at), 0.5, pitch);
     }
     /// `CopperGolem.turnToStatue`, which its weathering asked for.
     pub(super) fn golem_become_statue(&mut self, id: u32) {

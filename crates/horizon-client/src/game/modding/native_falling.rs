@@ -67,7 +67,10 @@ impl Game<'_> {
             return false;
         }
         let mut damage =
-            horizon_client::falling_block::Damage::falling(&self.res.facts().get(state).name);
+            horizon_client::falling_block::Damage::falling(
+                self.res.behaviours().is_anvil(state),
+                self.res.behaviours().data(state).is(horizon_world::level::classes::Class::Brushable),
+            );
         if falling.hurts {
             damage.hurt_entities = true;
             damage.per_distance = 2.0;

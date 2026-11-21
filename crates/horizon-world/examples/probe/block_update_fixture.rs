@@ -226,7 +226,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|id| {
                 registry
                     .state(BlockStateId(id))
-                    .map_or(PreRemove::Nothing, |s| pre_remove(&s.name))
+                    .map_or(PreRemove::Nothing, |_| {
+                        pre_remove(&behaviours, BlockStateId(id))
+                    })
             })
             .collect(),
     );

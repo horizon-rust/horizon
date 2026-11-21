@@ -86,10 +86,18 @@ impl GameLevel<'_> {
     /// name, its loaded tag) but none of its side effects.
     pub(super) fn carry_mod_block_entity(&mut self, from: BlockPos, to: BlockPos) {
         let (from, to) = ((from.x, from.y, from.z), (to.x, to.y, to.z));
+        let from_state = self.world.block(from.0, from.1, from.2);
         let partner = self
             .registry
-            .state(self.world.block(from.0, from.1, from.2))
-            .and_then(|state| super::storage::chest_connected_pos(state, [from.0, from.1, from.2]))
+            .state(from_state)
+            .and_then(|state| {
+                super::storage::chest_connected_pos(
+                    self.behaviours,
+                    state,
+                    from_state,
+                    [from.0, from.1, from.2],
+                )
+            })
             .map(|p| (p[0], p[1], p[2]));
         let mut data = super::piston_carry_state::take_position_data(self.world, from);
         let cached = self.positions.hoppers.remove(&from).map(|h| h.cooldown);

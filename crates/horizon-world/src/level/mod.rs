@@ -135,6 +135,7 @@ mod buckets;
 mod creaking;
 mod falling;
 mod feature_world;
+pub mod flip;
 mod fluids;
 mod growth;
 mod hooks;
@@ -1439,6 +1440,29 @@ impl Behaviours {
     }
     pub fn data(&self, state: BlockStateId) -> &BlockData {
         self.block_data(self.table.block(state))
+    }
+    /// Java's `state.getBlock() instanceof ChestBlock`: the class, never the
+    /// name, so a content block of a chest's template answers true and a block
+    /// whose id only ends in a chest's name does not.
+    pub fn is_chest_block(&self, state: BlockStateId) -> bool {
+        self.data(state).is(classes::Class::Chest)
+    }
+    /// Java's `instanceof ShulkerBoxBlock` (`ShulkerBoxBlockEntity`'s slots,
+    /// the dropped box's contents).
+    pub fn is_shulker_box(&self, state: BlockStateId) -> bool {
+        self.data(state).is(classes::Class::ShulkerBox)
+    }
+    /// Java's `instanceof AnvilBlock` (the falling block's impact and wear;
+    /// `BlockTags.ANVIL` holds exactly vanilla's three anvils).
+    pub fn is_anvil(&self, state: BlockStateId) -> bool {
+        self.data(state).is(classes::Class::Anvil)
+    }
+    /// Java's `state.is(BlockTags.ANVIL)`: the datapack tag, which a content
+    /// block joins only by adding itself to it. Vanilla reads the tag for a
+    /// falling block's saved `HurtEntities` default and for its wear chance.
+    pub fn is_anvil_tag(&self, state: BlockStateId) -> bool {
+        self.tag("minecraft:anvil")
+            .is_some_and(|anvils| anvils.contains(self.block(state)))
     }
     pub fn block(&self, state: BlockStateId) -> BlockId {
         self.table.block(state)

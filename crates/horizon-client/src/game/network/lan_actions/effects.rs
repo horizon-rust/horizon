@@ -13,7 +13,6 @@ impl Game<'_> {
             .as_ref()
             .map_or(&[][..], |log| log.get(logged..).unwrap_or(&[]))
             .to_vec();
-        let facts = self.res.facts();
         // BlockItem.place: `playSound(player, ...)`, for the others only. The
         // placer's client plays it as its block appears. The place sound is the
         // one the block's parts answered the placement with (`place_sound_type`).
@@ -49,7 +48,11 @@ impl Game<'_> {
         }
         let hand_operated = !changed.is_empty()
             && changed.iter().all(|&(x, y, z)| {
-                crate::game::remote::hand_operated(&facts.get(self.world.block(x, y, z)).name)
+                crate::game::remote::hand_operated(
+                    self.res
+                        .behaviours()
+                        .data(self.world.block(x, y, z)),
+                )
             });
         if hand_operated && let Some(capture) = self.audio.capture.as_mut() {
             sounds.extend(capture.drain(heard.min(capture.len())..));

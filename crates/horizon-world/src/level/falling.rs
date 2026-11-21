@@ -44,7 +44,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `FallingBlock.tick` (and `SpeleothemBlock`'s falling stalactites).
     pub(crate) fn falling_block_tick(&mut self, pos: BlockPos, state: BlockStateId) {
         if self.is_free(self.below_state(pos)) && pos.y >= self.level.min_y() {
-            self.falling_block_fall(pos, state, None);
+            // `FallingBlock.tick` runs the block's own `falling` hook after
+            // `fall`: `AnvilBlock.falling` is `setHurtsEntities(2.0F, 40)`, so
+            // an anvil of any class inheriting it hurts by distance where a
+            // name that only ends in `anvil` would not.
+            let hurt = self.b.instance_of(state, Class::Anvil).then_some(2.0);
+            self.falling_block_fall(pos, state, hurt);
         }
     }
     /// `SpeleothemBlock.spawnFallingStalactite`.

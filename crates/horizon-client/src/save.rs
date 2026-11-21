@@ -653,7 +653,9 @@ pub fn block_entity_id<'a>(e: &'a crate::containers::BlockEntity, block: &'a str
             | "minecraft:dropper"
             | "minecraft:ender_chest",
         ) => block,
-        (crate::containers::BlockEntity::Chest(_), b) if b.ends_with("shulker_box") => {
+        (crate::containers::BlockEntity::Chest(_), b)
+            if crate::containers::is_shulker_box_block(b) =>
+        {
             "minecraft:shulker_box"
         }
         _ => e.id(),

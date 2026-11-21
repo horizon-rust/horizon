@@ -875,12 +875,11 @@ impl Game<'_> {
         if self.block_is_empty_lectern(hit) {
             return false;
         }
-        let id = &*self
-            .res
-            .facts()
-            .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
-            .name;
+        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        let facts = self.res.facts().get(state);
+        let id = &*facts.name;
         let name = id.trim_start_matches("minecraft:");
+        let behaviours = self.res.behaviours();
         match name {
             // BlockBehaviour.getMenuProvider.
             "crafting_table" | "enchanting_table" | "anvil" | "chipped_anvil" | "damaged_anvil"
@@ -890,7 +889,7 @@ impl Game<'_> {
             // ChestBlock.getMenuProvider: none while a redstone conductor
             // sits on top of either half (a sitting cat aside). Copper
             // chests are `ChestBlock`s too.
-            _ if horizon_client::containers::is_chest_block(id) => {
+            _ if behaviours.is_chest_block(state) => {
                 let key = (hit.pos[0], hit.pos[1], hit.pos[2]);
                 let blocked = |p: (i32, i32, i32)| {
                     let above = self.world.block(p.0, p.1 + 1, p.2);
@@ -900,7 +899,8 @@ impl Game<'_> {
                 };
                 !blocked(key) && self.chest_other_half(key).is_none_or(|o| !blocked(o))
             }
-            _ => name.ends_with("shulker_box"),
+            // ShulkerBoxBlock.getMenuProvider.
+            _ => behaviours.is_shulker_box(state),
         }
     }
     /// `Attributes.ATTACK_SPEED` with the main-hand item's modifier and the

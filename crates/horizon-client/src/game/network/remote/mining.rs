@@ -316,8 +316,14 @@ impl Game<'_> {
                 );
                 // The other half of a double chest: its particles, and a second
                 // sound from the clicked block.
-                if let Some(other) =
-                    old.and_then(|old| super::super::storage::chest_connected_pos(old, hit.pos))
+                if let Some(other) = old.and_then(|old| {
+                    super::super::storage::chest_connected_pos(
+                        self.res.behaviours(),
+                        old,
+                        clicked,
+                        hit.pos,
+                    )
+                })
                 {
                     self.level_event_at(3003, other, 0);
                     self.play_client_local_sound(
@@ -397,8 +403,8 @@ impl Game<'_> {
         (changes, sounds): (&DryChanges, &Vec<DrySound>),
         seq: i32,
     ) {
-        let facts = self.res.facts();
-        let predicted = |state: BlockStateId| hand_operated(&facts.get(state).name);
+        let behaviours = self.res.behaviours();
+        let predicted = |state: BlockStateId| hand_operated(behaviours.data(state));
         if changes.is_empty()
             || !changes
                 .iter()

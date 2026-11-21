@@ -6,7 +6,7 @@
 //! half's, or "single".
 //!
 //! usage: chest_pair_fixture INPUT OUTPUT
-use horizon_client::containers::{ChestHalf, is_chest_block};
+use horizon_client::containers::ChestHalf;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -41,7 +41,13 @@ fn case(line: &str) -> Option<String> {
         i32::try_from(case["at"][0].as_i64()?).ok()?,
         i32::try_from(case["at"][1].as_i64()?).ok()?,
     );
-    if !is_chest_block(name) {
+    // The fixture only asks about `ChestBlock`s (`ChestBlock.combine`'s own gate):
+    // vanilla's are the blocks whose block entity is a chest's.
+    let is_chest = matches!(
+        horizon_client::containers::block_entity_type(name),
+        Some("minecraft:chest" | "minecraft:trapped_chest")
+    );
+    if !is_chest {
         return None;
     }
     let own = half(name, &props)?;

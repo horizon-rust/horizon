@@ -150,16 +150,85 @@ pub fn recipe_used_key(id: &str) -> String {
 /// A hopper's slots: the only plain container with five.
 pub const HOPPER_SLOTS: usize = 5;
 
-/// `getDefaultName` of the `BaseContainerBlockEntity` that `block` holds: the
-/// translation key of its menu's title when it has no custom name. Copper
-/// chests hold a `ChestBlockEntity`, shulker boxes of every colour a
-/// `ShulkerBoxBlockEntity`.
+/// The vanilla `BlockEntityType` of the block entity `block` holds
+/// (`BlockEntityType.validBlocks`), which is what vanilla asks for a
+/// container's name, menu and slots. A content block answers with its
+/// template's (`factory_block`), so a mod's chest is a `minecraft:chest`
+/// whatever its id, and a name that only ends in a vanilla suffix is not.
+pub fn block_entity_type(block: &str) -> Option<&'static str> {
+    if crate::block_entity_types::factory_valid(block) == Some(false) {
+        return None;
+    }
+    let n = crate::block_entity_types::factory_block(block).strip_prefix("minecraft:")?;
+    Some(match n {
+        "chest" => "minecraft:chest",
+        "trapped_chest" => "minecraft:trapped_chest",
+        "ender_chest" => "minecraft:ender_chest",
+        "barrel" => "minecraft:barrel",
+        "furnace" => "minecraft:furnace",
+        "blast_furnace" => "minecraft:blast_furnace",
+        "smoker" => "minecraft:smoker",
+        "hopper" => "minecraft:hopper",
+        "dispenser" => "minecraft:dispenser",
+        "dropper" => "minecraft:dropper",
+        "brewing_stand" => "minecraft:brewing_stand",
+        "beacon" => "minecraft:beacon",
+        "bell" => "minecraft:bell",
+        "campfire" | "soul_campfire" => "minecraft:campfire",
+        "enchanting_table" => "minecraft:enchanting_table",
+        "jukebox" => "minecraft:jukebox",
+        "lectern" => "minecraft:lectern",
+        "spawner" => "minecraft:mob_spawner",
+        "comparator" => "minecraft:comparator",
+        "daylight_detector" => "minecraft:daylight_detector",
+        "conduit" => "minecraft:conduit",
+        "decorated_pot" => "minecraft:decorated_pot",
+        "moving_piston" => "minecraft:piston",
+        "structure_block" => "minecraft:structure_block",
+        "jigsaw" => "minecraft:jigsaw",
+        "command_block" | "chain_command_block" | "repeating_command_block" => {
+            "minecraft:command_block"
+        }
+        "end_portal" => "minecraft:end_portal",
+        "end_gateway" => "minecraft:end_gateway",
+        "sculk_sensor" => "minecraft:sculk_sensor",
+        "calibrated_sculk_sensor" => "minecraft:calibrated_sculk_sensor",
+        "sculk_catalyst" => "minecraft:sculk_catalyst",
+        "sculk_shrieker" => "minecraft:sculk_shrieker",
+        "crafter" => "minecraft:crafter",
+        "potent_sulfur" => "minecraft:potent_sulfur",
+        "chiseled_bookshelf" => "minecraft:chiseled_bookshelf",
+        "trial_spawner" => "minecraft:trial_spawner",
+        "vault" => "minecraft:vault",
+        "beehive" | "bee_nest" => "minecraft:beehive",
+        "suspicious_sand" | "suspicious_gravel" => "minecraft:brushable_block",
+        "creaking_heart" => "minecraft:creaking_heart",
+        "test_block" => "minecraft:test_block",
+        "test_instance_block" => "minecraft:test_instance_block",
+        // `BlockEntityTypes.CHEST` takes every copper chest too (Util.copyAndAdd).
+        n if n.ends_with("copper_chest") => "minecraft:chest",
+        n if n.ends_with("shulker_box") => "minecraft:shulker_box",
+        n if n.ends_with("_wall_hanging_sign") || n.ends_with("_hanging_sign") => {
+            "minecraft:hanging_sign"
+        }
+        n if n.ends_with("_sign") => "minecraft:sign",
+        n if n.ends_with("_banner") => "minecraft:banner",
+        n if n.ends_with("_head") || n.ends_with("_skull") => "minecraft:skull",
+        n if n.ends_with("_shelf") => "minecraft:shelf",
+        n if n.ends_with("copper_golem_statue") => "minecraft:copper_golem_statue",
+        _ => return None,
+    })
+}
+
+/// `getDefaultName` of the `BaseContainerBlockEntity` whose block entity
+/// `block` holds: the translation key of its menu's title when it has no
+/// custom name. Copper chests hold a `ChestBlockEntity`, shulker boxes of
+/// every colour a `ShulkerBoxBlockEntity`.
 pub fn default_name_key(block: &str) -> Option<&'static str> {
-    Some(match block {
+    Some(match block_entity_type(block)? {
         "minecraft:chest" | "minecraft:trapped_chest" => "container.chest",
-        n if n.ends_with("copper_chest") => "container.chest",
         "minecraft:barrel" => "container.barrel",
-        n if n.ends_with("shulker_box") => "container.shulkerBox",
+        "minecraft:shulker_box" => "container.shulkerBox",
         "minecraft:dispenser" => "container.dispenser",
         "minecraft:dropper" => "container.dropper",
         "minecraft:hopper" => "container.hopper",
@@ -320,17 +389,17 @@ impl SkullSkin {
 }
 /// The skull and head blocks (`SkullBlock`, `WallSkullBlock`): every
 /// `*_skull` and `*_head` but the piston's head.
-/// The item slots of the container `name`'s block carries, if any.
+/// The item slots of the container `name`'s block carries, if any: `Container.getContainerSize`
+/// of the block entity it holds.
 fn container_size(name: &str) -> Option<usize> {
-    match name {
+    match block_entity_type(name)? {
         "minecraft:chest"
         | "minecraft:trapped_chest"
         | "minecraft:barrel"
-        | "minecraft:ender_chest" => Some(27),
-        n if n.ends_with("copper_chest") => Some(27),
+        | "minecraft:ender_chest"
+        | "minecraft:shulker_box" => Some(27),
         "minecraft:hopper" => Some(HOPPER_SLOTS),
         "minecraft:dispenser" | "minecraft:dropper" => Some(9),
-        n if n.ends_with("shulker_box") => Some(27),
         _ => None,
     }
 }
@@ -796,12 +865,26 @@ impl BlockEntity {
 }
 pub use crate::providers::Providers;
 
-/// A `ChestBlock`, which `ChestBlock.combine` can join into a double chest:
-/// chests, trapped chests and copper chests in every weathering state, waxed
-/// or not (`CopperChestBlock` extends `ChestBlock`). Ender chests are
-/// `EnderChestBlock`s and always single.
-pub fn is_chest_block(name: &str) -> bool {
-    matches!(name, "minecraft:chest" | "minecraft:trapped_chest") || name.ends_with("copper_chest")
+/// Whether the block `name` holds a `ShulkerBoxBlockEntity`: its container type
+/// is a shulker box's, which a content block answers with its template's.
+pub fn is_shulker_box_block(name: &str) -> bool {
+    block_entity_type(name) == Some("minecraft:shulker_box")
+}
+
+/// The `Items.SHULKER_BOX` and `Items.DYED_SHULKER_BOX` items: vanilla's own
+/// shulker box ids, which alone get `ShulkerBoxDispenseBehavior`. A content
+/// mod's shulker box item is not one of them, so a dispenser throws it like any
+/// other item (`DispenserBlock`'s `DEFAULT_BEHAVIOR`).
+pub fn is_vanilla_shulker_box_item(item: &str) -> bool {
+    let Some(name) = item.strip_prefix("minecraft:") else {
+        return false;
+    };
+    name == "shulker_box"
+        || name.strip_suffix("_shulker_box").is_some_and(|colour| {
+            crate::block_entity_render::DYES
+                .iter()
+                .any(|(dye, _)| *dye == colour)
+        })
 }
 
 /// A chest block's name with its `type` and `facing` properties.
@@ -837,10 +920,11 @@ impl ChestHalf<'_> {
     /// it: `other`, the block in this half's connected direction, is its other
     /// half when it is the same block, a half of the other side and faces the
     /// same way. Copper chests in different weathering states never join
-    /// (`CopperChestBlock` keeps both halves in one state instead).
+    /// (`CopperChestBlock` keeps both halves in one state instead). Whether
+    /// either block is a `ChestBlock` at all is the caller's
+    /// `Behaviours::is_chest_block`, as it is vanilla's.
     pub fn pairs_with(&self, other: &ChestHalf) -> bool {
-        is_chest_block(self.block)
-            && self.kind != "single"
+        self.kind != "single"
             && other.block == self.block
             && other.kind != "single"
             && other.kind != self.kind
@@ -871,12 +955,11 @@ pub fn create_experience(
 /// `ShulkerBoxSlot`s refuse shulker boxes), `DispenserMenu` for dispensers
 /// and droppers, `HopperMenu` for hoppers. None for other blocks.
 pub fn block_menu_type(block: &str) -> Option<&'static str> {
-    Some(match block {
+    Some(match block_entity_type(block)? {
         "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => {
             "minecraft:generic_9x3"
         }
-        n if n.ends_with("copper_chest") => "minecraft:generic_9x3",
-        n if n.ends_with("shulker_box") => "minecraft:shulker_box",
+        "minecraft:shulker_box" => "minecraft:shulker_box",
         "minecraft:dispenser" | "minecraft:dropper" => "minecraft:generic_3x3",
         "minecraft:hopper" => "minecraft:hopper",
         _ => return None,
@@ -932,6 +1015,75 @@ mod tests {
                 "{block}"
             );
         }
+    }
+
+    /// A container's title, menu and slots are its block entity's: a copper chest
+    /// holds a `minecraft:chest` entity (`BlockEntityTypes.CHEST` takes the
+    /// whole copper family), and an id that only ends in a vanilla container's
+    /// name belongs to no vanilla block entity at all.
+    #[test]
+    fn a_container_is_recognised_by_its_block_entity_type_not_by_its_suffix() {
+        for (block, name_key, menu) in [
+            (
+                "minecraft:chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
+            (
+                "minecraft:oxidized_copper_chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
+            (
+                "minecraft:waxed_weathered_copper_chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
+            (
+                "minecraft:trapped_chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
+            (
+                "minecraft:red_shulker_box",
+                "container.shulkerBox",
+                "minecraft:shulker_box",
+            ),
+            ("minecraft:hopper", "container.hopper", "minecraft:hopper"),
+            (
+                "minecraft:dispenser",
+                "container.dispenser",
+                "minecraft:generic_3x3",
+            ),
+        ] {
+            assert_eq!(default_name_key(block), Some(name_key), "{block}");
+            assert_eq!(block_menu_type(block), Some(menu), "{block}");
+        }
+        // `BlockEntityTypes.validBlocks` has no entry for a content id, so a
+        // name that merely ends in a vanilla one is not that vanilla block.
+        for block in [
+            "fieldtest:my_copper_chest",
+            "fieldtest:waxed_red_shulker_box",
+            "fieldtest:super_hopper",
+        ] {
+            assert_eq!(block_entity_type(block), None, "{block}");
+            assert_eq!(default_name_key(block), None, "{block}");
+            assert_eq!(block_menu_type(block), None, "{block}");
+        }
+        assert!(!is_vanilla_shulker_box_item("fieldtest:red_shulker_box"));
+        assert!(is_vanilla_shulker_box_item("minecraft:red_shulker_box"));
+        assert!(is_vanilla_shulker_box_item("minecraft:shulker_box"));
+        assert!(!is_vanilla_shulker_box_item("minecraft:shulker_shell"));
+        // The slots a container's block entity holds, which a chest's, a
+        // barrel's and a shulker box's differ on; a content id ending in a
+        // vanilla name gets none of them.
+        assert_eq!(container_size("minecraft:oxidized_copper_chest"), Some(27));
+        assert_eq!(container_size("minecraft:barrel"), Some(27));
+        assert_eq!(container_size("minecraft:hopper"), Some(5));
+        assert_eq!(container_size("minecraft:red_shulker_box"), Some(27));
+        assert_eq!(container_size("minecraft:furnace"), None);
+        assert_eq!(container_size("fieldtest:my_copper_chest"), None);
+        assert!(BlockEntity::for_block("fieldtest:my_copper_chest").is_none());
     }
 
     /// a client that isn't Horizon's is sent vanilla's menu types only.

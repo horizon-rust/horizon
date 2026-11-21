@@ -3,15 +3,38 @@
 //! player's `PlayerEnderChestContainer`, saved as `EnderItems`).
 use super::Game;
 use horizon_client::{
-    containers::{BlockEntity, ChestHalf, is_chest_block},
+    containers::{BlockEntity, ChestHalf},
     items::ItemStack,
     text::Text,
 };
 use horizon_core::random::RandomSource;
+use horizon_world::{
+    level::{Behaviours, classes::Class},
+    registry::BlockStateId,
+};
 
-pub(super) fn is_shulker_box(name: &str) -> bool {
-    name.ends_with("shulker_box")
+/// The blocks a spectator's click opens a menu for (`BlockState.getMenuProvider`
+/// up to `BaseContainerBlockEntity.canOpen`): vanilla asks each block's class, so
+/// a content block of a container's template answers for it, and a block whose id
+/// only ends in a container's name does not.
+fn spectator_container(behaviours: &Behaviours, state: BlockStateId) -> bool {
+    if is_shulker_box(behaviours, state) || behaviours.is_chest_block(state) {
+        return true;
+    }
+    let data = behaviours.data(state);
+    [
+        Class::Barrel,
+        Class::Hopper,
+        Class::Dispenser,
+        Class::Dropper,
+        Class::AbstractFurnace,
+        Class::BrewingStand,
+        Class::Crafter,
+    ]
+    .into_iter()
+    .any(|class| data.is(class))
 }
+
 impl Game<'_> {
     /// `ServerPlayerGameMode.useItemOn` for a spectator: the block's menu
     /// (`BlockState.getMenuProvider`) opens, and nothing else happens. The
@@ -27,27 +50,10 @@ impl Game<'_> {
             return;
         }
         let key = (pos[0], pos[1], pos[2]);
-        let name = self
-            .res
-            .facts()
-            .get(self.world.block(pos[0], pos[1], pos[2]))
-            .name
-            .clone();
-        let container = is_shulker_box(&name)
-            || matches!(
-                name.trim_start_matches("minecraft:"),
-                "chest"
-                    | "trapped_chest"
-                    | "barrel"
-                    | "hopper"
-                    | "dispenser"
-                    | "dropper"
-                    | "furnace"
-                    | "blast_furnace"
-                    | "smoker"
-                    | "brewing_stand"
-                    | "crafter"
-            );
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let facts = self.res.facts();
+        let name = facts.get(state).name.clone();
+        let container = spectator_container(self.res.behaviours(), state);
         // ChestBlock.getMenuProvider: none while either half is blocked.
         if !container || self.chest_menu_blocked(key, &name) {
             return;
@@ -153,13 +159,26 @@ impl Game<'_> {
             .play("minecraft:block.chest.locked", Some(at), 1.0, 1.0);
         true
     }
-    /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box.
+    /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box
+    /// (`ItemStack.canFitInsideContainerItems`, whose vanilla answer is
+    /// `!(block instanceof ShulkerBoxBlock)`).
     pub(super) fn refuses(&self, slot: usize, stack: &ItemStack) -> bool {
         (300..400).contains(&slot)
-            && is_shulker_box(&stack.item)
+            && !self.stack_fits_inside_container_items(stack)
             && self.container.is_some_and(|k| {
-                is_shulker_box(&self.res.facts().get(self.world.block(k.0, k.1, k.2)).name)
+                let state = self.world.block(k.0, k.1, k.2);
+                is_shulker_box(self.res.behaviours(), state)
             })
+    }
+    /// `ItemStack.canFitInsideContainerItems` for a stack whose item this client
+    /// has: the block the item places decides (`ItemInfo.block`), which is the
+    /// rule in `menu::container_items`.
+    fn stack_fits_inside_container_items(&self, stack: &ItemStack) -> bool {
+        horizon_client::menu::container_items::vanilla_fits_inside_container_items_for_item(
+            self.res.items(),
+            self.res.facts(),
+            stack,
+        )
     }
     /// Opening an ender chest shows the player's ender inventory in its place.
     pub(super) fn open_ender_chest(&mut self, key: (i32, i32, i32)) {
@@ -185,17 +204,17 @@ impl Game<'_> {
     /// `EnderChestBlock.useWithoutItem`: a blocked chest, or a double chest
     /// with either half blocked, opens no menu.
     pub(super) fn chest_menu_blocked(&self, key: (i32, i32, i32), name: &str) -> bool {
-        match name {
-            n if is_chest_block(n) => {
-                self.chest_blocked_at(key)
-                    || self
-                        .chest_partner(key)
-                        .is_some_and(|(other, _)| self.chest_blocked_at(other))
-            }
-            // The ender chest only looks at the block above (no cat check).
-            "minecraft:ender_chest" => self.conductor_above(key),
-            _ => false,
+        if self.res.behaviours().is_chest_block(self.world.block(key.0, key.1, key.2)) {
+            return self.chest_blocked_at(key)
+                || self
+                    .chest_partner(key)
+                    .is_some_and(|(other, _)| self.chest_blocked_at(other));
         }
+        // The ender chest only looks at the block above (no cat check).
+        if name == "minecraft:ender_chest" {
+            return self.conductor_above(key);
+        }
+        false
     }
     /// Closing it copies the items back and keeps the block entity, as vanilla's
     /// `EnderChestBlockEntity` persists across open/close (`close_ender_chest`
@@ -231,13 +250,28 @@ fn facing_step(facing: &str) -> (i32, i32) {
     }
 }
 
+/// Java's `state.getBlock() instanceof ShulkerBoxBlock`, for this client's
+/// tables: the block's class, which a content block answers with its template's.
+/// The client's own door to that answer. Its name and place are kept because the
+/// mod point `horizon_client::game::storage::is_shulker_box` and its entry in the
+/// generated `internals.json` may not disappear (`docs/layers.md#mod-points-stay-put`,
+/// `tools/check_mod_points_unchanged.py`); the arguments the class answer needs
+/// changed that point, and `tools/mod_points_removed.txt` lists it.
+pub(super) fn is_shulker_box(behaviours: &Behaviours, state: BlockStateId) -> bool {
+    behaviours.is_shulker_box(state)
+}
+
 /// `ChestBlock.getConnectedBlockPos` for a chest whose `type` is not single:
-/// where its other half belongs, whatever stands there now.
+/// where its other half belongs, whatever stands there now. `state` is the
+/// block there now and `id` its state, which `facts` answers for: vanilla asks
+/// the block's class, never its name.
 pub(super) fn chest_connected_pos(
+    behaviours: &Behaviours,
     state: &horizon_world::chunk::BlockState,
+    id: BlockStateId,
     pos: [i32; 3],
 ) -> Option<[i32; 3]> {
-    if !is_chest_block(&state.name) {
+    if !behaviours.is_chest_block(id) {
         return None;
     }
     let (dx, dz) = chest_half(state)?.connected_step()?;
@@ -249,8 +283,9 @@ impl Game<'_> {
     /// the right half (`ChestBlock.getConnectedDirection`).
     pub(super) fn chest_partner(&self, key: (i32, i32, i32)) -> Option<((i32, i32, i32), bool)> {
         let registry = self.pack.assets.registry;
-        let state = registry.state(self.world.block(key.0, key.1, key.2))?;
-        if !is_chest_block(&state.name) {
+        let id = self.world.block(key.0, key.1, key.2);
+        let state = registry.state(id)?;
+        if !self.res.behaviours().is_chest_block(id) {
             return None;
         }
         let own = chest_half(state)?;
@@ -306,13 +341,10 @@ impl Game<'_> {
     /// Callers play it only when the opener count crosses zero
     /// (`ContainerOpenersCounter.onOpen` / `onClose`).
     pub(super) fn container_edge_sound(&mut self, key: (i32, i32, i32), open: bool) {
-        let name = self
-            .res
-            .facts()
-            .get(self.world.block(key.0, key.1, key.2))
-            .name
-            .clone();
-        let sound = if is_shulker_box(&name) {
+        let id = self.world.block(key.0, key.1, key.2);
+        let facts = self.res.facts();
+        let name = facts.get(id).name.clone();
+        let sound = if is_shulker_box(self.res.behaviours(), id) {
             if open {
                 "minecraft:block.shulker_box.open"
             } else {
@@ -324,8 +356,12 @@ impl Game<'_> {
             } else {
                 "minecraft:block.ender_chest.close"
             }
-        } else if name.contains("chest") {
-            horizon_client::mobs::transport_items::chest_hinge_sound(&name, open)
+        } else if let Some(sound) = horizon_client::mobs::transport_items::chest_hinge_sound(
+            &name,
+            self.res.behaviours().is_chest_block(id),
+            open,
+        ) {
+            sound
         } else if &*name == "minecraft:barrel" {
             if open {
                 "minecraft:block.barrel.open"
@@ -454,9 +490,13 @@ impl Game<'_> {
         }
     }
     pub(super) fn container_block_is_shulker(&self) -> bool {
-        self.container_block()
-            .as_deref()
-            .is_some_and(is_shulker_box)
+        self.container_state()
+            .is_some_and(|id| is_shulker_box(self.res.behaviours(), id))
+    }
+    /// The state of the open container's block.
+    fn container_state(&self) -> Option<horizon_world::registry::BlockStateId> {
+        let k = self.container?;
+        Some(self.world.block(k.0, k.1, k.2))
     }
     fn container_block(&self) -> Option<std::sync::Arc<str>> {
         let k = self.container?;
@@ -479,7 +519,12 @@ impl Game<'_> {
         }
         let generic = match self.container_block().as_deref() {
             Some("minecraft:barrel" | "minecraft:ender_chest") => true,
-            Some(n) if is_chest_block(n) => true,
+            _ if self
+                .container_state()
+                .is_some_and(|id| self.res.behaviours().is_chest_block(id)) =>
+            {
+                true
+            }
             _ => self.open_cart_kind() == Some(super::minecarts::CartKind::Chest),
         };
         generic.then(|| self.open_container_size() / 9)
@@ -513,9 +558,8 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let grey = rgba(64, 64, 64, 255);
         if self
-            .container_block()
-            .as_deref()
-            .is_some_and(is_shulker_box)
+            .container_state()
+            .is_some_and(|id| is_shulker_box(self.res.behaviours(), id))
         {
             batch.sprite_region(
                 atlas,
@@ -585,6 +629,40 @@ impl Game<'_> {
 mod tests {
     use super::*;
 
+    /// `BlockState.getMenuProvider`: vanilla asks the block's class, so a copper
+    /// chest (a `ChestBlock`) opens for a spectator, an ender chest's
+    /// `EnderChestBlock` does not, and a block of another class whose id ends in
+    /// `chest` does not either.
+    #[test]
+    #[ignore = "daily"]
+    fn a_spectators_containers_are_asked_by_class() {
+        let mut resources = None;
+        let game = super::super::game_tests::tests::server_game(&mut resources);
+        let behaviours = game.res.behaviours();
+        let registry = game.pack.assets.registry;
+        for (block, opens) in [
+            ("minecraft:chest", true),
+            ("minecraft:trapped_chest", true),
+            ("minecraft:copper_chest", true),
+            ("minecraft:waxed_exposed_copper_chest", true),
+            ("minecraft:barrel", true),
+            ("minecraft:hopper", true),
+            ("minecraft:furnace", true),
+            ("minecraft:blast_furnace", true),
+            ("minecraft:smoker", true),
+            ("minecraft:dispenser", true),
+            ("minecraft:dropper", true),
+            ("minecraft:brewing_stand", true),
+            ("minecraft:crafter", true),
+            ("minecraft:shulker_box", true),
+            ("minecraft:ender_chest", false),
+            ("minecraft:crafting_table", false),
+        ] {
+            let state = registry.default_state(block).unwrap();
+            assert_eq!(spectator_container(behaviours, state), opens, "{block}");
+        }
+    }
+
     /// `ChestBlockEntity`'s opener counter plays the block's own hinge
     /// sound: a copper chest's, by weather state, not the wooden chest's.
     #[test]
@@ -617,6 +695,27 @@ mod tests {
         }
     }
 
+    /// `ShulkerBoxBlock.canOpen`: a box whose lid has no room opens neither its
+    /// menu nor anything else (`useWithoutItem` returns before the screen).
+    #[test]
+    #[ignore = "daily"]
+    fn a_shulker_box_with_a_blocked_lid_opens_nothing() {
+        let mut resources = None;
+        let mut game = super::super::game_tests::tests::server_game(&mut resources);
+        let registry = game.pack.assets.registry;
+        let shulker = registry.default_state("minecraft:shulker_box").unwrap();
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, shulker).unwrap();
+        game.world.set(key.0, key.1 + 1, key.2, stone).unwrap();
+        game.open_block_effect_menu([8, 64, 8]);
+        assert_eq!(game.container, None, "a blocked shulker box opened its menu");
+        assert!(
+            !matches!(game.screen, crate::game::Screen::Inventory),
+            "a blocked shulker box opened a screen"
+        );
+    }
+
     #[test]
     fn double_chest_halves_connect_around_the_facing() {
         let half = |kind, facing| ChestHalf {
@@ -632,7 +731,7 @@ mod tests {
         assert_eq!(half("single", "east").connected_step(), None);
     }
     #[test]
-    fn copper_chests_join_like_chests() {
+    fn chest_halves_join_only_with_the_same_block() {
         let half = |block, kind| ChestHalf {
             block,
             kind,
@@ -644,19 +743,14 @@ mod tests {
             "minecraft:copper_chest",
             "minecraft:waxed_weathered_copper_chest",
         ] {
-            assert!(is_chest_block(block));
             assert!(half(block, "left").pairs_with(&half(block, "right")));
         }
         // ChestBlock.combine needs the same block on both halves.
         let copper = half("minecraft:copper_chest", "left");
         assert!(!copper.pairs_with(&half("minecraft:exposed_copper_chest", "right")));
-        assert!(!is_chest_block("minecraft:ender_chest"));
-    }
-    #[test]
-    fn shulker_boxes_are_recognised_by_name() {
-        assert!(is_shulker_box("minecraft:red_shulker_box"));
-        assert!(is_shulker_box("minecraft:shulker_box"));
-        assert!(!is_shulker_box("minecraft:chest"));
+        // A single half never joins.
+        let single = half("minecraft:chest", "single");
+        assert!(!single.pairs_with(&half("minecraft:chest", "left")));
     }
 }
 

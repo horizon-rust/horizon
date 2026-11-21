@@ -3758,22 +3758,6 @@ fn chat_is_narrated_with_its_chat_types_narration_decoration() {
     );
 }
 
-/// A cauldron's fill level is a use this client predicts, and a guest's
-/// host forwards its sound: every cauldron state counts, not only the
-/// doors and levers.
-#[test]
-fn every_cauldron_counts_as_hand_operated() {
-    for name in [
-        "minecraft:cauldron",
-        "minecraft:water_cauldron",
-        "minecraft:lava_cauldron",
-        "minecraft:powder_snow_cauldron",
-    ] {
-        assert!(super::hand_operated(name), "{name}");
-    }
-    assert!(!super::hand_operated("minecraft:water"));
-}
-
 /// An NPC plugin lists the NPC, spawns it, and takes the entry off the list:
 /// the entity keeps the skin it found; a player spawned before its entry
 /// arrives takes the entry once it comes.

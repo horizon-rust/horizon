@@ -42,6 +42,10 @@ enum Interaction {
 struct Target {
     pos: [i32; 3],
     name: String,
+    /// The block state at `pos` when the target was chosen: vanilla's identity
+    /// of the block entity it picked (`TransportItemsBetweenContainers
+    /// .targetHasNotChanged`), which a level keeps until the block goes.
+    state: horizon_world::registry::BlockStateId,
     /// The halves of the container in slot order (the right half first).
     halves: Vec<[i32; 3]>,
 }
@@ -89,26 +93,38 @@ fn name_at(w: &MobWorld, p: [i32; 3]) -> String {
         .name
         .to_string()
 }
-/// `ChestBlock.getOpenChestSound` / `getCloseChestSound` of a chest block:
-/// a copper chest's comes from `CopperChestBlock.getHingeSound`, by its
-/// weather state (a waxed chest's is its state's).
-pub fn chest_hinge_sound(block: &str, open: bool) -> &'static str {
-    let base = block
+/// `ChestBlock`, by the block's class chain: the mob side reads the same chain
+/// the engine's `Behaviours::is_chest_block` answers for.
+fn is_chest_block(w: &MobWorld, p: [i32; 3]) -> bool {
+    w.facts
+        .get(w.world.block(p[0], p[1], p[2]))
+        .has_class("ChestBlock")
+}
+/// `ChestBlock.getOpenChestSound` / `getCloseChestSound` of a chest block: a
+/// copper chest's comes from `CopperChestBlock.getHingeSound`, by its weather
+/// state (a waxed chest's is its state's). Only a `ChestBlock` has them
+/// (`is_chest` is that class, which the caller asks of the block), and a content
+/// block's chest is its template's (`factory_block`), so its weather state is
+/// the template's too.
+pub fn chest_hinge_sound(block: &str, is_chest: bool, open: bool) -> Option<&'static str> {
+    if !is_chest {
+        return None;
+    }
+    let base = horizon_client::block_entity_types::factory_block(block)
         .trim_start_matches("minecraft:")
         .trim_start_matches("waxed_");
-    match (base.ends_with("copper_chest"), base.split('_').next(), open) {
-        (false, _, true) => "minecraft:block.chest.open",
-        (false, _, false) => "minecraft:block.chest.close",
-        (true, Some("weathered"), true) => "minecraft:block.copper_chest_weathered.open",
-        (true, Some("weathered"), false) => "minecraft:block.copper_chest_weathered.close",
-        (true, Some("oxidized"), true) => "minecraft:block.copper_chest_oxidized.open",
-        (true, Some("oxidized"), false) => "minecraft:block.copper_chest_oxidized.close",
-        (true, _, true) => "minecraft:block.copper_chest.open",
-        (true, _, false) => "minecraft:block.copper_chest.close",
-    }
-}
-fn is_chest_block(name: &str) -> bool {
-    matches!(name, "minecraft:chest" | "minecraft:trapped_chest") || name.ends_with("copper_chest")
+    Some(
+        match (base.ends_with("copper_chest"), base.split('_').next(), open) {
+            (false, _, true) => "minecraft:block.chest.open",
+            (false, _, false) => "minecraft:block.chest.close",
+            (true, Some("weathered"), true) => "minecraft:block.copper_chest_weathered.open",
+            (true, Some("weathered"), false) => "minecraft:block.copper_chest_weathered.close",
+            (true, Some("oxidized"), true) => "minecraft:block.copper_chest_oxidized.open",
+            (true, Some("oxidized"), false) => "minecraft:block.copper_chest_oxidized.close",
+            (true, _, true) => "minecraft:block.copper_chest.open",
+            (true, _, false) => "minecraft:block.copper_chest.close",
+        },
+    )
 }
 /// `CopperGolemAi.TRANSPORT_ITEM_SOURCE_BLOCK` / `_DESTINATION_BLOCK`.
 fn wanted(w: &MobWorld, m: &Mob, name: &str) -> bool {
@@ -348,9 +364,14 @@ fn open_or_close(cx: &mut Bx, p: [i32; 3], open: bool, mob: u32) {
             at[0] += f64::from(o[0] - p[0]) * 0.5;
             at[2] += f64::from(o[2] - p[2]) * 0.5;
         }
-        let sound = chest_hinge_sound(&name_at(w, p), open).trim_start_matches("minecraft:");
-        let pitch = cx.level.random().next_float() * 0.1 + 0.9;
-        cx.events.push(MobEvent::Sound(sound, at, 0.5, pitch));
+        let is_chest = is_chest_block(w, p);
+        // `ChestBlockEntity.playSound`: only a `ChestBlock` has a hinge sound,
+        // so only it draws the pitch.
+        if let Some(sound) = chest_hinge_sound(&name_at(w, p), is_chest, open) {
+            let sound = sound.trim_start_matches("minecraft:");
+            let pitch = cx.level.random().next_float() * 0.1 + 0.9;
+            cx.events.push(MobEvent::Sound(sound, at, 0.5, pitch));
+        }
     }
     cx.events.push(MobEvent::ChestOpen {
         chest: p,
@@ -443,10 +464,14 @@ impl Transport {
             return false;
         };
         let w = cx.w;
+        // `targetHasNotChanged`: the block entity the target was picked with is
+        // still there, which a level's own keeps only while the block does not
+        // change. `isWantedBlock` above asks the state it was picked at, as
+        // vanilla does, so only this one reads the level now.
         let unchanged = matches!(
             w.world.block_entities.get(&(t.pos[0], t.pos[1], t.pos[2])),
             Some(BlockEntity::Chest(_))
-        ) && is_chest_block(&name_at(w, t.pos));
+        ) && w.world.block(t.pos[0], t.pos[1], t.pos[2]) == t.state;
         if !(wanted(w, m, &t.name) && unchanged) || blocked(w, t.pos) {
             return false;
         }
@@ -537,6 +562,7 @@ impl Transport {
                             Target {
                                 pos: p,
                                 name,
+                                state: w.world.block(p[0], p[1], p[2]),
                                 halves,
                             },
                         ));

@@ -678,7 +678,7 @@ impl Game<'_> {
                 let (no_gravity, drop_item) = entity_nbt::falling_block_flags(&tag);
                 let damage = horizon_client::falling_block::Damage::from_nbt(
                     &tag,
-                    self.res.facts().get(state).name.ends_with("anvil"),
+                    self.res.behaviours().is_anvil_tag(state),
                 );
                 let uuid = self.uuid_for(id);
                 let index = self

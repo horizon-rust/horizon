@@ -92,15 +92,16 @@ impl Game<'_> {
                 .state(state)
                 .is_some_and(|s| s.properties.get("extended").is_some_and(|p| p == "false")),
             "minecraft:mangrove_roots" | "minecraft:moving_piston" => false,
+            // ShulkerBoxBlock: suffocating while closed; a box seen open here is rare
+            // enough to count as closed. Asked of the class, so a content block of
+            // a shulker box's template counts.
+            _ if self.res.behaviours().is_shulker_box(state) => true,
             _ if name.ends_with("_leaves")
                 || name.ends_with("glass")
                 || name.ends_with("copper_grate") =>
             {
                 false
             }
-            // ShulkerBoxBlock: suffocating while closed; a box seen open
-            // here is rare enough to count as closed.
-            _ if name.ends_with("shulker_box") => true,
             _ => {
                 facts.full_collision
                     && self

@@ -2282,7 +2282,7 @@ impl Game<'_> {
             return (player_context && self.held().is_some_and(|s| *s.item == **name))
                 .then_some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
         }
-        if !name.ends_with("shulker_box") {
+        if !self.res.behaviours().is_shulker_box(state) {
             return None;
         }
         let progress = anims.shulkers.get(&pos).map_or(0.0, |s| s.progress);
@@ -3524,8 +3524,10 @@ impl Game<'_> {
                     state,
                     hurt_per_distance,
                 } => {
+                    let data = self.res.behaviours().data(state);
                     let mut damage = horizon_client::falling_block::Damage::falling(
-                        &self.res.facts().get(state).name,
+                        data.is(horizon_world::level::classes::Class::Anvil),
+                        data.is(horizon_world::level::classes::Class::Brushable),
                     );
                     if let Some(per_distance) = hurt_per_distance {
                         damage.hurt_entities = true;
@@ -3826,8 +3828,9 @@ impl Game<'_> {
             self.world.block_entities.get_or_insert_with(key, || {
                 BlockEntity::for_block(&name).unwrap_or(BlockEntity::Chest(Vec::new()))
             });
-        } else if storage::is_shulker_box(&name) && !self.shulker_can_open(pos) {
+        } else if self.res.behaviours().is_shulker_box(block) && !self.shulker_can_open(pos) {
             // ShulkerBoxBlock.canOpen: the lid has no room; nothing opens.
+            return;
         } else if let Some(entity) = BlockEntity::for_block(&name) {
             self.world.block_entities.get_or_insert_with(key, || entity);
             horizon_client::spans::time("open_loot", || self.unpack_opened_loot(key, &name));
@@ -3857,7 +3860,7 @@ impl Game<'_> {
                 "minecraft:hopper" => "inspect_hopper",
                 "minecraft:dropper" => "inspect_dropper",
                 "minecraft:dispenser" => "inspect_dispenser",
-                n if storage::is_shulker_box(n) => "open_shulker_box",
+                _ if self.res.behaviours().is_shulker_box(block) => "open_shulker_box",
                 _ => "",
             };
             if !stat.is_empty() {
@@ -6787,9 +6790,13 @@ impl Game<'_> {
         old: BlockStateId,
         particle: &str,
     ) {
-        let old = self.pack.assets.registry.state(old).cloned();
+        let id = old;
+        let old = self.pack.assets.registry.state(id).cloned();
         let Some(old) = old else { return };
-        if !old.name.ends_with("copper_chest") {
+        // `CopperChestBlock` is a `ChestBlock`, and the transform only reaches
+        // a copper one; the class says so, a name that ends in `copper_chest`
+        // does not.
+        if !self.res.behaviours().is_chest_block(id) {
             return;
         }
         let kind = old
@@ -6986,7 +6993,9 @@ impl Game<'_> {
             let registry = self.pack.assets.registry;
             let old = registry.state(clicked);
             if let Some(state) = self.honeycomb_waxed(clicked) {
-                let other = old.and_then(|old| storage::chest_connected_pos(old, hit.pos));
+                let other = old.and_then(|old| {
+                    storage::chest_connected_pos(self.res.behaviours(), old, clicked, hit.pos)
+                });
                 // HoneycombItem.useOn: ITEM_USED_ON_BLOCK before the swap.
                 self.trigger_block("minecraft:item_used_on_block", hit.pos, stack);
                 self.level_set(hit.pos, state)?;

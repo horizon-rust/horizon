@@ -39,7 +39,7 @@ pub fn encode(p: (i32, i32, i32), e: &crate::containers::BlockEntity, block: &st
             // ShulkerBoxBlockEntity.saveAdditional: `saveAllItems(.., false)`
             // writes no list for an empty box; other containers always do.
             let empty = matches!(&list, Tag::List(l) if l.is_empty());
-            if !(empty && block.ends_with("shulker_box")) {
+            if !(empty && crate::containers::is_shulker_box_block(block)) {
                 entries.push(("Items", list));
             }
         }

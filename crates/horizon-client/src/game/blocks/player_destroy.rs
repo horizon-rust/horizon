@@ -1,7 +1,7 @@
 //! The removal in a player's break (`ServerPlayerGameMode.destroyBlock`): the block's parts
 //! (`on_destroyed_by_player`, `IBlockExtension.onDestroyedByPlayer`) may take it over, and with
 //! none answering `playerWillDestroy` and `Level.removeBlock` are vanilla's.
-use super::{Game, storage};
+use super::Game;
 use horizon_client::{blocks::StateFacts, items::ItemStack};
 use horizon_core::position::BlockPos;
 use horizon_world::registry::BlockStateId;
@@ -119,7 +119,7 @@ impl Game<'_> {
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, disarmed, 260));
             self.post_block_game_event("minecraft:shear", pos, self.sculk_actor(), None);
         }
-        if creative && storage::is_shulker_box(&facts.name) {
+        if creative && self.res.behaviours().is_shulker_box(state) {
             self.drop_creative_shulker(pos);
         }
         // BeehiveBlock.playerWillDestroy: a creative break still drops the hive

@@ -922,7 +922,7 @@ mod tests {
                 drop_item: false,
                 fall_distance: 0.0,
                 stuck: Vec3::ZERO,
-                damage: horizon_client::falling_block::Damage::falling("minecraft:sand"),
+                damage: horizon_client::falling_block::Damage::falling(false, false),
                 saved: None,
             });
             let falling = game.entity(falling).unwrap();
@@ -1101,7 +1101,7 @@ mod tests {
                 drop_item: false,
                 fall_distance: 0.0,
                 stuck: Vec3::ZERO,
-                damage: horizon_client::falling_block::Damage::falling("minecraft:sand"),
+                damage: horizon_client::falling_block::Damage::falling(false, false),
                 saved: None,
             });
             let falling = game.entity(id).unwrap();

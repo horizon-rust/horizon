@@ -3442,3 +3442,8 @@ fn stamp(
 #[cfg(test)]
 #[path = "mod_content_tests.rs"]
 mod tests;
+
+/// The vanilla rules a content block takes from its template (#18502).
+#[cfg(test)]
+#[path = "mod_block_rules_tests.rs"]
+mod block_rules_tests;

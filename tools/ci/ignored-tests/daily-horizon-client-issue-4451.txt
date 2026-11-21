@@ -2491,6 +2491,8 @@ horizon-client game::storage::lock_tests::a_lock_on_either_half_refuses_a_double
 horizon-client game::storage::lock_tests::a_locked_container_refuses_the_local_players_open lib daily resources
 horizon-client game::storage::reach_tests::breaking_the_other_half_closes_the_open_double_chest lib daily resources
 horizon-client game::storage::tests::a_player_opens_and_closes_a_chest_with_its_own_hinge_sound lib daily resources
+horizon-client game::storage::tests::a_shulker_box_with_a_blocked_lid_opens_nothing lib daily resources
+horizon-client game::storage::tests::a_spectators_containers_are_asked_by_class lib daily resources
 horizon-client game::storage_alias_tests::a_rejected_wildcard_set_keeps_the_storage_s_cleared_array lib daily resources
 horizon-client game::storage_alias_tests::the_failure_keeps_the_save_state_and_stores_nothing_new lib daily resources
 horizon-client game::sulfur_bucket_tests::an_empty_bucket_picks_up_an_adult_sulfur_cube lib daily resources

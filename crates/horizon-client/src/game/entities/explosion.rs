@@ -2940,7 +2940,9 @@ mod shulker_lock_drop_tests {
             (7, 3, "chest", true, "command"),
             (7, 11, "crafter", true, "command"),
         ] {
-            let shulker = kind.ends_with("shulker_box");
+            // The fixture's own list of shulker boxes: the expectation is the test's,
+            // not the code's under test.
+            let shulker = matches!(kind, "shulker_box" | "red_shulker_box");
             let mut fields = Vec::new();
             if shulker {
                 fields.push("CustomName:\"Box\"");

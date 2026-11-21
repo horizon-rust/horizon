@@ -31,36 +31,74 @@ pub enum PreRemove {
     Beacon,
 }
 
-/// The side effect of removing the block entity of block `name` (a
-/// `minecraft:` identifier).
-pub fn pre_remove(name: &str) -> PreRemove {
-    let n = name.strip_prefix("minecraft:").unwrap_or(name);
+/// The side effect of removing the block entity of the block `state` holds:
+/// vanilla runs that entity's own `preRemoveSideEffects`, so a
+/// `ShulkerBoxBlockEntity` keeps its contents and a block whose id only ends in
+/// a shulker box's name is not a shulker box at all. Every container's rule is
+/// asked of the block's class too, which a content block answers with its
+/// template's, never of its name.
+pub fn pre_remove(
+    behaviours: &super::Behaviours,
+    state: crate::registry::BlockStateId,
+) -> PreRemove {
+    use super::classes::Class;
+    let data = behaviours.data(state);
+    if data.is(Class::ShulkerBox) {
+        return PreRemove::ShulkerBox;
+    }
     let contents = |slots| PreRemove::Contents {
         slots,
         furnace: false,
     };
-    match n {
-        "chest" | "trapped_chest" | "barrel" => contents(27),
-        _ if n.ends_with("copper_chest") => contents(27),
-        _ if n.ends_with("shulker_box") => PreRemove::ShulkerBox,
-        "hopper" => contents(5),
-        "dispenser" | "dropper" | "crafter" => contents(9),
-        "brewing_stand" => contents(5),
-        "chiseled_bookshelf" => contents(6),
-        _ if n.ends_with("_shelf") => contents(3),
-        "decorated_pot" => contents(1),
-        "furnace" | "blast_furnace" | "smoker" => PreRemove::Contents {
+    // `ChestBlockEntity.preRemoveSideEffects` drops its 27 slots: chests,
+    // trapped chests and copper chests alike, by class; a `BarrelBlockEntity`'s
+    // 27 stand in for a barrel's.
+    if behaviours.is_chest_block(state) || data.is(Class::Barrel) {
+        return contents(27);
+    }
+    if data.is(Class::Hopper) || data.is(Class::BrewingStand) {
+        return contents(5);
+    }
+    if data.is(Class::Dispenser) || data.is(Class::Dropper) || data.is(Class::Crafter) {
+        return contents(9);
+    }
+    // `AbstractFurnaceBlockEntity.preRemoveSideEffects` also awards its
+    // recipes' experience.
+    if data.is(Class::AbstractFurnace) {
+        return PreRemove::Contents {
             slots: 3,
             furnace: true,
-        },
-        "campfire" | "soul_campfire" => PreRemove::Campfire,
-        "jukebox" => PreRemove::Jukebox,
-        "lectern" => PreRemove::Lectern,
-        "sculk_shrieker" => PreRemove::SculkShrieker,
-        "creaking_heart" => PreRemove::CreakingHeart,
-        "beacon" => PreRemove::Beacon,
-        _ => PreRemove::Nothing,
+        };
     }
+    // `ChiseledBookShelfBlockEntity` holds six slots, a `ShelfBlockEntity` three.
+    if data.is(Class::ChiseledBookShelf) {
+        return contents(6);
+    }
+    if data.is(Class::Shelf) {
+        return contents(3);
+    }
+    if data.is(Class::DecoratedPot) {
+        return contents(1);
+    }
+    if data.is(Class::Campfire) {
+        return PreRemove::Campfire;
+    }
+    if data.is(Class::Jukebox) {
+        return PreRemove::Jukebox;
+    }
+    if data.is(Class::Lectern) {
+        return PreRemove::Lectern;
+    }
+    if data.is(Class::SculkShrieker) {
+        return PreRemove::SculkShrieker;
+    }
+    if data.is(Class::CreakingHeart) {
+        return PreRemove::CreakingHeart;
+    }
+    if data.is(Class::Beacon) {
+        return PreRemove::Beacon;
+    }
+    PreRemove::Nothing
 }
 
 /// One item entity of a spill: position, stack size and motion.

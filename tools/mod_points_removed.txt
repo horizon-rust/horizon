@@ -7,3 +7,10 @@
 # `#[horizon_mod_api_macros::replaceable]` on it in the lower crate (an issue is enough); that keeps its point.
 #
 # One line per point: name | #PR | short reason. Lines starting with # are comments.
+
+# #19333 asks the block's class where the mod points above took a name: a
+# content block answers with its template's.
+game_remote_hand_operated | #19333 | takes the block's &BlockData so a content block's class decides, not its id
+game_storage_chest_connected_pos | #19333 | takes the &Behaviours and the state id so the block's class decides, not its id
+game_storage_is_shulker_box | #19333 | takes the &Behaviours and the state id so the block's class decides, not its name
+game_wind_triggers | #19333 | takes the &BlockData so a content block's class decides, not its id

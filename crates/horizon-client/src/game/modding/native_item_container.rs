@@ -172,10 +172,21 @@ fn extract_one(
 
 // Native mods use these; nothing in Horizon does.
 impl Game<'_> {
-    /// `ItemStack.canFitInsideContainerItems`: vanilla's answer, then the parts of `item`'s
-    /// item, in the loop this game runs.
+    /// `ItemStack.canFitInsideContainerItems`: vanilla's answer from the block
+    /// the stack's item places (`ItemInfo.block`, which this game's item table
+    /// answers), then the parts of `item`'s item, in the loop this game runs.
     fn fits_inside_container_items(&self, item: &ItemStack) -> bool {
-        horizon_client::menu::fits_inside_container_items(&self.loop_context, item)
+        let vanilla =
+            horizon_client::menu::container_items::vanilla_fits_inside_container_items_for_item(
+                self.res.items(),
+                self.res.facts(),
+                item,
+            );
+        horizon_client::menu::container_items::fits_inside_container_items_from(
+            &self.loop_context,
+            item,
+            vanilla,
+        )
     }
     /// The slots a mod gave item `item`, clamped; none for any other item.
     fn item_container_size(&self, item: &str) -> Option<u32> {

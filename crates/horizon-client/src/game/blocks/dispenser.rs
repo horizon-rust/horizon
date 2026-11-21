@@ -702,7 +702,9 @@ impl Game<'_> {
             "minecraft:brush" => self.dispense_brush(pos, facing, stack),
             "minecraft:honeycomb" => self.dispense_honeycomb(pos, facing, stack)?,
             "minecraft:potion" => self.dispense_potion(pos, facing, stack)?,
-            _ if item.ends_with("shulker_box") => self.dispense_shulker_box(pos, facing, stack)?,
+            _ if horizon_client::containers::is_vanilla_shulker_box_item(&item) => {
+                self.dispense_shulker_box(pos, facing, stack)?
+            }
             _ if self.dispenses_as_filled_bucket(&item) => {
                 self.dispense_filled_bucket(pos, facing, stack)?
             }

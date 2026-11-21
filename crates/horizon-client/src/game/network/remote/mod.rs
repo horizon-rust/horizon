@@ -1837,13 +1837,10 @@ type DryPlace = (horizon_core::position::BlockPos, DryChanges);
 /// The blocks a guest's hand flips that its use predicts (and hears at once): a wooden or
 /// copper door, trapdoor or fence gate, a lever, a button or a cauldron, whose fill level
 /// changes as the bucket, bottle or dye lands. An iron door or trapdoor has no hand use.
-pub(super) fn hand_operated(name: &str) -> bool {
-    let name = name.trim_start_matches("minecraft:");
-    ((name.ends_with("_door") || name.ends_with("_trapdoor")) && !name.starts_with("iron_"))
-        || name.ends_with("_fence_gate")
-        || name.ends_with("_button")
-        || name == "lever"
-        || name.ends_with("cauldron")
+/// The class test lives with the wind charge's, which asks `BlockSetType.canOpenByWindCharge`
+/// of the same blocks.
+pub(super) fn hand_operated(data: &horizon_world::level::data::BlockData) -> bool {
+    crate::game::wind::hand_operated(data)
 }
 
 /// `InteractionHand` on the wire.

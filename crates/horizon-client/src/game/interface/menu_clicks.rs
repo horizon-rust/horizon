@@ -394,7 +394,7 @@ impl Game<'_> {
                     Some(BlockEntity::Chest(_)) => {
                         let shulker = self.container.is_some_and(|k| {
                             let id = self.world.block(k.0, k.1, k.2);
-                            storage::is_shulker_box(&self.res.facts().get(id).name)
+                            self.res.behaviours().is_shulker_box(id)
                         });
                         let kind = match size {
                             5 => Kind::Hopper,

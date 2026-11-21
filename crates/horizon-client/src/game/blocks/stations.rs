@@ -525,7 +525,7 @@ impl Game<'_> {
             "minecraft:stonecutter" => "interact_with_stonecutter",
             "minecraft:loom" => "interact_with_loom",
             "minecraft:cartography_table" => "interact_with_cartography_table",
-            n if n.ends_with("anvil") => "interact_with_anvil",
+            _ if self.res.behaviours().is_anvil(self.world.block(pos[0], pos[1], pos[2])) => "interact_with_anvil",
             _ => "",
         };
         if !stat.is_empty() {

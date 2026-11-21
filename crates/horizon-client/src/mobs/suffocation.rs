@@ -29,6 +29,14 @@ pub fn bind<'r>(
             Some("dirt_path" | "farmland" | "mud" | "soul_sand") => Always,
             Some("piston" | "sticky_piston") => NotExtendedPiston,
             Some("mangrove_roots" | "moving_piston") => Never,
+            // `ShulkerBoxBlock` suffocates while its lid is shut. What is asked here
+            // is the block's *block entity type* (`BlockEntityType.validBlocks`:
+            // `minecraft:shulker_box` for vanilla's boxes), which a content block
+            // carries when its declared type says so — not its class, which the
+            // client's own suffocation rule reads (`game::entities::cushions`).
+            // The arm is before the name suffixes below, so a block
+            // whose id ends in a suffix answers for its type, not for the suffix.
+            _ if crate::containers::is_shulker_box_block(&state.name) => ClosedShulker,
             Some(name)
                 if name.ends_with("_leaves")
                     || name == "glass"
@@ -39,7 +47,6 @@ pub fn bind<'r>(
             {
                 Never
             }
-            Some(name) if name == "shulker_box" || name.ends_with("_shulker_box") => ClosedShulker,
             _ => TaggedFullCollision,
         };
         definitions.insert(state.name.clone(), definition);

@@ -35,69 +35,9 @@ const ENTITY: u8 = 4;
 /// clients get of it; none sends no tag.
 pub type ModUpdateTag = fn([i32; 3], &ModBlockEntity) -> Option<Compound>;
 
-/// The vanilla block entity type of a block (BlockEntityType.validBlocks).
-pub fn block_entity_type(name: &str) -> Option<&'static str> {
-    if crate::block_entity_types::factory_valid(name) == Some(false) {
-        return None;
-    }
-    let n = crate::block_entity_types::factory_block(name).strip_prefix("minecraft:")?;
-    Some(match n {
-        "chest" => "minecraft:chest",
-        "trapped_chest" => "minecraft:trapped_chest",
-        "ender_chest" => "minecraft:ender_chest",
-        "barrel" => "minecraft:barrel",
-        "furnace" => "minecraft:furnace",
-        "blast_furnace" => "minecraft:blast_furnace",
-        "smoker" => "minecraft:smoker",
-        "hopper" => "minecraft:hopper",
-        "dispenser" => "minecraft:dispenser",
-        "dropper" => "minecraft:dropper",
-        "brewing_stand" => "minecraft:brewing_stand",
-        "beacon" => "minecraft:beacon",
-        "bell" => "minecraft:bell",
-        "campfire" | "soul_campfire" => "minecraft:campfire",
-        "enchanting_table" => "minecraft:enchanting_table",
-        "jukebox" => "minecraft:jukebox",
-        "lectern" => "minecraft:lectern",
-        "spawner" => "minecraft:mob_spawner",
-        "comparator" => "minecraft:comparator",
-        "daylight_detector" => "minecraft:daylight_detector",
-        "conduit" => "minecraft:conduit",
-        "decorated_pot" => "minecraft:decorated_pot",
-        "moving_piston" => "minecraft:piston",
-        "structure_block" => "minecraft:structure_block",
-        "jigsaw" => "minecraft:jigsaw",
-        "command_block" | "chain_command_block" | "repeating_command_block" => {
-            "minecraft:command_block"
-        }
-        "end_portal" => "minecraft:end_portal",
-        "end_gateway" => "minecraft:end_gateway",
-        "sculk_sensor" => "minecraft:sculk_sensor",
-        "calibrated_sculk_sensor" => "minecraft:calibrated_sculk_sensor",
-        "sculk_catalyst" => "minecraft:sculk_catalyst",
-        "sculk_shrieker" => "minecraft:sculk_shrieker",
-        "crafter" => "minecraft:crafter",
-        "potent_sulfur" => "minecraft:potent_sulfur",
-        "chiseled_bookshelf" => "minecraft:chiseled_bookshelf",
-        "trial_spawner" => "minecraft:trial_spawner",
-        "vault" => "minecraft:vault",
-        "beehive" | "bee_nest" => "minecraft:beehive",
-        "suspicious_sand" | "suspicious_gravel" => "minecraft:brushable_block",
-        "creaking_heart" => "minecraft:creaking_heart",
-        "test_block" => "minecraft:test_block",
-        "test_instance_block" => "minecraft:test_instance_block",
-        n if n.ends_with("shulker_box") => "minecraft:shulker_box",
-        n if n.ends_with("_wall_hanging_sign") || n.ends_with("_hanging_sign") => {
-            "minecraft:hanging_sign"
-        }
-        n if n.ends_with("_sign") => "minecraft:sign",
-        n if n.ends_with("_banner") => "minecraft:banner",
-        n if n.ends_with("_head") || n.ends_with("_skull") => "minecraft:skull",
-        n if n.ends_with("_shelf") => "minecraft:shelf",
-        n if n.ends_with("copper_golem_statue") => "minecraft:copper_golem_statue",
-        _ => return None,
-    })
-}
+/// The vanilla block entity type of a block (BlockEntityType.validBlocks): the
+/// container table's, which every reader of a block's entity type shares.
+pub use crate::containers::block_entity_type;
 
 /// Per-state facts and registry ids for encoding chunks.
 pub struct ChunkEncoder {

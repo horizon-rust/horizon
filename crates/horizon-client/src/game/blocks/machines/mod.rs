@@ -3,7 +3,7 @@
 //! the vanilla dispense behaviours Horizon has entities for, and container
 //! comparator signals (`AbstractContainerMenu.getRedstoneSignalFromContainer`).
 mod loot_access;
-use super::{Game, composter::is_composter, spill, storage::is_shulker_box};
+use super::{Game, composter::is_composter, spill};
 use horizon_core::nbt::Tag;
 use mod_api::__private::game::*;
 
@@ -339,10 +339,10 @@ impl Containers<'_> {
             (BlockEntity::ChiseledBookshelf(_), _) => Kind::Bookshelf,
             (BlockEntity::Jukebox(_), _) => Kind::Jukebox,
             (_, "minecraft:hopper") => Kind::Hopper,
-            (_, n) if is_shulker_box(n) => Kind::Shulker,
+            _ if self.behaviours.is_shulker_box(state) => Kind::Shulker,
             _ => Kind::Generic,
         };
-        if horizon_client::containers::is_chest_block(name) {
+        if self.behaviours.is_chest_block(state) {
             let is_blocked = |p: Pos| {
                 let above = self.world.block(p.0, p.1 + 1, p.2);
                 self.behaviours.facts(above).flags
@@ -464,8 +464,14 @@ impl Containers<'_> {
                         .get(&stack.item)
                         .is_some_and(|i| i.compostable.is_some())
             }
-            // ShulkerBoxBlockEntity.canPlaceItemThroughFace
-            Kind::Shulker => !is_shulker_box(&stack.item),
+            // ShulkerBoxBlockEntity.canPlaceItemThroughFace:
+            // `!(Block.byItem(item) instanceof ShulkerBoxBlock)`, so the block the
+            // item places decides, not its id; an item that places no block fits.
+            Kind::Shulker => self
+                .items
+                .get(&stack.item)
+                .and_then(|i| i.block)
+                .is_none_or(|block| !self.behaviours.is_shulker_box(block)),
             Kind::Crafter => match self.world.block_entities.get(&view.parts[0].0) {
                 Some(BlockEntity::Crafter(c)) => slot < 9 && !c.disabled[slot],
                 _ => false,

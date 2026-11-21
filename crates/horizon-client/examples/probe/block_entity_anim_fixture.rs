@@ -287,7 +287,7 @@ pub fn main() -> Result<()> {
                     f(r.page_flip1),
                     f(r.page_flip2)
                 );
-            } else if name.ends_with("shulker_box") {
+            } else if horizon_client::containers::is_shulker_box_block(&name) {
                 let s = anims.shulkers.entry(pos).or_insert_with(Shulker::default);
                 if let Some((a, b)) = event {
                     let handled = s.trigger_event(a, b);
