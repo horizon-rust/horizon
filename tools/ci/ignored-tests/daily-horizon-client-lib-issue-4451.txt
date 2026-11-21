@@ -20,6 +20,7 @@ horizon-client-lib crafting::repair_item::tests::repair_overridden_durability li
 horizon-client-lib crafting::repair_item::tests::repair_plain_pickaxes lib daily resources
 horizon-client-lib crafting::repair_item::tests::repair_removed_durability lib daily resources
 horizon-client-lib crafting::repair_item::tests::repair_takes_the_larger_maximum lib daily resources
+horizon-client-lib crafting::repair_item::tests::repair_to_full_durability_patches_nothing lib daily resources
 horizon-client-lib entities::destroyed_bundle_environment_tests::lava_that_destroys_a_bundle_spills_its_contents lib daily resources
 horizon-client-lib entities::fire_environment_tests::ordinary_items_burn_but_native_netherite_resists_lava lib daily resources
 horizon-client-lib falling_block::tests::impact_hurts_only_living_intersecting_noninvulnerable_mobs lib daily resources
