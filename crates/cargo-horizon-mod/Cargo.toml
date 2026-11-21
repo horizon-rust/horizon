@@ -37,6 +37,7 @@ toml_edit = "0.25"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 wasm-encoder = { version = "0.261", features = ["wasmparser"] }
 wasmparser = "0.261"
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -46,7 +47,6 @@ base64 = "0.22"
 ring = "0.17"
 tempfile = "3.27.0"
 wat = "1.261"
-zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

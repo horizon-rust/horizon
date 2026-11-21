@@ -179,6 +179,7 @@ impl Options {
     }
     pub(super) fn from_launch(launch: LaunchArguments) -> Result<Option<Self>> {
         let installation_side = launch.installation_side();
+        let jar_side = launch.jar_side();
         let LaunchArguments { context, rest } = launch;
         let sibling = std::env::current_exe()?
             .parent()
@@ -229,6 +230,7 @@ impl Options {
             benchmark_profile: false,
             mods: mods::ModsState {
                 installation_side,
+                jar_side,
                 overrides_dir: context.game_dir.join(horizon_mod_package::mod_list::DIR),
                 dev: context.dev_mods,
                 ..Default::default()
