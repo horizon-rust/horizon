@@ -692,6 +692,11 @@ impl ItemStack {
             extra: None,
         }
     }
+    /// `ItemStack.isEmpty`: the air stack, or a stack whose count has reached
+    /// zero (a save or a mod can leave one).
+    pub fn is_empty(&self) -> bool {
+        self.count == 0 || &*self.item == "minecraft:air"
+    }
     /// The stack `ItemStack.CODEC` reads from `tag` (`id`, `count`,
     /// `components`), as `item_nbt::item_from_nbt` does; None for air or an
     /// id that is no valid identifier. The id is not looked up in a registry.
@@ -3931,5 +3936,13 @@ mod written_book_tests {
         assert_eq!(template(Some(0)), None);
         assert_eq!(template(Some(100)), None);
         assert_eq!(template(Some(-1)), None);
+    }
+
+    /// `ItemStack.isEmpty`: the air stack or a count of zero.
+    #[test]
+    fn an_item_stack_is_empty_after_air_or_a_zero_count() {
+        assert!(ItemStack::new("minecraft:air", 1).is_empty());
+        assert!(ItemStack::new("minecraft:stone", 0).is_empty());
+        assert!(!ItemStack::new("minecraft:stone", 1).is_empty());
     }
 }

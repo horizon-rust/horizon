@@ -241,6 +241,7 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
             assert_eq!(host_stat(game), stat + 8);
 
             // 8 offered, 5 fit: one partial notice, original 8, remainder 3, and no post.
+            // The statistic is the whole offered stack (8), as vanilla awards `orgCount`.
             let (animations, stat) = (host_animations(game), host_stat(game));
             let partial = Case { room: 5, ..CASE };
             assert_eq!(
@@ -248,9 +249,10 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
                 (vec![("partial", 7, 8, Some(3))], Some(3), 64)
             );
             assert_eq!(host_animations(game), animations + 1);
-            assert_eq!(host_stat(game), stat + 5);
+            assert_eq!(host_stat(game), stat + 8);
 
-            // The partial listener raises the remainder to 6: the entity keeps 6, the pickup counts 2.
+            // The partial listener raises the remainder to 6: the entity keeps 6, the
+            // statistic is still the whole offered stack.
             let (animations, stat) = (host_animations(game), host_stat(game));
             let raised = Case {
                 raise: Some(6),
@@ -261,7 +263,7 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
                 (vec![("partial", 7, 8, Some(3))], Some(6), 64)
             );
             assert_eq!(host_animations(game), animations + 1);
-            assert_eq!(host_stat(game), stat + 2);
+            assert_eq!(host_stat(game), stat + 8);
 
             // The partial listener empties the remainder: the entity goes, the pickup counts 8.
             let (animations, stat) = (host_animations(game), host_stat(game));
@@ -319,7 +321,8 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
                 (vec![("post", 7, 8, None)], None, 64)
             );
 
-            // The listener puts 3 back: the entity stays with 3, the pickup counts 5.
+            // The listener puts 3 back: the entity stays with 3, the statistic is the
+            // whole offered stack.
             let (animations, stat) = (host_animations(game), host_stat(game));
             let raised = Case {
                 raise: Some(3),
@@ -330,7 +333,7 @@ fn host_pickup_tells_whole_and_partial_pickups_apart_and_keeps_listener_changes(
                 (vec![("post", 7, 8, None)], Some(3), 64)
             );
             assert_eq!(host_animations(game), animations + 1);
-            assert_eq!(host_stat(game), stat + 5);
+            assert_eq!(host_stat(game), stat + 8);
 
             // Creative takes the whole ground stack even with no inventory room.
             game.creative = true;

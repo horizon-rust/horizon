@@ -141,13 +141,15 @@ impl Game<'_> {
                 }
             };
             self.as_guest(conn, |g| {
-                g.award_stat("picked_up", &kind, count as i32);
+                // `ItemEntity.playerTouch` awards and tells `orgCount`, the stack
+                // before `Inventory.add`, not the amount that fit.
+                g.award_stat("picked_up", &kind, before as i32);
                 if let Some(thrower) = thrower {
                     g.trigger_thrown_picked_up_by_player(&picked, thrower);
                 }
             });
             if after.is_some() {
-                taken.push((item_id, count));
+                taken.push((item_id, before));
             }
         }
         // Entity.take: the clients play the pickup sound themselves

@@ -113,6 +113,13 @@ impl Game<'_> {
             {
                 continue;
             }
+            // `ItemEntity.tick` first discards an entity whose stack has gone
+            // empty, before it moves, ages or merges.
+            if items[i].stack.is_empty() {
+                removed[i] = true;
+                cells.remove(i, items[i].position);
+                continue;
+            }
             self.tick_saved_invulnerable_time(items[i].id);
             let item = &mut items[i];
             // `Entity.baseTick` reads the fluid the item starts the tick in,
@@ -281,7 +288,7 @@ impl Game<'_> {
                 );
             }
             let item = &mut items[i];
-            let mut alive = alive || (item.age < 6000 && item.position.y >= void);
+            let mut alive = alive || (!item.expired(merging) && item.position.y >= void);
             if merging && !removed[i] && item.age >= 6000 && item.position.y >= void {
                 let mut extra_life = 0;
                 self.native_item_expire(item.id, &item.stack, &mut extra_life);
@@ -975,6 +982,36 @@ mod destroyed_contents_tests {
         // The spill leaves the level's random alone.
         assert_eq!(game.world.random.next_double(), level.next_double());
         assert_eq!(game.world.random.next_double(), level.next_double());
+    }
+
+    /// `ItemEntity.tick`'s first line: an entity whose stack has gone empty is
+    /// discarded before it moves or ages (a save or a mod can leave one).
+    #[test]
+    #[ignore = "daily"]
+    fn an_empty_item_stack_is_discarded_before_it_ticks() {
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        game.build_registries();
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(8.5, 70.0, 8.5),
+            )
+            .unwrap(),
+        );
+        game.update_chunk_tickets();
+        game.spawn_item_own(
+            ItemStack::new("minecraft:stone", 0),
+            [8.5, 70.0, 8.5],
+            0,
+        );
+        game.ticked_entities_through = u32::MAX;
+        game.tick_items();
+        assert!(game.dropped.is_empty(), "the empty stack left before its tick");
     }
 
     /// The damage command is one of those callers: killing a shulker box item

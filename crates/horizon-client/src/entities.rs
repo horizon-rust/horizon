@@ -769,6 +769,18 @@ impl ItemEntity {
             Vec3::new(v.x, new_delta_y(-0.05), v.z)
         };
     }
+    /// `ItemEntity.tick`'s pickup delay countdown: one tick off a positive
+    /// delay, never below zero, and an infinite delay stays where it is.
+    fn tick_pickup_delay(&mut self) {
+        if self.pickup_delay > 0 && !self.has_infinite_pickup_delay() {
+            self.pickup_delay -= 1;
+        }
+    }
+    /// `ItemEntity.tick`'s lifetime discard: `age >= 6000`, on the server only.
+    /// A client keeps the entity until the server's removal packet arrives.
+    pub fn expired(&self, server: bool) -> bool {
+        server && self.age >= 6000
+    }
     fn has_infinite_pickup_delay(&self) -> bool {
         self.pickup_delay == i64::from(i16::MAX) || self.pickup_delay == i64::from(u32::MAX)
     }
@@ -3208,6 +3220,76 @@ mod merge_tests {
         items[1].pickup_delay = 30;
         assert_eq!(merge(&mut items, 0), [None, Some(2)]);
         assert_eq!(items[1].pickup_delay, 30, "the longer pickup delay stays");
+    }
+
+    /// `ItemEntity.tick`'s pickup delay countdown: one off a positive delay,
+    /// never below zero, and the infinite sentinel stays.
+    #[test]
+    fn a_pickup_delay_counts_down_once_but_never_below_zero() {
+        let mut it = item("minecraft:sand", 1, 0.5, 0);
+        it.pickup_delay = 10;
+        it.tick_pickup_delay();
+        assert_eq!(it.pickup_delay, 9);
+        it.pickup_delay = 1;
+        it.tick_pickup_delay();
+        assert_eq!(it.pickup_delay, 0);
+        it.tick_pickup_delay();
+        assert_eq!(it.pickup_delay, 0, "zero is not negative");
+        it.pickup_delay = -1;
+        it.tick_pickup_delay();
+        assert_eq!(it.pickup_delay, -1, "a loaded negative delay stays");
+        for infinite in [i64::from(i16::MAX), i64::from(u32::MAX)] {
+            it.pickup_delay = infinite;
+            it.tick_pickup_delay();
+            assert_eq!(it.pickup_delay, infinite, "an infinite delay stays");
+        }
+    }
+
+    /// `ItemEntity.tick` discards at `age >= 6000` on the server only; a
+    /// client keeps the entity until the server removes it.
+    #[test]
+    fn only_the_server_discards_at_the_lifetime() {
+        let mut it = item("minecraft:sand", 1, 0.5, 5999);
+        assert!(!it.expired(true));
+        assert!(!it.expired(false));
+        it.age = 6000;
+        assert!(it.expired(true));
+        assert!(!it.expired(false), "a client does not age items out");
+    }
+
+    /// `ItemStack.isSameItemSameComponents`: a different damage value or
+    /// component keeps two otherwise equal stacks apart, and so does a
+    /// different owner target (`ItemEntity.tryToMerge`).
+    #[test]
+    fn equal_items_with_different_components_or_owners_stay_apart() {
+        let mut items = [
+            item("minecraft:stone", 1, 0.5, 1),
+            item("minecraft:stone", 1, 0.5, 1),
+        ];
+        items[1].stack.damage = 1;
+        assert_eq!(merge(&mut items, 0), [Some(1), Some(1)]);
+        let mut items = [
+            item("minecraft:stone", 1, 0.5, 1),
+            item("minecraft:stone", 1, 0.5, 1),
+        ];
+        items[1].target = Some([0, 0, 0, 1]);
+        assert_eq!(merge(&mut items, 0), [Some(1), Some(1)]);
+    }
+
+    /// `ItemEntity.setFluidMovement`: water drag is `0.99F`, lava `0.95F`,
+    /// and a vertical speed below `0.06F` gains `5.0E-4F`.
+    #[test]
+    fn fluid_movement_drags_and_lifts_below_the_threshold() {
+        let mut it = item("minecraft:sand", 1, 0.5, 0);
+        it.velocity = Vec3::new(1.0, 0.04, 1.0);
+        it.set_fluid_movement(0.99_f32);
+        assert_eq!(it.velocity.x, f64::from(0.99_f32));
+        assert_eq!(it.velocity.z, f64::from(0.99_f32));
+        assert_eq!(it.velocity.y, 0.04 + f64::from(5.0e-4_f32));
+        it.velocity = Vec3::new(1.0, 0.06, 1.0);
+        it.set_fluid_movement(0.95_f32);
+        assert_eq!(it.velocity.y, 0.06, "at the threshold there is no lift");
+        assert_eq!(it.velocity.x, f64::from(0.95_f32));
     }
 
     #[test]

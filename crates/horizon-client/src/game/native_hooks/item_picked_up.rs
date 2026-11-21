@@ -186,7 +186,9 @@ impl Game<'_> {
             };
             let taken = before.saturating_sub(left.count);
             if taken > 0 {
-                self.award_stat("picked_up", &kind, taken as i32);
+                // `ItemEntity.playerTouch` awards the count the stack had
+                // before `Inventory.add`, not the amount that fit.
+                self.award_stat("picked_up", &kind, before as i32);
                 if let Some(thrower) = thrower {
                     self.trigger_thrown_picked_up_by_player(&left, thrower);
                 }

@@ -55,9 +55,7 @@ impl ItemEntity {
     ) -> ItemStep {
         self.ticks += 1;
         self.previous = self.position;
-        if self.pickup_delay > 0 && !self.has_infinite_pickup_delay() {
-            self.pickup_delay -= 1;
-        }
+        self.tick_pickup_delay();
         let prior_fall = self.fall_distance;
         let old_velocity = self.velocity;
         // Entity.updateInWaterStateAndDoFluidPushing: touching water resets the fall.

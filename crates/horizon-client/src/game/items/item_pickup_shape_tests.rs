@@ -166,9 +166,11 @@ fn indexed_pickup_keeps_bound_survivors_and_processes_shifted_tail() {
                     "only the whole pickup is heard, not the partial or the refused one"
                 );
                 assert_eq!(game.inventory[0].as_ref().unwrap().count, 64);
+                // Vanilla awards the count the stack had before `Inventory.add`:
+                // the whole 1 and the whole 3, though only 1 of the 3 fit.
                 assert_eq!(
                     game.stats.values["minecraft:picked_up"]["minecraft:apple"],
-                    2
+                    4
                 );
                 assert_eq!(
                     game.world.random.next_int(),

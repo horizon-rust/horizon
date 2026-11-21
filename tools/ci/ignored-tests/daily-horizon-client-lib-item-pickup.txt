@@ -1,0 +1,3 @@
+# Prepared-resource item pickup and destroyed-contents tests.
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+horizon-client game::item_entities::destroyed_contents_tests::an_empty_item_stack_is_discarded_before_it_ticks lib daily resources
