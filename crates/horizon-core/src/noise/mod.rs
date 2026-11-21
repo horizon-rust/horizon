@@ -56,10 +56,6 @@ impl GradientTable {
     pub fn permutations(&self) -> &[u8; 256] {
         &self.permutations
     }
-
-    fn permute(&self, index: i32) -> i32 {
-        i32::from(self.permutations[(index & 255) as usize])
-    }
 }
 
 // Perlin's 16-direction table includes four repeated directions. Simplex uses
@@ -99,12 +95,14 @@ const PERLIN_GRADIENTS: [[f32; 3]; 16] = {
     out
 };
 
+#[inline(always)]
 fn dot(gradient: [f32; 3], point: [f32; 3]) -> f32 {
     gradient[0] * point[0] + gradient[1] * point[1] + gradient[2] * point[2]
 }
 
 /// Vanilla's periodic coordinate reduction with the normal Far Lands flag off.
 /// The fast-path boundary is the double immediately below 2^24.
+#[inline]
 pub fn wrap(value: f64) -> f64 {
     let half = f64::from_bits(16_777_216.0_f64.to_bits() - 1);
     if value >= -half && value < half {
@@ -114,15 +112,19 @@ pub fn wrap(value: f64) -> f64 {
     }
 }
 
+#[inline(always)]
 fn smoothstep(value: f32) -> f32 {
     value * value * value * (value * (value * 6.0 - 15.0) + 10.0)
 }
+#[inline(always)]
 fn smoothstep_derivative(value: f32) -> f32 {
     30.0 * value * value * (value - 1.0) * (value - 1.0)
 }
+#[inline(always)]
 fn lerp(delta: f32, start: f32, end: f32) -> f32 {
     start + delta * (end - start)
 }
+#[inline(always)]
 fn lerp2(a: f32, b: f32, values: [f32; 4]) -> f32 {
     lerp(
         b,
@@ -130,11 +132,20 @@ fn lerp2(a: f32, b: f32, values: [f32; 4]) -> f32 {
         lerp(a, values[2], values[3]),
     )
 }
+#[inline(always)]
 fn lerp3(fade: [f32; 3], values: [f32; 8]) -> f32 {
     lerp(
         fade[2],
-        lerp2(fade[0], fade[1], values[..4].try_into().unwrap()),
-        lerp2(fade[0], fade[1], values[4..].try_into().unwrap()),
+        lerp2(
+            fade[0],
+            fade[1],
+            [values[0], values[1], values[2], values[3]],
+        ),
+        lerp2(
+            fade[0],
+            fade[1],
+            [values[4], values[5], values[6], values[7]],
+        ),
     )
 }
 
