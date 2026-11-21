@@ -1069,6 +1069,9 @@ mod escape_tests {
 }
 
 #[cfg(test)]
+#[path = "tests/death_drop_position_tests.rs"]
+mod death_drop_position_tests;
+#[cfg(test)]
 #[path = "tests/item_cactus_damage_tests.rs"]
 mod item_cactus_damage_tests;
 #[cfg(test)]
