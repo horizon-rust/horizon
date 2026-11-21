@@ -93,6 +93,17 @@ pub fn prepare_paths(stage: &Roots, source: &Roots, target: &Roots) -> Result<()
 
 /// Refuse live games/build tools even if the window that started them has already exited.
 fn ensure_idle(source: &Roots) -> Result<(), String> {
+    // A background service runs the server runtime's program from the launcher's data (or one
+    // on PATH, which can't be told apart here), so any installed one stops the move.
+    if let Some(server) = crate::servers::list()
+        .into_iter()
+        .find(|e| e.host.is_none() && crate::servers::service_installed(&e.dir))
+    {
+        return Err(format!(
+            "Turn off running in the background for {} on the Servers page before moving data.",
+            server.name
+        ));
+    }
     #[cfg(windows)]
     let output = process::command("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress"])
