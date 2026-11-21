@@ -76,14 +76,18 @@ pub struct ReceiveLease<T> {
 }
 impl<T> Drop for ReceiveLease<T> {
     fn drop(&mut self) {
-        let mut state = self.shared.lock();
-        state.held_bytes -= self.charge.bytes;
-        if self.charge.control {
-            state.control_held -= self.charge.bytes;
+        let notify = {
+            let mut state = self.shared.lock();
+            state.held_bytes -= self.charge.bytes;
+            if self.charge.control {
+                state.control_held -= self.charge.bytes;
+            }
+            state.release(self.charge);
+            state.room_waiters > 0
+        };
+        if notify {
+            self.shared.room.notify_all();
         }
-        state.release(self.charge);
-        drop(state);
-        self.shared.room.notify_all();
     }
 }
 
@@ -94,6 +98,8 @@ struct State<T> {
     stats: Stats,
     senders: usize,
     receiver_alive: bool,
+    room_waiters: usize,
+    ready_waiters: usize,
     /// The control allowance's share of `stats.reserved_bytes` (at most one value's
     /// charge), and of that the part still pending and the part held in a lease.
     control_bytes: usize,
@@ -154,6 +160,8 @@ pub fn channel<T>(capacity: usize) -> Result<(Sender<T>, Receiver<T>), InvalidCa
             },
             senders: 1,
             receiver_alive: true,
+            room_waiters: 0,
+            ready_waiters: 0,
             control_bytes: 0,
             control_pending: 0,
             control_held: 0,
@@ -206,7 +214,9 @@ impl<T> Sender<T> {
             if charge <= state.room(self.0.capacity) {
                 return self.take(&mut state, charge, false);
             }
+            state.room_waiters += 1;
             state = self.0.room.wait(state).unwrap_or_else(|e| e.into_inner());
+            state.room_waiters -= 1;
         }
     }
     /// Admits a control value that must reach the consumer in order, however full the
@@ -228,7 +238,9 @@ impl<T> Sender<T> {
             if state.control_bytes == 0 {
                 return self.take(&mut state, charge, true);
             }
+            state.room_waiters += 1;
             state = self.0.room.wait(state).unwrap_or_else(|e| e.into_inner());
+            state.room_waiters -= 1;
         }
     }
     fn take(
@@ -263,32 +275,42 @@ impl<T> Sender<T> {
 impl<T> Permit<T> {
     /// Publishes exactly once without charging again. On closure returns ownership.
     pub fn publish(mut self, value: T) -> Result<(), T> {
-        let mut state = self.shared.lock();
-        if !state.receiver_alive || state.senders == 0 {
-            return Err(value);
+        let notify = {
+            let mut state = self.shared.lock();
+            if !state.receiver_alive || state.senders == 0 {
+                return Err(value);
+            }
+            state.queue.push_back((value, self.charge));
+            state.pending_bytes -= self.charge.bytes;
+            if self.charge.control {
+                state.control_pending -= self.charge.bytes;
+            }
+            state.stats.queued_items += 1;
+            self.charge.bytes = 0;
+            state.ready_waiters > 0
+        };
+        if notify {
+            self.shared.ready.notify_one();
         }
-        state.queue.push_back((value, self.charge));
-        state.pending_bytes -= self.charge.bytes;
-        if self.charge.control {
-            state.control_pending -= self.charge.bytes;
-        }
-        state.stats.queued_items += 1;
-        self.charge.bytes = 0;
-        drop(state);
-        self.shared.ready.notify_one();
         Ok(())
     }
 }
 impl<T> Drop for Permit<T> {
     fn drop(&mut self) {
-        let mut state = self.shared.lock();
-        if state.receiver_alive && state.senders != 0 && self.charge.bytes != 0 {
-            state.pending_bytes -= self.charge.bytes;
-            if self.charge.control {
-                state.control_pending -= self.charge.bytes;
+        let notify = {
+            let mut state = self.shared.lock();
+            if state.receiver_alive && state.senders != 0 && self.charge.bytes != 0 {
+                state.pending_bytes -= self.charge.bytes;
+                if self.charge.control {
+                    state.control_pending -= self.charge.bytes;
+                }
+                state.release(self.charge);
+                state.room_waiters > 0
+            } else {
+                false
             }
-            state.release(self.charge);
-            drop(state);
+        };
+        if notify {
             self.shared.room.notify_all();
         }
     }
@@ -360,21 +382,26 @@ impl<T> Receiver<T> {
             if state.senders == 0 {
                 return Err(RecvError);
             }
+            state.ready_waiters += 1;
             state = self.0.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+            state.ready_waiters -= 1;
         }
     }
     pub fn stats(&self) -> Stats {
         self.0.lock().stats
     }
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        let mut state = self.0.lock();
-        let value = Self::pop(&mut state).ok_or(if state.senders == 0 {
-            TryRecvError::Disconnected
-        } else {
-            TryRecvError::Empty
-        });
-        drop(state);
-        if value.is_ok() {
+        let (value, notify) = {
+            let mut state = self.0.lock();
+            let value = Self::pop(&mut state).ok_or(if state.senders == 0 {
+                TryRecvError::Disconnected
+            } else {
+                TryRecvError::Empty
+            });
+            let notify = value.is_ok() && state.room_waiters > 0;
+            (value, notify)
+        };
+        if notify {
             self.0.room.notify_all();
         }
         value
@@ -383,14 +410,19 @@ impl<T> Receiver<T> {
         let mut state = self.0.lock();
         loop {
             if let Some(value) = Self::pop(&mut state) {
+                let notify = state.room_waiters > 0;
                 drop(state);
-                self.0.room.notify_all();
+                if notify {
+                    self.0.room.notify_all();
+                }
                 return Ok(value);
             }
             if state.senders == 0 {
                 return Err(RecvError);
             }
+            state.ready_waiters += 1;
             state = self.0.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+            state.ready_waiters -= 1;
         }
     }
     pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
@@ -415,12 +447,14 @@ impl<T> Receiver<T> {
             let Some(remaining) = timeout.checked_sub(start.elapsed()) else {
                 return Err(RecvTimeoutError::Timeout);
             };
+            state.ready_waiters += 1;
             state = self
                 .0
                 .ready
                 .wait_timeout(state, remaining)
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
+            state.ready_waiters -= 1;
         }
     }
 }
@@ -833,5 +867,52 @@ mod tests {
                 Err(RecvTimeoutError::Disconnected)
             );
         });
+    }
+
+    #[test]
+    fn waiter_counts_wake_blocked_producers_and_consumers() {
+        let charge = message_overhead::<u32>() + 4;
+        let (tx, rx) = channel::<u32>(charge).unwrap();
+        let timeout = Duration::from_secs(5);
+
+        // Consumer blocked in `recv`, `recv_owned`, and `recv_timeout` must wake when `Permit::publish` runs.
+        std::thread::scope(|scope| {
+            let h1 = scope.spawn(|| rx.recv().unwrap());
+            std::thread::sleep(Duration::from_millis(20));
+            assert_eq!(tx.0.lock().ready_waiters, 1);
+            let p1 = tx.reserve(4).unwrap();
+            p1.publish(11).unwrap();
+            assert_eq!(h1.join().unwrap(), 11);
+
+            let h2 = scope.spawn(|| rx.recv_owned().unwrap());
+            std::thread::sleep(Duration::from_millis(20));
+            let p2 = tx.reserve(4).unwrap();
+            p2.publish(22).unwrap();
+            let (v2, lease2) = h2.join().unwrap().into_parts();
+            assert_eq!(v2, 22);
+
+            // Producer blocked in `reserve_waiting` wakes when `ReceiveLease` drops, and
+            // producer blocked in `reserve_over_budget` wakes when `Permit::drop` cancels.
+            let prod = waiting(&tx, 4, 33);
+            assert_waits(&prod);
+            drop(lease2);
+            assert_eq!(prod.recv_timeout(timeout), Ok(Ok(true)));
+            assert_eq!(rx.recv_timeout(timeout), Ok(33));
+
+            let h3 = scope.spawn(|| rx.recv_timeout(timeout).unwrap());
+            std::thread::sleep(Duration::from_millis(20));
+            assert_eq!(tx.0.lock().ready_waiters, 1);
+            tx.try_send(34, 4).unwrap();
+            assert_eq!(h3.join().unwrap(), 34);
+
+            let ctrl1 = tx.reserve_over_budget(4).unwrap();
+            let ctrl2 = control(&tx, 4, 44);
+            assert_waits(&ctrl2);
+            drop(ctrl1);
+            assert_eq!(ctrl2.recv_timeout(timeout), Ok(Ok(true)));
+            assert_eq!(rx.recv_timeout(timeout), Ok(44));
+        });
+        assert_eq!(tx.0.lock().room_waiters, 0);
+        assert_eq!(tx.0.lock().ready_waiters, 0);
     }
 }
