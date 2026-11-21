@@ -8865,9 +8865,57 @@ impl Renderer {
             );
             entities = &self.pack_entity_rest;
         }
+        // The world's targets: the screen, or the scaled target of `post`.
+        let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
+        // One of Horizon's own packs reads the same world target.
+        let native_post = !frame.title && self.executor.is_some();
+        let pack_reads_world = pack_post || native_post;
+        // Before the frame chooses how it draws translucent things: the world's size decides
+        // whether improved transparency has the room for its targets.
+        let scaled = self.world_post.prepare(
+            &self.device,
+            [self.config.width, self.config.height],
+            pack_reads_world || fg || msaa_on,
+            pack_post,
+        );
         // GameRenderer.useImprovedTransparency. A shader pack keeps its own
-        // path.
-        let oit_on = !frame.title && self.improved_transparency_runs();
+        // path. Without the room for its targets (#13624) this frame draws translucent things
+        // the ordinary way.
+        let mut oit_on = !frame.title && self.improved_transparency_runs();
+        if oit_on {
+            let size = self
+                .world_post
+                .size()
+                .filter(|_| scaled.is_some())
+                .unwrap_or([self.config.width, self.config.height]);
+            let (device, layout, sprites) =
+                (&self.device, &self.terrain_layout, self.terrain_sprites);
+            let clouds = [0, 1].map(|i| self.cloud_pipeline.get_bind_group_layout(i));
+            let format = self.output.frame.format;
+            let flat = self
+                .flat
+                .as_ref()
+                .map(|f| f.translucent.get_bind_group_layout(1));
+            let features = [
+                self.entity_pipeline.get_bind_group_layout(0),
+                self.weather.pipeline().get_bind_group_layout(1),
+                self.border_pipeline.get_bind_group_layout(0),
+            ];
+            oit_on = self
+                .oit
+                .get_or_insert_with(|| {
+                    oit::Oit::new(
+                        device,
+                        layout,
+                        flat.as_ref(),
+                        [&features[0], &features[1], &features[2]],
+                        [&clouds[0], &clouds[1]],
+                        sprites,
+                        format,
+                    )
+                })
+                .fit(&self.device, size);
+        }
         self.cracks_transparent = oit_on && !hdr_gain;
         let [
             entity_quads,
@@ -9487,12 +9535,7 @@ impl Renderer {
         } else {
             self.show_stats(serial, cpu);
         }
-        // The world's targets: the screen, or the scaled target of `post`.
-        let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
-        // One of Horizon's own packs reads the same world target.
-        let native_post = !frame.title && self.executor.is_some();
         self.set_up_pack_timing();
-        let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
         self.ray_prepare(&mut encoder, camera, frame);
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
@@ -9551,12 +9594,6 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_weather());
-        let scaled = self.world_post.prepare(
-            &self.device,
-            [self.config.width, self.config.height],
-            pack_reads_world || fg || msaa_on,
-            pack_post,
-        );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
             None => (&view_target, self.depth.as_ref().expect(WINDOW_DEPTH)),
@@ -9574,44 +9611,13 @@ impl Renderer {
             // Frame generation draws the hand over the real and the made frame after the world.
             && fg_frames.is_none()
             && !native_render::world_drawn_hooked();
-        if oit_on {
-            let size = self
-                .world_post
-                .size()
-                .filter(|_| scaled.is_some())
-                .unwrap_or([self.config.width, self.config.height]);
-            let (device, layout, sprites) =
-                (&self.device, &self.terrain_layout, self.terrain_sprites);
-            let clouds = [0, 1].map(|i| self.cloud_pipeline.get_bind_group_layout(i));
-            let format = self.output.frame.format;
-            let flat = self
-                .flat
-                .as_ref()
-                .map(|f| f.translucent.get_bind_group_layout(1));
-            let features = [
-                self.entity_pipeline.get_bind_group_layout(0),
-                self.weather.pipeline().get_bind_group_layout(1),
-                self.border_pipeline.get_bind_group_layout(0),
-            ];
-            self.oit
-                .get_or_insert_with(|| {
-                    oit::Oit::new(
-                        device,
-                        layout,
-                        flat.as_ref(),
-                        [&features[0], &features[1], &features[2]],
-                        [&clouds[0], &clouds[1]],
-                        sprites,
-                        format,
-                    )
-                })
-                .prepare(
-                    &self.device,
-                    &self.queue,
-                    size,
-                    &views.primary().projection,
-                    [water_mask_quads > 0, cloud_quads > 0],
-                );
+        if oit_on && let Some(oit) = &mut self.oit {
+            oit.prepare(
+                &self.device,
+                &self.queue,
+                &views.primary().projection,
+                [water_mask_quads > 0, cloud_quads > 0],
+            );
         }
         let oit = self.oit.as_ref().filter(|_| oit_on);
         let cull = self.cull.as_ref().filter(|_| culling && solid_draws > 0);

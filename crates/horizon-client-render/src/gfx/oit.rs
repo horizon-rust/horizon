@@ -582,12 +582,30 @@ impl Oit {
         &self.features
     }
 
-    /// Sizes the targets to the world's and writes this frame's projection.
+    /// Sizes the targets to the world's `size`, before the frame chooses how it draws translucent
+    /// things: `false` where there was no room for them (#13624), and the frame draws them the
+    /// ordinary way. Nothing that failed is kept, the old targets go first, and it stays off
+    /// (`no_room`) until the window's size changes.
+    pub fn fit(&mut self, device: &wgpu::Device, size: [u32; 2]) -> bool {
+        if self.targets.as_ref().is_some_and(|t| t.size == size) {
+            return true;
+        }
+        self.targets = None;
+        self.targets =
+            super::frame_targets::made(device, super::frame_targets::Kind::Transparency, || {
+                self.targets_at(device, size)
+            });
+        self.no_room = self.targets.is_none();
+        !self.no_room
+    }
+
+    /// Writes this frame's projection, and makes the depths the water mask and the clouds
+    /// `wants`. Without the room for one, this frame's `run` leaves that part out and it is off
+    /// from the next frame (`no_room`).
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        size: [u32; 2],
         projection: &Mat4,
         wants: [bool; 2],
     ) {
@@ -597,40 +615,27 @@ impl Oit {
             bytemuck::cast_slice(&[projection_terms(projection), [0.0; 2]].concat()),
         );
         let [mask, clouds] = wants;
-        // Without the room for its targets, this frame's `run` draws nothing and it is off from
-        // the next; what failed is not kept, and the old targets go first.
-        if let Some(t) = self.targets.as_mut().filter(|t| t.size == size) {
-            let depth = |label| {
-                super::frame_targets::made(device, super::frame_targets::Kind::Transparency, || {
-                    Depth::new(device, label, size)
-                })
-            };
-            if mask && t.terrain_depth.is_none() {
-                t.terrain_depth = depth("OIT terrain depth");
-            }
-            if clouds && t.cloud_depth.is_none() {
-                t.cloud_depth = depth("OIT cloud depth");
-            }
-            if (mask && t.terrain_depth.is_none()) || (clouds && t.cloud_depth.is_none()) {
-                self.targets = None;
-                self.no_room = true;
-            }
+        let Some(t) = self.targets.as_mut() else {
             return;
-        }
-        self.targets = None;
-        self.targets =
+        };
+        let size = t.size;
+        let depth = |label| {
             super::frame_targets::made(device, super::frame_targets::Kind::Transparency, || {
-                self.targets_at(device, size, wants)
-            });
-        self.no_room = self.targets.is_none();
+                Depth::new(device, label, size)
+            })
+        };
+        if mask && t.terrain_depth.is_none() {
+            t.terrain_depth = depth("OIT terrain depth");
+        }
+        if clouds && t.cloud_depth.is_none() {
+            t.cloud_depth = depth("OIT cloud depth");
+        }
+        if (mask && t.terrain_depth.is_none()) || (clouds && t.cloud_depth.is_none()) {
+            self.no_room = true;
+        }
     }
 
-    fn targets_at(
-        &self,
-        device: &wgpu::Device,
-        size: [u32; 2],
-        [mask, clouds]: [bool; 2],
-    ) -> Targets {
+    fn targets_at(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
         let make = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -690,8 +695,8 @@ impl Oit {
                 &self.layouts[3],
                 &[&views.bounds, c0, c1, &views.accumulated],
             ),
-            terrain_depth: mask.then(|| Depth::new(device, "OIT terrain depth", size)),
-            cloud_depth: clouds.then(|| Depth::new(device, "OIT cloud depth", size)),
+            terrain_depth: None,
+            cloud_depth: None,
             bounds,
             culled,
             views,
