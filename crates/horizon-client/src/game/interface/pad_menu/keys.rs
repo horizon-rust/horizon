@@ -74,6 +74,24 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
         key: KeyCode,
     ) -> bool {
+        // The title owns configuration Ctrl+Tab and the Players list's navigation.
+        // Do not leave the generic ring or a queued nudge on the previous widget.
+        if self.title_input_active()
+            && self.screen != Screen::Options
+            && key == KeyCode::Tab
+            && self.has_control_down_with_quirk()
+        {
+            self.pad_clear_focus();
+            return false;
+        }
+        if self
+            .title
+            .as_ref()
+            .is_some_and(|t| t.players_owns_keyboard())
+        {
+            self.pad_clear_focus();
+            return false;
+        }
         if self
             .title
             .as_ref()

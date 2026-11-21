@@ -240,6 +240,31 @@ impl StartupMenu {
         true
     }
 
+    /// Drop only the host's navigation state, not Title's UUID/column focus.
+    fn clear_key_focus(&mut self) {
+        self.key_focus = None;
+        self.key_origin = None;
+        self.key_nudge = None;
+        self.key_slider_edit = false;
+    }
+
+    /// The tab bar gets its shortcuts before generic focus navigation.
+    fn title_tab_key(&mut self, key: KeyCode) -> bool {
+        let ctrl = if cfg!(target_os = "macos") {
+            self.modifiers.super_key()
+        } else {
+            self.modifiers.control_key()
+        };
+        let handled = self
+            .title
+            .as_mut()
+            .and_then(|title| title.tab_bar_key(key, ctrl, self.modifiers.shift_key()));
+        if handled == Some(true) {
+            self.clear_key_focus();
+        }
+        handled.is_some()
+    }
+
     fn queue_entry(&mut self, action: Action, player_name: String) {
         let entry = match action {
             Action::Play { folder } => PendingWorldEntry::Local {
@@ -298,6 +323,11 @@ impl StartupMenu {
     /// `Screen.keyPressed` on the title screens: the action a key starts (Enter confirms, see `confirm_key` in title.rs).
     fn title_key(&mut self, event: &KeyEvent, viewport: (f32, f32)) -> Action {
         let shortcut = self.shortcut(event);
+        if let PhysicalKey::Code(key) = event.physical_key
+            && self.title_tab_key(key)
+        {
+            return Action::None;
+        }
         let Some(title) = &mut self.title else {
             return Action::None;
         };
@@ -315,21 +345,6 @@ impl StartupMenu {
             }
             return Action::None;
         }
-        // `TabNavigationBar.keyPressed` comes before the open tab's own
-        // widgets: Ctrl plus a digit or Tab picks a tab instead of reaching
-        // them.
-        let ctrl = if cfg!(target_os = "macos") {
-            self.modifiers.super_key()
-        } else {
-            self.modifiers.control_key()
-        };
-        if let PhysicalKey::Code(key) = event.physical_key
-            && title
-                .tab_bar_key(key, ctrl, self.modifiers.shift_key())
-                .is_some()
-        {
-            return Action::None;
-        }
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
@@ -342,7 +357,9 @@ impl StartupMenu {
             }
             PhysicalKey::Code(KeyCode::Space)
                 if !title.has_caret_field()
-                    && (title.list_focused() || title.focused_button.is_some()) =>
+                    && (title.list_focused()
+                        || title.focused_button.is_some()
+                        || title.player_action_focused()) =>
             {
                 return title.confirm_key_size(viewport).0;
             }
@@ -934,7 +951,26 @@ impl Loading {
     /// pointer sits on the focus; a step past a list's visible rows doesn't
     /// scroll it here). Whether the key was used.
     fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
-        // This safety prompt owns its default and spatial navigation in Title.
+        if !self.menu.options_open
+            && self.gui.is_some()
+            && self.menu.pending.is_none()
+            && self.menu.win.is_none()
+            && self.menu.title_tab_key(key)
+        {
+            return true;
+        }
+        // Players owns UUID/column navigation; no old generic ring or click
+        // origin may survive that handoff. The safety prompt also owns its keys.
+        if !self.menu.options_open
+            && self
+                .menu
+                .title
+                .as_ref()
+                .is_some_and(Title::players_owns_keyboard)
+        {
+            self.menu.clear_key_focus();
+            return false;
+        }
         if !self.menu.options_open
             && self
                 .menu
@@ -1360,6 +1396,17 @@ impl Loading {
             horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
             return;
         };
+        // Players can also take over after a mouse tab switch, before another key.
+        if !self.menu.options_open
+            && self.menu.win.is_none()
+            && self
+                .menu
+                .title
+                .as_ref()
+                .is_some_and(Title::players_owns_keyboard)
+        {
+            self.menu.clear_key_focus();
+        }
         // `Gui.setScreen` clears the focus of the screen it leaves
         // (`Screen.clearFocus`): the title behind the options, and the one
         // that comes back, start with no button highlighted.
@@ -1573,6 +1620,67 @@ mod tests {
             title_drawn: false,
             menu: StartupMenu::default(),
             error: None,
+        }
+    }
+
+    #[test]
+    fn tab_shortcuts_precede_startup_focus_and_discard_its_old_state() {
+        struct Loop;
+        impl EventLoopCtl for Loop {
+            fn exit(&self) {}
+            fn set_control_flow(&self, _: winit::event_loop::ControlFlow) {}
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let mut title = Title::new(scratch.path().join("saves"), scratch.path(), "");
+        title.mode = horizon_client::title::Mode::Create {
+            name: "Test".into(),
+            seed: String::new(),
+            creative: false,
+            focus: 0,
+            options: Default::default(),
+        };
+        let (_, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        loading.gui = Some(UiResources {
+            atlas: HudAtlas::boot(),
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
+            splashes: Arc::from(""),
+        });
+        loading.menu.title = Some(title);
+        let ctrl = if cfg!(target_os = "macos") {
+            ModifiersState::SUPER
+        } else {
+            ModifiersState::CONTROL
+        };
+        for (shift, expected) in [(false, 1), (true, 0)] {
+            let rect = [10.0, 20.0, 100.0, 20.0];
+            horizon_client::widgets::cover_frame();
+            horizon_client::widgets::record("Test", rect, true);
+            horizon_client::widgets::end_frame(1);
+            loading.menu.key_focus = Some(Target {
+                rect,
+                kind: Kind::Button,
+            });
+            loading.menu.key_origin = Some(rect);
+            loading.menu.key_nudge = Some((rect, 40.0));
+            loading.menu.key_slider_edit = true;
+            loading.menu.modifiers = ctrl
+                | if shift {
+                    ModifiersState::SHIFT
+                } else {
+                    ModifiersState::empty()
+                };
+            assert!(loading.menu_key_focus(&Loop, KeyCode::Tab));
+            let horizon_client::title::Mode::Create { options, .. } =
+                &loading.menu.title.as_ref().unwrap().mode
+            else {
+                panic!("create tab");
+            };
+            assert_eq!(options.tab, expected);
+            assert!(loading.menu.key_focus.is_none());
+            assert!(loading.menu.key_origin.is_none());
+            assert!(loading.menu.key_nudge.is_none());
+            assert!(!loading.menu.key_slider_edit);
         }
     }
 

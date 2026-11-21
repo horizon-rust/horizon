@@ -54,7 +54,12 @@ struct View { mouse: (f32, f32) }
 struct Point { x: f64, y: f64 }
 struct Batch { scale: f32 }
 enum WindowEvent { Focused(bool) }
-struct Game { drag_button: Option<i32>, physical_buttons: HashSet<i32>, physical_keys: HashSet<i32>,
+#[derive(Default)]
+struct Title { releases: usize }
+impl Title {
+    fn release(&mut self) { self.releases += 1; }
+}
+struct Game { title: Option<Title>, drag_button: Option<i32>, physical_buttons: HashSet<i32>, physical_keys: HashSet<i32>,
     cursor: (f32, f32), modifiers: ModifiersState, synthetic: bool, open: bool, cancel: bool, handled: usize, posts: usize,
     calls: RefCell<Vec<(i32, [f32; 2], (f32, f32))>> }
 impl Game {
@@ -78,7 +83,7 @@ impl Game {
 #[test]
 fn lifecycle_and_cancellation() {
     for cancel in [false, true] {
-        let mut game = Game { drag_button: None, physical_buttons: HashSet::from([0, 1]),
+        let mut game = Game { title: Some(Title::default()), drag_button: None, physical_buttons: HashSet::from([0, 1]),
             physical_keys: HashSet::from([10]), cursor: (10.0, 10.0), modifiers: ModifiersState(5), synthetic: false,
             open: true, cancel, handled: 0, posts: 0, calls: RefCell::new(vec![]) };
         game.track_drag_button(0, true);
@@ -106,10 +111,15 @@ fn lifecycle_and_cancellation() {
         assert_eq!(game.drag_button, None);
         game.track_drag_button(0, true);
         game.physical_buttons.insert(0);
+        game.focus(WindowEvent::Focused(true));
+        assert_eq!(game.title.as_ref().unwrap().releases, 0);
         game.focus(WindowEvent::Focused(false));
+        assert_eq!(game.title.as_ref().unwrap().releases, 1);
         assert_eq!(game.modifiers.0, 0);
         assert_eq!(game.drag_button, None);
         assert!(game.physical_buttons.is_empty() && game.physical_keys.is_empty());
+        game.title = None;
+        game.focus(WindowEvent::Focused(false));
         game.pointer(Point { x: 62.0, y: 42.0 }).unwrap();
         assert!(game.calls.borrow().is_empty());
     }

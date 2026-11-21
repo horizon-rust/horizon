@@ -223,6 +223,7 @@ impl MenuCursor {
         self.focus = None;
         self.origin = None;
         self.slider_edit = false;
+        self.nudge = None;
         self.pending = None;
         self.armed = None;
     }
@@ -920,7 +921,24 @@ impl Game<'_> {
             Button::Select | Button::LeftStick if book_control => {}
             Button::East | Button::Start => return self.pad_back(),
             Button::South if self.pad_focusing() => {
-                let focus = self.pad_reveal(self.pad.menu.focus.expect("focusing"));
+                let size = self.gui_size();
+                let focus = self.pad.menu.focus.expect("focusing");
+                if let Some(title) = self
+                    .title
+                    .as_mut()
+                    .filter(|title| title.player_action_focused())
+                {
+                    // Never press a hidden UUID or the row now under an out-of-date rectangle.
+                    if title.visible_player_target(size) != Some(focus.rect) {
+                        return Ok(());
+                    }
+                    let (action, sound) = title.confirm_key_size(size);
+                    if sound {
+                        self.audio.play_button_click();
+                    }
+                    return self.title_action(event_loop, action);
+                }
+                let focus = self.pad_reveal(focus);
                 self.pad.menu.focus = Some(focus);
                 match focus.kind {
                     // A click would jump the handle: A takes hold of it, or lets it go.
@@ -1211,6 +1229,30 @@ impl Game<'_> {
         if reveal_pending(self.pad.menu.revealed, widgets::generation()) {
             return;
         }
+        let key = match button {
+            Button::DPadUp => Some(winit::keyboard::KeyCode::ArrowUp),
+            Button::DPadDown => Some(winit::keyboard::KeyCode::ArrowDown),
+            Button::DPadLeft => Some(winit::keyboard::KeyCode::ArrowLeft),
+            Button::DPadRight => Some(winit::keyboard::KeyCode::ArrowRight),
+            _ => None,
+        };
+        let size = self.gui_size();
+        if let Some(key) = key
+            && let Some(rect) = self
+                .title
+                .as_mut()
+                .and_then(|title| title.step_player_target(key, size))
+        {
+            self.pad_focus_on(
+                event_loop,
+                Target {
+                    rect,
+                    kind: Kind::Button,
+                },
+            );
+            self.pad.menu.revealed = Some(widgets::generation());
+            return;
+        }
         let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
         let vertical = matches!(button, Button::DPadUp | Button::DPadDown);
         // A step the screen declared comes first (`widgets::focus_link`).
@@ -1281,13 +1323,30 @@ impl Game<'_> {
     }
 
     fn pad_focus_on(&mut self, event_loop: &dyn EventLoopCtl, target: Target) {
-        let target = self.pad_reveal(target);
+        let mut target = self.pad_reveal(target);
         self.pad.menu.shortcut_focus = None;
-        let left = self.pad.menu.focus.replace(target);
+        let left = self.pad.menu.focus;
         if left.is_some_and(|l| l.rect != target.rect) {
             self.clear_screen_click_focus();
             self.pad.menu.armed = None;
         }
+        let size = self.gui_size();
+        if let Some(title) = &mut self.title {
+            if target.kind == Kind::Button
+                && let Some(rect) = title
+                    .visible_player_target(size)
+                    .filter(|rect| *rect == target.rect)
+                    .or_else(|| title.reveal_player_target(target.center(), size))
+            {
+                if rect != target.rect {
+                    target.rect = rect;
+                    self.pad.menu.revealed = Some(widgets::generation());
+                }
+            } else if title.players_owns_keyboard() {
+                title.clear_player_action_focus();
+            }
+        }
+        self.pad.menu.focus = Some(target);
         self.pad.menu.pending = None;
         self.pad.menu.nudge = None;
         if !self.pad.menu.held[0] {
@@ -1300,6 +1359,14 @@ impl Game<'_> {
         }
         if left.is_none_or(|l| l.rect != target.rect) {
             self.pad_focus_selects_row(target);
+        } else if self
+            .title
+            .as_ref()
+            .is_some_and(|t| t.players_owns_keyboard())
+        {
+            // A Players fallback can reconcile UUIDs at the same rectangle.
+            // It is not another focus move to announce on every poll.
+            return;
         }
         // The screen's narration hears it as an arrow key moving the focus.
         self.narration.set_input(InputType::KeyboardArrow);
@@ -1893,10 +1960,29 @@ impl Game<'_> {
                     gamepad::follow_scroll(focus.rect, s.down, &s.before, &after)
                 });
                 // The widget itself, wherever it went; else where its rectangle says.
-                self.pad.menu.focus = named
+                let player = self
+                    .title
+                    .as_ref()
+                    .and_then(|title| title.visible_player_target(self.gui_size()))
+                    .and_then(|rect| gamepad::refind(rect, &rects, 0.5));
+                let restored = player
+                    .or(named)
                     .or(followed)
                     .or_else(|| gamepad::refind(focus.rect, &rects, 12.0))
                     .map(|i| targets[i]);
+                if player.is_none()
+                    && self
+                        .title
+                        .as_ref()
+                        .is_some_and(|t| t.players_owns_keyboard())
+                    && let Some(target) = restored
+                {
+                    // The UUID disappeared or is offscreen: a geometric fallback
+                    // is a new landing, so Title must adopt its UUID/column too.
+                    self.pad_focus_on(event_loop, target);
+                } else {
+                    self.pad.menu.focus = restored;
+                }
                 if self.pad.menu.focus.is_none() && self.pad.menu.pos.is_some() {
                     // The widget went away on this screen (a Reset or an Undo took itself away
                     // when pressed): what's beside it. Two frames on, as the first may have been
@@ -1910,10 +1996,14 @@ impl Game<'_> {
                         Some(i) => Some(targets[i]),
                         None => self.pad_first_target(targets),
                     };
-                    if self.pad.menu.keyboard
+                    if (self.pad.menu.keyboard
+                        || self
+                            .title
+                            .as_ref()
+                            .is_some_and(|t| t.players_owns_keyboard()))
                         && let Some(first) = first
                     {
-                        // Screen.setInitialFocus after a keyboard press.
+                        // A new landing also updates Title's Players identity.
                         self.pad_focus_on(event_loop, first);
                     } else {
                         self.pad.menu.focus = first;
@@ -1922,11 +2012,21 @@ impl Game<'_> {
             } else if self.pad.menu.pos.is_some() {
                 // The pad drives but nothing is focused (switched from the pointer).
                 let centres: Vec<(f32, f32)> = targets.iter().map(Target::center).collect();
-                self.pad.menu.focus = if self.prompt_open() {
+                let restored = if self.prompt_open() {
                     self.pad_first_target(targets)
                 } else {
                     gamepad::nearest(self.cursor, &centres, f32::INFINITY).map(|i| targets[i])
                 };
+                if self
+                    .title
+                    .as_ref()
+                    .is_some_and(|t| t.players_owns_keyboard())
+                    && let Some(target) = restored
+                {
+                    self.pad_focus_on(event_loop, target);
+                } else {
+                    self.pad.menu.focus = restored;
+                }
             }
         }
         self.pad.menu.focus_name = self.pad.menu.focus.and_then(|focus| {
@@ -2465,12 +2565,14 @@ mod tests {
                 kind: Kind::Button,
             }),
             origin: Some([229.0, 98.0, 20.0, 18.0]),
+            nudge: Some(([229.0, 98.0, 20.0, 18.0], 240.0)),
             slider_edit: true,
             ..MenuCursor::default()
         };
         menu.clear_focus();
         assert!(menu.focus.is_none());
         assert!(menu.origin.is_none());
+        assert!(menu.nudge.is_none());
         assert!(!menu.slider_edit);
     }
 

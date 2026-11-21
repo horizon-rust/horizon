@@ -12,6 +12,7 @@ pub mod availability;
 pub mod client;
 pub mod download;
 mod draw_notice;
+mod players_list;
 pub mod upload;
 
 use crate::hud::{HudAtlas, HudBatch, rgba};
@@ -23,6 +24,7 @@ use client::{
     WorldDownload, WorldTemplate, WorldTemplateList,
 };
 use horizon_client_render::auth::{self, AuthSession};
+pub(crate) use players_list::{PlayerAction, PlayerColumn};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -460,6 +462,20 @@ fn settings_column_top(h: f32, content_height: f32) -> f32 {
     24.0 + ((h - 24.0 - 33.0 - content_height) / 6.0).trunc()
 }
 
+/// `StringUtil.isBlank`: Java whitespace plus nonbreaking spaces, but not U+0085.
+fn is_blank(text: &str) -> bool {
+    text.chars()
+        .all(|c| (c.is_whitespace() && c != '\u{85}') || ('\u{1c}'..='\u{1f}').contains(&c))
+}
+
+fn player_uuid(player: &PlayerInfo) -> Option<u128> {
+    player
+        .uuid
+        .as_deref()
+        .and_then(auth::parse_uuid)
+        .filter(|&id| id != 0)
+}
+
 /// A configuration screen with no data yet, for an error screen's `nextScreen`
 /// (`RealmsConfigureWorldScreen.createErrorScreen` returns the list or the tab it came
 /// from); the fetch starters run when it is restored.
@@ -472,6 +488,7 @@ fn configure_screen(server: RealmServer, tab: ConfigureTab) -> SubScreen {
         detail: None,
         detail_job: None,
         deleting: None,
+        switching_slot: None,
         member_job: None,
         settings: None,
         players_scroll: crate::ui::Scroll::default(),
@@ -867,8 +884,8 @@ pub enum Popup {
     Delete(RealmServer),
     /// `RealmsPlayersTab.PlayerEntry.uninvite`'s confirm (`RealmsConfirmScreen`).
     Uninvite {
-        server: RealmServer,
         player: PlayerInfo,
+        parent: Box<SubScreen>,
     },
     /// `RealmsWorldsTab.switchToFullSlot`'s question, then `RealmsClient.switchSlot`.
     SwitchSlot { server: RealmServer, slot: i32 },
@@ -1105,8 +1122,10 @@ pub enum SubScreen {
         detail_job: Option<Job<Result<RealmServer, RealmsError>>>,
         /// `RealmsClient.deleteRealm` on a worker, from the subscription tab's question.
         deleting: Option<Job<Result<(), RealmsError>>>,
-        /// `RealmsClient.op`/`deop`/`uninvite` on a worker, from the players tab.
-        member_job: Option<Job<Result<(), RealmsError>>>,
+        /// `RealmsClient.switchSlot` from the Worlds tab's question.
+        switching_slot: Option<Job<Result<(), RealmsError>>>,
+        /// `RealmsClient.op`/`deop` returns the complete operator roster.
+        member_job: Option<Job<Result<client::Ops, RealmsError>>>,
         /// The settings tab's editable fields, once the tab has been opened.
         settings: Option<SettingsDraft>,
         /// The players tab's list scroll (`InvitedObjectSelectionList`).
@@ -1362,9 +1381,9 @@ pub struct Screen {
     /// The subscription tab's Extend and Delete button tops, as the draw laid the
     /// column out (`RealmsSubscriptionTab`'s centred stack).
     subscription_buttons: std::cell::Cell<(f32, f32)>,
-    /// The players tab's per-row buttons as last drawn: the rect and its id (the op
-    /// toggle's width follows its label, which only the draw measures).
-    players_button_rects: std::cell::RefCell<Vec<([f32; 4], u8)>>,
+    players_list: players_list::PlayersList,
+    /// The original configuration page behind Invite and the invite-code flow.
+    players_parent: Option<Box<SubScreen>>,
     /// `RealmsBackupScreen.Entry`'s Changes/Restore buttons as last drawn.
     backup_row_buttons: std::cell::RefCell<Vec<([f32; 4], u8)>>,
     /// The settings tab's `ScrollableLayout`: the column is taller than the tab area on
@@ -1743,7 +1762,8 @@ impl Screen {
             popup_buttons: std::cell::Cell::new([[0.0; 4]; 2]),
             main_scroll: crate::ui::Scroll::default(),
             subscription_buttons: std::cell::Cell::new((0.0, 0.0)),
-            players_button_rects: std::cell::RefCell::new(Vec::new()),
+            players_list: players_list::PlayersList::default(),
+            players_parent: None,
             backup_row_buttons: std::cell::RefCell::new(Vec::new()),
             settings_scroll: crate::ui::Scroll::default(),
             settings_slider: None,
@@ -2278,6 +2298,7 @@ impl Screen {
                 detail,
                 detail_job,
                 deleting,
+                switching_slot,
                 member_job,
                 settings,
                 tier,
@@ -2346,12 +2367,28 @@ impl Screen {
                     }
                     *tier = Some(result);
                 }
+                if let Some(result) = switching_slot.as_ref().and_then(take) {
+                    *switching_slot = None;
+                    match result {
+                        Ok(()) => refetch_detail = true,
+                        Err(e) => *error = Some(e.text()),
+                    }
+                }
                 if let Some(result) = member_job.as_ref().and_then(take) {
                     *member_job = None;
                     match result {
-                        // `updateOps`: the list reads again with the new operators.
-                        Ok(()) => refetch_detail = true,
-                        Err(e) => *error = Some(e.text()),
+                        Ok(ops) => {
+                            let update = |players: &mut [PlayerInfo]| {
+                                for player in players {
+                                    player.operator = ops.ops.contains(&player.name);
+                                }
+                            };
+                            update(&mut server.players);
+                            if let Some(Ok(detail)) = detail {
+                                update(&mut detail.players);
+                            }
+                        }
+                        Err(e) => log::warn!("Couldn't update Realm operators: {}", e.text()),
                     }
                 }
                 if let Some(result) = regions_job.as_ref().and_then(take) {
@@ -2422,37 +2459,19 @@ impl Screen {
                     }
                 }
             }
-            SubScreen::Invite {
-                server, job, error, ..
-            } => {
+            SubScreen::Invite { job, error, .. } => {
                 if let Some(result) = job.as_ref().and_then(take) {
                     *job = None;
                     match result {
-                        Ok(_players) => {
-                            // `invitePlayer` succeeded: back to the players tab, which
-                            // reads the list again.
-                            let server = server.clone();
-                            self.subscreen = SubScreen::Configure {
-                                server,
-                                tab: ConfigureTab::Players,
-                                subscription: None,
-                                subscription_job: None,
-                                detail: None,
-                                detail_job: None,
-                                deleting: None,
-                                member_job: None,
-                                settings: None,
-                                players_scroll: crate::ui::Scroll::default(),
-                                tier: None,
-                                tier_job: None,
-                                regions: None,
-                                regions_job: None,
-                                saving: None,
-                                error: None,
-                                job: None,
-                            };
-                            self.start_configure_subscription();
-                            self.start_configure_detail();
+                        Ok(players) => {
+                            self.back_to_players();
+                            if let SubScreen::Configure { server, detail, .. } = &mut self.subscreen
+                            {
+                                server.players.clone_from(&players);
+                                if let Some(Ok(detail)) = detail {
+                                    detail.players = players;
+                                }
+                            }
                         }
                         // `RealmsInviteScreen.onInvite`: any refusal reads as the fixed
                         // "no such player" text, not the service's own message.
@@ -2794,7 +2813,10 @@ impl Screen {
                     &[&code as &dyn std::fmt::Display],
                 ),
                 detail,
-                next: Box::new(configure_screen(server, ConfigureTab::Players)),
+                next: self
+                    .players_parent
+                    .take()
+                    .unwrap_or_else(|| Box::new(configure_screen(server, ConfigureTab::Players))),
             };
         }
         if let Some((server, code, active, expiration, e)) = edit_error {
@@ -3179,6 +3201,9 @@ impl Screen {
     /// `AbstractSliderButton.onDrag`: the settings tab's held distance slider follows the
     /// pointer while the button stays down.
     pub fn drag(&mut self, cursor: (f32, f32), (w, h): (f32, f32)) {
+        if self.drag_players(cursor.1, (w, h)) {
+            return;
+        }
         // `ScrollableLayout`'s held scrollbar (the settings tab's column).
         if self.settings_scroll.held()
             && let SubScreen::Configure {
@@ -3261,6 +3286,9 @@ impl Screen {
         self.settings_slider = None;
         self.other_slider = None;
         self.settings_scroll.release();
+        if let SubScreen::Configure { players_scroll, .. } = &mut self.subscreen {
+            players_scroll.release();
+        }
     }
 
     /// Escape: a sub-screen goes back to the list (cancelling a join); the list goes back to
@@ -3404,10 +3432,20 @@ impl Screen {
         // configure screen's questions over it, so they go back there; the leave question
         // (`RealmsMainScreen.leaveClicked`) and the resource pack's (`GetServerDetailsTask`)
         // keep the list they were started from.
+        if matches!(
+            self.subscreen,
+            SubScreen::Invite { .. } | SubScreen::InviteCodes { .. }
+        ) {
+            self.back_to_players_tab();
+            return false;
+        }
+        if let SubScreen::Popup(Popup::Uninvite { parent, .. }) = &self.subscreen {
+            self.subscreen = *parent.clone();
+            return false;
+        }
         if let SubScreen::Popup(popup) = &self.subscreen {
             let server = match popup {
                 Popup::Delete(server) => Some(server.clone()),
-                Popup::Uninvite { server, .. } => Some(server.clone()),
                 Popup::SwitchSlot { server, .. } | Popup::SwitchEmpty { server, .. } => {
                     Some(server.clone())
                 }
@@ -3650,15 +3688,13 @@ impl Screen {
                 job,
                 ..
             } if job.is_none() => (
-                name.trim().to_owned(),
+                name.clone(),
                 server.id,
-                players
-                    .iter()
-                    .any(|p| p.name.eq_ignore_ascii_case(name.trim())),
+                players.iter().any(|p| p.name.eq_ignore_ascii_case(name)),
             ),
             _ => return,
         };
-        let refusal = if name.is_empty() {
+        let refusal = if is_blank(&name) {
             Some("mco.configure.world.players.error")
         } else if already {
             Some("mco.configure.world.players.invite.duplicate")
@@ -3672,7 +3708,9 @@ impl Screen {
             }
             if let Some(client) = client() {
                 *error = None;
-                *job = Some(spawn(move || client.invite_player(id, &name)));
+                *job = Some(spawn(move || {
+                    client.invite_player(id, name.trim_matches(|c| c <= ' '))
+                }));
             }
         }
     }
@@ -3693,6 +3731,7 @@ impl Screen {
             detail,
             detail_job: None,
             deleting: None,
+            switching_slot: None,
             member_job: None,
             tier,
             tier_job: None,
@@ -3855,6 +3894,7 @@ impl Screen {
             detail: None,
             detail_job: None,
             deleting: None,
+            switching_slot: None,
             member_job: None,
             settings: None,
             players_scroll: crate::ui::Scroll::default(),
@@ -4177,64 +4217,111 @@ impl Screen {
         self.start_download(download, world_name, progress);
     }
 
-    /// Back to the players tab from the codes screens.
-    fn back_to_players_tab(&mut self) {
-        let server = match &self.subscreen {
-            SubScreen::InviteCodes { server, .. } | SubScreen::EditCode { server, .. } => {
-                server.clone()
+    fn players_ready(&self) -> bool {
+        matches!(
+            self.subscreen,
+            SubScreen::Configure {
+                tab: ConfigureTab::Players,
+                detail: Some(Ok(_)),
+                subscription: Some(Ok(_)),
+                regions: Some(Ok(_)),
+                tier: Some(Ok(_)),
+                ..
             }
-            _ => return,
-        };
-        self.subscreen = SubScreen::Configure {
-            server,
-            tab: ConfigureTab::Players,
-            subscription: None,
-            subscription_job: None,
-            detail: None,
-            detail_job: None,
-            deleting: None,
-            member_job: None,
-            settings: None,
-            players_scroll: crate::ui::Scroll::default(),
-            tier: None,
-            tier_job: None,
-            regions: None,
-            regions_job: None,
-            saving: None,
-            error: None,
-            job: None,
-        };
-        self.start_configure_subscription();
-        self.start_configure_detail();
+        )
     }
 
-    /// `RealmsInviteScreen.onClose`: back to the players tab.
-    fn back_to_players(&mut self) {
-        let SubScreen::Invite { server, .. } = &self.subscreen else {
-            return;
-        };
-        let server = server.clone();
-        self.subscreen = SubScreen::Configure {
+    pub(crate) fn click_player_action(&mut self, action: PlayerAction) -> Outcome {
+        if !self.players_ready() {
+            return Outcome::None;
+        }
+        let SubScreen::Configure {
             server,
-            tab: ConfigureTab::Players,
-            subscription: None,
-            subscription_job: None,
-            detail: None,
-            detail_job: None,
-            deleting: None,
-            member_job: None,
-            settings: None,
-            players_scroll: crate::ui::Scroll::default(),
-            tier: None,
-            tier_job: None,
-            regions: None,
-            regions_job: None,
-            saving: None,
-            error: None,
-            job: None,
+            detail: Some(Ok(detail)),
+            switching_slot,
+            member_job,
+            ..
+        } = &mut self.subscreen
+        else {
+            return Outcome::None;
         };
-        self.start_configure_subscription();
-        self.start_configure_detail();
+        if member_job.is_some() || switching_slot.is_some() {
+            return Outcome::None;
+        }
+        let id = match action {
+            PlayerAction::Op(id) | PlayerAction::Deop(id) | PlayerAction::Remove(id) => id,
+        };
+        if id == 0 {
+            return Outcome::None;
+        }
+        let Some(player) = detail.players.iter().find(|p| player_uuid(p) == Some(id)) else {
+            return Outcome::None;
+        };
+        match action {
+            PlayerAction::Remove(_) => {
+                let player = player.clone();
+                let parent = Box::new(std::mem::replace(&mut self.subscreen, SubScreen::Main));
+                self.subscreen = SubScreen::Popup(Popup::Uninvite { player, parent });
+            }
+            PlayerAction::Op(_) | PlayerAction::Deop(_) => {
+                let op = matches!(action, PlayerAction::Op(_));
+                if player.operator != op
+                    && let Some(client) = client()
+                {
+                    let realm = server.id;
+                    let uuid = format!("{id:032x}");
+                    *member_job = Some(spawn(move || {
+                        if op {
+                            client.op_player(realm, &uuid)
+                        } else {
+                            client.deop_player(realm, &uuid)
+                        }
+                    }));
+                }
+            }
+        }
+        Outcome::None
+    }
+
+    fn confirm_player_removal(
+        &mut self,
+        player: &PlayerInfo,
+        parent: SubScreen,
+        uninvite: impl FnOnce(i64, u128),
+    ) {
+        self.subscreen = parent;
+        if let Some(uuid) = player_uuid(player)
+            && let SubScreen::Configure {
+                server,
+                detail: Some(Ok(detail)),
+                ..
+            } = &mut self.subscreen
+        {
+            server.players.retain(|p| player_uuid(p) != Some(uuid));
+            detail.players.retain(|p| player_uuid(p) != Some(uuid));
+            uninvite(server.id, uuid);
+        }
+    }
+
+    fn back_to_players_tab(&mut self) {
+        let server = match &self.subscreen {
+            SubScreen::Invite { server, .. }
+            | SubScreen::InviteCodes { server, .. }
+            | SubScreen::EditCode { server, .. } => server.clone(),
+            _ => return,
+        };
+        if let Some(parent) = self.players_parent.take() {
+            self.subscreen = *parent;
+        } else {
+            self.restore_after_error(configure_screen(server, ConfigureTab::Players));
+        }
+    }
+
+    /// `RealmsInviteScreen.onClose`: back to the configuration page that opened it.
+    fn back_to_players(&mut self) {
+        if matches!(self.subscreen, SubScreen::Invite { .. }) {
+            self.back_to_players_tab();
+        }
     }
 
     /// `RealmsConfigureWorldScreen` with the worlds tab, its data read again: the screen a
@@ -4248,6 +4335,7 @@ impl Screen {
             detail: None,
             detail_job: None,
             deleting: None,
+            switching_slot: None,
             member_job: None,
             settings: None,
             players_scroll: crate::ui::Scroll::default(),
@@ -4663,6 +4751,12 @@ impl Screen {
 
     pub fn click(&mut self, hit: Option<u8>, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
         self.list_clicked = false;
+        if hit.is_none()
+            && let Some((outcome, action_clicked)) = self.press_players((x, y), (w, h))
+        {
+            self.list_clicked = action_clicked;
+            return outcome;
+        }
         // `RealmsTermsScreen.mouseClicked`: a click on the underlined link opens
         // `CommonLinks.REALMS_TERMS` (the draw recorded the text's box).
         if hit.is_none() && matches!(self.subscreen, SubScreen::Terms { .. }) {
@@ -4684,6 +4778,7 @@ impl Screen {
                         detail: None,
                         detail_job: None,
                         deleting: None,
+                        switching_slot: None,
                         member_job: None,
                         settings: None,
                         players_scroll: crate::ui::Scroll::default(),
@@ -4818,9 +4913,12 @@ impl Screen {
                     self.back_to_settings(server, settings, detail, tier);
                     return Outcome::None;
                 }
+                if let SubScreen::Popup(Popup::Uninvite { parent, .. }) = &self.subscreen {
+                    self.subscreen = *parent.clone();
+                    return Outcome::None;
+                }
                 let server = match &self.subscreen {
                     SubScreen::Popup(Popup::Delete(server)) => Some(server.clone()),
-                    SubScreen::Popup(Popup::Uninvite { server, .. }) => Some(server.clone()),
                     SubScreen::Popup(Popup::SwitchSlot { server, .. })
                     | SubScreen::Popup(Popup::SwitchEmpty { server, .. }) => Some(server.clone()),
                     _ => None,
@@ -5329,23 +5427,22 @@ impl Screen {
                 Outcome::None
             }
             Some(67) => {
-                if let SubScreen::Configure { server, tab, .. } = &self.subscreen
-                    && *tab == ConfigureTab::Players
+                if self.players_ready()
+                    && let SubScreen::Configure {
+                        server,
+                        detail: Some(Ok(detail)),
+                        ..
+                    } = &self.subscreen
                 {
-                    let players = match &self.subscreen {
-                        SubScreen::Configure {
-                            detail: Some(Ok(detail)),
-                            ..
-                        } => detail.players.clone(),
-                        _ => Vec::new(),
-                    };
-                    self.subscreen = SubScreen::Invite {
+                    let invite = SubScreen::Invite {
                         server: server.clone(),
-                        players,
+                        players: detail.players.clone(),
                         name: String::new(),
                         job: None,
                         error: None,
                     };
+                    self.players_parent =
+                        Some(Box::new(std::mem::replace(&mut self.subscreen, invite)));
                 }
                 Outcome::None
             }
@@ -5475,18 +5572,20 @@ impl Screen {
             }
             // RealmsInviteCodesScreen: the Players tab's second button.
             Some(68) => {
-                if let SubScreen::Configure { server, .. } = &self.subscreen
-                    && let Some(client) = client()
+                if self.players_ready()
+                    && let SubScreen::Configure { server, .. } = &self.subscreen
                 {
                     let id = server.id;
-                    self.subscreen = SubScreen::InviteCodes {
+                    let codes = SubScreen::InviteCodes {
                         server: server.clone(),
                         codes: None,
-                        list_job: Some(spawn(move || client.invite_codes(id))),
+                        list_job: client().map(|client| spawn(move || client.invite_codes(id))),
                         job: None,
                         error: None,
                         selected: None,
                     };
+                    self.players_parent =
+                        Some(Box::new(std::mem::replace(&mut self.subscreen, codes)));
                 }
                 Outcome::None
             }
@@ -5738,13 +5837,10 @@ impl Screen {
                 Outcome::None
             }
             Some(btn @ 100..=200) => {
-                // The button's meaning: a pending invite's answer, or a player row's
-                // Op/Deop/Remove (`RealmsPlayersTab.PlayerEntry`).
+                // Pending invites and invite codes use these page-local button IDs.
                 enum Row {
                     Nothing,
                     Pending(bool, String),
-                    Member(bool, i64, String),
-                    Uninvite(RealmServer, PlayerInfo),
                     Copy(String),
                     Edit(InviteCode),
                     DeleteCode(String),
@@ -5775,30 +5871,6 @@ impl Screen {
                             _ => Row::Nothing,
                         }
                     }
-                    SubScreen::Configure {
-                        server,
-                        tab,
-                        detail,
-                        member_job,
-                        ..
-                    } if *tab == ConfigureTab::Players && member_job.is_none() => {
-                        let index = usize::from((btn - 100) / 3);
-                        let which = (btn - 100) % 3;
-                        let player = match detail {
-                            Some(Ok(detail)) => detail.players.get(index).cloned(),
-                            _ => None,
-                        };
-                        match player {
-                            Some(player) if which < 2 => match &player.uuid {
-                                Some(uuid) if !uuid.is_empty() => {
-                                    Row::Member(which == 0, server.id, uuid.clone())
-                                }
-                                _ => Row::Nothing,
-                            },
-                            Some(player) => Row::Uninvite(server.clone(), player),
-                            None => Row::Nothing,
-                        }
-                    }
                     _ => Row::Nothing,
                 };
                 match row {
@@ -5817,23 +5889,6 @@ impl Screen {
                                 done.and_then(|()| client.pending_invites())
                             }));
                         }
-                    }
-                    Row::Member(op, realm_id, uuid) => {
-                        if let SubScreen::Configure { member_job, .. } = &mut self.subscreen
-                            && member_job.is_none()
-                            && let Some(client) = client()
-                        {
-                            *member_job = Some(spawn(move || {
-                                if op {
-                                    client.op_player(realm_id, &uuid).map(drop)
-                                } else {
-                                    client.deop_player(realm_id, &uuid).map(drop)
-                                }
-                            }));
-                        }
-                    }
-                    Row::Uninvite(server, player) => {
-                        self.subscreen = SubScreen::Popup(Popup::Uninvite { server, player });
                     }
                     Row::Copy(code) => return Outcome::Copy(code),
                     Row::Edit(code) => {
@@ -6398,7 +6453,8 @@ impl Screen {
                     detail: None,
                     detail_job: None,
                     deleting: None,
-                    member_job: Some(spawn(move || client.switch_slot(id, slot).map(drop))),
+                    switching_slot: Some(spawn(move || client.switch_slot(id, slot).map(drop))),
+                    member_job: None,
                     settings: None,
                     players_scroll: crate::ui::Scroll::default(),
                     tier: None,
@@ -6419,34 +6475,19 @@ impl Screen {
                 self.open_reset_world(server, slot, ResetKind::Empty);
                 Outcome::None
             }
-            // RealmsPlayersTab.PlayerEntry.uninvite, answered: the player goes and the
-            // list reads again.
-            Popup::Uninvite { server, player } => {
-                let Some(client) = client() else {
-                    return Outcome::None;
-                };
-                let (id, uuid) = (server.id, player.uuid.clone().unwrap_or_default());
-                self.subscreen = SubScreen::Configure {
-                    server,
-                    tab: ConfigureTab::Players,
-                    subscription: None,
-                    subscription_job: None,
-                    detail: None,
-                    detail_job: None,
-                    deleting: None,
-                    member_job: Some(spawn(move || client.uninvite_player(id, &uuid))),
-                    settings: None,
-                    players_scroll: crate::ui::Scroll::default(),
-                    tier: None,
-                    tier_job: None,
-                    regions: None,
-                    regions_job: None,
-                    saving: None,
-                    error: None,
-                    job: None,
-                };
-                self.start_configure_subscription();
-                self.start_configure_detail();
+            // `RealmsPlayersTab.PlayerEntry.uninvite`: remove immediately when confirmed.
+            Popup::Uninvite { player, parent } => {
+                if let Some(client) = client() {
+                    self.confirm_player_removal(&player, *parent, |id, uuid| {
+                        let _ = spawn(move || {
+                            if let Err(e) = client.uninvite_player(id, &format!("{uuid:032x}")) {
+                                log::warn!("Couldn't uninvite Realm player: {}", e.text());
+                            }
+                        });
+                    });
+                } else {
+                    self.subscreen = *parent;
+                }
                 Outcome::None
             }
             // RealmsSubscriptionTab.deleteRealm: the question was asked over the
@@ -6465,6 +6506,7 @@ impl Screen {
                     detail: None,
                     detail_job: None,
                     deleting: Some(spawn(move || client.delete_realm(id))),
+                    switching_slot: None,
                     member_job: None,
                     settings: None,
                     players_scroll: crate::ui::Scroll::default(),
@@ -6847,7 +6889,10 @@ impl Screen {
 
     /// `AbstractScrollArea.mouseScrolled` over the product page's list, the template and
     /// upload lists.
-    pub fn wheel(&mut self, delta: f32, cursor: (f32, f32), (_, h): (f32, f32)) {
+    pub fn wheel(&mut self, delta: f32, cursor: (f32, f32), (w, h): (f32, f32)) {
+        if self.wheel_players(delta, cursor, (w, h)) {
+            return;
+        }
         if let SubScreen::AddRealm {
             scroll, content, ..
         } = &mut self.subscreen
@@ -6918,17 +6963,6 @@ impl Screen {
             SubScreen::BackupInfo { backup, .. } => {
                 Some((33.0, h - 33.0, backup.change_list.len() as f32 * 36.0, 36.0))
             }
-            // The players tab's list scrolls from the header row (RealmsPlayersTab).
-            SubScreen::Configure {
-                tab: ConfigureTab::Players,
-                detail: Some(Ok(detail)),
-                ..
-            } => Some((
-                25.0,
-                h - 68.0,
-                17.0 + detail.players.len() as f32 * 36.0,
-                36.0,
-            )),
             _ => None,
         };
         if let Some((top, bottom, content, height)) = scrolled
@@ -6945,13 +6979,6 @@ impl Screen {
                 }
                 SubScreen::RegionPreference { scroll, .. } => {
                     scroll.wheel(delta, height / 2.0, top, bottom, content);
-                }
-                SubScreen::Configure {
-                    tab: ConfigureTab::Players,
-                    players_scroll,
-                    ..
-                } => {
-                    players_scroll.wheel(delta, height / 2.0, top, bottom, content);
                 }
                 _ => {}
             }
@@ -7208,30 +7235,7 @@ impl Screen {
                         None,
                     ));
                 }
-                // RealmsPlayersTab: each row's op toggle (make or remove, by the
-                // player's state) and Remove, chained from the row's right edge - each
-                // button 16 wider than its label (`SpriteIconButton`), 20 tall at the
-                // row's middle; then Invite Player.
-                if *tab == ConfigureTab::Players && matches!(detail, Some(Ok(_))) {
-                    // The rows' buttons as the draw laid them out; the sprites sit to
-                    // the right of each label (the port's trailing slot).
-                    for ([bx, by, bw, _bh], id) in self.players_button_rects.borrow().iter() {
-                        let (label, icon) = match id % 3 {
-                            0 => (
-                                t("mco.configure.world.invites.normal.tooltip"),
-                                "player_list/make_operator",
-                            ),
-                            1 => (
-                                t("mco.configure.world.invites.ops.tooltip"),
-                                "player_list/remove_operator",
-                            ),
-                            _ => (
-                                t("mco.configure.world.invites.remove.tooltip"),
-                                "player_list/remove_player",
-                            ),
-                        };
-                        buttons.push((*bx, *by, *bw, label, true, *id, Some((icon, 8.0))));
-                    }
+                if self.players_ready() {
                     // `init`'s actions row: Invite Player and the invite codes, two
                     // default-width buttons 8 apart, bottom-aligned under the list.
                     // The tab's actions row: 8 under the list's `contentHeight - 36`
@@ -8604,7 +8608,6 @@ impl Screen {
                 subscription,
                 detail,
                 settings,
-                players_scroll,
                 tier,
                 regions,
                 saving,
@@ -9008,123 +9011,10 @@ impl Screen {
                             u32::MAX,
                         ),
                     },
+                    ConfigureTab::Players if self.players_ready() => {
+                        self.draw_players(batch, atlas, cursor, (w, h), list_focused);
+                    }
                     ConfigureTab::Players => match detail {
-                        Some(Ok(detail)) => {
-                            // `RealmsPlayersTab`: its `GridLayout` places the list in the
-                            // tab area's first row (`contentHeight - 36` tall) with the
-                            // 28-tall actions row 8 under it; the 1/6 alignment puts the
-                            // list at 25, its first entry at 27, the 17-tall "Invited: N"
-                            // header next and the 36-tall player rows from 44. The list
-                            // draws no band or separators (both overrides are empty).
-                            let rx = ((w - 300.0) / 2.0).floor();
-                            let list_top = 25.0;
-                            let list_bottom = list_top + (h - 93.0);
-                            let top = 27.0;
-                            let heading = Text::translate(
-                                "mco.configure.world.invited.number",
-                                &[Text::literal(detail.players.len().to_string())],
-                            )
-                            .underlined();
-                            // `invitedWidget.getWidth()`: the formatted message's width.
-                            let hw = HudBatch::text_width(
-                                atlas,
-                                &crate::lang::tr(
-                                    "mco.configure.world.invited.number",
-                                    &[&detail.players.len() as &dyn std::fmt::Display],
-                                ),
-                            );
-                            batch.text_styled(
-                                atlas,
-                                &heading,
-                                rx + 150.0 - (hw / 2.0).floor(),
-                                top + 4.0,
-                                u32::MAX,
-                                true,
-                            );
-                            // `InvitedObjectSelectionList`: rows of 36 from the header's
-                            // 17; the scroll keeps the lower players reachable.
-                            // `PlayerEntry`: each row's op toggle and Remove, chained
-                            // from the row's right edge - each 16 wider than its label,
-                            // 20 tall at the row's middle; the op toggle swaps its
-                            // sprite and label with the player's state.
-                            let mut rects = Vec::new();
-                            for (i, player) in detail.players.iter().enumerate() {
-                                let row_y = top + 17.0 + i as f32 * 36.0 - players_scroll.amount;
-                                if row_y + 36.0 <= list_top || row_y >= list_bottom {
-                                    continue;
-                                }
-                                let id = 100 + i as u8 * 3;
-                                let (op_key, op_icon) = if player.operator {
-                                    (
-                                        "mco.configure.world.invites.ops.tooltip",
-                                        "player_list/remove_operator",
-                                    )
-                                } else {
-                                    (
-                                        "mco.configure.world.invites.normal.tooltip",
-                                        "player_list/make_operator",
-                                    )
-                                };
-                                let _ = op_icon;
-                                let op_label = t(op_key);
-                                let remove_label = t("mco.configure.world.invites.remove.tooltip");
-                                let op_w = 16.0 + HudBatch::text_width(atlas, &op_label);
-                                let remove_w = 16.0 + HudBatch::text_width(atlas, &remove_label);
-                                // `getContentRight()` is the row's right edge - 2.
-                                let remove_x = rx + 298.0 - remove_w;
-                                let remove_y = row_y + 8.0;
-                                if row_y + 36.0 > list_top {
-                                    rects.push(([remove_x, remove_y, remove_w, 20.0], id + 2));
-                                    rects.push((
-                                        [remove_x - op_w - 8.0, remove_y, op_w, 20.0],
-                                        if player.operator { id + 1 } else { id },
-                                    ));
-                                }
-                            }
-                            *self.players_button_rects.borrow_mut() = rects;
-                            let first = batch.vertices.len();
-                            for (i, player) in detail.players.iter().enumerate() {
-                                let row_y = top + 17.0 + i as f32 * 36.0 - players_scroll.amount;
-                                if row_y + 36.0 <= list_top || row_y >= list_bottom {
-                                    continue;
-                                }
-                                // `PlayerEntry.extractContent`: the 32px face at the
-                                // content origin, the name at contentX + 40 centred in
-                                // the row — grey before accepting, green while online,
-                                // white otherwise.
-                                let face =
-                                    self.face_sprite(batch, atlas, player.uuid.as_deref(), i);
-                                batch.sprite_scaled(
-                                    atlas,
-                                    face.as_deref().unwrap_or("misc/unknown_server"),
-                                    rx + 2.0,
-                                    row_y + 2.0,
-                                    32.0,
-                                    32.0,
-                                    u32::MAX,
-                                );
-                                let color = if !player.accepted {
-                                    GREY
-                                } else if player.online {
-                                    0xFF00_FF00
-                                } else {
-                                    u32::MAX
-                                };
-                                let text_y = row_y + 2.0 + 16.0 - 4.0;
-                                batch.text(atlas, &player.name, rx + 42.0, text_y, color, true);
-                            }
-                            let content = detail.players.len() as f32 * 36.0 + 17.0;
-                            batch.clip_since(first, rx, list_top, rx + 300.0, list_bottom);
-                            crate::ui::scrollbar(
-                                batch,
-                                atlas,
-                                rx + 308.0,
-                                list_top,
-                                list_bottom,
-                                content,
-                                players_scroll.amount,
-                            );
-                        }
                         Some(Err(e)) => {
                             for (i, line) in
                                 wrap_lines(&e.text(), atlas, w - 40.0).iter().enumerate()
@@ -9132,7 +9022,7 @@ impl Screen {
                                 centered(batch, atlas, line, cx, 60.0 + i as f32 * 10.0, RED);
                             }
                         }
-                        None => centered(
+                        None | Some(Ok(_)) => centered(
                             batch,
                             atlas,
                             &t("mco.configure.world.loading"),
@@ -10175,6 +10065,7 @@ impl Screen {
                         detail: detail.clone(),
                         detail_job: None,
                         deleting: None,
+                        switching_slot: None,
                         member_job: None,
                         settings: Some(settings.clone()),
                         players_scroll: crate::ui::Scroll::default(),
@@ -11705,6 +11596,144 @@ fn task_stack_top((_, h): (f32, f32)) -> f32 {
 mod tests {
     use super::*;
 
+    fn loaded_players_screen() -> Screen {
+        let mut realm = server(7, None);
+        realm.players = ["Ada", "Bea"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| PlayerInfo {
+                name: name.into(),
+                uuid: Some(format!("{:032x}", i + 1)),
+                ..Default::default()
+            })
+            .collect();
+        let mut screen = listed(vec![realm.clone()]);
+        screen.subscreen = configure_screen(realm.clone(), ConfigureTab::Players);
+        if let SubScreen::Configure {
+            detail,
+            subscription,
+            tier,
+            regions,
+            players_scroll,
+            ..
+        } = &mut screen.subscreen
+        {
+            *detail = Some(Ok(realm));
+            *subscription = Some(Ok(Subscription::default()));
+            *tier = Some(Ok(RealmTierConfiguration::default()));
+            *regions = Some(Ok(Vec::new()));
+            players_scroll.amount = 18.0;
+        }
+        screen
+    }
+
+    #[test]
+    fn cancelling_removal_returns_to_the_original_players_page() {
+        for escape in [false, true] {
+            let mut screen = loaded_players_screen();
+            let _ = screen.click_player_action(PlayerAction::Remove(2));
+            assert!(
+                matches!(&screen.subscreen, SubScreen::Popup(Popup::Uninvite { player, .. }) if player.name == "Bea")
+            );
+            if escape {
+                assert!(!screen.escape());
+            } else {
+                let _ = screen.click(Some(51), 0.0, 0.0, (800.0, 300.0));
+            }
+            assert!(matches!(&screen.subscreen, SubScreen::Configure {
+                tab: ConfigureTab::Players, detail: Some(Ok(detail)), players_scroll, detail_job: None, ..
+            } if detail.players.len() == 2 && players_scroll.amount == 18.0));
+        }
+    }
+
+    #[test]
+    fn invite_code_list_failure_restores_the_saved_players_page() {
+        for escape in [false, true] {
+            let mut screen = loaded_players_screen();
+            let parent = std::mem::replace(&mut screen.subscreen, SubScreen::Main);
+            screen.players_parent = Some(Box::new(parent));
+            screen.subscreen = SubScreen::InviteCodes {
+                server: server(7, None),
+                codes: None,
+                list_job: Some(Arc::new(Mutex::new(Some(Err(RealmsError::Timeout))))),
+                job: None,
+                error: None,
+                selected: None,
+            };
+            let _ = screen.poll();
+            assert!(matches!(screen.subscreen, SubScreen::Error { .. }));
+            assert!(screen.players_parent.is_none());
+            if escape {
+                assert!(!screen.escape());
+            } else {
+                let _ = screen.click(Some(91), 0.0, 0.0, (800.0, 300.0));
+            }
+            assert!(screen.players_ready());
+            assert!(matches!(&screen.subscreen, SubScreen::Configure {
+                tab: ConfigureTab::Players, detail: Some(Ok(detail)), players_scroll,
+                detail_job: None, subscription_job: None, tier_job: None, regions_job: None, ..
+            } if detail.players.len() == 2 && players_scroll.amount == 18.0));
+        }
+    }
+
+    #[test]
+    fn confirmed_removal_updates_the_parent_without_waiting_for_the_request() {
+        let mut screen = loaded_players_screen();
+        let _ = screen.click_player_action(PlayerAction::Remove(2));
+        let SubScreen::Popup(Popup::Uninvite { player, parent }) = screen.subscreen.clone() else {
+            panic!("removal asks first");
+        };
+        assert!(
+            matches!(&*parent, SubScreen::Configure { detail: Some(Ok(detail)), .. } if detail.players.len() == 2)
+        );
+        let mut requested = Vec::new();
+        screen.confirm_player_removal(&player, *parent, |realm, uuid| {
+            requested.push((realm, uuid))
+        });
+        assert_eq!(requested, [(7, 2)]);
+        assert!(matches!(&screen.subscreen, SubScreen::Configure {
+            tab: ConfigureTab::Players, server, detail: Some(Ok(detail)), detail_job: None, ..
+        } if detail.players.len() == 1 && player_uuid(&detail.players[0]) == Some(1) && detail.players == server.players));
+    }
+
+    #[test]
+    fn players_consumes_operator_and_invite_answers_without_reloading_the_parent() {
+        let mut screen = loaded_players_screen();
+        for result in [
+            Ok(client::Ops {
+                ops: vec!["Bea".into(), "ada".into()],
+            }),
+            Err(RealmsError::Timeout),
+        ] {
+            let SubScreen::Configure { member_job, .. } = &mut screen.subscreen else {
+                unreachable!()
+            };
+            *member_job = Some(Arc::new(Mutex::new(Some(result))));
+            let _ = screen.poll();
+            assert!(
+                matches!(&screen.subscreen, SubScreen::Configure { server, detail: Some(Ok(detail)), detail_job: None, error: None, .. }
+                if !detail.players[0].operator && detail.players[1].operator && detail.players == server.players)
+            );
+        }
+        let size = (800.0, 300.0);
+        let _ = screen.click(Some(67), 0.0, 0.0, size);
+        assert!(matches!(screen.subscreen, SubScreen::Invite { .. }));
+        assert!(!screen.escape());
+        let _ = screen.click(Some(67), 0.0, 0.0, size);
+        let SubScreen::Invite { job, .. } = &mut screen.subscreen else {
+            unreachable!()
+        };
+        let invited = vec![PlayerInfo {
+            name: "New member".into(),
+            ..Default::default()
+        }];
+        *job = Some(Arc::new(Mutex::new(Some(Ok(invited.clone())))));
+        let _ = screen.poll();
+        assert!(matches!(&screen.subscreen, SubScreen::Configure {
+            tab: ConfigureTab::Players, server, detail: Some(Ok(detail)), detail_job: None, players_scroll, ..
+        } if server.players == invited && detail.players == invited && players_scroll.amount == 18.0));
+    }
+
     fn server(id: i64, owner_uuid: Option<&str>) -> RealmServer {
         RealmServer {
             id,
@@ -11716,7 +11745,7 @@ mod tests {
         }
     }
 
-    fn listed(servers: Vec<RealmServer>) -> Screen {
+    pub(super) fn listed(servers: Vec<RealmServer>) -> Screen {
         Screen {
             state: FetchState::Loaded(servers),
             subscreen: SubScreen::Main,
@@ -11745,7 +11774,8 @@ mod tests {
             popup_buttons: std::cell::Cell::new([[0.0; 4]; 2]),
             main_scroll: crate::ui::Scroll::default(),
             subscription_buttons: std::cell::Cell::new((0.0, 0.0)),
-            players_button_rects: std::cell::RefCell::new(Vec::new()),
+            players_list: players_list::PlayersList::default(),
+            players_parent: None,
             backup_row_buttons: std::cell::RefCell::new(Vec::new()),
             settings_scroll: crate::ui::Scroll::default(),
             settings_slider: None,
@@ -12091,6 +12121,7 @@ mod tests {
             detail: None,
             detail_job: None,
             deleting: None,
+            switching_slot: None,
             member_job: None,
             settings: Some(SettingsDraft::of(&server)),
             players_scroll: crate::ui::Scroll::default(),
@@ -12237,7 +12268,8 @@ mod tests {
             popup_buttons: std::cell::Cell::new([[0.0; 4]; 2]),
             main_scroll: crate::ui::Scroll::default(),
             subscription_buttons: std::cell::Cell::new((0.0, 0.0)),
-            players_button_rects: std::cell::RefCell::new(Vec::new()),
+            players_list: players_list::PlayersList::default(),
+            players_parent: None,
             backup_row_buttons: std::cell::RefCell::new(Vec::new()),
             settings_scroll: crate::ui::Scroll::default(),
             settings_slider: None,
