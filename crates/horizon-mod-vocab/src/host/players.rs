@@ -74,6 +74,18 @@ pub trait PlayersServerHost {
     #[access(WorldOnly)]
     fn profile_by_uuid(&self, uuid: u128) -> Option<GameProfile>;
     /// Side: server.
+    /// The statistics of the player with this UUID as their `players/stats/<uuid>.json` file
+    /// holds them, in the text `player_statistics` returns (`ServerStatsCounter.toJson`:
+    /// `{"stats":{"minecraft:mined":{"minecraft:stone":3},...},"DataVersion":n}`), so a mod
+    /// can read the counters of a player who is not online (a stats command for an offline
+    /// name, Paper's `OfflinePlayer#getStatistic`). A player who is online reads as of their last
+    /// save, not their live counters: ask `player.statistics(host)` for them. None for a player
+    /// with no stats file, a file that is not a `stats` object of whole numbers that fit an
+    /// `i32`, a file over 4 MiB, and on a client or in a remote world. Reads only: the file is
+    /// never written.
+    #[access(WorldOnly)]
+    fn offline_player_statistics(&self, uuid: u128) -> Option<String>;
+    /// Side: server.
     /// The profile of the player with this name, any case, as
     /// `profile_by_uuid` knows it: an online player's, else an unexpired
     /// user cache entry. Never asked of Mojang, and an unknown name is not
@@ -82,6 +94,16 @@ pub trait PlayersServerHost {
     /// [`Profiles::resolve_name`](crate::Profiles).
     #[access(WorldOnly)]
     fn profile_by_name(&self, name: &str) -> Option<GameProfile>;
+    /// Side: server.
+    /// When the player with this UUID last played, in milliseconds since the Unix epoch
+    /// (Paper's `OfflinePlayer#getLastPlayed`): the current time for a player who is on now,
+    /// else the time their player file was last saved (their leaving, or a periodic save of a
+    /// player who has since gone). None when the server has no file for them, which is also how
+    /// a mod tells a player who never joined (`OfflinePlayer#hasPlayedBefore` is
+    /// `player_last_played(uuid).is_some()` for a player who is not on), and where no world is
+    /// open to read from.
+    #[access(WorldOnly)]
+    fn player_last_played(&self, uuid: u128) -> Option<i64>;
 }
 /// The client host's methods of the `players` area, implemented by the game and reached through [`crate::ClientHost`].
 #[horizon_mod_api_macros::host_area]
@@ -496,6 +518,22 @@ pub trait PlayersBackend {
     /// no known connection has an empty one. None for a stale or unavailable player.
     #[access(WorldOnly)]
     fn player_client_brand(&self, player: PlayerRef) -> Option<String>;
+    /// Side: server.
+    /// The protocol version the player's client stated in its handshake
+    /// (`ClientIntentionPacket.protocolVersion`, ViaVersion's `getPlayerVersion`): the current
+    /// game's own number for a client of the same release, an older release's number for a
+    /// client the server lets join (`horizon-accept-older-clients`). Behind a proxy, the number
+    /// the proxy forwards. None for a stale or unavailable player, a fake player, and a
+    /// connection that sent no handshake.
+    #[access(WorldOnly)]
+    fn player_protocol_version(&self, player: PlayerRef) -> Option<i32>;
+    /// The language the player's client announced in its client information
+    /// (`ServerPlayer.language`, Paper's `Player#locale`), as the client writes it: lower case
+    /// with an underscore (`en_us`, `de_de`). It follows the client's latest information
+    /// packet; `en_us` until it sends one. None for a stale or unavailable player and for a
+    /// fake player.
+    #[access(WorldOnly)]
+    fn player_locale(&self, player: PlayerRef) -> Option<String>;
     /// Side: server.
     /// The plugin channels the player's client announced in `minecraft:register`, less those
     /// it withdrew in `minecraft:unregister`, during configuration and play, in announcement
@@ -951,6 +989,20 @@ pub trait PlayersBackendMut {
         player: PlayerRef,
         location: Option<GlobalPos>,
     ) -> bool;
+
+    /// Side: server.
+    /// `Player.setSimulationDistance`: tells that player's client how far around them entities are
+    /// simulated, from 2 to 32 chunks (`ClientboundSetSimulationDistancePacket`). Only their client
+    /// changes: the server's simulation distance and the other players keep theirs. False when the
+    /// value is outside 2 to 32 or the player is not on here.
+    #[access(WorldOnly)]
+    fn player_set_simulation_distance(&mut self, player: PlayerRef, chunks: i32) -> bool;
+    /// `Player.setViewDistance`: sets how many chunks that player is sent, from 2 to 32 and at most the
+    /// server's view distance (a larger value is clamped to it). Their client is told the radius at once
+    /// and the chunks follow it, until the server's view distance changes or they rejoin. False when the
+    /// value is outside 2 to 32, or the player's record is not in the player list at that moment.
+    #[access(WorldOnly)]
+    fn player_set_view_distance(&mut self, player: PlayerRef, chunks: i32) -> bool;
     /// Side: server.
     /// `FoodData.eat(nutrition, saturationModifier)`: adds `nutrition` to
     /// the food level (0 to 20) and `nutrition * modifier * 2` to the
@@ -1308,6 +1360,16 @@ pub trait PlayersBackendMut {
         signature: Option<&str>,
     ) -> bool;
     /// Side: server.
+    /// Drops the property `name` that a mod set with `player_set_profile_property`, so the player's
+    /// profile shows the one the player list gives again (Paper's `PlayerProfile#removeProperty`): a
+    /// reset to the default skin needs no empty value. Only a mod's own property can go; the
+    /// properties the account gives (`textures` of the player's own skin) stay as they are. True for a
+    /// connected player whether or not the mod had set `name` (nothing to remove is done); false for a
+    /// stale or unavailable player, a fake player, an empty name or one past 64 characters, and on a
+    /// client. The player is not sent to the others again: call `player_refresh` for that.
+    #[access(WorldOnly)]
+    fn player_remove_profile_property(&mut self, player: PlayerRef, name: &str) -> bool;
+    /// Side: server.
     /// Sends the player to the other players again, as Paper's
     /// `hidePlayer` then `showPlayer` does: over the next two ticks they
     /// leave every other player's Tab list and world and come back with
@@ -1338,4 +1400,11 @@ pub trait PlayersBackendMut {
     /// that is not finite.
     #[access(WorldOnly)]
     fn player_set_velocity(&mut self, player: PlayerRef, velocity: [f64; 3]) -> bool;
+    /// Side: server.
+    /// Sets whether a server player or guest is sneaking (`Player#setSneaking`): the shift-key
+    /// state the crouching pose and hitbox follow, as a guest's own sneak key sets it. A fake
+    /// player takes it too, which is how a bot is shown crouched. False for a stale handle, a
+    /// client, or a player the server does not hold in place.
+    #[access(WorldOnly)]
+    fn player_set_sneaking(&mut self, player: PlayerRef, sneaking: bool) -> bool;
 }

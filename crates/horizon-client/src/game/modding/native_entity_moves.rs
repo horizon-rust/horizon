@@ -272,6 +272,23 @@ impl Game<'_> {
             _ => false,
         }
     }
+    /// Sets a server player's or guest's sneaking (the shift-key state the crouching pose
+    /// follows), as Paper's `Player#setSneaking`. False for a stale or unavailable player and
+    /// for an entity that is not a player.
+    pub(super) fn player_set_sneaking(&mut self, player: PlayerRef, sneaking: bool) -> bool {
+        let motion = match self.native_entity_target(player.entity()) {
+            Some(Target::Player) => self.player.as_mut(),
+            Some(Target::Guest(conn)) => self
+                .lan
+                .as_mut()
+                .and_then(|host| host.hub.guests.motion_mut(conn)),
+            _ => None,
+        };
+        motion.is_some_and(|motion| {
+            motion.shift_key_down = sneaking;
+            true
+        })
+    }
     /// Changes a player's velocity with `change` and sends their client the
     /// result: the acting player's record (`Target::Player`) or a guest's.
     fn native_player_motion(&mut self, target: Target, change: impl FnOnce(Vec3) -> Vec3) -> bool {

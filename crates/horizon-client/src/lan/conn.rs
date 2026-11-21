@@ -301,6 +301,9 @@ pub struct PlayerSender {
     /// The host and port the client typed in its handshake ([`typed_address`]), None for a
     /// connection that sent none.
     pub connect: Option<(Arc<str>, u16)>,
+    /// The protocol version the client's handshake stated (`ClientIntentionPacket.protocolVersion`),
+    /// 0 for a connection that sent none (a test's channel, a connectionless actor).
+    pub protocol: i32,
 }
 #[derive(Clone)]
 enum To {
@@ -375,6 +378,7 @@ impl PlayerSender {
             menu_extra_rev: 0,
             packet_counts: Arc::default(),
             connect: None,
+            protocol: 0,
         }
     }
     #[cfg(test)]
@@ -415,6 +419,7 @@ impl PlayerSender {
             menu_extra_rev: 0,
             packet_counts: Arc::default(),
             connect: None,
+            protocol: 0,
         };
         (sender, move || inspect.queued_contents())
     }
@@ -434,6 +439,7 @@ impl PlayerSender {
             menu_extra_rev: 0,
             packet_counts: Arc::default(),
             connect: None,
+            protocol: 0,
         }
     }
     /// The bytes received from and sent to the client on the wire so far.
@@ -859,7 +865,7 @@ fn serve_connection(
                 return Ok(());
             }
             let typed = typed_address(&intention, c.is_memory());
-            serve_login(c, address, typed, &shared, counted)
+            serve_login(c, address, typed, intention.protocol, &shared, counted)
         }
         other => Err(format!("unknown intent {other}")),
     }
@@ -1197,6 +1203,7 @@ fn serve_login(
     mut c: Connection,
     address: std::net::SocketAddr,
     typed: Option<(Arc<str>, u16)>,
+    protocol: i32,
     shared: &Arc<Shared>,
     counted: Option<super::Counted>,
 ) -> Result<(), String> {
@@ -1363,6 +1370,7 @@ fn serve_login(
                 parts,
                 address,
                 typed,
+                protocol,
                 counted,
                 expected.is_some(),
             );
@@ -2213,6 +2221,7 @@ fn play(
     parts: Parts,
     address: std::net::SocketAddr,
     typed: Option<(Arc<str>, u16)>,
+    protocol: i32,
     counted: Option<super::Counted>,
     expected: bool,
 ) {
@@ -2251,6 +2260,7 @@ fn play(
         menu_extra_rev: parts.channels.menu_extra_rev.revision(),
         packet_counts: packet_counts.clone(),
         connect: typed,
+        protocol,
     };
     let required_pack = shared
         .config
@@ -4262,6 +4272,7 @@ mod outgoing_budget_tests {
             menu_extra_rev: 0,
             packet_counts: Arc::default(),
             connect: None,
+            protocol: 0,
         }
     }
     #[test]

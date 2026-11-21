@@ -89,6 +89,26 @@ impl Game<'_> {
         };
         serde_json::to_string(&json).ok()
     }
+    /// The most a stats file may be for `offline_player_statistics` to read it.
+    const OFFLINE_STATS_LIMIT: u64 = 4 << 20;
+
+    /// The statistics file of the player `uuid` (`players/stats/<uuid>.json`), read strictly as
+    /// `player_set_statistics` takes a snapshot and written out as `player_statistics` does.
+    pub(super) fn offline_player_statistics(&self, uuid: u128) -> Option<String> {
+        if self.remote.is_some() {
+            return None;
+        }
+        let path = super::stats::player_json(
+            &self.world_root,
+            "stats",
+            horizon_client::lan::playerdata::uuid_ints(uuid),
+        );
+        if std::fs::metadata(&path).ok()?.len() > Self::OFFLINE_STATS_LIMIT {
+            return None;
+        }
+        let json = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        serde_json::to_string(&Stats::from_snapshot(&json)?.to_json()).ok()
+    }
     /// `ServerStatsCounter.parseLocal`'s counters of `json` in place of the player's own,
     /// each set as `StatsCounter.setValue` sets it.
     pub(super) fn player_set_statistics(&mut self, player: PlayerRef, json: &str) -> bool {
@@ -271,6 +291,46 @@ mod tests {
             // A guest without play state yet has counted nothing.
             game.lan.as_mut().unwrap().play.remove(&1);
             assert_eq!(jump(game), Some(0));
+        });
+    }
+
+    /// A stats file is read by UUID, whole and strictly, and written out as `player_statistics`
+    /// writes them; a missing, malformed, partly valid or oversized file is None.
+    #[test]
+    #[ignore = "daily"]
+    fn offline_statistics_are_read_from_the_stats_file() {
+        with_game(|game| {
+            let dir = std::env::temp_dir().join(format!("horizon-offline-stats-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            game.world_root = dir.clone();
+            let path = super::super::stats::player_json(&dir, "stats", [0, 0, 0, 7]);
+            assert_eq!(game.offline_player_statistics(7), None, "no file yet");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"stats":{"minecraft:custom":{"minecraft:jump":9},"minecraft:killed":{"minecraft:zombie":1},"minecraft:mined":{}},"DataVersion":4000}"#,
+            )
+            .unwrap();
+            let read: serde_json::Value =
+                serde_json::from_str(&game.offline_player_statistics(7).unwrap()).unwrap();
+            assert_eq!(read["stats"]["minecraft:custom"]["minecraft:jump"], 9);
+            assert_eq!(read["stats"]["minecraft:killed"]["minecraft:zombie"], 1);
+            assert!(read["stats"].get("minecraft:mined").is_none(), "empty types are left out");
+            assert_eq!(read["DataVersion"], horizon_world::DATA_VERSION);
+            assert_eq!(game.offline_player_statistics(8), None, "another UUID");
+            for bad in [
+                "not json",
+                "[]",
+                r#"{"DataVersion":1}"#,
+                r#"{"stats":{"minecraft:custom":{"minecraft:jump":"x"}}}"#,
+                r#"{"stats":{"minecraft:custom":{"minecraft:jump":4294967297}}}"#,
+            ] {
+                std::fs::write(&path, bad).unwrap();
+                assert_eq!(game.offline_player_statistics(7), None, "{bad}");
+            }
+            std::fs::write(&path, vec![b' '; (4 << 20) + 1]).unwrap();
+            assert_eq!(game.offline_player_statistics(7), None, "over 4 MiB");
+            let _ = std::fs::remove_dir_all(&dir);
         });
     }
 

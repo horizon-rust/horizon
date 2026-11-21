@@ -101,6 +101,9 @@ UTF-16 units, values of 32767 and signatures of 1024. A list past a limit is
 refused and the login's own properties are sent. `player_login` follows later and
 can still refuse the player.
 
+`player.set_sneaking(host, sneaking)` (`player_set_sneaking`) sets the shift-key state a server player or a guest crouches by, so the crouching pose and hitbox follow, as Paper's `Player#setSneaking` does. A fake player takes it too, which shows a bot crouched. It returns `false` for a stale handle, a client, or a player the server does not hold in place.
+Game profiles (server only): `host.profile_by_uuid(uuid)` and `host.profile_by_name(name)` (any case) return the `GameProfile` the server knows: an online player's, with its properties, else the name from the user cache (`usercache.json`, on a dedicated server), without properties. Neither asks Mojang, and `None` means neither the server nor its cache knows the player. To change a skin, `player.set_profile_property(host, "textures", value, signature)` sets the `textures` property (Mojang's base64 value and its signature). Other players see it once `player.refresh(host)` sends the player to them again; the player's own client keeps its current skin until they change level or join again. A property set this way is published and returned by the two lookups; `player.profile(host)` keeps returning the properties the player logged in with. To drop a property a mod set (a reset to the default skin), `player.remove_profile_property(host, name)` removes that override and the profile shows the account's properties again; it returns `false` for a stale or unavailable player and an empty or over-long name, and it does not send the player to the others, so call `player.refresh(host)` after it.
+
 ## Messages and visibility
 
 Send a message with `player.tell(host, text)`, `player.action_bar(host, text)` or
@@ -126,6 +129,10 @@ sidebar on that one player's client, in place of the one shown before; `None` ta
 are shown, top first, each with its text and an optional right-hand value. The sidebar is not stored in the
 world's scoreboard, so `/scoreboard` and other players do not see it, and it is gone when the player leaves.
 It returns `Ok(false)` for a player who is not online; a text the boundary refuses changes nothing.
+
+The statistics of a player who is not online are read with `host.offline_player_statistics(uuid)`: the same
+JSON text `player.statistics(host)` returns, taken from the player's `stats/<uuid>.json` file as of the
+last save (use `player.statistics(host)` for someone online, whose live counters are newer). It is `None` for a player with no file, a file that is not a `stats` object of whole numbers that fit an `i32`, a file over 4 MiB, and on a client or in a remote world. It only reads: the file is never written.
 
 To change only the name in the Tab list, use `player.set_list_name(host, Some(text))`.
 Everyone sees the new name at once, colours included; `None` shows the nickname or real
@@ -164,6 +171,9 @@ the list shows) and `hide_players` start as vanilla's answer. `hide_players` lea
 is dropped. An answer longer than a client reads (32767 characters) is replaced by the plain one, and so is any answer
 the mods do not finish within half a second. With no listener the request is not put to the game thread at all.
 The legacy ping of pre-1.7 clients is not asked.
+The read `player.protocol_version(host)` returns the protocol number the player's client stated in its handshake (`Option<i32>`). A client of the same release reads this game's own number; a client let in by `horizon-accept-older-clients` reads its own, older one, so a mod can tell what an older client can see. Behind a proxy it is the number the proxy forwards. `None` means a stale or unavailable player, a fake one, or a connection that sent no handshake.
+`host.player_last_played(uuid)` answers when a player, on or off, last played (`Option<i64>`, milliseconds since the Unix epoch). A player who is on reads the current time. A player who is off reads when their player file was last saved, which is their leaving, or a periodic save of a player who has since gone. `None` means the server has no file for that UUID, so the player never joined, and also that no world is open. For a player who is not on, `player_last_played(uuid).is_some()` is Paper's `hasPlayedBefore`.
+The read `player.locale(host)` returns the language the player's client announced (`Option<String>`, as the client writes it: `en_us`, `de_de`). It follows the client's latest information packet, so a player who changes the language in the options menu reads the new one, and it is `en_us` until the client has sent any. `None` means a stale or unavailable player, or a fake one.
 
 ## Chat lines and respawn
 

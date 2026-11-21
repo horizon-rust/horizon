@@ -2,6 +2,36 @@
 use super::native_guest_turn_tests::with_guests;
 use mod_api::{GameProfile, ProfileProperty};
 
+/// Removing a mod's property drops only that override: the others stay, a name the mod never set
+/// changes nothing, and an empty or too long name is refused.
+#[test]
+#[ignore = "daily"]
+fn a_mods_property_is_removed_by_name() {
+    with_guests(|game| {
+        let a = game.player(12).unwrap();
+        assert!(game.player_set_profile_property(a, "textures", "new", Some("signed")));
+        assert!(game.player_set_profile_property(a, "example:badge", "1", None));
+        assert!(game.player_remove_profile_property(a, "textures"));
+        let names = |game: &super::Game<'_>| {
+            game.lan
+                .as_ref()
+                .unwrap()
+                .hub
+                .guest(12)
+                .unwrap()
+                .profile_overrides
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(game), ["example:badge"]);
+        assert!(game.player_remove_profile_property(a, "textures"));
+        assert_eq!(names(game), ["example:badge"], "a name never set changes nothing");
+        assert!(!game.player_remove_profile_property(a, ""));
+        assert!(!game.player_remove_profile_property(a, &"x".repeat(65)));
+    });
+}
+
 #[test]
 #[ignore = "daily"]
 fn a_new_skin_is_set_and_the_player_sent_again() {

@@ -75,6 +75,23 @@ impl Game<'_> {
         true
     }
 
+    /// Drops the mod's override `name` (`player_remove_profile_property`); the listed properties stay.
+    pub(super) fn player_remove_profile_property(&mut self, player: PlayerRef, name: &str) -> bool {
+        if name.is_empty() || utf16_len(name) > MAX_PROPERTY_NAME {
+            return false;
+        }
+        let Some(i) = self.connected_guest_index(player) else {
+            return false;
+        };
+        let Some(host) = self.lan.as_mut() else {
+            return false;
+        };
+        host.hub
+            .guests
+            .update(i, |g| g.profile_overrides.retain(|p| p.name != name));
+        true
+    }
+
     /// The index of a connected player's record in the hub's guest list.
     fn connected_guest_index(&self, player: PlayerRef) -> Option<usize> {
         let conn = self.online_player_record(player)?.conn;

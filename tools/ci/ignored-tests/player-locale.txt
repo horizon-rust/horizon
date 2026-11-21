@@ -1,0 +1,2 @@
+# A player's client language needs prepared resources.
+horizon-client game::native_player_locale::tests::player_locale_reads_the_language_the_client_announced lib daily resources

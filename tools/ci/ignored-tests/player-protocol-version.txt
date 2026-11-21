@@ -1,0 +1,2 @@
+# A player's handshake protocol version needs prepared resources.
+horizon-client game::native_player_protocol::tests::player_protocol_version_reads_the_handshake_number lib daily resources

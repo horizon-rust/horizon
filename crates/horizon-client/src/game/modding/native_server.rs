@@ -1276,7 +1276,7 @@ impl Game<'_> {
 
     /// Validate identity without requiring a live body: sending to an online
     /// displaced player still works, as it did through the UUID send path.
-    fn message_player_uuid(&self, player: PlayerRef) -> Option<u128> {
+    pub(super) fn message_player_uuid(&self, player: PlayerRef) -> Option<u128> {
         (self.native_acting_player() == Some(player) || self.online_player_record(player).is_some())
             .then_some(player.uuid())
     }
