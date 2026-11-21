@@ -687,6 +687,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     ) {
         let b = self.b;
         let signal = self.plate_signal_strength(pos, state);
+        // A mod may keep the plate as it was: no signal, neighbour update, sound or event.
+        if signal != old_signal
+            && !self
+                .level
+                .allow_plate_signal(pos, state, old_signal, signal)
+        {
+            return;
+        }
         let was = old_signal > 0;
         let is = signal > 0;
         let block = b.block(state);

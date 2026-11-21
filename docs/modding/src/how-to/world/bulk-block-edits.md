@@ -22,6 +22,14 @@ notify no neighbors and send whole changed chunks.
 same block with different properties have distinct entries. Only distinct numeric
 states are converted to API values, not each block in the returned columns.
 
+## Read a chunk section
+
+`level.section_blocks(host, [cx, sy, cz])` returns the section's 4096 block states in vanilla's
+`LevelChunkSection.states` order, index `(y << 8) | (z << 4) | x`, one read instead of 4096
+`block_state` calls. `level.section_has_only_air(host, [cx, sy, cz])` answers `LevelChunkSection.hasOnlyAir`.
+Both are server only, load nothing and return `None` for a section of an unloaded chunk or outside build
+height. The section is `SectionPos`: `sy` is the section, so block y is `sy * 16` to `sy * 16 + 15`.
+
 #### Upgrading saved block entities and entities
 
 Data a mod reads from an older source (a schematic, a structure file, an old world's region) carries the
@@ -30,6 +38,9 @@ Data a mod reads from an older source (a schematic, a structure file, an old wor
 loader runs on a block entity of a chunk of that version and the entity chunk loader on an entity (its passengers
 included), up to the game's `DataVersion`. Both are server-side and pure: they read nothing from the level and change
 nothing in it.
+
+`host.upgrade_block_state_nbt(data_version, nbt)` does the same for one block state (`{Name, Properties}`): a state
+saved before 1.13 comes out with its 1.13 name and properties, and data of the game's version comes back unchanged.
 
 - Data at exactly the game's version comes back unchanged, and so does a block entity whose `id` its version
   doesn't know (as a chunk keeps one) and data the fixes can't read. Version 0 is a valid source.

@@ -69,7 +69,7 @@ use horizon_world::level::{BonemealCheck, PlaceContext};
 use mod_api::CommandSource;
 use mod_api::GameMode;
 use mod_api::GameTests;
-pub use mod_api::game::{PhantomSpawnResult, Shake, SleepProblem};
+pub use mod_api::game::{BlockBreakResult, PhantomSpawnResult, Shake, SleepProblem};
 use mod_api::{
     self, Answered, BlockPlacement, BlockTintSources, CameraDrawContext, CauldronFluidContents,
     CauldronInteractions, ClientAudioOptions, ClientChatOptions, ClientGraphicsOptions,

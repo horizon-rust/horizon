@@ -13,6 +13,21 @@ impl GameLevel<'_> {
         !cancel
     }
 
+    /// `allow_plate_signal`: the `pressure_plate_change` hook's cancel.
+    pub(in crate::game) fn plate_signal_allowed(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        from: i32,
+        to: i32,
+    ) -> bool {
+        let mut cancel = false;
+        if self.native_authoritative {
+            self.native_pressure_plate_change(self.dimension, pos, state, from, to, &mut cancel);
+        }
+        !cancel
+    }
+
     /// `allow_block_burn`: the `block_burn` hook's cancel.
     pub(in crate::game) fn block_burn_allowed(&self, pos: BlockPos) -> bool {
         let mut cancel = false;

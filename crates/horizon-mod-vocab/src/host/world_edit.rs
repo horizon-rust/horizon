@@ -44,6 +44,17 @@ pub trait WorldEditServerHost {
         nbt: Compound,
     ) -> Result<Compound, NbtUpgradeError>;
     /// Side: server.
+    /// A block state's NBT (`{Name, Properties}`) saved at `data_version`, upgraded as the datafixers upgrade a block
+    /// state of a chunk of that version: a state from before 1.13 comes out with its 1.13 name and properties (the
+    /// table of `BlockStateData`); any other comes back unchanged, as does data of exactly the game's version. Pure:
+    /// nothing in the world changes. Refused by name as `upgrade_block_entity_nbt` refuses.
+    #[access(WorldOnly)]
+    fn upgrade_block_state_nbt(
+        &self,
+        data_version: i32,
+        nbt: Compound,
+    ) -> Result<Compound, NbtUpgradeError>;
+    /// Side: server.
     /// For a server mod: each column's height by `heightmap` in the authoritative level `dimension` (the one being
     /// ticked), none for a column not loaded. `Err` says why nothing was read: another dimension or a client of a
     /// server, or more than 65,536 columns (`MAX_COLUMNS`).

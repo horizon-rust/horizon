@@ -187,7 +187,7 @@ pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
 pub use native_configs::ConfigFile;
 pub use native_data_maps::DataMapType;
-pub use native_hooks::{PhantomSpawnResult, Shake, SleepProblem};
+pub use native_hooks::{BlockBreakResult, PhantomSpawnResult, Shake, SleepProblem};
 pub use native_mob_draw::{MobRender, PlayerRender};
 use std::{
     cell::RefCell,

@@ -250,6 +250,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `PlayerRef::tell` and the item helpers reach them.
 - **`block_dispense_armor(dimension, pos, item, target)`**: a dispenser equipped `item` on the first eligible player, mob or armor stand in front of its block at `pos`. The equip, item consumption, sound and game event have completed; `target` names the kind of entity equipped.
 - **`block_shear_entity(dimension, pos, entity, kind)`**: a dispenser sheared the entity of `kind` and id `entity` at the block in front of the dispenser at `pos`, after applying the shearing effects.
+- **`pressure_plate_change(dimension, pos, state, from, to, cancel)`**: a pressure plate is about to change its signal from `from` to `to` (an entity moves on or off it, or its timer ends). Set `cancel` to keep the plate as it was: no signal, neighbour update, sound or game event.
 - **`block_receive_game(dimension, pos, block, event, cancel)`**: a sculk sensor, calibrated sensor or shrieker received the vibration `event`. Set `cancel` to suppress its response.
 - **`brewing_start(pos, ingredient)`**: a brewing stand at `pos` starts its timer for `ingredient`, after it consumes fuel. Server-side.
 - **`campfire_start(pos, item)`**: `item` was placed on the campfire at `pos` and began cooking. Server-side.

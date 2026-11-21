@@ -74,6 +74,13 @@ up to the fluid's height, a full block under the same fluid. `has_collisions(hos
 whether any block collision shape is in a box, with `collision_boxes`'s walk and limits and
 without building the list; entities and the world border are not part of it.
 
+`can_stand_at(host, pos)` is the standing check for a player whose feet are at `pos`: its box
+(0.6 wide, 1.8 tall) shares no volume with a block collision shape, and the floor under `pos` is a
+full block's top, so `block_floor_height` there is 0. A slab's top, a gap or a block in the head
+cell fails it. Entities and the world border are not counted. It is a server read: None on a
+client, for a stale level, or for a position outside build height. Use it to pick a safe spot
+before a teleport; it does not move anyone.
+
 `ray_trace_entities(host, from, to, margin, exclude)` lists every entity the segment passes
 through, nearest first, with where it enters each box grown by `margin` and how far that is:
 the test `ProjectileUtil.getEntityHitResult` makes on each candidate. Vanilla's filter is a

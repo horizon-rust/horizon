@@ -1399,7 +1399,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
             let test = rel(pos, direction);
             let edge = self.state(test);
-            if b.is_air(edge) {
+            if b.is_air(edge) && self.level.allow_natural_spread("vine", pos, test) {
                 let cw = super::query::clockwise(direction);
                 let ccw = super::query::counter_clockwise(direction);
                 let cw_face = b.table.bool(state, self.direction_prop(cw));

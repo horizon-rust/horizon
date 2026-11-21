@@ -657,6 +657,19 @@ pub trait LevelsBackend {
     /// a stale handle or on a client. Loads nothing.
     #[access(WorldOnly)]
     fn level_loaded_chunks(&self, level: LevelRef) -> Option<Vec<ChunkRef>>;
+    /// Side: server.
+    /// The 4096 block states of a chunk section of an open server level, in vanilla's
+    /// `LevelChunkSection.states` order: index `(y << 8) | (z << 4) | x`, each 0 to 15 inside the
+    /// section. `section` is `[cx, sy, cz]` as `SectionPos` reads it: the chunk x and z, and the
+    /// section y (block y `sy * 16` to `sy * 16 + 15`). Loads nothing: None on a client, for a stale
+    /// level, for a section whose chunk is not loaded, and for one outside build height.
+    #[access(WorldOnly)]
+    fn level_section_blocks(&self, level: LevelRef, section: [i32; 3]) -> Option<Vec<BlockState>>;
+    /// Side: server.
+    /// Whether all 4096 blocks of that section are air (`LevelChunkSection.hasOnlyAir`). Same
+    /// section, refusals and order as `level_section_blocks`; None where that refuses.
+    #[access(WorldOnly)]
+    fn level_section_has_only_air(&self, level: LevelRef, section: [i32; 3]) -> Option<bool>;
     /// Side: both.
     /// World-space block collision boxes under an empty collision context, without entities or border. Refuses a stale or nonresident level and invalid or overlarge boxes.
     /// On a client, the level it shows or a viewed one (`host.level`), each through its own
@@ -696,6 +709,15 @@ pub trait LevelsBackend {
     /// the world border are not counted. None as for `collision_boxes`.
     #[access(WorldOnly)]
     fn level_has_collisions(&self, level: LevelRef, aabb: [f64; 6]) -> Option<bool>;
+    /// Side: server.
+    /// Whether a player standing with its feet at `pos` fits there and stands on the block
+    /// level with its bottom: the player's box (0.6 wide, 1.8 tall, centred on `pos`) shares
+    /// no volume with a block collision shape, and `level_block_floor_height` at `pos` is 0,
+    /// so the floor under it is a full block's top, not a slab's or a gap. Entities and the
+    /// world border are not counted. None for a client, a stale or closed level, and a
+    /// position outside build height; a read never loads a chunk.
+    #[access(WorldOnly)]
+    fn level_can_stand_at(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool>;
     /// Side: both.
     /// The fluid's shape at `pos` (`FluidState.getShape`), as block-local boxes: none for no
     /// fluid, else one box from the floor to the fluid's height (`FluidState.getHeight`), a

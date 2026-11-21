@@ -15,6 +15,15 @@ impl Game<'_> {
         datafix::upgrade_block_entity(data_version, nbt).map_err(refusal)
     }
 
+    /// A block state's NBT saved at `data_version`, upgraded as the datafixers upgrade it, or the refusal.
+    pub(in crate::game) fn upgrade_block_state_nbt(
+        &self,
+        data_version: i32,
+        nbt: Compound,
+    ) -> Result<Compound, NbtUpgradeError> {
+        datafix::upgrade_block_state(data_version, nbt).map_err(refusal)
+    }
+
     /// An entity's NBT saved at `data_version`, upgraded as the entity chunk loader upgrades it, or the refusal.
     pub(in crate::game) fn upgrade_entity_nbt(
         &self,

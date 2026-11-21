@@ -483,6 +483,12 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn allow_spread(&self, _kind: Spread, _from: BlockPos, _to: BlockPos) -> bool {
         true
     }
+    /// Whether a natural grower of `kind` (`vine` or `sculk`) may spread from `from` into `to`:
+    /// a native mod may refuse, and the block at `to` stays as it is. Asked after the grower's
+    /// own random draws, which a refusal does not change. The default allows.
+    fn allow_natural_spread(&self, _kind: &'static str, _from: BlockPos, _to: BlockPos) -> bool {
+        true
+    }
     /// Returns the state to place for a liquid conversion, or None to cancel.
     fn fluid_place_block(
         &self,
@@ -528,6 +534,17 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn allow_block_burn(&self, _pos: BlockPos) -> bool {
         true
     }
+    /// Whether a pressure plate at `pos` may change its signal from `from` to `to`
+    /// (`pressure_plate_change`'s veto); false keeps the plate as it was.
+    fn allow_plate_signal(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _from: i32,
+        _to: i32,
+    ) -> bool {
+        true
+    }
     /// Select or cancel the feature a block is about to grow into; `None` when
     /// vanilla has none to place.
     fn block_grow_feature<'a>(
@@ -536,6 +553,12 @@ pub trait LevelAccess: BlockEntityNeighbors {
         feature: Option<&'a str>,
     ) -> Option<std::borrow::Cow<'a, str>> {
         feature.map(std::borrow::Cow::Borrowed)
+    }
+    /// Whether the block at `pos`, in state `from`, may grow into `to` by natural growth
+    /// (sculk growth above a charged sculk block so far). A native mod may refuse; `pos` stays
+    /// as it is. The default allows.
+    fn allow_block_grow(&self, _pos: BlockPos, _from: BlockStateId, _to: BlockStateId) -> bool {
+        true
     }
     /// Whether a crop-like block grows on this random tick (NeoForge's
     /// `CommonHooks.canCropGrow`). `vanilla` is the game's own answer, its

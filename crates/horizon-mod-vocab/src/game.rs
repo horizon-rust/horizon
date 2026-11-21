@@ -59,6 +59,18 @@ pub enum PhantomSpawnResult {
     /// Never try.
     Deny,
 }
+/// The outcome of `tool_break_block`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum BlockBreakResult {
+    /// The block was removed, with its drops and tool damage.
+    Broken,
+    /// The game or a `break_block` listener refused the break; the block stays.
+    Kept,
+    /// The handle is stale, or it names a player this build does not act for.
+    NotThisPlayer,
+}
 /// `Player.BedSleepingProblem` as `CanContinueSleepingEvent.getProblem` reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]

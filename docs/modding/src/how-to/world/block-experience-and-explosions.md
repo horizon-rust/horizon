@@ -318,3 +318,8 @@ before, so each moves as it was and the cells they leave and enter end as air
 or a moving block, as does the arm. Writes outside the move stay. A move that
 `piston_pre` cancels and a client's replay of a move are not heard. A panic is
 contained and the move goes on.
+
+## Dispensers
+
+`block_dispense` can be cancelled. It runs before a dispenser releases its item, ahead of any `dispense_item` or
+`dispense_method` answer: a cancel leaves the stack in the dispenser and plays nothing.

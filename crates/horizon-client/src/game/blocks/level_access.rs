@@ -117,6 +117,15 @@ impl LevelAccess for GameLevel<'_> {
         }
         !canceled
     }
+    fn allow_natural_spread(&self, kind: &'static str, from: BlockPos, to: BlockPos) -> bool {
+        let mut canceled = false;
+        if self.native_authoritative
+            && mod_api::__private::listened(mod_api::HookId::NaturalBlockSpread)
+        {
+            self.native_natural_block_spread(self.dimension, kind, from, to, &mut canceled);
+        }
+        !canceled
+    }
     fn fluid_place_block(
         &self,
         pos: BlockPos,
@@ -195,6 +204,14 @@ impl LevelAccess for GameLevel<'_> {
         self.native_block_grow_feature(self.dimension, pos, &mut feature, &mut cancel);
         feature.filter(|_| !cancel).map(std::borrow::Cow::Owned)
     }
+    fn allow_block_grow(&self, pos: BlockPos, from: BlockStateId, to: BlockStateId) -> bool {
+        let mut canceled = false;
+        if self.native_authoritative && mod_api::__private::listened(mod_api::HookId::BlockGrow)
+        {
+            self.native_block_grow(self.dimension, pos, from, to, &mut canceled);
+        }
+        !canceled
+    }
     fn crop_grow_pre(&mut self, pos: BlockPos, state: BlockStateId, vanilla: bool) -> bool {
         if !self.native_authoritative || !mod_api::__private::listened(mod_api::HookId::CropGrowPre)
         {
@@ -213,6 +230,9 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn allow_block_burn(&self, pos: BlockPos) -> bool {
         self.block_burn_allowed(pos)
+    }
+    fn allow_plate_signal(&self, pos: BlockPos, state: BlockStateId, from: i32, to: i32) -> bool {
+        self.plate_signal_allowed(pos, state, from, to)
     }
     fn allow_leaves_decay(&self, pos: BlockPos) -> bool {
         let mut cancel = false;

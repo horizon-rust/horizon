@@ -460,6 +460,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let Some(new) = self.sculk_state_for_placement(old, target, face_to) else {
                     continue;
                 };
+                if !self.level.allow_natural_spread("sculk", pos, target) {
+                    continue;
+                }
                 if self.set_block(target, new, 2) {
                     count += 1;
                 }
@@ -570,14 +573,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     if self.sculk_rand(GROWTH_SPAWN_COST) < charge {
                         let growth_pos = above(pos);
                         let growth = self.sculk_random_growth(growth_pos);
-                        self.set_block_and_update(growth_pos, growth);
-                        let sounds = self.b.data(growth).sounds.clone();
-                        self.emit(LevelEvent::Sound {
-                            pos,
-                            sound: sounds.place.clone(),
-                            volume: 1.0,
-                            pitch: 1.0,
-                        });
+                        let from = self.state(growth_pos);
+                        if self.level.allow_block_grow(growth_pos, from, growth) {
+                            self.set_block_and_update(growth_pos, growth);
+                            let sounds = self.b.data(growth).sounds.clone();
+                            self.emit(LevelEvent::Sound {
+                                pos,
+                                sound: sounds.place.clone(),
+                                volume: 1.0,
+                                pitch: 1.0,
+                            });
+                        }
                     }
                     return (charge - GROWTH_SPAWN_COST).max(0);
                 }

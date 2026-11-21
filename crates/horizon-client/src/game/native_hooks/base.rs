@@ -193,6 +193,21 @@ impl GameLevel<'_> {
         self.fire_block_ignite(dimension, player, pos, cause, cancel);
     }
 
+    /// On an authoritative server, a pressure plate at `pos` (`state`) is about to change its signal
+    /// from `from` to `to`: `BasePressurePlateBlock.checkPressed`, when an entity moves on or off it
+    /// or its timer runs out. Set `cancel` to keep the plate as it was.
+    #[inline(always)]
+    pub(in crate::game) fn native_pressure_plate_change(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockStateId,
+        from: i32,
+        to: i32,
+        cancel: &mut bool,
+    ) {
+        self.fire_pressure_plate_change(dimension, pos, state, from, to, cancel);
+    }
     /// On an authoritative server, fire is about to burn the block at `pos`
     /// away. Set `cancel` to keep that block.
     #[inline(always)]
@@ -2190,6 +2205,18 @@ impl Game<'_> {
         state: &str,
     ) {
         self.fire_vault_change_state(dimension, pos, state);
+    }
+
+    /// A dispenser at `pos` is about to dispense `stack`, before any answer is
+    /// asked. Set `cancel` and the stack stays in the dispenser. Server-side.
+    pub(in crate::game) fn native_block_dispense(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        stack: &ItemStack,
+        cancel: &mut bool,
+    ) {
+        self.fire_block_dispense(dimension, pos, stack, cancel);
     }
 
     /// A dispenser at `pos` failed to dispense `item`. Server-side.
