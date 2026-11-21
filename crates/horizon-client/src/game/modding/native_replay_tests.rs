@@ -1036,15 +1036,37 @@ fn a_replay_ends_with_the_session_it_plays_on() {
         let second = game.replay_open("trip").unwrap();
         finish_opening(game);
         assert!(game.replay_state().is_some());
+        // Left with a reason (a mod's `disconnect`): the replay closes once, and the
+        // disconnect screen says the reason, as without a replay.
+        let host: &mut dyn ClientHost = game;
+        host.disconnect(Some(mod_api::Text::literal("kicked")))
+            .unwrap();
+        game.native_leave_if_asked().unwrap();
+        assert_eq!(game.replay_state(), None);
+        assert!(game.remote.is_none());
+        let mode = &game.title.as_ref().expect("the title screen").mode;
+        assert!(
+            matches!(
+                mode,
+                horizon_client::title::Mode::Multiplayer(
+                    horizon_client::multiplayer::Screen::Disconnected { reason, .. }
+                ) if reason.plain() == "kicked"
+            ),
+            "the disconnect screen with the reason"
+        );
+
+        let third = game.replay_open("trip").unwrap();
+        finish_opening(game);
+        assert!(game.replay_state().is_some());
         // Another connection takes the session's place under the replay: the replay is
         // dropped, and the session there now is one a replay never displaces.
         game.replay.connections += 1;
         assert_eq!(game.replay_open("trip"), Err(ReplayError::WorldBusy));
         assert_eq!(game.replay_state(), None);
         assert!(game.remote.is_some(), "the session there now is left alone");
-        ids = vec![first, second];
+        ids = vec![first, second, third];
     });
-    let [first, second] = ids[..] else {
+    let [first, second, third] = ids[..] else {
         panic!("the test ended early");
     };
     assert_eq!(
@@ -1053,6 +1075,8 @@ fn a_replay_ends_with_the_session_it_plays_on() {
             format!("opened trip 1000 true #{first}"),
             "closed trip".into(),
             format!("opened trip 1000 true #{second}"),
+            "closed trip".into(),
+            format!("opened trip 1000 true #{third}"),
             "closed trip".into(),
         ]
     );
