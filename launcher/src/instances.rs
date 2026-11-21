@@ -513,7 +513,26 @@ pub fn select(query: &str) -> Result<Instance, String> {
 }
 
 /// The game's cache folder in each instance; the game rebuilds it on start.
-pub(crate) const GAME_CACHE: &str = ".horizon-cache";
+const GAME_CACHE: &str = ".horizon-cache";
+
+/// Where the game makes its cache under `game_home`: directly in each instance's home, never
+/// deeper, since a world may carry the same name. Every instance, port and pack folder counts,
+/// whether or not its record reads.
+pub(crate) fn game_caches(game_home: &Path) -> Vec<PathBuf> {
+    let children = |dir: PathBuf| {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+    };
+    std::iter::once(game_home.to_path_buf())
+        .chain(children(game_home.join(OWN)))
+        .chain(children(game_home.join("ports")).map(|w| modpacks::profile_home(&w)))
+        .chain(children(game_home.join("horizon-packs")).map(|w| registry_pack::home(&w)))
+        .map(|home| home.join(GAME_CACHE))
+        .collect()
+}
 
 /// What a copy of a game folder leaves out: other instances and packs, logs and crash reports,
 /// caches, data collection's state, and sign-in sessions (a session never leaves its folder).

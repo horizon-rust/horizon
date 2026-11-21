@@ -426,7 +426,7 @@ fn migrate_locked(
             &source.game,
             &staged.game,
             bootstrap,
-            &[crate::instances::GAME_CACHE],
+            &crate::instances::game_caches(&source.game),
             &mut progress,
         )?;
         if separate_build || !within(&source.build, &source.launcher) {
@@ -692,7 +692,7 @@ fn copy_tree(
     source: &Path,
     dest: &Path,
     bootstrap: &Path,
-    skip: &[&str],
+    skip: &[PathBuf],
     progress: &mut impl FnMut(&str),
 ) -> Result<()> {
     let meta = match fs::symlink_metadata(source) {
@@ -706,10 +706,10 @@ fn copy_tree(
         copy_acl(source, dest)?;
         for entry in fs::read_dir(source).map_err(|e| problem(source, e))? {
             let entry = entry.map_err(|e| problem(source, e))?;
-            if skip.iter().any(|name| entry.file_name() == *name) {
+            let path = entry.path();
+            if skip.contains(&path) {
                 continue;
             }
-            let path = entry.path();
             let controls = [
                 bootstrap.to_path_buf(),
                 bootstrap.with_file_name("migration.lock"),

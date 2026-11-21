@@ -296,7 +296,11 @@ fn game_cache_links_are_left_out_of_the_move() {
         }
     }
     let mut links = Vec::new();
-    for instance in [f.source.game.clone(), f.source.game.join("instances/a")] {
+    for instance in [
+        f.source.game.clone(),
+        f.source.game.join("instances/a"),
+        f.source.game.join("ports/p/home"),
+    ] {
         let stamp = instance.join(".horizon-cache/mod-content/0123456789abcdef");
         fs::create_dir_all(&stamp).unwrap();
         fs::write(stamp.join("STAMP"), b"stamp").unwrap();
@@ -316,10 +320,19 @@ fn game_cache_links_are_left_out_of_the_move() {
         links.push(Link(link));
     }
     fs::write(f.source.game.join("instances/a/options.txt"), b"options").unwrap();
+    // A world may carry the cache's name; only the game's own caches are left out.
+    let world = f.source.game.join("saves/.horizon-cache");
+    fs::create_dir_all(&world).unwrap();
+    fs::write(world.join("level.dat"), b"world").unwrap();
     let roots = migrate(&f.source, &f.target(), &f.bootstrap, |_| {}).unwrap();
     drop(links);
     assert!(!roots.game.join(".horizon-cache").exists());
     assert!(!roots.game.join("instances/a/.horizon-cache").exists());
+    assert!(!roots.game.join("ports/p/home/.horizon-cache").exists());
+    assert_eq!(
+        fs::read(roots.game.join("saves/.horizon-cache/level.dat")).unwrap(),
+        b"world"
+    );
     assert_eq!(
         fs::read(roots.game.join("instances/a/options.txt")).unwrap(),
         b"options"
