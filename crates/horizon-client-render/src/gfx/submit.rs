@@ -8,7 +8,7 @@
 //! submissions keep the order they had on one thread.
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// Whether frames go to the submit thread, unless `HORIZON_SUBMIT_THREAD` says (`0` off, `1` on):
@@ -62,6 +62,8 @@ pub struct Queue {
     /// Nanoseconds the window's thread waited for the submit thread since the last
     /// [`take_waited`](Self::take_waited): the GPU or the display holding a frame back, not work.
     waited: AtomicU64,
+    /// The submit thread gave a frame up (#13624) since the last [`take_lost`](Self::take_lost).
+    lost: Arc<AtomicBool>,
 }
 
 impl Queue {
@@ -73,6 +75,7 @@ impl Queue {
             pending: AtomicBool::new(false),
             landing: Mutex::new(None),
             waited: AtomicU64::new(0),
+            lost: Arc::new(AtomicBool::new(false)),
         };
         if !threaded {
             return this;
@@ -80,22 +83,29 @@ impl Queue {
         let (jobs, job_rx) = mpsc::channel::<Sent>();
         let (done_tx, done) = mpsc::channel();
         let queue = this.queue.clone();
+        let lost_frame = Arc::clone(&this.lost);
         let spawned = std::thread::Builder::new()
             .name("Render submit".into())
             .spawn(move || {
                 for Sent { job, first, device } in job_rx {
                     let device = device.as_ref();
+                    // What goes ahead of the frame is submitted on its own, so the frame running
+                    // out of video memory does not take it along.
+                    let ((), ahead) = out_of_memory(device, || {
+                        if let Some(first) = first {
+                            queue.submit([first]);
+                        }
+                    });
                     let (commands, lost) = out_of_memory(device, || job.encoder.finish());
                     // Given up where finishing it ran out of video memory (#13624), as its
-                    // commands may hold what failed: what goes ahead of it is still submitted,
-                    // its readbacks (`after`) still start, as one never started would hold its
-                    // slot for good, and its image is presented as wgpu clears an image nothing
-                    // drew to.
+                    // commands may hold what failed: its readbacks (`after`) still start, as one
+                    // never started would hold its slot for good, its image is presented as wgpu
+                    // clears an image nothing drew to, and the renderer is told (`take_lost`).
                     let commands = lost.is_none().then_some(commands);
-                    let (submission, failed) =
-                        out_of_memory(device, || queue.submit(first.into_iter().chain(commands)));
-                    if let Some(error) = lost.or(failed) {
+                    let (submission, failed) = out_of_memory(device, || queue.submit(commands));
+                    if let Some(error) = ahead.or(lost).or(failed) {
                         super::frame_targets::warn_frame_lost(&error);
+                        lost_frame.store(true, Ordering::Release);
                     }
                     if let Some(after) = job.after {
                         after();
@@ -159,6 +169,11 @@ impl Queue {
             }
             Err(mpsc::SendError(sent)) => Err((Box::new(sent.job), sent.first)),
         }
+    }
+    /// Whether the submit thread gave a frame up since the last call (#13624): what it uploaded
+    /// is uploaded again. Reliable once that frame is waited for ([`wait`](Self::wait)).
+    pub fn take_lost(&self) -> bool {
+        self.lost.swap(false, Ordering::Acquire)
     }
     /// Wait until the frame on the submit thread is submitted and presented.
     pub fn wait(&self) {
@@ -247,6 +262,37 @@ mod tests {
             usage,
             mapped_at_creation: false,
         })
+    }
+
+    #[test]
+    fn what_goes_ahead_of_a_frame_on_the_thread_lands_before_it() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let queue = Queue::new(queue, true);
+        use wgpu::BufferUsages as U;
+        let source = buffer(&device, U::COPY_SRC | U::COPY_DST);
+        let middle = buffer(&device, U::COPY_SRC | U::COPY_DST);
+        let read = buffer(&device, U::MAP_READ | U::COPY_DST);
+        queue.write_buffer(&source, 0, &[5, 6, 7, 8]);
+        let mut first = device.create_command_encoder(&Default::default());
+        first.copy_buffer_to_buffer(&source, 0, &middle, 0, 4);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&middle, 0, &read, 0, 4);
+        let job = Job {
+            encoder,
+            surface: None,
+            after: None,
+        };
+        let sent = queue.submit_frame(job, Some(first.finish()), Some(&device));
+        assert!(sent.is_ok());
+        assert!(queue.landed().is_some());
+        assert!(!queue.take_lost());
+        read.slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert_eq!(*read.slice(..).get_mapped_range().unwrap(), [5, 6, 7, 8]);
     }
 
     #[test]

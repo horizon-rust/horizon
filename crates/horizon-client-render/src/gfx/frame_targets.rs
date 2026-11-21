@@ -199,13 +199,15 @@ impl super::Renderer {
     /// Gives up a window frame after it took its swapchain image (#13624). The image is
     /// cleared to black and presented, as a Vulkan swapchain image that is never presented is
     /// not given back; the section copies staged before it are submitted, and a screenshot it
-    /// took is asked for again. `render` then uploads the HUD's patches again.
+    /// took is asked for again. `render` then uploads the HUD's patches again, and where the
+    /// frame's commands are dropped, the next frame what they uploaded (`upload_again`).
     pub(super) fn abandon_frame(&mut self, frame: Abandoned) -> crate::Result<bool> {
         let lost = frame.backstop.is_some_and(|backstop| {
             let (memory, validation) = backstop.errors();
             frame_lost(memory, validation)
         });
         let encoder = frame.encoder.filter(|_| !lost);
+        self.frame_lost |= encoder.is_none();
         let mut encoder = encoder.unwrap_or_else(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -236,6 +238,10 @@ impl super::Renderer {
         self.queue
             .submit(frame.copies.into_iter().chain([encoder.finish()]));
         if let Some(surface) = frame.surface {
+            // As the frame's own present would (Wayland's frame callbacks).
+            if self.config.present_mode == wgpu::PresentMode::Fifo {
+                self.window.pre_present_notify();
+            }
             self.queue.present(surface);
         }
         if frame.generated.is_some() {
@@ -244,6 +250,7 @@ impl super::Renderer {
         if let Some(request) = frame.screenshot {
             self.screenshot = Some(request);
         }
+        self.frame_given_up();
         Ok(false)
     }
 }

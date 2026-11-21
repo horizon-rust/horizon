@@ -599,6 +599,11 @@ impl Oit {
         !self.no_room
     }
 
+    /// Lets the targets go while it is off for want of room (`no_room`).
+    pub fn let_go(&mut self) {
+        self.targets = None;
+    }
+
     /// Writes this frame's projection, and makes the depths the water mask and the clouds
     /// `wants`. Without the room for one, this frame's `run` leaves that part out and it is off
     /// from the next frame (`no_room`).

@@ -1654,6 +1654,18 @@ pub struct Renderer {
     shrink_gate: ShrinkGate,
     /// Whether `lightmap` holds `lightmap_pixels` yet.
     lightmap_uploaded: bool,
+    /// A window frame was given up after it recorded uploads (#13624): the next one uploads
+    /// what is uploaded only when it changes again (`upload_again`).
+    frame_lost: bool,
+    /// Window frames given up in a row (`frame_given_up`).
+    given_up: u32,
+    /// The last frame went to the submit thread, and whether it was given up there is not
+    /// looked at yet.
+    handed_off: bool,
+    /// That frame's atlas patches, uploaded again where the submit thread gave it up.
+    handed_patches: Vec<crate::font::Patch>,
+    /// The world border's vertices go up on the next frame that draws it, rebuilt or not.
+    border_stale: bool,
     sprite_minimum_size: u32,
     /// Each sprite layer's own side, before the arrays scaled it up (`mipmap::Settings::native_size`).
     sprite_native: Vec<u32>,
@@ -4601,6 +4613,11 @@ impl Renderer {
             section_copy_bytes: 0,
             shrink_gate: ShrinkGate::default(),
             lightmap_uploaded: false,
+            frame_lost: false,
+            given_up: 0,
+            handed_off: false,
+            handed_patches: Vec::new(),
+            border_stale: false,
             sprite_minimum_size,
             sprite_native: sprite_mips.iter().map(|s| s.native_size).collect(),
             mipmap_option: 4,
@@ -4838,6 +4855,58 @@ impl Renderer {
         rt::query::quad_indices(device, quads)
     }
 
+    /// A window frame was given up (#13624). Where video memory stays full, every frame would
+    /// be: black frames, or the last one held, behind one warning. After `GIVEN_UP_LIMIT` in a
+    /// row the game ends, as running out of memory did before.
+    fn frame_given_up(&mut self) {
+        self.given_up += 1;
+        if self.given_up >= GIVEN_UP_LIMIT {
+            panic!(
+                "Horizon renderer: video memory is full: {GIVEN_UP_LIMIT} frames in a row could                  not be drawn (#13624)"
+            );
+        }
+    }
+    /// After a frame given up whose uploads never reached the GPU (#13624): what frames upload
+    /// only when it changes is uploaded again.
+    fn upload_again(&mut self) {
+        self.lightmap_uploaded = false;
+        self.static_entity_catalog_revision = 0;
+        for section in self.static_entity_sections.values_mut() {
+            section.revision = 0;
+        }
+        self.cloud_mesh.forget();
+        self.border_stale = true;
+        self.animations.forget();
+        self.material_animations.forget();
+        self.hud.forget_pictures();
+        if let Some(gpu) = &mut self.gpu_culling {
+            gpu.forget();
+        }
+        for section in self.sections.values_mut() {
+            section.sort.forget();
+        }
+        for tile in self.lods.values_mut() {
+            for mesh in tile.meshes_mut() {
+                mesh.sort.forget();
+            }
+        }
+    }
+    /// The atlas patches of the frame the submit thread gave up (#13624), uploaded again.
+    fn upload_handed_patches(&mut self) {
+        if self.handed_patches.is_empty() {
+            return;
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon atlas patches"),
+            });
+        self.hud
+            .upload_patches(&mut self.uploads, &mut encoder, &self.handed_patches);
+        self.uploads.finish(&encoder);
+        self.queue.submit([encoder.finish()]);
+        self.handed_patches.clear();
+    }
     /// The index buffer of `quads` quads, for a frame that grows one: `None` where there was no
     /// room for it (#13624).
     fn grown_quad_indices(
@@ -7431,6 +7500,19 @@ impl Renderer {
         // Waiting for the previous frame (offscreen: at most two on the GPU), not work.
         let landed = landing.elapsed();
         self.queue.take_waited();
+        // The last frame, landed now, given up on the submit thread or not (#13624).
+        let lost_there = self.queue.take_lost();
+        if std::mem::take(&mut self.handed_off) && !lost_there {
+            self.given_up = 0;
+        }
+        if lost_there {
+            self.upload_handed_patches();
+            self.frame_lost = true;
+            self.frame_given_up();
+        }
+        if std::mem::take(&mut self.frame_lost) {
+            self.upload_again();
+        }
         // World frames alone follow the shader pack: the game loads the picked one
         // before it draws one. Title frames draw no terrain and keep the layout
         // through a pack dropped (Shader Options) or not loaded yet (`Renderer::new`),
@@ -7468,12 +7550,14 @@ impl Renderer {
         if checks.is_none() {
             frame_targets::begin_frame();
             if self.depth.is_none() && !self.remake_depth() {
+                self.frame_given_up();
                 return Ok(false);
             }
             let size = [self.config.width, self.config.height];
             if let Some(hdr) = &mut self.hdr
                 && !hdr.ready(&self.device, size)
             {
+                self.frame_given_up();
                 return Ok(false);
             }
             // Without HDR, the texture a float frame or a screenshot of a swapchain that can't
@@ -7500,6 +7584,7 @@ impl Renderer {
                 && let Some(image) = image
                 && !self.readback.ready(&self.device, image, format, screenshot)
             {
+                self.frame_given_up();
                 return Ok(false);
             }
         }
@@ -8936,6 +9021,13 @@ impl Renderer {
                 })
                 .fit(&self.device, size);
         }
+        // Off for want of room (#13624): its targets are let go until the size changes.
+        if !oit_on
+            && let Some(oit) = &mut self.oit
+            && oit.no_room
+        {
+            oit.let_go();
+        }
         self.cracks_transparent = oit_on && !hdr_gain;
         let [
             entity_quads,
@@ -9397,7 +9489,7 @@ impl Renderer {
             self.indices = indices;
         }
         if let Some(b) = &frame.border {
-            if b.rebuilt {
+            if b.rebuilt || std::mem::take(&mut self.border_stale) {
                 self.uploads.buffer(
                     &mut encoder,
                     &self.border_vertices,
@@ -11570,6 +11662,8 @@ impl Renderer {
             {
                 Ok(()) => {
                     self.deferred = Some(offscreen);
+                    self.handed_off = true;
+                    self.handed_patches.clone_from(&frame.hud.patches);
                     // The frame's waits for the previous one on the submit thread.
                     self.last_wait += self.queue.take_waited();
                     self.last_encode = started.elapsed().saturating_sub(self.last_wait);
@@ -11631,6 +11725,9 @@ impl Renderer {
             && let Some(read) = post.submitted()
         {
             read();
+        }
+        if checks.is_none() {
+            self.given_up = 0;
         }
         let failed = checks.and_then(GpuChecks::pop);
         if let Some((request, buffer)) = readback {
@@ -12022,6 +12119,9 @@ impl Renderer {
 }
 /// Window frames are drawn only once their depth is made (`remake_depth`).
 const WINDOW_DEPTH: &str = "the window's depth is made before its frames";
+/// Window frames given up in a row for want of video memory before the game ends (#13624):
+/// about two seconds.
+const GIVEN_UP_LIMIT: u32 = 120;
 /// Out-of-memory and validation error scopes, popped together: the first error either caught.
 struct GpuChecks {
     // Dropped (popped) in this order, the reverse of `push`'s: wgpu panics on any other.

@@ -71,6 +71,9 @@ impl Readback {
     ) -> Option<wgpu::Texture> {
         let image = Image::of(surface);
         if !needed(image, format, screenshot) {
+            // A frame given up after `target` (#13624) left `drawn` set, and `present` would
+            // draw its stale texture over this one.
+            self.drawn = false;
             return None;
         }
         if !self.fits(image, format) {

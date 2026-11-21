@@ -152,6 +152,7 @@ impl FrameGen {
         self.stop();
         self.gpu = None;
         self.offscreen_generated = None;
+        self.motion = None;
         self.no_room = true;
     }
 
