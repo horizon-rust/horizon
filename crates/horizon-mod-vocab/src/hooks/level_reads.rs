@@ -40,6 +40,10 @@ locked, tracking and unlimited flags and its 128 by 128 colour ids, from memory 
 `.dat` without loading it for good. `set_map_data(host, id, colors)` repaints it pixel by pixel as
 `setColor` does, so the map saves, redraws and reaches the players carrying or framing it. Maps
 belong to the world: any current level handle reaches them. Markers are not part of either.
+`set_map_locked(host, id, locked)` sets the locked flag as `MapItemSavedData.setLocked` does: the pixels
+stay, and the players' copies take the flag with their next update of the map.
+`new_map(host, center, scale, colors)` makes a new unlocked map in the level's dimension (`Bukkit.createMap`)
+and returns its id; the centre is kept as given, not snapped to the grid.
 
 `block_tick(host, pos)` runs the block's scheduled tick now through the path a due tick from the
 queue takes (the block's part first, then `BlockState.tick`), and `block_random_tick(host, pos)`

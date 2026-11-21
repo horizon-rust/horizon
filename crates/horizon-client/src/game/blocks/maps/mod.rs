@@ -219,6 +219,14 @@ impl MapData {
             texture_dirty: true,
         }
     }
+    /// `MapItemSavedData.setLocked`: the flag changes and the map is marked to save. Nothing is
+    /// repainted and no holder is sent anything, as vanilla.
+    pub(super) fn set_locked(&mut self, locked: bool) {
+        if self.locked != locked {
+            self.locked = locked;
+            self.dirty = true;
+        }
+    }
     /// `MapItemSavedData.setColor` for every pixel of `colors` (128 by 128, row by row): each
     /// changed one marks the map to save, redraw and send. Whether one changed; None for
     /// another length.
