@@ -396,6 +396,9 @@ impl Game<'_> {
         };
 
         self.dispatch_studio_replay_packets(packets);
+        if !self.replay.playing() {
+            return Ok(());
+        }
         self.reset_studio_playback_ticks();
         self.replay.last_tick = Some(std::time::Instant::now());
         self.replay.seek_report = true;
@@ -427,7 +430,13 @@ impl Game<'_> {
         &mut self,
         packets: Vec<horizon_client::studio::mcpr::TimestampedPacket>,
     ) {
+        let generation = self.replay.generation;
         for pkt in packets {
+            // A packet whose handler left the session (a chat it can't place) ended the
+            // replay: the rest of the batch has no session to go to.
+            if !self.replay.playing() || self.replay.generation != generation {
+                break;
+            }
             match horizon_protocol::packets::play::Clientbound::decode(pkt.id, &pkt.payload) {
                 Ok(packet) => {
                     let _ = self.handle_packet(packet);
@@ -497,6 +506,9 @@ impl Game<'_> {
         };
 
         self.dispatch_studio_replay_packets(ready_packets);
+        if !self.replay.playing() {
+            return Ok(());
+        }
         let paused = self
             .replay
             .driver

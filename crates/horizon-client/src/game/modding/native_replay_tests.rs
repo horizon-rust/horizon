@@ -1082,6 +1082,58 @@ fn a_replay_ends_with_the_session_it_plays_on() {
     );
 }
 
+/// A recorded packet that makes the client leave its session (a chat deletion naming no
+/// message it holds) ends the replay where it plays: closed once, the rest of the batch not
+/// applied, and nothing heard after.
+#[test]
+#[ignore = "daily"]
+fn a_recorded_packet_that_leaves_the_session_ends_the_replay_once() {
+    use horizon_protocol::packets::play;
+    let root = tempfile::tempdir().unwrap();
+    write_packets(
+        &root.path().join("kick.mcpr"),
+        1_000,
+        vec![
+            (0, login_packet()),
+            (
+                500,
+                play::Clientbound::DeleteChat(play::DeleteChat {
+                    signature: (5, None),
+                }),
+            ),
+            (500, chat_packet("said after the kick")),
+        ],
+    );
+    let mut request = 0;
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        request = game.replay_open("kick").unwrap();
+        finish_opening(game);
+        frame(game, 250);
+        frame(game, 250);
+        assert_eq!(game.replay_state(), None);
+        frame(game, 250);
+        assert!(
+            !game
+                .ui
+                .chat
+                .recent_lines(10)
+                .iter()
+                .any(|line| line == "said after the kick"),
+            "the rest of the batch went nowhere"
+        );
+    });
+    assert_eq!(
+        heard,
+        [
+            format!("opened kick 1000 true #{request}"),
+            // The open's own first frame ran 16 ms.
+            "advanced 266".into(),
+            "closed kick".into(),
+        ]
+    );
+}
+
 /// Request ids run out rather than wrap: the last `u32` is given once, then none, never the
 /// reserved 0 nor an id given before.
 #[test]
