@@ -1569,6 +1569,12 @@ fn read_lock(dir: &Path) -> Result<String, String> {
 }
 
 fn source(revision: &str) -> Result<PathBuf, String> {
+    source_until(revision, &|| Ok(()))
+}
+
+/// [`source`] that asks `stop` before the download and for each file unpacked (a build passes
+/// [`check_cancelled`]; internals sync, outside a build, never stops).
+fn source_until(revision: &str, stop: &dyn Fn() -> Result<(), String>) -> Result<PathBuf, String> {
     let dir = root().join("source").join(revision);
     if dir.join(".horizon-revision").is_file() {
         crate::storage::mark_used(&dir).map_err(cache_error)?;
@@ -1579,7 +1585,7 @@ fn source(revision: &str) -> Result<PathBuf, String> {
         horizon_platform::mod_package::index::native::PREBUILT_REPO
     );
     let partial = root().join("source").join(format!(".{revision}.partial"));
-    let top = unpack_archive_until(&archive, &partial, u64::MAX, &check_cancelled)?;
+    let top = unpack_archive_until(&archive, &partial, u64::MAX, stop)?;
     fs::write(top.join(".horizon-revision"), revision).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&dir);
     fs::rename(&top, &dir).map_err(|e| e.to_string())?;
@@ -1625,7 +1631,7 @@ pub(crate) fn unpack_archive(url: &str, partial: &Path, limit: u64) -> Result<Pa
 
 /// [`unpack_archive`] that asks `stop` before the download and for each file unpacked: its
 /// error ends it word for word, and `partial` is removed with what was unpacked so far.
-fn unpack_archive_until(
+pub(super) fn unpack_archive_until(
     url: &str,
     partial: &Path,
     limit: u64,
@@ -2935,6 +2941,52 @@ mod tests {
         assert_eq!(result.unwrap_err(), CANCELLED);
         assert!(folder.path().join("top/one").is_file());
         assert!(!folder.path().join("top/two").exists());
+    }
+
+    /// A stop during a downloaded archive's unpack removes what was unpacked of it (#19300).
+    #[test]
+    fn a_stopped_archive_download_keeps_no_partial_folder() {
+        use std::io::{Read, Write};
+        let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for path in ["top/one", "top/two"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive.append_data(&mut header, path, &b"x"[..]).unwrap();
+        }
+        let body = archive.into_inner().unwrap().finish().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/source.tar.gz", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.read(&mut [0; 4096]);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(&body);
+            }
+        });
+        let folder = tempfile::tempdir().unwrap();
+        let partial = folder.path().join(".source.partial");
+        let asked = std::cell::Cell::new(0);
+        // Asked once before the download, then before each entry: stops at the second entry.
+        let stop = || {
+            asked.set(asked.get() + 1);
+            match asked.get() > 2 {
+                true => Err(CANCELLED.to_string()),
+                false => Ok(()),
+            }
+        };
+        let result = unpack_archive_until(&url, &partial, u64::MAX, &stop);
+        assert_eq!(result.unwrap_err(), CANCELLED);
+        assert_eq!(asked.get(), 3);
+        assert!(!partial.exists());
     }
 
     #[test]
