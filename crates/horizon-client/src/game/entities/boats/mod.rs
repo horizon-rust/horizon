@@ -1517,8 +1517,9 @@ impl Game<'_> {
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
     }
-    /// `VehicleEntity.hurtServer`: wobble, add the damage and break past 40
-    /// (`creative`: a creative player's hit discards it straight away).
+    /// `VehicleEntity.hurtServer`: wobble, post the damage event, add the
+    /// damage and break past 40 (`creative`: a creative player's hit discards
+    /// it straight away).
     /// `AbstractChestBoat.remove` drops the chest contents for every removal
     /// reason that destroys the boat (DISCARDED included), while the boat item
     /// itself only drops on the death path (`VehicleEntity.destroy`), not when

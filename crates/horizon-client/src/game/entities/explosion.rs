@@ -1279,6 +1279,7 @@ impl Game<'_> {
                         }
                     }
                     // `VehicleEntity.hurtServer`: damage * 10, broken past 40.
+                    // The damage event's source is the blast's cause.
                     EntityHandle::Boat(i) => {
                         let kind = self.boats[i].entity_type();
                         if !blocked_damage!(entity as i32, &kind) {

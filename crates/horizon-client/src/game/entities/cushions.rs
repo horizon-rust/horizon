@@ -425,31 +425,17 @@ impl Game<'_> {
             1.0,
         );
         self.cushion_break_particles(&c);
-        // `Cushion.dropItem`: the item unless drops are off or the cause is a
-        // player with infinite materials (the TNT's owner for a blast).
+        // `Cushion.dropItem` suppresses drops for a player with infinite materials.
         if !self
             .ui
             .rules
             .bool_at(horizon_client::gamerules::vanilla::ENTITY_DROPS)
-            || self.infinite_materials(source.as_ref())
+            || self.causing_abilities(source).0
         {
             return;
         }
         let stack = c.item_stack_with_data();
         self.spawn_item(stack, [p.x, p.y, p.z], [0.0; 3], 10);
-    }
-    /// `Player.hasInfiniteMaterials` of a hurt's cause: the mode of the body in
-    /// place, or of the guest the blast names.
-    fn infinite_materials(&self, source: Option<&super::commands::Target>) -> bool {
-        use super::commands::Target;
-        match source {
-            Some(Target::Player) => self.creative,
-            // The guest whose turn it is is in place already (the hub is out of
-            // `self.lan` while it acts), as `sculk::entity_event_by` reads it.
-            Some(Target::Guest(conn)) if self.lan_acting == Some(*conn) => self.creative,
-            Some(Target::Guest(conn)) => self.command_guest(*conn).is_some_and(|g| g.creative()),
-            _ => false,
-        }
     }
 
     /// `Entity.kill` of a cushion (`/kill`): gone with no drop, its rider let go.

@@ -4104,6 +4104,11 @@ impl Game<'_> {
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
         let pierce = std::mem::take(&mut self.combat.piercing_hit);
         let melee = self.combat.melee_mob.take();
+        // ServerPlayer.canHarmPlayer refused another player's projectile.
+        if self.abilities_refuse_hit(damage_type) || self.combat.refuse_player_hit {
+            self.combat.forget_noted(false);
+            return false;
+        }
         // A projectile entity dealt it: `#is_projectile`, or a firework
         // rocket (its `fireworks` type is not in the tag).
         let projectile = rocket
@@ -4854,7 +4859,7 @@ impl Game<'_> {
     /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
     /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
     pub(super) fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
-        let creative = p.owner == Some(Who::Player) && self.creative;
+        let (cause, creative) = self.projectile_source(p.owner, p.guest);
         let damage_kind = self.projectile_damage_kind(p);
         let damage_type = source_damage_type(Damage {
             kind: damage_kind,
@@ -4865,7 +4870,7 @@ impl Game<'_> {
         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
             let kind = self.boats[i].entity_type();
             if !self.vehicle_refuses_projectile(p, id, &kind, damage_type) {
-                self.hurt_boat(i, amount, creative);
+                self.hurt_boat_by(i, amount, creative, cause);
             }
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
             let kind = self.carts[i].kind.id();
@@ -5405,8 +5410,8 @@ impl Game<'_> {
         {
             // AbstractArrow.onHitEntity on an item frame: spent when the
             // frame took the hit, turned back when a fixed one refused it.
-            let by_player = p.owner == Some(Who::Player);
-            let hurt = self.projectile_hurts_frame(id, by_player, by_player && self.creative);
+            let (cause, creative) = self.projectile_source(p.owner, p.guest);
+            let hurt = self.projectile_hurts_frame(id, cause, creative);
             let outcome = if hurt {
                 EntityHit::Hurt
             } else {
@@ -5457,7 +5462,8 @@ impl Game<'_> {
             let mut arrow = p.clone();
             let victim_type = self.boats[i].entity_type();
             let amount = self.shot_damage(&mut arrow, Some(&victim_type), Who::Mob(id));
-            let creative = p.owner == Some(Who::Player) && self.creative;
+            let cause = super::nonliving_hurt::projectile_by(p);
+            let creative = self.causing_abilities(cause).0;
             let kind = self.boats[i].entity_type();
             let damage_type = horizon_client::health::damage_type(
                 self.projectile_damage_kind(p),
@@ -5465,7 +5471,7 @@ impl Game<'_> {
             );
             let refused = self.vehicle_refuses_projectile(p, id, &kind, damage_type);
             if !refused {
-                self.hurt_boat_by(i, amount, creative, super::nonliving_hurt::projectile_by(p));
+                self.hurt_boat_by(i, amount, creative, cause);
             }
             self.finish_arrow_hit(
                 arrow,
