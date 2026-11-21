@@ -308,6 +308,7 @@ impl Game<'_> {
     }
     /// The same guests' feet and whether they stand on the ground, for the
     /// blocks that also ask that (`BigDripleafBlock.canEntityTilt`).
+    #[allow(dead_code)]
     pub(super) fn lan_guest_feet(&self) -> Vec<([f64; 3], bool)> {
         let Some(host) = self.lan.as_ref() else {
             return Vec::new();

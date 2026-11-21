@@ -26,14 +26,23 @@ impl Game<'_> {
         self.sync_tick_chunks();
         self.start_ticking_chunks();
         laps.lap("tb_tickets");
-        self.random_tick_chunks(&mut scratch.ticking);
+        let random_ticks_on = !self.world_debug
+            && self
+                .ui
+                .rules
+                .int_at(horizon_client::gamerules::vanilla::RANDOM_TICK_SPEED)
+                > 0;
+        if random_ticks_on {
+            self.random_tick_chunks(&mut scratch.ticking);
+        } else {
+            scratch.ticking.clear();
+        }
         laps.lap("tb_chunks");
         // Entity.checkInsideBlocks for the plates, tripwires, detector rails and
         // buttons under the players (the host and the LAN guests), the minecarts
         // and the arrows (the mobs and other entities are added in `with_level`
         // below).
         scratch.inside.clear();
-        let guests = self.lan_block_trigger_boxes();
         let boxes = self
             .player
             .iter()
@@ -52,13 +61,27 @@ impl Game<'_> {
                     [p.x - 0.49, p.y, p.z - 0.49],
                     [p.x + 0.49, p.y + 0.7, p.z + 0.49],
                 )
-            }))
-            .chain(guests);
+            }));
         for (lo, hi) in boxes {
             for x in (lo[0] + 1e-7).floor() as i32..=(hi[0] - 1e-7).floor() as i32 {
                 for y in (lo[1] + 1e-7).floor() as i32..=(hi[1] - 1e-7).floor() as i32 {
                     for z in (lo[2] + 1e-7).floor() as i32..=(hi[2] - 1e-7).floor() as i32 {
                         scratch.inside.push(BlockPos::new(x, y, z));
+                    }
+                }
+            }
+        }
+        if let Some(host) = self.lan.as_ref() {
+            for g in host.hub.guests.simulation_iter() {
+                if host.hub.here(g) && g.loaded && !g.dead && !g.spectator() {
+                    let b = g.bounds();
+                    let (lo, hi) = (b.min_position(), b.max_position());
+                    for x in (lo.x + 1e-7).floor() as i32..=(hi.x - 1e-7).floor() as i32 {
+                        for y in (lo.y + 1e-7).floor() as i32..=(hi.y - 1e-7).floor() as i32 {
+                            for z in (lo.z + 1e-7).floor() as i32..=(hi.z - 1e-7).floor() as i32 {
+                                scratch.inside.push(BlockPos::new(x, y, z));
+                            }
+                        }
                     }
                 }
             }
@@ -98,8 +121,12 @@ impl Game<'_> {
                 f64::from(p.dimensions.width) / 2.0,
             );
         }
-        for (at, on_ground) in self.lan_guest_feet() {
-            standing_feet(&mut scratch.standing, at, on_ground, 0.3);
+        if let Some(host) = self.lan.as_ref() {
+            for g in host.hub.guests.iter() {
+                if host.hub.here(g) && g.loaded && !g.dead && !g.spectator() {
+                    standing_feet(&mut scratch.standing, g.position, g.on_ground, 0.3);
+                }
+            }
         }
         {
             use entity::{Entity as _, entity_lists_of, for_each_entity};
@@ -287,62 +314,77 @@ impl Game<'_> {
             }
         }
         horizon_threads::work::clear_work();
-        self.with_level(|b, level, ticks| {
-            // The masks the random ticks will read, built on helper threads first while the
-            // parallel tick is on (`HORIZON_PARALLEL_TICK`): the draws and ticks don't depend on them.
-            if !debug && horizon_client::parallel::lanes() > 1 {
-                horizon_client::spans::time("random_tick_masks", || {
-                    let chunks = &level.world.chunks;
-                    level.random_tick_sections.prepare_masks(
-                        &scratch.ticking,
-                        |key| chunks.get(&key).cloned(),
-                        level.facts,
-                        &|id| b.random_tick_candidate(BlockStateId(id)),
-                    );
-                });
-            }
-            horizon_client::spans::time("random_ticks", || {
-                for (x, z) in scratch.ticking.drain(..).filter(|_| !debug) {
-                    // The last answer, asked from Y `from` at a world revision:
-                    // the next ticking section. It stands for a later Y up to
-                    // that section's until a block changes; the mask itself is
-                    // retained by tick_chunk_random_masked between callback asks.
-                    let mut last: Option<(u64, i32, Option<i32>)> = None;
-                    let pos = horizon_core::position::ChunkPos::new(x, z);
-                    b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
-                        let revision = level.world.revision;
-                        let stands = last.as_ref().is_some_and(|(r, f, next_y)| {
-                            *r == revision && *f <= from && next_y.is_none_or(|y| from <= y)
-                        });
-                        if stands {
-                            return last.as_ref().and_then(|(_, _, next_y)| {
-                                next_y.map(|y| (y, RandomTickMaskUpdate::Keep))
-                            });
-                        }
-                        let next = level.world.chunks.get(&(x, z)).and_then(|chunk| {
-                            level.random_tick_sections.next_masked(
-                                (x, z),
-                                chunk,
-                                level.facts,
-                                |id| b.random_tick_candidate(BlockStateId(id)),
-                                from,
-                            )
-                        });
-                        let next_y = next.as_ref().map(|(y, _)| *y);
-                        last = Some((revision, from, next_y));
-                        next.map(|(y, mask)| (y, RandomTickMaskUpdate::Replace(Some(mask))))
+        let random_ticks_on = !debug
+            && self
+                .ui
+                .rules
+                .int_at(horizon_client::gamerules::vanilla::RANDOM_TICK_SPEED)
+                > 0;
+        if random_ticks_on && scratch.ticking.is_empty() {
+            self.random_tick_chunks(&mut scratch.ticking);
+        }
+        if !random_ticks_on {
+            scratch.ticking.clear();
+        } else {
+            self.with_level(|b, level, ticks| {
+                // The masks the random ticks will read, built on helper threads first while the
+                // parallel tick is on (`HORIZON_PARALLEL_TICK`): the draws and ticks don't depend on them.
+                if horizon_client::parallel::lanes() > 1 {
+                    horizon_client::spans::time("random_tick_masks", || {
+                        let chunks = &level.world.chunks;
+                        level.random_tick_sections.prepare_masks(
+                            &scratch.ticking,
+                            |key| chunks.get(&key).cloned(),
+                            level.facts,
+                            &|id| b.random_tick_candidate(BlockStateId(id)),
+                        );
                     });
                 }
+                horizon_client::spans::time("random_ticks", || {
+                    for (x, z) in scratch.ticking.drain(..) {
+                        // The last answer, asked from Y `from` at a world revision:
+                        // the next ticking section. It stands for a later Y up to
+                        // that section's until a block changes; the mask itself is
+                        // retained by tick_chunk_random_masked between callback asks.
+                        let mut last: Option<(u64, i32, Option<i32>)> = None;
+                        let pos = horizon_core::position::ChunkPos::new(x, z);
+                        b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
+                            let revision = level.world.revision;
+                            let stands = last.as_ref().is_some_and(|(r, f, next_y)| {
+                                *r == revision && *f <= from && next_y.is_none_or(|y| from <= y)
+                            });
+                            if stands {
+                                return last.as_ref().and_then(|(_, _, next_y)| {
+                                    next_y.map(|y| (y, RandomTickMaskUpdate::Keep))
+                                });
+                            }
+                            let next = level.world.chunks.get(&(x, z)).and_then(|chunk| {
+                                level.random_tick_sections.next_masked(
+                                    (x, z),
+                                    chunk,
+                                    level.facts,
+                                    |id| b.random_tick_candidate(BlockStateId(id)),
+                                    from,
+                                )
+                            });
+                            let next_y = next.as_ref().map(|(y, _)| *y);
+                            last = Some((revision, from, next_y));
+                            next.map(|(y, mask)| (y, RandomTickMaskUpdate::Replace(Some(mask))))
+                        });
+                    }
+                });
             });
-        });
+        }
         horizon_threads::work::clear_work();
         laps = horizon_client::spans::laps();
         let sent = self.lan_broadcast_changes();
         laps.lap("tb_broadcast");
         self.save_chunks_eagerly();
-        self.with_level(|b, level, ticks| {
-            b.run_block_events(level, ticks);
-        });
+        if !self.block_ticks.block_events.is_empty() {
+            self.with_level(|b, level, ticks| {
+                b.run_block_events(level, ticks);
+            });
+        }
         laps.lap("tb_block_events");
         // `ServerLevel`: `handlingTick = false` right after `runBlockEvents`
         // (:412), before the entities and the block entities.

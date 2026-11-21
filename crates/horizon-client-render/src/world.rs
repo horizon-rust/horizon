@@ -611,6 +611,18 @@ impl World {
                 .0
         })
     }
+    /// Awake block entities to tick this tick (`BlockEntities::awake_tickers`).
+    pub fn awake_block_entity_tickers(
+        &mut self,
+    ) -> std::sync::Arc<Vec<(crate::block_entities::Pos, u32)>> {
+        let (chunks, air) = (&self.chunks, self.air);
+        self.block_entities.awake_tickers(|(x, y, z)| {
+            chunks
+                .get(&(x >> 4, z >> 4))
+                .map_or(air, |chunk| chunk.block(x & 15, y, z & 15))
+                .0
+        })
+    }
     pub fn light(&self, x: i32, y: i32, z: i32) -> u8 {
         self.chunks
             .get(&(x >> 4, z >> 4))

@@ -1,11 +1,7 @@
 //! The game's side of `NaturalSpawner` (`mobs::spawn_selection`): the level
 //! it reads, the spawning chunks and caps of `ServerChunkCache.tickChunks`,
 //! and the mobs it adds (finalized with the game's `finalizeSpawn`).
-use super::{
-    Dim, Game,
-    creatures::Finalized,
-    structures::reaches_in,
-};
+use super::{Dim, Game, creatures::Finalized, structures::reaches_in};
 use horizon_client::vanillagen::VanillaTerrain;
 use horizon_client::{
     biome::{BiomeInfo, SpawnEntry},
@@ -683,7 +679,8 @@ impl<'g, 'a> GameLevel<'g, 'a> {
                     created: Vec::new(),
                     jockey_rider: None,
                 };
-                group = horizon_client::mobs::finalize::finalize(&mut cx, &mut mob, r.reason, group);
+                group =
+                    horizon_client::mobs::finalize::finalize(&mut cx, &mut mob, r.reason, group);
                 for m in cx.created {
                     let bounds = m.bounds();
                     self.pending.borrow_mut().push(bounds);
@@ -1402,6 +1399,15 @@ impl<'a> Game<'a> {
             *self.world.inhabited.entry(key).or_insert(0) += 1;
         }
         laps.lap("sn_inhabited");
+        if !self
+            .ui
+            .rules
+            .bool_at(horizon_client::gamerules::vanilla::SPAWN_MOBS)
+        {
+            scratch.candidates.clear();
+            self.spawn_scratch = scratch;
+            return;
+        }
         let mut random = std::mem::replace(
             &mut self.world.random,
             horizon_core::random::LevelRandom::for_level(LegacyRandom::new(0)),
