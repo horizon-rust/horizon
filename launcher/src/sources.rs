@@ -519,6 +519,41 @@ pub(crate) fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
         })
 }
 
+/// The folder in the launcher's data that other launchers' files are linked into.
+pub(crate) const LINKED: &str = "linked-minecraft";
+
+/// The links preparing makes in `launcher`'s [`LINKED`] folder: to another launcher's files,
+/// remade by every prepare, so a move of the launcher's data leaves them out. None is followed.
+pub(crate) fn linked_layout_links(launcher: &Path) -> Vec<PathBuf> {
+    let linked = launcher.join(LINKED);
+    // Only Unix links the client jar; Windows hard-links or copies it.
+    #[cfg(unix)]
+    let jars: Vec<PathBuf> = {
+        let plain_dir = |dir: &Path| fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir());
+        let versions = linked.join("versions");
+        [launcher, linked.as_path(), versions.as_path()]
+            .into_iter()
+            .all(plain_dir)
+            .then(|| fs::read_dir(&versions).ok())
+            .flatten()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| {
+                let mut jar = entry.file_name();
+                jar.push(".jar");
+                entry.path().join(jar)
+            })
+            .collect()
+    };
+    #[cfg(not(unix))]
+    let jars = Vec::new();
+    [linked.join("libraries"), linked.join("assets")]
+        .into_iter()
+        .chain(jars)
+        .collect()
+}
+
 /// Links a launcher's files into the official layout in `linked`: the client jar as
 /// `versions/<v>/<v>.jar`, its `libraries` and `assets`, and the pinned version JSON, the
 /// launcher's own when it keeps it, else Mojang's.
