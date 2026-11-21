@@ -1,0 +1,4 @@
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+horizon-client game::block_ticks::entity_inside_tests::a_boat_breaks_a_lily_pad_only_inside_the_simulation_distance lib daily resources
+horizon-client game::block_ticks::entity_inside_tests::a_mob_presses_a_plate_only_inside_the_simulation_distance lib daily resources
+horizon-client game::use_hand::lily_pad_tests::a_lily_pad_places_on_the_water_above_a_kelp_plant lib daily resources

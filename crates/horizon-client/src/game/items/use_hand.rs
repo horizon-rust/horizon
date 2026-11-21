@@ -997,3 +997,7 @@ mod bow_enchantment_tests;
 #[cfg(test)]
 #[path = "tests/jigsaw_place_tests.rs"]
 mod jigsaw_place_tests;
+
+#[cfg(test)]
+#[path = "tests/lily_pad_tests.rs"]
+mod lily_pad_tests;
