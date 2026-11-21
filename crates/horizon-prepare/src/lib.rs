@@ -586,7 +586,15 @@ impl Run<'_> {
         log: &Path,
     ) -> Result<(), String> {
         (self.log)(&format!("Exporting {what} ({})", mains.join(", ")));
-        let fail = |e: String| format!("{e} while exporting {what}; see {}", log.display());
+        // On the first line: a stopped exporter JVM's details follow it.
+        let fail = |e: String| {
+            let first = e.find('\n').unwrap_or(e.len());
+            let (first, rest) = e.split_at(first);
+            format!(
+                "{first} while exporting {what}; see {}{rest}",
+                log.display()
+            )
+        };
         // Compiled first, so the time is this step's (the JVM's start included).
         self.bundle().map_err(fail)?;
         let started = Instant::now();
