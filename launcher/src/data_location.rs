@@ -634,7 +634,7 @@ fn pointer_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn reject_link(path: &Path, meta: &fs::Metadata) -> Result<()> {
+pub(crate) fn reject_link(path: &Path, meta: &fs::Metadata) -> Result<()> {
     #[cfg(windows)]
     let reparse = {
         use std::os::windows::fs::MetadataExt;

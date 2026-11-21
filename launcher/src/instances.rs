@@ -517,10 +517,17 @@ const GAME_CACHE: &str = ".horizon-cache";
 
 /// Where the game makes its cache under `game_home`: directly in each instance's home, never
 /// deeper, since a world may carry the same name. Every instance, port and pack folder counts,
-/// whether or not its record reads.
+/// whether or not its record reads. Links are never followed: the copy refuses them afterwards.
 pub(crate) fn game_caches(game_home: &Path) -> Vec<PathBuf> {
+    let plain_dir = |dir: &Path| {
+        fs::symlink_metadata(dir).is_ok_and(|meta| {
+            meta.is_dir() && crate::data_location::reject_link(dir, &meta).is_ok()
+        })
+    };
     let children = |dir: PathBuf| {
-        fs::read_dir(dir)
+        (plain_dir(game_home) && plain_dir(&dir))
+            .then(|| fs::read_dir(dir).ok())
+            .flatten()
             .into_iter()
             .flatten()
             .flatten()
