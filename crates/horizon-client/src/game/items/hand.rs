@@ -740,12 +740,14 @@ impl Game<'_> {
             return;
         }
         let hand = if h == 0 { Hand::Main } else { Hand::Off };
+        let slot = Some(if h == 0 { "mainhand" } else { "offhand" });
         let slot_changed = h == 0 && visible.0 != held.0;
         let mut reequip = !*same;
-        self.native_should_cause_reequip_animation(
+        self.reequip_slot_dispatch(
             stack,
             visible.1.as_ref(),
             hand,
+            slot,
             slot_changed,
             &mut reequip,
         );

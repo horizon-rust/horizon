@@ -4,8 +4,11 @@ pub trait Hooks {
     /// NeoForge's `IItemExtension.shouldCauseReequipAnimation`: does the
     /// first-person hand lower and raise again to show `stack`, the stack the
     /// hand holds now? `old` is the stack the hand shows (`None` for an empty
-    /// hand), `slot_changed` whether `stack` came from another slot (always
-    /// false for the off hand). `reequip` arrives with vanilla's answer
+    /// hand), `slot` the equipment slot name where the game knows it
+    /// (`mainhand` or `offhand` for a vanilla hand, `None` otherwise), so a
+    /// part can tell a vanilla equipment slot from a place a mod tracks in its
+    /// own client state. `slot_changed` says whether `stack` came from another
+    /// slot (always false for the off hand). `reequip` arrives with vanilla's answer
     /// (`!FirstPersonHandsAndItems.shouldInstantlyReplaceVisibleItem`: the
     /// same stack changed in place, or an equal one but for its damage, is
     /// shown at once). `true` lowers the hand and raises it with `stack`;

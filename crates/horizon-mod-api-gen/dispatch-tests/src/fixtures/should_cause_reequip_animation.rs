@@ -1,5 +1,8 @@
 /// A reequip part: records the stacks, hand and answer it was given, then answers its own.
-struct ReequipProbe(bool, Arc<Mutex<Vec<(u32, Option<u32>, bool, bool)>>>);
+struct ReequipProbe(
+    bool,
+    Arc<Mutex<Vec<(u32, Option<u32>, Option<String>, bool, bool)>>>,
+);
 
 impl ItemPart for ReequipProbe {
     fn item_subscribed(&self) -> &'static [Option<HookId>] {
@@ -14,6 +17,7 @@ impl ItemPart for ReequipProbe {
         self.1.lock().unwrap().push((
             event.stack.count(),
             event.old.map(ItemStack::count),
+            event.slot.map(str::to_owned),
             event.slot_changed,
             event.reequip,
         ));
@@ -41,14 +45,19 @@ fn reequip_parts_start_from_vanillas_answer_and_answer_in_turn() {
         &stick(2),
         Some(&stick(1)),
         Hand::Main,
+        Some("mainhand"),
         true,
         &mut reequip,
     );
     // The second part is given the first part's answer, and its own is the last word.
     assert!(!reequip);
+    let slot = Some("mainhand".to_owned());
     assert_eq!(
         *heard.lock().unwrap(),
-        [(2, Some(1), true, true), (2, Some(1), true, true)]
+        [
+            (2, Some(1), slot.clone(), true, true),
+            (2, Some(1), slot, true, true)
+        ]
     );
     install_parts(Parts::default());
 }

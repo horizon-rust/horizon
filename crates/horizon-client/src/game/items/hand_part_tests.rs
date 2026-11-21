@@ -15,7 +15,8 @@ static REEQUIP: Mutex<Option<bool>> = Mutex::new(None);
 static RESET: Mutex<Option<bool>> = Mutex::new(None);
 /// What the part was asked: `(old count, stack count, hand, slot changed)`
 /// and, for a break, whether the break's stack had components.
-static REEQUIP_ASKED: Mutex<Vec<(Option<u32>, u32, mod_api::Hand, bool)>> = Mutex::new(Vec::new());
+static REEQUIP_ASKED: Mutex<Vec<(Option<u32>, u32, Option<String>, mod_api::Hand, bool)>> =
+    Mutex::new(Vec::new());
 static RESET_ASKED: Mutex<Vec<bool>> = Mutex::new(Vec::new());
 
 #[derive(Clone)]
@@ -30,6 +31,7 @@ impl ItemPart for Stick {
         REEQUIP_ASKED.lock().unwrap().push((
             event.old.map(|s| s.count()),
             event.stack.count(),
+            event.slot.map(str::to_owned),
             event.hand,
             event.slot_changed,
         ));
@@ -118,7 +120,13 @@ fn a_part_decides_whether_the_hand_lowers_for_a_new_stack() {
                 close(&dip(game)[..1], &[(1.0, 1)]);
                 assert_eq!(
                     REEQUIP_ASKED.lock().unwrap().drain(..).collect::<Vec<_>>(),
-                    [(Some(1), 1, mod_api::Hand::Main, true)]
+                    [(
+                        Some(1),
+                        1,
+                        Some("mainhand".to_owned()),
+                        mod_api::Hand::Main,
+                        true
+                    )]
                 );
 
                 // The same move with the part answering `true`: the hand drops,
@@ -140,7 +148,13 @@ fn a_part_decides_whether_the_hand_lowers_for_a_new_stack() {
                 close(&dip(game)[..2], &[(0.6, 1), (0.2, 1)]);
                 assert_eq!(
                     REEQUIP_ASKED.lock().unwrap()[0],
-                    (Some(1), 2, mod_api::Hand::Main, false)
+                    (
+                        Some(1),
+                        2,
+                        Some("mainhand".to_owned()),
+                        mod_api::Hand::Main,
+                        false
+                    )
                 );
                 *REEQUIP.lock().unwrap() = Some(false);
                 settle(game, stick(1));
