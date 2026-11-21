@@ -731,7 +731,9 @@ impl Game<'_> {
         let (right, up) = if self.posed_roll == 0.0 {
             (right, up)
         } else {
-            let (sin, cos) = f64::from(self.posed_roll).to_radians().sin_cos();
+            // In f32, as the view's `view_roll` and the billboards' `rolled_camera` turn.
+            let (sin, cos) = self.posed_roll.to_radians().sin_cos();
+            let (sin, cos) = (f64::from(sin), f64::from(cos));
             (right * cos - up * sin, right * sin + up * cos)
         };
         let away = forward.as_vec3() * 0.002;

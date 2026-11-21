@@ -98,7 +98,9 @@ impl Game<'_> {
     fn sequence_scene(&mut self) -> Result<String> {
         let view = self.camera_view(1.0).ok_or("no camera")?;
         let (position, yaw, pitch) = self.native_camera_pose_now(1.0, view);
-        let roll = self.native_camera_roll_now(1.0);
+        // The roll the last frame drew with, not a second `camera_roll` call: a listener that
+        // answers each call differently can't pass this check while the captured roll moves.
+        let roll = self.posed_roll;
         let renderer = self.renderer.as_ref().ok_or("no renderer")?;
         Ok(format!(
             "{:?}",

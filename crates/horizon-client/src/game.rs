@@ -8287,6 +8287,13 @@ impl Game<'_> {
         ) {
             let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
+            // Its pass draws with the view alone, no pose: a mod's roll turns the axes about
+            // the view direction instead, so they turn with the world.
+            if self.posed_roll != 0.0 {
+                let turn =
+                    view.inverse() * horizon_client::camera::view_roll(self.posed_roll) * view;
+                crosshair.turn_on_top(at, turn.as_dmat4());
+            }
         }
         let debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
         let debug_lines_on_top = horizon_client::gizmos::camera_relative(&on_top, at, view);
