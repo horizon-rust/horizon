@@ -419,42 +419,166 @@ pub(super) fn set_entity_pipeline(
 /// What the shadow camera sees of the terrain, for the game's draw lists: its view and
 /// projection in wgpu's clip space, the direction toward the light, and how far from the camera
 /// terrain is drawn (`shadowDistanceRenderMul`).
+#[derive(Clone, Copy, Debug)]
 pub struct ShadowView {
-    pub cull: glam::Mat4,
-    pub light: glam::Vec3,
-    pub distance: Option<f32>,
+    pub(crate) cull: glam::Mat4,
+    pub(crate) light: glam::Vec3,
+    pub(crate) distance: Option<f32>,
     /// Draw everything, every face, within this many blocks (`shadow.culling=false|reversed`):
     /// packs that voxelize the world in their shadow pass need all of it.
-    pub unculled: Option<f32>,
+    pub(crate) unculled: Option<f32>,
     /// Every face of the drawn sections, not only those that can face the light. Iris 1.11.7's
     /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
     /// a cave's ceiling, which faces away, is often all that shadows the cave.
-    pub every_face: bool,
+    pub(crate) every_face: bool,
     /// Only the sections whose shadow can fall into the camera's view: those the camera's
     /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
     /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
     /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
-    pub view_casters: bool,
+    pub(crate) view_casters: bool,
     /// Whether the projection's near and far planes in `cull` drop sections too. Our probes'
     /// Iris 1.11.7 maps hold the terrain at every depth we put it along the light (from 535 blocks
     /// beyond the shadow camera to about 120 before it), whatever `shadowNearPlane` and
     /// `shadowFarPlane` the pack sets, or none (#10403): only its sides cull.
-    pub depth_planes: bool,
+    pub(crate) depth_planes: bool,
+}
+
+impl ShadowView {
+    /// Construct a basic `ShadowView` with default flags (not every face, no view casters, no depth planes).
+    #[inline]
+    pub fn new(cull: glam::Mat4, light: glam::Vec3) -> Self {
+        Self {
+            cull,
+            light,
+            distance: None,
+            unculled: None,
+            every_face: false,
+            view_casters: false,
+            depth_planes: false,
+        }
+    }
+
+    #[inline]
+    pub fn with_distance(mut self, distance: Option<f32>) -> Self {
+        self.distance = distance;
+        self
+    }
+
+    #[inline]
+    pub fn with_unculled(mut self, unculled: Option<f32>) -> Self {
+        self.unculled = unculled;
+        self
+    }
+
+    #[inline]
+    pub fn with_every_face(mut self, every_face: bool) -> Self {
+        self.every_face = every_face;
+        self
+    }
+
+    #[inline]
+    pub fn with_view_casters(mut self, view_casters: bool) -> Self {
+        self.view_casters = view_casters;
+        self
+    }
+
+    #[inline]
+    pub fn with_depth_planes(mut self, depth_planes: bool) -> Self {
+        self.depth_planes = depth_planes;
+        self
+    }
+
+    #[inline]
+    pub fn cull(&self) -> glam::Mat4 {
+        self.cull
+    }
+
+    #[inline]
+    pub fn light(&self) -> glam::Vec3 {
+        self.light
+    }
+
+    #[inline]
+    pub fn distance(&self) -> Option<f32> {
+        self.distance
+    }
+
+    #[inline]
+    pub fn unculled(&self) -> Option<f32> {
+        self.unculled
+    }
+
+    #[inline]
+    pub fn every_face(&self) -> bool {
+        self.every_face
+    }
+
+    #[inline]
+    pub fn view_casters(&self) -> bool {
+        self.view_casters
+    }
+
+    #[inline]
+    pub fn depth_planes(&self) -> bool {
+        self.depth_planes
+    }
 }
 
 /// A shader pack's shadow camera's box, and with `casters` only what can shade the camera's view
 /// (`shadow_casters`): a box must meet all of them.
 #[derive(Clone, Copy, Debug)]
 pub struct ShadowCull {
-    pub light: Frustum,
-    pub casters: Option<[Frustum; 2]>,
+    pub(crate) light: Frustum,
+    pub(crate) casters: Option<[Frustum; 2]>,
     /// `shadowDistance × shadowDistanceRenderMul`: only what lies within this many blocks of the
     /// camera along each axis, a cube around it. Our probe's Iris 1.11.7 maps keep the sections
     /// whose box, grown by `SHADOW_CASTER_MARGIN` as for the casters, meets that cube (#8464):
     /// out to its corners, and a section 1 block past its side but not one 1.5 blocks past.
-    pub reach: Option<f32>,
+    pub(crate) reach: Option<f32>,
 }
 impl ShadowCull {
+    /// Construct a shadow cull for the shadow camera's box `light`.
+    #[inline]
+    pub fn new(light: Frustum) -> Self {
+        Self {
+            light,
+            casters: None,
+            reach: None,
+        }
+    }
+
+    /// Set optional shadow casters (`[near, far]`) that can shade the view.
+    #[inline]
+    pub fn with_casters(mut self, casters: Option<[Frustum; 2]>) -> Self {
+        self.casters = casters;
+        self
+    }
+
+    /// Set the maximum reach cube distance along each axis.
+    #[inline]
+    pub fn with_reach(mut self, reach: Option<f32>) -> Self {
+        self.reach = reach;
+        self
+    }
+
+    /// The shadow camera's light frustum box.
+    #[inline]
+    pub fn light(&self) -> &Frustum {
+        &self.light
+    }
+
+    /// The casters frustums, if any.
+    #[inline]
+    pub fn casters(&self) -> Option<&[Frustum; 2]> {
+        self.casters.as_ref()
+    }
+
+    /// The reach limit in blocks along each axis, if set.
+    #[inline]
+    pub fn reach(&self) -> Option<f32> {
+        self.reach
+    }
+
     /// Whether the camera-relative box `min..max`, grown by the margin, meets (`whole`: lies
     /// within) `reach`'s cube.
     fn within_reach(&self, min: Vec3, max: Vec3, whole: bool) -> bool {
