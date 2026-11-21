@@ -1543,6 +1543,9 @@ struct Game<'a> {
     /// Roll already resolved by `render_sequence_frame` for the next `render_frame` call so
     /// sequence validation and rendering share one `camera_roll` dispatch.
     sequence_frame_roll: Option<f32>,
+    /// Set by `render_sequence_frame` for its `sequence_scene` call: the frame about to be
+    /// drawn, and whether mods are asked for its roll.
+    sequence_frame_asks: Option<bool>,
     /// `LocalPlayer.postEffects`: the chains the server has the screen run
     /// (`ClientboundPostEffectsPacket`), in order.
     post_effects: Vec<String>,
@@ -10820,6 +10823,7 @@ impl<'a> Game<'a> {
             posed_rotation: None,
             posed_roll: 0.0,
             sequence_frame_roll: None,
+            sequence_frame_asks: None,
             post_effects: Vec::new(),
             polytone_post_ticks: 0.0,
             spectated_post_effect: None,

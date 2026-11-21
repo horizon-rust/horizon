@@ -94,16 +94,12 @@ impl Game<'_> {
     }
 
     /// What a sequence's frames must share: the world, the camera, the settings, the pack and
-    /// the window's size, with the last drawn frame's roll.
+    /// the window's size. Before the first frame the roll is the last drawn frame's. For a frame
+    /// about to be drawn (`sequence_frame_asks`: whether mods are asked for its roll, else
+    /// level) it is that frame's, kept for it in `sequence_frame_roll`, and asked after the pose:
+    /// a mod hears `camera_pose` before `camera_roll`, as on every frame.
     fn sequence_scene(&mut self) -> Result<String> {
-        self.sequence_scene_rolled(None)
-    }
-
-    /// [`Self::sequence_scene`] for the frame about to be drawn (`frame`: whether mods are asked
-    /// for its roll, else level), which keeps that roll for the frame (`sequence_frame_roll`).
-    /// The roll is asked after the pose: a mod hears `camera_pose` before `camera_roll`, as on
-    /// every frame.
-    fn sequence_scene_rolled(&mut self, frame: Option<bool>) -> Result<String> {
+        let frame = self.sequence_frame_asks.take();
         let view = self.camera_view(1.0).ok_or("no camera")?;
         let (position, yaw, pitch) = self.native_camera_pose_now(1.0, view);
         let roll = match frame {
@@ -236,9 +232,12 @@ impl Game<'_> {
             sequence.scene.clone(),
         );
         let refusal = self.sequence_refusal();
-        let asks = refusal.is_none() && !self.shows_panorama() && !self.studio.flying();
         // Read once: the check and the frame both use this roll.
-        let now = self.sequence_scene_rolled(Some(asks));
+        self.sequence_frame_asks =
+            Some(refusal.is_none() && !self.shows_panorama() && !self.studio.flying());
+        let now = self.sequence_scene();
+        // A mod's replacement of `sequence_scene` doesn't take it.
+        self.sequence_frame_asks = None;
         match (refusal, now) {
             (None, Ok(now)) if now == scene => {}
             (refusal, _) => {
