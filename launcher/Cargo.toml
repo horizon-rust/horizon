@@ -7,6 +7,15 @@ description = "Downloads, prepares and starts Horizon builds"
 
 [workspace]
 
+[features]
+img-probe = ["gpui/test-support", "gpui_platform/test-support"]
+
+# gpui-fast 0.1.13 plus one patch: on Direct3D 11 a rounded overflow clip drops the content
+# inside it (the launcher's icons and avatars vanish). The mask still applies; only the corners
+# are square. `GPUI_ROUNDED_CLIPS=1` opts back in. Drop this pin once the crate is fixed upstream.
+[patch.crates-io]
+gpui-fast = { git = "https://github.com/MausRundung/gpui-fast", rev = "287641e07802b6cd83befc80fadbf7ec16421ea0" }
+
 [dependencies]
 horizon-mod-point-emit = { path = "../crates/horizon-mod-point-emit" }
 horizon-addresses = { path = "../crates/horizon-addresses" }
