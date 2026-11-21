@@ -101,9 +101,9 @@ impl Worker {
         }
     }
 
-    /// `what` stopped the JVM: the error says how it exited and quotes what it printed, the end
-    /// of its log and its crash report. The task's `log` gets the same text; the JVM may have
-    /// stopped before it wrote anything there.
+    /// `what` stopped the JVM: the error says how it exited, the last thing it said, and where
+    /// its log and crash report are. The task's `log`, which the JVM may have stopped before it
+    /// wrote, gets that and the ends of what it printed and logged.
     fn stopped(&mut self, what: &str, mut printed: Vec<String>, log: &Path) -> String {
         let deadline = Instant::now() + EXIT_GRACE;
         while let Ok(Ok(line)) = self
@@ -126,31 +126,42 @@ impl Worker {
                 Err(e) => break e.to_string(),
             }
         };
-        let mut text = format!("{what} ({status})");
         let printed = tail(&printed.join("\n"));
-        if !printed.is_empty() {
-            text += &format!("\nIt printed:\n{printed}");
-        }
         let logged = read_tail(&self.log);
-        text += &if logged.is_empty() {
-            format!("\nIts log is empty: {}", self.log.display())
-        } else {
-            format!("\nIts log ends ({}):\n{logged}", self.log.display())
-        };
         let report = format!("hs_err_pid{}.log", self.child.id());
         // HotSpot writes the report to the working directory, or the temporary one if it can't.
-        if let Some(report) = [self.dir.join(&report), std::env::temp_dir().join(&report)]
+        let report = [self.dir.join(&report), std::env::temp_dir().join(&report)]
             .into_iter()
-            .find(|path| path.is_file())
+            .find(|path| path.is_file());
+        // One line: the launcher shows a preparer's last line, and the caller adds the step.
+        // HotSpot's own words come first, else Java's last exception.
+        let mut error = format!("{what} ({status})");
+        if let Some(last) = printed
+            .lines()
+            .next_back()
+            .or_else(|| logged.lines().next_back())
         {
-            text += &format!("\nJava's crash report: {}", report.display());
+            error += &format!(": {}", last.trim());
         }
+        error += &format!("; its log: {}", self.log.display());
+        if let Some(report) = &report {
+            error += &format!("; Java's crash report: {}", report.display());
+        }
+        let mut details = error.clone();
+        if !printed.is_empty() {
+            details += &format!("\nIt printed:\n{printed}");
+        }
+        details += &if logged.is_empty() {
+            "\nIts log is empty.".to_string()
+        } else {
+            format!("\nIts log ends:\n{logged}")
+        };
         let _ = fs::OpenOptions::new()
             .append(true)
             .create(true)
             .open(log)
-            .and_then(|mut file| writeln!(file, "{text}"));
-        text
+            .and_then(|mut file| writeln!(file, "{details}"));
+        error
     }
 }
 
@@ -165,7 +176,9 @@ fn tail(text: &str) -> String {
         .lines()
         .filter(|line| {
             let line = line.trim();
+            // HotSpot's banner frames its lines with bare `#`.
             !(line.is_empty()
+                || line == "#"
                 || line.starts_with("at ")
                 || (line.starts_with("... ") && line.ends_with(" more")))
         })
@@ -197,25 +210,26 @@ mod tests {
 
     /// A stand-in JVM that prints like HotSpot on stdout, like Java on stderr, and exits 3
     /// without reading its task.
+    #[cfg(windows)]
     fn stand_in() -> Command {
-        if cfg!(windows) {
-            let mut command = Command::new("cmd");
-            #[cfg(windows)]
-            std::os::windows::process::CommandExt::raw_arg(
-                &mut command,
-                "/C \"echo Error occurred during initialization of VM& \
-                 echo java.lang.OutOfMemoryError: Java heap space 1>&2& exit /b 3\"",
-            );
-            command
-        } else {
-            let mut command = Command::new("sh");
-            command.args([
-                "-c",
-                "echo Error occurred during initialization of VM; \
-                 echo 'java.lang.OutOfMemoryError: Java heap space' >&2; exit 3",
-            ]);
-            command
-        }
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new("cmd");
+        command.raw_arg(
+            "/C \"echo Error occurred during initialization of VM& \
+             echo java.lang.OutOfMemoryError: Java heap space 1>&2& exit /b 3\"",
+        );
+        command
+    }
+
+    #[cfg(not(windows))]
+    fn stand_in() -> Command {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "echo Error occurred during initialization of VM; \
+             echo 'java.lang.OutOfMemoryError: Java heap space' >&2; exit 3",
+        ]);
+        command
     }
 
     #[test]
@@ -233,17 +247,20 @@ mod tests {
             error.starts_with("Exporter JVM stopped before VanillaHeightmapOracle finished"),
             "{error}"
         );
+        assert_eq!(error.lines().count(), 1, "{error}");
         assert!(error.contains(": 3)"), "the exit status: {error}");
+        // What HotSpot printed says more than what Java logged before it.
         assert!(
             error.contains("Error occurred during initialization of VM"),
             "{error}"
         );
-        assert!(
-            error.contains("OutOfMemoryError: Java heap space"),
-            "{error}"
-        );
         assert!(error.contains("server-worker.log"), "{error}");
-        assert_eq!(fs::read_to_string(&task_log).unwrap(), format!("{error}\n"));
+        let logged = fs::read_to_string(&task_log).unwrap();
+        assert!(logged.starts_with(&format!("{error}\n")), "{logged}");
+        assert!(
+            logged.contains("OutOfMemoryError: Java heap space"),
+            "{logged}"
+        );
         drop(worker);
         fs::remove_dir_all(dir).unwrap();
     }
