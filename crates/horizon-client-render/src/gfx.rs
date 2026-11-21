@@ -11465,7 +11465,6 @@ impl Renderer {
                 .take()
                 .and_then(|request| self.take_readback(request, &mut encoder, shown_texture))
         });
-        self.uploads.finish(&encoder);
         if let Some(image) = surface_frame
             .as_ref()
             .map(|f| &f.texture)
@@ -11516,6 +11515,9 @@ impl Renderer {
                 });
             }
         }
+        // After everything the frame makes and its scopes' verdict: a frame given up drops its
+        // encoder, and the belt's chunks would not come back from it.
+        self.uploads.finish(&encoder);
         let first_frame = self.first_frame == FirstFrame::Submit;
         // Finished, submitted and presented on the submit thread when nothing after the
         // submission needs this one: screenshots' readbacks, the error scopes (one per
