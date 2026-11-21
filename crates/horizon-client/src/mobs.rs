@@ -2067,10 +2067,14 @@ pub enum MobEvent {
         source: Damage,
         apply_blocking: Option<f32>,
     },
-    /// Set another mob's attack target (HurtByTargetGoal alerts).
+    /// Set another mob's attack target (`HurtByTargetGoal.alertOthers`,
+    /// `PiglinAi.broadcastAngerTarget`): `mob` takes the target `source` has.
+    /// A `Who::Player` target is the player `source` sees, its attacker, not
+    /// the one nearest `mob` (vanilla hands over the entity itself).
     SetTarget {
         mob: u32,
         target: Who,
+        source: u32,
     },
     PiglinAlertTarget(undead::PiglinAlert),
     /// `HoglinAi.broadcastAttackTarget`: receiver and source player connection.

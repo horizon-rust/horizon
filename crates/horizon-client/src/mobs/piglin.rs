@@ -942,7 +942,11 @@ fn broadcast_anger(m: &Mob, w: &MobWorld, by: Who, at: Vec3, events: &mut Vec<Mo
         .map(|s| s.id)
         .collect();
     for mob in others {
-        events.push(MobEvent::SetTarget { mob, target: by });
+        events.push(MobEvent::SetTarget {
+            mob,
+            target: by,
+            source: id,
+        });
     }
 }
 /// `PiglinAi.maybeRetaliate`: the tests. Not while retreating, only against
@@ -2583,7 +2587,8 @@ mod hurt_broadcast_tests {
                 e,
                 MobEvent::SetTarget {
                     mob: 2,
-                    target: Who::Player
+                    target: Who::Player,
+                    source: 1,
                 }
             )),
             "the piglin takes the player as its target: {events:?}"

@@ -1969,6 +1969,7 @@ impl Goal for HurtByTarget {
                 cx.events.push(MobEvent::SetTarget {
                     mob: other,
                     target: by,
+                    source: id,
                 });
             }
         }

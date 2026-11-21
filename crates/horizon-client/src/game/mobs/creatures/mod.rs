@@ -2857,11 +2857,17 @@ impl Game<'_> {
                         );
                     }
                 }
-                MobEvent::SetTarget { mob, target } => {
+                MobEvent::SetTarget {
+                    mob,
+                    target,
+                    source,
+                } => {
+                    // `alertOther(other, lastHurtByMob)` hands over the attacker itself: a
+                    // player target is the one the alerting mob sees, not the receiver's nearest.
                     let player = self
                         .lan
                         .as_ref()
-                        .and_then(|host| host.mob_players.get(&mob).copied())
+                        .and_then(|host| host.mob_players.get(&source).copied())
                         .or(self.lan_acting);
                     self.set_event_ai_target(mob, Some(target), player);
                 }
