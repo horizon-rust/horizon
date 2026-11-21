@@ -2,6 +2,7 @@
 //! server threads and the play-state hub, feeds it the world's entities each
 //! tick and turns what the guests do into gameplay. A world that is not open
 //! costs one `Option` check per tick.
+mod dash_meta;
 mod event_timings;
 #[cfg(test)]
 mod level_event_targets;
@@ -975,18 +976,7 @@ pub(super) fn mob_meta_sync(
         }
         _ => {}
     }
-    // Camel.DASH and LAST_POSE_CHANGE_TICK (after AbstractHorse's flags).
-    if horizon_client::mobs::camel::is_camel(m.species()) {
-        if e.flag2 {
-            meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
-        }
-        defaults.push((19, serializer::BOOLEAN, Value::Bool(false)));
-        let tick = horizon_client::mobs::camel::synced_pose_tick(m, game_time);
-        if tick != 0 {
-            meta.push((20, serializer::LONG, Value::Long(tick)));
-        }
-        defaults.push((20, serializer::LONG, Value::Long(0)));
-    }
+    dash_meta::write(m, game_time, meta, defaults);
 }
 
 /// AbstractVillager.DATA_UNHAPPY_COUNTER (after AgeableMob's two): the head
