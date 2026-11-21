@@ -198,7 +198,7 @@ impl Setup {
             if let Ok(Ok(Some(mut paths))) = paths.await {
                 if let Some(path) = paths.pop() {
                     let _ = this.update(cx, |this, cx| {
-                        this.options.dir = installer::folder_for(&path);
+                        this.options.dir = path;
                         cx.notify();
                     });
                 }
@@ -477,5 +477,21 @@ impl Render for Setup {
                     .child(card),
             )
             .children(titlebar::resize_handles(window))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    async fn setup_keeps_the_exact_folder_chosen_in_the_picker(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        let setup = window.update(|window, cx| cx.new(|cx| Setup::new(Mode::Install, window, cx)));
+        setup.update(window, |setup, cx| setup.choose_folder(cx));
+        let folder = std::path::PathBuf::from(r"C:\games\horizon_launcher");
+        window.simulate_path_prompt_response(|_| Some(vec![folder.clone()]));
+        window.run_until_parked();
+        setup.read_with(window, |setup, _| assert_eq!(setup.options.dir, folder));
     }
 }

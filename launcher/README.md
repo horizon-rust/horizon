@@ -368,12 +368,13 @@ labelled `feature`) with `horizon-launcher-linux-x86_64.tar.gz`,
 
 Windows also publishes `horizon-launcher-setup.exe` (x64) and `horizon-launcher-setup-arm64.exe`: the launcher's own
 binary under another name, which opens
-a per-user setup instead of the window (no administrator). It copies itself to
-`%LOCALAPPDATA%\Programs\Horizon Launcher\horizon-launcher.exe`, makes the Start menu shortcut (and the
-desktop one if asked) and an entry in *Apps & features*, then starts the copy. `horizon-launcher-setup.exe
-setup --quiet [--dir <folder>] [--desktop-shortcut]` does the same without a window, and
-`horizon-launcher.exe uninstall` (or `... uninstall --quiet [--remove-data]`) takes it all away again: the
-shortcuts, the registry entries and the install folder. The game's folders are never touched, and the
+a per-user setup instead of the window (no administrator). By default it copies itself to
+`%LOCALAPPDATA%\Programs\Horizon Launcher\horizon-launcher.exe`. Choose **Change** to install directly in
+the folder you select. Setup makes the Start menu shortcut (and the desktop one if asked) and an entry in
+*Apps & features*, then starts the copy. For scripts, `horizon-launcher-setup.exe setup --quiet
+[--dir <folder>] [--desktop-shortcut]` uses the `Horizon Launcher` subfolder unless `--dir` already names it.
+`horizon-launcher.exe uninstall` (or `... uninstall --quiet [--remove-data]`) removes the launcher's files,
+shortcuts and registry entries. A folder with a custom name and any unrelated files stay. The game's folders are never touched, and the
 launcher's data folder only with `--remove-data`. An installed launcher keeps updating itself, so the
 uninstaller at that path is always the newest one.
 
