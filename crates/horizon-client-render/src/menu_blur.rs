@@ -159,11 +159,13 @@ impl MenuBlur {
     /// failed is kept, the old ones go first, and that size is not tried again until `release`
     /// (the next screen that blurs). `source` needs it to be `true`.
     pub fn ready(&mut self, device: &wgpu::Device, size: [u32; 2]) -> bool {
-        if self.size == size && !self.targets.is_empty() {
-            return true;
-        }
-        if self.no_room == Some(size) {
-            return false;
+        self.ensure(device, size);
+        !self.targets.is_empty()
+    }
+    /// `ready` without its answer: the targets stay empty where there was no room.
+    fn ensure(&mut self, device: &wgpu::Device, size: [u32; 2]) {
+        if self.size == size && !self.targets.is_empty() || self.no_room == Some(size) {
+            return;
         }
         self.targets.clear();
         self.size = size;
@@ -180,7 +182,6 @@ impl MenuBlur {
         );
         self.no_room = made.is_none().then_some(size);
         self.targets = made.unwrap_or_default();
-        !self.targets.is_empty()
     }
     fn targets_at(
         &self,
