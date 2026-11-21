@@ -206,7 +206,7 @@ fn wrapper_config(member: &Member, crates: &[String]) -> Value {
 }
 
 /// The library target's crate root relative to its package directory `source`.
-fn lib_root(package: &Value, source: &Path) -> Result<PathBuf, String> {
+fn lib_src_path(package: &Value) -> Result<PathBuf, String> {
     let target = package["targets"]
         .as_array()
         .into_iter()
@@ -219,14 +219,11 @@ fn lib_root(package: &Value, source: &Path) -> Result<PathBuf, String> {
             })
         })
         .ok_or("mod has no library")?;
-    let path = Path::new(
+    Ok(PathBuf::from(
         target["src_path"]
             .as_str()
             .ok_or("library has no src_path")?,
-    );
-    path.strip_prefix(source)
-        .map(Path::to_path_buf)
-        .map_err(|_| format!("{}: library root outside its package", path.display()))
+    ))
 }
 
 // Preserve all Cargo dependency attributes and aliases; only relocate local paths.
@@ -414,7 +411,7 @@ pub(super) fn build(
             root: dunce::canonicalize(source).map_err(|e| e.to_string())?,
             stage: stage.join(id),
             krate: lib_name(package).ok_or("mod has no library")?,
-            lib: lib_root(package, source)?,
+            lib: lib_src_path(package)?,
             package: package["name"].as_str().ok_or("no package name")?.into(),
             manifest,
             registrations: String::new(),
@@ -476,6 +473,11 @@ pub(super) fn build(
         if !ids.insert(member.manifest["id"].as_str().ok_or("no id")?) {
             return Err("duplicate mod id in Cargo group".into());
         }
+        let canonical_lib = dunce::canonicalize(&member.lib).unwrap_or_else(|_| member.lib.clone());
+        member.lib = canonical_lib
+            .strip_prefix(&member.root)
+            .map(Path::to_path_buf)
+            .map_err(|_| format!("{}: library root outside its package", member.lib.display()))?;
     }
     let staged: BTreeMap<_, _> = members
         .iter()
@@ -597,6 +599,9 @@ pub(super) fn build(
         mod_dependencies(cargo.as_table_mut(), &mod_paths);
         cargo.remove("workspace");
         paths(cargo.as_table_mut(), &member.root, &staged)?;
+        if cargo.get("lib").and_then(|l| l.get("path")).is_some() {
+            cargo["lib"]["path"] = toml_edit::value(member.lib.to_string_lossy().as_ref());
+        }
         cargo["lib"]["crate-type"] =
             toml_edit::value(["rlib", "cdylib"].into_iter().collect::<toml_edit::Array>());
         write_changed(&path, cargo.to_string().as_bytes())?;
