@@ -1816,6 +1816,7 @@ impl GameLevel<'_> {
                 speed: [speed; 3],
                 count,
                 randomization: 0,
+                force: false,
             });
         true
     }
@@ -3615,8 +3616,9 @@ fn client_packet_view(packet: &horizon_protocol::packets::play::Clientbound) -> 
     packet_view(&TYPES, packet.id(), payload)
 }
 
-/// `client_packet_send`'s view of a packet the game sends: as `client_packet_view`.
-fn serverbound_packet_view(packet: &horizon_protocol::packets::play::Serverbound) -> ClientPacket {
+/// `client_packet_send`'s view of a packet the game sends, and `serverbound_packet`'s of one a player
+/// sent: as `client_packet_view`.
+pub(in crate::game) fn serverbound_packet_view(packet: &horizon_protocol::packets::play::Serverbound) -> ClientPacket {
     use horizon_protocol::packets::play::Serverbound;
     use mod_api::Identifier;
     use std::sync::LazyLock;

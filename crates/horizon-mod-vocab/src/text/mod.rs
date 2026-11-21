@@ -238,6 +238,47 @@ impl Text {
         self.style = style;
         self
     }
+
+    /// The characters of this component and its children, with no styling, as Adventure's
+    /// `PlainTextComponentSerializer` writes them. A component's own content comes first, then
+    /// its children in order.
+    ///
+    /// A translation has no language file here: its `fallback` template is used with each `%s`
+    /// replaced by the plain text of the next argument, and without a fallback the key is used.
+    /// A selector gives its pattern (it is not resolved), a keybind its key name; a score, an NBT
+    /// path and an inline object give nothing, as they need the game's context to resolve.
+    /// Styles, click and hover events are left out.
+    pub fn plain(&self) -> String {
+        let mut out = String::new();
+        let mut pending = vec![self];
+        while let Some(text) = pending.pop() {
+            match &text.content {
+                TextContent::Literal(value) => out.push_str(value),
+                TextContent::Translatable {
+                    key,
+                    fallback,
+                    arguments,
+                } => match fallback {
+                    Some(template) => {
+                        let mut arguments = arguments.iter().map(Text::plain);
+                        let mut rest = template.as_str();
+                        while let Some(at) = rest.find("%s") {
+                            out.push_str(&rest[..at]);
+                            out.extend(arguments.next());
+                            rest = &rest[at + 2..];
+                        }
+                        out.push_str(rest);
+                    }
+                    None => out.push_str(key),
+                },
+                TextContent::Keybind(name) => out.push_str(name),
+                TextContent::Selector { pattern, .. } => out.push_str(pattern),
+                TextContent::Score { .. } | TextContent::Nbt { .. } | TextContent::Object(_) => {}
+            }
+            pending.extend(text.children.iter().rev());
+        }
+        out
+    }
 }
 
 /// A player profile, including ordered signed properties and unknown data.
@@ -1037,6 +1078,21 @@ impl TryFrom<TextForm> for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plain_text_joins_content_then_children_without_style() {
+        let text = Text::literal("Hi ")
+            .append(Text::literal("there"))
+            .append(Text::translate("missing.key", vec![Text::literal("x")]));
+        assert_eq!(text.plain(), "Hi theremissing.key");
+        let filled = Text::new(TextContent::Translatable {
+            key: "greet".into(),
+            fallback: Some("Hello %s, you have %s.".into()),
+            arguments: vec![Text::literal("Ada"), Text::literal("3")],
+        });
+        assert_eq!(filled.plain(), "Hello Ada, you have 3.");
+        assert_eq!(Text::literal("a").append(Text::literal("b")).plain(), "ab");
+    }
+
     fn named(name: &str) -> TextProfile {
         TextProfile {
             name: Some(name.into()),

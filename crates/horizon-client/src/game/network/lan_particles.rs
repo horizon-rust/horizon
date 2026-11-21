@@ -42,6 +42,9 @@ pub(super) struct QueuedParticle {
     pub count: i32,
     /// The packet's `RandomizationType` (0 DEFAULT, 1 ALTERNATIVE).
     pub randomization: i32,
+    /// `ServerLevel.sendParticles` with `force`: sent to the players within 512 blocks, not 32,
+    /// and drawn whatever their particle setting (the packet's `overrideLimiter`).
+    pub force: bool,
 }
 
 /// `PowderSnowBlock.entityInside`'s server roll. The branch and both float
@@ -388,6 +391,7 @@ impl Game<'_> {
             speed: velocity,
             count: 1,
             randomization: 1,
+            force: false,
         });
     }
 
@@ -634,6 +638,7 @@ impl Game<'_> {
             speed,
             count,
             randomization,
+            force,
         } = request;
         let Some(particle) = self.network_particle(&options, state) else {
             return;
@@ -644,7 +649,7 @@ impl Game<'_> {
         let horizon_only = particle.horizon_only();
         let body = C::LevelParticles(play::LevelParticles {
             particle,
-            override_limiter: false,
+            override_limiter: force,
             always_show: false,
             pos: at,
             dist: spread.map(|d| d as f32),
@@ -653,13 +658,14 @@ impl Game<'_> {
             randomization,
         })
         .encode();
-        // BlockPos.closerToCenterThan(at, 32): from the centre of the
+        // BlockPos.closerToCenterThan(at, 32), or 512 with `force`: from the centre of the
         // player's block.
+        let reach = if force { 512.0 } else { 32.0 };
         send_native_nearby(host, dimension, body, horizon_only, None, |position| {
             let d: f64 = (0..3)
                 .map(|k| (position[k].floor() + 0.5 - at[k]).powi(2))
                 .sum();
-            d < 32.0 * 32.0
+            d < reach * reach
         });
     }
 
@@ -756,6 +762,7 @@ impl Game<'_> {
             speed: [0.0; 3],
             count: 8,
             randomization: 1,
+            force: false,
         });
     }
 

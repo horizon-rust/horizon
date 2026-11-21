@@ -856,6 +856,29 @@ impl Text {
     }
     /// Parse legacy formatting codes (`§a`, `§l`, `§r`...) as the font does.
     pub fn legacy(s: &str) -> Self {
+        Self::legacy_codes(s, false)
+    }
+    /// [`Text::legacy`], also reading the hex colour form Bukkit's `ChatColor.of("#rrggbb")`
+    /// writes: `§x` and then six `§` plus hex digit pairs (`§x§f§f§0§0§a§a`). It sets that
+    /// colour and, as a colour code does, clears the decorations. A `§x` not followed by all
+    /// six pairs is dropped like any unknown code. The font itself does not read this form.
+    pub fn legacy_with_hex(s: &str) -> Self {
+        Self::legacy_codes(s, true)
+    }
+    /// The six hex digits `§x` is followed by (`§f§f§0§0§a§a`, each digit behind a `§`), as one
+    /// colour; None unless all six pairs are there.
+    fn legacy_hex_run(rest: std::str::Chars<'_>) -> Option<u32> {
+        let mut rgb = 0u32;
+        let mut it = rest;
+        for _ in 0..6 {
+            if it.next()? != '§' {
+                return None;
+            }
+            rgb = (rgb << 4) | it.next()?.to_digit(16)?;
+        }
+        Some(rgb)
+    }
+    fn legacy_codes(s: &str, hex: bool) -> Self {
         let mut out = Text::default();
         let mut style = Style::default();
         let mut current = String::new();
@@ -877,6 +900,11 @@ impl Text {
             if let Some(c) = COLORS.iter().find(|c| c.0 == code) {
                 // Colour codes reset decorations (Style.applyLegacyFormat).
                 style = Style::color(c.2);
+            } else if let (true, 'x', Some(rgb)) = (hex, code, Self::legacy_hex_run(chars.clone()))
+            {
+                // Six `§d` pairs: twelve characters.
+                chars.nth(11);
+                style = Style::color(rgb);
             } else {
                 match code {
                     'k' => style.obfuscated = Some(true),

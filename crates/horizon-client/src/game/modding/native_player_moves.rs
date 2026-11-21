@@ -15,6 +15,7 @@ impl Game<'_> {
             .set_listened(mod_api::__private::enabled_listened(
                 mod_api::HookId::PlayerHandshake,
             ));
+        hub.packets_listened = mod_api::__private::listened(mod_api::HookId::ServerboundPacket);
     }
 
     /// The hub holds guest `conn`'s movement report: the mods hear it with the player's state

@@ -898,6 +898,7 @@ impl Game<'_> {
                 speed: [1.0; 3],
                 count: 1,
                 randomization: 0,
+                force: false,
             });
         }
         self.audio

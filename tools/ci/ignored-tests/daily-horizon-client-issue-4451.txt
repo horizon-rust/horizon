@@ -775,6 +775,7 @@ horizon-client game::item_entities::thrown_items_tests::a_death_scatter_takes_th
 horizon-client game::item_entities::thrown_items_tests::a_pickup_pitch_is_not_drawn_from_the_levels_random lib daily resources
 horizon-client game::item_entities::thrown_items_tests::a_thrown_item_takes_the_throwers_random_not_the_levels lib daily resources
 horizon-client game::item_interact_mob_tests::actual_item_interact_mob_fallback_priority_and_filters lib daily resources
+horizon-client game::item_particle_send_tests::forced_particle_is_marked_for_512_blocks_and_plain_one_is_not lib daily resources
 horizon-client game::item_particle_send_tests::stack_particle_crosses_server_packet_and_resolves_apple lib daily resources
 horizon-client game::item_pickup_shape_tests::indexed_pickup_keeps_bound_survivors_and_processes_shifted_tail lib daily resources
 horizon-client game::item_slot_command_tests::item_replace_asks_the_slot_predicate_of_a_stand_and_the_dragon lib daily resources
@@ -881,8 +882,8 @@ horizon-client game::lan_menus_tests::a_lifted_host_comes_back_after_a_panic_and
 horizon-client game::lan_menus_tests::a_panicking_turn_leaves_play_state_and_menus_restored lib daily resources
 horizon-client game::lan_menus_tests::menu_owners_stay_reachable_through_nested_guest_turns lib daily resources
 horizon-client game::lan_menus_tests::removing_a_fake_player_drops_its_menu_owners lib daily resources
-horizon-client game::lan_mount_menu::tests::horse_inventory_click_keeps_complete_body_stack lib daily resources
 horizon-client game::lan_mount_menu::tests::a_dead_mounts_inventory_takes_no_click lib daily resources
+horizon-client game::lan_mount_menu::tests::horse_inventory_click_keeps_complete_body_stack lib daily resources
 horizon-client game::lan_trading::tests::a_lowered_level_still_levels_up_with_the_next_trade_set lib daily resources
 horizon-client game::lan_trading::tests::a_merchant_edit_reaches_the_guest_trading_with_it lib daily resources
 horizon-client game::lan_trading::tests::a_trade_hook_fired_by_a_real_select_can_write_the_open_trade lib daily resources
@@ -1195,6 +1196,7 @@ horizon-client game::native_entities::tests::portal_ids_follow_only_the_existing
 horizon-client game::native_entity_data::tests::an_entity_is_in_its_level_from_its_join_until_its_removal lib daily resources
 horizon-client game::native_entity_data::tests::classification_is_the_types_category lib daily resources
 horizon-client game::native_entity_data::tests::custom_name_and_visibility_are_saved_and_load_again lib daily resources
+horizon-client game::native_entity_data::tests::type_classification_needs_no_entity lib daily resources
 horizon-client game::native_entity_extinguish_tests::extinguish_fire_preserves_player_guest_stand_and_item_sound_routes lib daily resources
 horizon-client game::native_entity_extinguish_tests::extinguish_fire_uses_mob_kind_immunity_and_own_random_unlike_silent_clear lib daily resources
 horizon-client game::native_entity_index_parity_tests::cushion_get_entity_matches_vanilla_membership_oracle lib daily resources
@@ -1630,6 +1632,7 @@ horizon-client game::native_level_events::tests::a_queued_block_event_runs_the_b
 horizon-client game::native_level_events::tests::with_the_rule_off_a_global_level_event_reaches_a_player_in_range_as_a_plain_one lib daily resources
 horizon-client game::native_level_items::tests::a_level_pops_spawns_and_awards_as_vanilla lib daily resources
 horizon-client game::native_level_items::tests::an_orb_awarded_in_a_merge_hook_is_merged_by_a_later_scan lib daily resources
+horizon-client game::native_level_items::tests::level_item_entities_lists_each_drop_with_its_stack lib daily resources
 horizon-client game::native_level_notify_tests::biome_negative_min_y_and_unwind_restore_without_publication lib daily resources
 horizon-client game::native_level_notify_tests::biome_writes_roll_back_and_only_the_root_commit_notifies_clients lib daily resources
 horizon-client game::native_level_notify_tests::bone_meal_on_an_invalid_block_changes_nothing lib daily resources
@@ -1855,11 +1858,11 @@ horizon-client game::native_player_food::tests::more_points_than_an_int_are_refu
 horizon-client game::native_player_food::tests::points_repair_a_damaged_mending_item_before_experience lib daily resources
 horizon-client game::native_player_modes::tests::item_use_follows_the_mode_the_stack_and_the_clicked_block lib daily resources
 horizon-client game::native_player_modes::tests::one_player_may_harm_another_by_the_pvp_rule_and_their_teams lib daily resources
+horizon-client game::native_player_move_packet_tests::a_packet_is_heard_with_its_flags_and_a_gone_guest_is_not lib daily resources
 horizon-client game::native_player_move_tests::a_veto_corrects_the_player_and_a_pass_commits_the_report lib daily resources
 horizon-client game::native_player_move_tests::a_veto_of_the_first_of_two_reports_in_one_tick_corrects_and_the_second_is_not_heard lib daily resources
 horizon-client game::native_player_move_tests::two_reports_in_one_tick_are_heard_in_order_each_from_the_one_before_when_both_pass lib daily resources
 horizon-client game::native_player_move_tests::two_reports_in_one_tick_with_no_listener_are_committed_in_the_one_pass lib daily resources
-horizon-client game::native_player_move_packet_tests::a_packet_is_heard_with_its_flags_and_a_gone_guest_is_not lib daily resources
 horizon-client game::native_player_spectating_tests::a_guests_camera_is_heard_starting_once_and_stopping lib daily resources
 horizon-client game::native_player_spectating_tests::a_target_that_is_gone_sets_no_camera_and_is_not_heard lib daily resources
 horizon-client game::native_player_spectating_tests::switching_straight_to_another_target_is_one_start_and_no_stop lib daily resources
@@ -1948,6 +1951,8 @@ horizon-client game::native_server::tests::native_typed_commands_reach_listeners
 horizon-client game::native_server::tests::native_unauthorized_commands_never_reach_the_listener lib daily resources
 horizon-client game::native_server::tests::server_events_are_posted_only_on_the_dedicated_role lib daily resources
 horizon-client game::native_server::tests::the_hubs_chunk_watches_reach_the_mods_in_order lib daily resources
+horizon-client game::native_serverbound_packet_tests::each_packet_is_heard_in_order_and_a_cancel_drops_only_that_packet lib daily resources
+horizon-client game::native_serverbound_packet_tests::with_no_listener_the_packet_is_handled_in_place lib daily resources
 horizon-client game::native_shield_totem_tests::a_blocked_damage_above_the_hit_is_clamped_to_it lib daily resources
 horizon-client game::native_shield_totem_tests::an_uncanceled_totem_saves_the_mob lib daily resources
 horizon-client game::native_shield_totem_tests::setting_blocked_false_blocks_nothing lib daily resources

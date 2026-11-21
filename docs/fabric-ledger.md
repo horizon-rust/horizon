@@ -1601,3 +1601,11 @@ Pinned Fabric revision `2065040b236a0d5ac011bd6a45625dc49579b222` (`fabric-26.3/
 | `wind_burst` | **Gap:** none | `wind_burst` runs server-side after the explosion game event, the knockback and the shuffle, and offers the shuffled candidate block positions to `native_wind_burst` so positions can be removed, only when mob griefing lets a breeze interact with blocks. The pinned Fabric event index has no wind-burst or explosion event firing at that point with a mutable position list and no other change to knockback or random draws. No key. |
 | `window_resize` | **Gap:** none | `notify_window_resize` fires client-side only when the physical or scaled dimensions change, passing physical width/height and scaled GUI width/height. The pinned Fabric event index has no window, fullscreen or GUI-scale event, and no candidate is proven to match that change-only moment with those four arguments. No key. |
 | `xp_orb_targeting` | **Gap:** none | `orb_target` runs server-side on every orb tick, recomputes the nearest living non-spectator player within the scan distance, and lets `native_xp_orb_targeting` replace or clear the `following` player reference. The pinned Fabric event index has no experience-orb targeting event for that per-tick moment with an orb `EntityRef`, a scan distance and a mutable `PlayerRef`. No key. |
+
+## Event counterparts: serverbound packet hook
+
+Fabric evidence is at `fabric-26.3/` pinned `2065040b236a0d5ac011bd6a45625dc49579b222`; Horizon call sites are named by function, never by line. Scope: the server hook `serverbound_packet`. It records a gap and adds no key.
+
+| Horizon hook | Fabric event considered / status | Evidence and porting boundary |
+|---|---|---|
+| `serverbound_packet` | **Gap:** none; nearest `ServerPlayNetworking` receivers | Fabric API 26.3 receives only the custom payloads a mod registered, through `ServerPlayNetworking.registerGlobalReceiver`, and has no event for the vanilla play packets (movement, digging, placing, the end of the client tick). Horizon's `Hub::hear_or_keep` holds each packet the hub reads from a player's input queue, `Game::lan_packet_heard` fires `Game::native_serverbound_packet` with the sender's UUID and the packet's protocol type id, and `Flow::Cancel` drops the packet before the server handles it. A registered mod channel does not pass through it. No key. |

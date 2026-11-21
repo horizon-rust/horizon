@@ -181,19 +181,21 @@ impl Game<'_> {
     /// from its type, `Monster` for the dragon, `Misc` for every other kind.
     pub(super) fn entity_classification(&self, entity: EntityRef) -> Option<MobCategory> {
         Some(match self.native_entity_target(entity)? {
-            Target::Mob(id) => match self.mobs.iter().find(|m| m.id == id)?.category() {
-                "monster" => MobCategory::Monster,
-                "creature" => MobCategory::Creature,
-                "ambient" => MobCategory::Ambient,
-                "axolotls" => MobCategory::Axolotls,
-                "underground_water_creature" => MobCategory::UndergroundWaterCreature,
-                "water_creature" => MobCategory::WaterCreature,
-                "water_ambient" => MobCategory::WaterAmbient,
-                _ => MobCategory::Misc,
-            },
+            Target::Mob(id) => category_named(self.mobs.iter().find(|m| m.id == id)?.category()),
             Target::Dragon(_) => MobCategory::Monster,
             _ => MobCategory::Misc,
         })
+    }
+    /// `EntityType.getCategory` for the type `kind` with no entity: a mob type's category
+    /// from its data, `Monster` for the dragon. None for a kind that is no mob type, such
+    /// as `minecraft:item`; an entity's own `entity_classification` answers those.
+    /// None for a kind Horizon does not load.
+    pub(super) fn entity_type_classification(&self, kind: &str) -> Option<MobCategory> {
+        if kind == "minecraft:ender_dragon" {
+            return Some(MobCategory::Monster);
+        }
+        let mob = self.res.mob_types().get(kind)?;
+        Some(category_named(&mob.category))
     }
     /// Whether the entity is in its level: from when `entity_join_level` let
     /// it in (false while that hook runs for it and before) until it
@@ -263,6 +265,21 @@ fn named_id(t: Target) -> Option<u32> {
         | Target::Fangs(id)
         | Target::Cloud(id) => Some(id),
         _ => None,
+    }
+}
+
+/// A category's name in the mob data (`EntityType.getCategory`'s `getName`) as its `MobCategory`;
+/// anything else is `Misc`.
+fn category_named(name: &str) -> MobCategory {
+    match name {
+        "monster" => MobCategory::Monster,
+        "creature" => MobCategory::Creature,
+        "ambient" => MobCategory::Ambient,
+        "axolotls" => MobCategory::Axolotls,
+        "underground_water_creature" => MobCategory::UndergroundWaterCreature,
+        "water_creature" => MobCategory::WaterCreature,
+        "water_ambient" => MobCategory::WaterAmbient,
+        _ => MobCategory::Misc,
     }
 }
 
@@ -382,6 +399,25 @@ mod tests {
             game.dragon.replace(dragon);
             let dragon = game.entity(28).unwrap();
             assert_eq!(dragon.classification(game), Some(MobCategory::Monster));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn type_classification_needs_no_entity() {
+        with_game(|game| {
+            for (kind, category) in [
+                ("minecraft:zombie", MobCategory::Monster),
+                ("minecraft:cow", MobCategory::Creature),
+                ("minecraft:bat", MobCategory::Ambient),
+                ("minecraft:glow_squid", MobCategory::UndergroundWaterCreature),
+                ("minecraft:cod", MobCategory::WaterAmbient),
+                ("minecraft:ender_dragon", MobCategory::Monster),
+            ] {
+                assert_eq!(game.entity_type_classification(kind), Some(category), "{kind}");
+            }
+            assert_eq!(game.entity_type_classification("minecraft:item"), None);
+            assert_eq!(game.entity_type_classification("minecraft:no_such_kind"), None);
         });
     }
 

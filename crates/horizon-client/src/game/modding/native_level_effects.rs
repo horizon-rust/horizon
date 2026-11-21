@@ -72,6 +72,27 @@ impl Game<'_> {
     /// count sends one particle moving along `spread`). Block particle types
     /// need `state`; item particles need a validated stack; trail and vibration aren't supported.
     /// True means queued, not drawn.
+    /// `level_send_particles` with `ServerLevel.sendParticles`' `force`: the same request
+    /// and answer, sent to the players within 512 blocks and drawn whatever their particle
+    /// setting. It marks the request `level_send_particles` queued last.
+    pub(super) fn level_send_particles_forced(
+        &mut self,
+        level: LevelRef,
+        options: &ParticleOptions,
+        state: Option<BlockStateId>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+    ) -> bool {
+        if !self.level_send_particles(level, options, state, at, spread, speed, count) {
+            return false;
+        }
+        if let Some(queued) = self.creatures.lan_particles.last_mut() {
+            queued.force = true;
+        }
+        true
+    }
     pub(super) fn level_send_particles(
         &mut self,
         level: LevelRef,
@@ -99,6 +120,7 @@ impl Game<'_> {
             speed: [speed; 3],
             count,
             randomization: 0,
+            force: false,
         });
         true
     }

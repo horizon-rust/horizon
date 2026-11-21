@@ -2403,6 +2403,7 @@ impl Game<'_> {
                     (on_ground, has_position, has_rotation),
                 ),
                 HostEvent::Pong { conn, id } => self.announce_player_pong(conn, id),
+                HostEvent::PacketHeard(conn) => self.lan_packet_heard(conn),
                 HostEvent::Input { conn, flags } => {
                     if !mod_api::__private::listened(mod_api::HookId::PlayerInput) {
                         continue;

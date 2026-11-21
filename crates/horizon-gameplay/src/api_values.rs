@@ -74,7 +74,7 @@ macro_rules! scalar_values {
         }
     )* };
 }
-scalar_values!(u32, i32, bool, ());
+scalar_values!(u32, i32, bool, (), mod_api::EntityRef);
 
 impl TryIntoApi for String {
     type Api = Self;

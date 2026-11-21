@@ -1888,6 +1888,7 @@ impl Game<'_> {
             speed: [0.0; 3],
             count: 1,
             randomization: 0,
+            force: false,
         });
     }
     /// A vibration travelling to a warden or allay (`MobEvent::Vibration`).

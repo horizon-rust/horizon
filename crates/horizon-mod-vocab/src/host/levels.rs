@@ -286,6 +286,15 @@ pub trait LevelsBackend {
     /// O(n log n), followed by one authoritative handle lookup per candidate.
     #[access(WorldOnly)]
     fn level_all_entities(&self, level: LevelRef) -> Option<Vec<EntityRef>>;
+    /// Side: server.
+    /// Every dropped item entity of the level with its complete stack, in the order
+    /// `level_all_entities` walks (`Level.getEntitiesOfClass(ItemEntity.class, ...)` over
+    /// the whole level, without a box). An item held out while it ticks is left out, and a
+    /// stack's `ItemEntity` handle is not needed: the entity ID names the item. None for a
+    /// stale handle, a level not in place and a client. A mod that needs the items near a
+    /// point should use `level_entities_in` and `item_entity`, which return less.
+    #[access(WorldOnly)]
+    fn level_item_entities(&self, level: LevelRef) -> Option<Vec<(EntityRef, ItemStack)>>;
     /// Side: both.
     /// Entities whose bounding boxes intersect this box (`Level.getEntities`).
     /// Face-only contact does not intersect; spectator players are excluded.
@@ -1252,6 +1261,22 @@ pub trait LevelsBackendMut {
     /// True means queued, not drawn.
     #[access(WorldOnly)]
     fn level_send_particles(
+        &mut self,
+        level: LevelRef,
+        options: &ParticleOptions,
+        state: Option<BlockState>,
+        at: [f64; 3],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+    ) -> bool;
+    /// Side: server.
+    /// `level_send_particles` with `ServerLevel.sendParticles`' `force` set: the same
+    /// particle, validation and answer, sent to the players within 512 blocks instead of 32
+    /// and drawn whatever their particle setting (vanilla's `overrideLimiter`). True means
+    /// queued, not drawn.
+    #[access(WorldOnly)]
+    fn level_send_particles_forced(
         &mut self,
         level: LevelRef,
         options: &ParticleOptions,

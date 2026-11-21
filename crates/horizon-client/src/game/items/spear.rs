@@ -355,6 +355,7 @@ impl Game<'_> {
                 speed: [0.2; 3],
                 count: (actual * 0.5) as u32 as i32,
                 randomization: 0,
+                force: false,
             });
         }
     }

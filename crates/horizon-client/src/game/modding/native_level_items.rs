@@ -75,6 +75,24 @@ impl Game<'_> {
     /// spawned, for an empty stack or an unknown item, a value that isn't
     /// finite, on a client, for a stale handle, a level not in place, or an
     /// item a mod kept out (`native_entity_join_level`).
+    /// The dropped item entities of the level with their stacks (`level_item_entities`):
+    /// the level's entity walk, narrowed to items, each with its complete stack. None where
+    /// `level_all_entities` is None.
+    pub(super) fn level_item_entities(
+        &self,
+        level: LevelRef,
+    ) -> Option<Vec<(EntityRef, ItemStack)>> {
+        let entities = self.level_all_entities(level)?;
+        Some(
+            entities
+                .into_iter()
+                .filter_map(|entity| {
+                    let stack = self.item_entity_stack(self.item_entity(entity)?)?;
+                    Some((entity, stack))
+                })
+                .collect(),
+        )
+    }
     pub(super) fn level_spawn_item(
         &mut self,
         level: LevelRef,
@@ -329,6 +347,30 @@ mod tests {
                 let left: Vec<(u32, u32)> = game.orbs.iter().map(|o| (o.id, o.count)).collect();
                 assert_eq!(left, [(40, 2), (120, 2)]);
             });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn level_item_entities_lists_each_drop_with_its_stack() {
+        use horizon_client::items::ItemStack;
+        use mod_api::LevelRef;
+
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let level: LevelRef = game.level(game.dim.id()).unwrap();
+            assert_eq!(game.level_item_entities(level), Some(Vec::new()));
+            let stone = ItemStack::new("minecraft:stone", 3);
+            let first = game
+                .level_spawn_item(level, 1.5, 70.0, 2.5, stone.clone(), 10)
+                .unwrap();
+            let second = game
+                .level_spawn_item(level, 4.5, 70.0, 2.5, ItemStack::new("minecraft:dirt", 1), 10)
+                .unwrap();
+            let items = game.level_item_entities(level).unwrap();
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], (first, stone));
+            assert_eq!(items[1].0, second);
+            assert_eq!(items[1].1.count, 1);
         });
     }
 }

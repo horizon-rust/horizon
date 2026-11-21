@@ -153,6 +153,8 @@ in place of the player's name, `None` when there is none (`Option<Option<String>
 An outer `None` means a stale or unavailable player for all three, a client or an
 unjoinable world for `hidden`, and no server list for `nickname`.
 
+`host.text_from_legacy` reads Bukkit's hex colour strings as well as the sixteen colour codes. `ChatColor.of("#ff00aa")` writes `§x§f§f§0§0§a§a`; the call turns that into the colour `#ff00aa` and, as any colour code does, clears the decorations before it. A `§x` that is not followed by six `§`-and-digit pairs is dropped like an unknown code, and the font's own reading of `§` codes (names, signs, item text) is unchanged: only this call reads the form. `&#ff00aa` is not read; convert it to the `§x` form first, as `&` codes are replaced with `§` first.
+
 ## The server list
 
 Changing what the server list shows (a MOTD with colours or a random line, an icon, fake counts, a hidden player list):
@@ -231,6 +233,13 @@ escapes such as `\u0041` are decoded.
 `host.text_from_legacy("§cRed")` reads `§` formatting codes as
 the font draws them; `&` codes are not read, so replace `&` with `§` first.
 Both work on either side.
+
+`text.plain()` returns the characters of a `Text` and its children with no
+styling, as Adventure's plain-text serializer writes them. A translation uses its
+`fallback` template with each `%s` replaced by the next argument's plain text,
+and the key when there is no fallback; a selector gives its pattern unresolved,
+and a score, an NBT path or an inline object gives nothing. An advancement's
+title is `host.advancement(id)` then its `display.title`; call `plain()` on it.
 
 ## Server clock, rules and distances
 
@@ -315,3 +324,10 @@ goes back to 0, scoreboard criteria follow the changed values, and the client se
 `player_stat_award` is not heard.
 
 Measuring a client's transaction round trip (a lag-compensating anticheat): send the player a `ping` with `player_send_packet` and hear the answer in `player_pong(player, name, id)`, which carries the number the ping had; the time between the two is finer than the keep-alive average `player_latency` reads. The engine's own pings (a recording's end-of-tick ping, whose id is the server tick) are answered here too, so pick ids that tell apart from small tick numbers. The hook is heard only for a pong that answers a ping the server sent on that connection, once per ping (an unsolicited or repeated pong, or an answer to a ping older than 30 seconds, is dropped), in order with the guest's other packets, with their state swapped in, and cannot cancel; with no listener nothing is queued.
+
+## Item entities of a level
+
+`level_item_entities(level)` lists every dropped item entity of a level with its complete stack, as
+`(entity, stack)` pairs in the level's entity order. It returns `None` for a stale handle, a level not in
+place and on a client. An item held out while it ticks is left out. Use `level_entities_in` with a box when only
+the items near one place are needed.

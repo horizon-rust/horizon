@@ -208,6 +208,7 @@ impl Game<'_> {
             speed: [0.0; 3],
             count: 7,
             randomization: 0,
+            force: false,
         });
         // `DecoratedPotBlockEntity.setChanged()`: a comparator beside the pot re-reads it.
         self.container_changed((pos[0], pos[1], pos[2]));

@@ -20,7 +20,12 @@ pub trait TextHost {
     /// (`Style.applyLegacyFormat`; Bukkit's `ChatColor` strings): a colour code resets the
     /// decorations, `§r` resets everything, an unknown code is dropped. `&` codes are not
     /// read; a mod that takes them replaces `&` with `§` first, as
-    /// `ChatColor.translateAlternateColorCodes` does.
+    /// `ChatColor.translateAlternateColorCodes` does. The hex form Bukkit's
+    /// `ChatColor.of("#rrggbb")` writes is read too: `§x` and then six `§` plus hex digit
+    /// pairs (`§x§f§f§0§0§a§a` is `#ff00aa`, either letter case). It sets that colour and
+    /// clears the decorations, as a colour code does; a `§x` without all six pairs is dropped
+    /// like an unknown code. The font does not read it, so a `§x` in a name or sign is not
+    /// affected: only this call reads it.
     #[access(Metadata)]
     fn text_from_legacy(&self, legacy: &str) -> Result<Text, TextFormError>;
     /// Side: both.

@@ -137,6 +137,14 @@ pub trait EntitiesBackend {
     /// from its type, `Monster` for the dragon, `Misc` for every other kind.
     #[access(WorldOnly)]
     fn entity_classification(&self, entity: EntityRef) -> Option<MobCategory>;
+    /// Side: both.
+    /// The category of the entity type `kind` (`minecraft:zombie`) with no entity
+    /// (`EntityType.getCategory` of the type): a mob type's from its data, `Monster`
+    /// for `minecraft:ender_dragon`. None for a kind that is no mob type, such as
+    /// `minecraft:item` (`entity_classification` answers those for an entity), and for
+    /// a kind Horizon does not load. Purge and spawn-limit commands read it by type.
+    #[access(PublishedResources)]
+    fn entity_type_classification(&self, kind: &str) -> Option<MobCategory>;
     /// Side: server.
     /// Whether the entity is in its level: from when `entity_join_level` let
     /// it in (false while that hook runs for it and before) until it

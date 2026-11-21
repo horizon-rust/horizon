@@ -96,6 +96,7 @@ impl Game<'_> {
             speed: [0.0; 3],
             count: 0,
             randomization: 0,
+            force: false,
         });
     }
 
@@ -367,6 +368,7 @@ impl Game<'_> {
                     speed: [0.2; 3],
                     count: (actual * 0.5) as u32 as i32,
                     randomization: 0,
+                    force: false,
                 });
             }
             self.remember_mob_player_credit(self.mobs[index].id);

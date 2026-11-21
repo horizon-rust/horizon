@@ -85,3 +85,24 @@ fn stack_particle_crosses_server_packet_and_resolves_apple() {
         );
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn forced_particle_is_marked_for_512_blocks_and_plain_one_is_not() {
+    crate::game::native_entity_refs::tests::with_game(|game| {
+        mod_api::__private::resolve_particles(["minecraft:flame"], |id| {
+            horizon_client::particles::ParticleType::from_name(id)
+                .map(|ty| mod_api::__private::ParticleKind::Vanilla(ty as u32))
+        })
+        .unwrap();
+        let key = mod_api::__private::particle_named_key("minecraft:flame").unwrap();
+        let options = mod_api::ParticleOptions::simple(key);
+        let level = game.level(game.dim.id()).unwrap();
+        assert!(level.send_particles_forced(game, &options, None, [0.0, 64.0, 0.0], [0.0; 3], 0.0, 1));
+        assert!(game.creatures.lan_particles.last().unwrap().force);
+        game.creatures.lan_particles.clear();
+        assert!(level.send_particles(game, &options, None, [0.0, 64.0, 0.0], [0.0; 3], 0.0, 1));
+        assert!(!game.creatures.lan_particles.last().unwrap().force);
+        game.creatures.lan_particles.clear();
+    });
+}

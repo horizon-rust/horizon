@@ -2769,6 +2769,7 @@ registration path.
   vanilla particles to nearby players. Block particles require a valid block state; item particles
   require a validated stack. Trail and vibration remain unsupported. Count zero sends one directional
   particle. The return value says whether the call was accepted, not whether any player received it.
+- `level.send_particles_forced(host, options, state, at, spread, speed, count)` is `send_particles` with vanilla's `force` flag: the players within 512 blocks instead of 32 get the particle, whatever their particle setting. The same refusals and the same answer.
 
 - Authoritative world lifecycle events through `world_lifecycle`: open failed, final close and
   close failed (contract version 2). **Migration (`WorldPhase::WorldOpenReady` → `server_started`):** a mod that matched
