@@ -7279,18 +7279,7 @@ impl Renderer {
         let scaled = self.screenshot_size();
         let rendered = match scaled {
             Some(size) => self.draw_scaled_frame(frame, size),
-            // The backstop for a target made on demand that no fallback of its own covers
-            // (#13624): its error is warned of instead of reaching wgpu's handler, which
-            // panics. Native error scopes resolve at once, and the frame is still passed to
-            // the submit thread (`checks` stays `None`), whose errors these scopes don't see.
-            None => {
-                let checks = GpuChecks::push(&self.device);
-                let drawn = self.draw_frame(frame, None, self.output);
-                if let Some(error) = checks.pop() {
-                    frame_targets::frame_failed(&error);
-                }
-                drawn
-            }
+            None => self.draw_frame(frame, None, self.output),
         };
         self.finish_prepared_frame();
         // A frame that was not drawn still submits the section copies and
@@ -7465,6 +7454,7 @@ impl Renderer {
         // a swapchain image, and tried again on the next (#13624). A scaled screenshot's frame
         // is under its own scopes (`checks`), which take it again at half the size.
         if checks.is_none() {
+            frame_targets::begin_frame();
             if self.depth.is_none() && !self.remake_depth() {
                 return Ok(false);
             }
@@ -7626,6 +7616,11 @@ impl Renderer {
             self.acquire_validation_failures = 0;
             self.frame_gen.paused = false;
         }
+        // A window frame's own scopes, read before its commands are finished (`frame_lost`):
+        // where something no fallback of its own covers runs out of memory (#13624), the frame
+        // is given up rather than submitted with what failed. Native error scopes resolve at
+        // once.
+        let backstop = checks.is_none().then(|| GpuChecks::push(&self.device));
         let size = [self.config.width, self.config.height];
         let target_texture = match (&surface_frame, &mut self.hdr) {
             (_, Some(hdr)) => hdr.frame(&self.device, size),
@@ -7648,17 +7643,14 @@ impl Renderer {
                     .unwrap_or(image)
             }
         };
-        // One command buffer for the frame, after the section copies staged
-        // since the last one: Metal commits every command buffer wgpu-core
-        // makes (one per run of copies and two per pass) on its own.
-        let section_copies = self.section_copies.take();
-        let has_section_copies = section_copies.is_some();
-        let mut encoder = section_copies.unwrap_or_else(|| {
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Horizon frame"),
-                })
-        });
+        // The section copies staged since the last frame, in a command buffer of their own
+        // submitted before the frame's: a frame given up (`abandon_frame`) still submits them.
+        let mut copies = self.take_section_copies();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon frame"),
+            });
         // Horizon's own passes are timed like a shader pack's, from the frame's first pass.
         if self.own_timing.is_some() != self.pass_timing {
             self.own_timing = self
@@ -8221,16 +8213,25 @@ impl Renderer {
         let listed = visible.len() + visible_lods.len();
         let viewed = listed + shadow_visible.len();
         let instances = viewed + self.world_views.sections.sections().count();
+        // A buffer a frame grows keeps the old one until the new one is made (#13624): without
+        // the room for it, the frame is given up and nothing is recorded with what failed.
         if instances as u64 > self.instance_capacity {
-            self.instance_capacity = (instances as u64).next_power_of_two();
-            self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Section origins"),
-                size: self.instance_capacity * 16,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE,
-                mapped_at_creation: false,
-            });
+            let capacity = (instances as u64).next_power_of_two();
+            let usage = wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE;
+            let made = frame_targets::buffer(&self.device, "Section origins", capacity * 16, usage);
+            let Some(buffer) = made else {
+                return self.abandon_frame(frame_targets::Abandoned::grown(
+                    encoder,
+                    copies,
+                    surface_frame,
+                    fg_frames,
+                    backstop,
+                ));
+            };
+            self.instance_capacity = capacity;
+            self.instances = buffer;
         }
         self.origins.clear();
         let (sections, retiring) = (&self.sections, &self.lod_retiring);
@@ -8716,13 +8717,20 @@ impl Renderer {
         if debug_depth + debug_top + crosshair > 0 {
             let needed = u64::from(debug_depth + debug_top + crosshair);
             if needed > self.debug_line_capacity {
-                self.debug_line_capacity = needed.next_power_of_two();
-                self.debug_line_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Debug lines"),
-                    size: 32 * self.debug_line_capacity,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
+                let capacity = needed.next_power_of_two();
+                let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+                let made = frame_targets::buffer(&self.device, "Debug lines", 32 * capacity, usage);
+                let Some(buffer) = made else {
+                    return self.abandon_frame(frame_targets::Abandoned::grown(
+                        encoder,
+                        copies,
+                        surface_frame,
+                        fg_frames,
+                        backstop,
+                    ));
+                };
+                self.debug_line_capacity = capacity;
+                self.debug_line_buffer = buffer;
             }
             let lines = &mut self.debug_lines_scratch;
             lines.clear();
@@ -8984,13 +8992,23 @@ impl Renderer {
             let vertices = self.cloud_mesh.vertices.len() as u64;
             if rebuilt && vertices > 0 {
                 if vertices > self.cloud_capacity {
-                    self.cloud_capacity = vertices.next_power_of_two();
-                    self.cloud_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Cloud vertices"),
-                        size: self.cloud_capacity * std::mem::size_of::<Vertex>() as u64,
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
+                    let capacity = vertices.next_power_of_two();
+                    let size = capacity * std::mem::size_of::<Vertex>() as u64;
+                    let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+                    let made = frame_targets::buffer(&self.device, "Cloud vertices", size, usage);
+                    let Some(buffer) = made else {
+                        // The mesh is uploaded again once there is room.
+                        self.cloud_mesh.forget();
+                        return self.abandon_frame(frame_targets::Abandoned::grown(
+                            encoder,
+                            copies,
+                            surface_frame,
+                            fg_frames,
+                            backstop,
+                        ));
+                    };
+                    self.cloud_capacity = capacity;
+                    self.cloud_buffer = buffer;
                 }
                 self.uploads.buffer(
                     &mut encoder,
@@ -9040,13 +9058,21 @@ impl Renderer {
         let outlined = skin.map_or(0, |s| s.outline_vertices);
         let entity_vertices = u64::from(outline_base) + u64::from(outlined);
         if entity_vertices > self.entity_capacity {
-            self.entity_capacity = entity_vertices.next_power_of_two();
-            self.entity_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Entity vertices"),
-                size: self.entity_capacity * std::mem::size_of::<Vertex>() as u64,
-                usage: self.entity_usage(),
-                mapped_at_creation: false,
-            });
+            let capacity = entity_vertices.next_power_of_two();
+            let size = capacity * std::mem::size_of::<Vertex>() as u64;
+            let usage = self.entity_usage();
+            let made = frame_targets::buffer(&self.device, "Entity vertices", size, usage);
+            let Some(buffer) = made else {
+                return self.abandon_frame(frame_targets::Abandoned::grown(
+                    encoder,
+                    copies,
+                    surface_frame,
+                    fg_frames,
+                    backstop,
+                ));
+            };
+            self.entity_capacity = capacity;
+            self.entity_buffer = buffer;
         }
         if !all_entities.is_empty() {
             self.uploads.buffer(
@@ -9069,16 +9095,22 @@ impl Renderer {
             self.device.limits().max_buffer_size,
         )?;
         if slots > self.prepared_instance_capacity {
-            let checks = GpuChecks::push(&self.device);
-            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Prepared model instances"),
-                size: slots * stride,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            if let Some(error) = checks.pop() {
-                return Err(error.to_string().into());
-            }
+            let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+            let made = frame_targets::buffer(
+                &self.device,
+                "Prepared model instances",
+                slots * stride,
+                usage,
+            );
+            let Some(buffer) = made else {
+                return self.abandon_frame(frame_targets::Abandoned::grown(
+                    encoder,
+                    copies,
+                    surface_frame,
+                    fg_frames,
+                    backstop,
+                ));
+            };
             self.prepared_instance_buffer = buffer;
             self.prepared_instance_capacity = slots;
         }
@@ -9147,43 +9179,60 @@ impl Renderer {
                     .binary_search_by_key(section, |snapshot| snapshot.section)
                     .is_ok()
             });
+            // A section without the room for its buffers (#13624) keeps what it had and is
+            // uploaded again on a later frame: the catalog's revision waits for it.
+            let mut missed = false;
+            let origin = |device: &wgpu::Device, origin: &[i32; 3]| {
+                frame_targets::made(device, frame_targets::Kind::Buffers, || {
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Static block-entity section origin"),
+                        contents: bytemuck::bytes_of(origin),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+                })
+            };
+            let vertex_buffer = |device: &wgpu::Device, capacity: u64| {
+                frame_targets::buffer(
+                    device,
+                    "Static block-entity section vertices",
+                    capacity * std::mem::size_of::<Vertex>() as u64,
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                )
+            };
             for snapshot in static_sections {
                 let vertices = snapshot.vertices.len() as u64;
-                let gpu = self
-                    .static_entity_sections
-                    .entry(snapshot.section)
-                    .or_insert_with(|| {
-                        let capacity = vertices.next_power_of_two().max(4);
-                        let origin_buffer =
-                            self.device
-                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some("Static block-entity section origin"),
-                                    contents: bytemuck::bytes_of(&snapshot.origin),
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                });
-                        static_bytes_uploaded += std::mem::size_of_val(&snapshot.origin) as u64;
+                if !self.static_entity_sections.contains_key(&snapshot.section) {
+                    let capacity = vertices.next_power_of_two().max(4);
+                    let (Some(origin_buffer), Some(buffer)) = (
+                        origin(&self.device, &snapshot.origin),
+                        vertex_buffer(&self.device, capacity),
+                    ) else {
+                        missed = true;
+                        continue;
+                    };
+                    static_bytes_uploaded += std::mem::size_of_val(&snapshot.origin) as u64;
+                    self.static_entity_sections.insert(
+                        snapshot.section,
                         GpuStaticEntitySection {
-                            buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
-                                label: Some("Static block-entity section vertices"),
-                                size: capacity * std::mem::size_of::<Vertex>() as u64,
-                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                                mapped_at_creation: false,
-                            }),
+                            buffer,
                             origin_buffer,
                             origin: snapshot.origin,
                             capacity,
                             revision: 0,
                             vertices: 0,
-                        }
-                    });
+                        },
+                    );
+                }
+                let gpu = self
+                    .static_entity_sections
+                    .get_mut(&snapshot.section)
+                    .expect("made above");
                 if gpu.origin != snapshot.origin {
-                    gpu.origin_buffer =
-                        self.device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("Static block-entity section origin"),
-                                contents: bytemuck::bytes_of(&snapshot.origin),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            });
+                    let Some(origin_buffer) = origin(&self.device, &snapshot.origin) else {
+                        missed = true;
+                        continue;
+                    };
+                    gpu.origin_buffer = origin_buffer;
                     gpu.origin = snapshot.origin;
                     static_bytes_uploaded += std::mem::size_of_val(&snapshot.origin) as u64;
                 }
@@ -9191,13 +9240,13 @@ impl Renderer {
                     continue;
                 }
                 if vertices > gpu.capacity {
-                    gpu.capacity = vertices.next_power_of_two();
-                    gpu.buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("Static block-entity section vertices"),
-                        size: gpu.capacity * std::mem::size_of::<Vertex>() as u64,
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
+                    let capacity = vertices.next_power_of_two();
+                    let Some(buffer) = vertex_buffer(&self.device, capacity) else {
+                        missed = true;
+                        continue;
+                    };
+                    gpu.capacity = capacity;
+                    gpu.buffer = buffer;
                 }
                 self.uploads.buffer(
                     &mut encoder,
@@ -9209,7 +9258,9 @@ impl Renderer {
                 gpu.revision = snapshot.revision;
                 gpu.vertices = vertices as u32;
             }
-            self.static_entity_catalog_revision = catalog_revision;
+            if !missed {
+                self.static_entity_catalog_revision = catalog_revision;
+            }
         }
         let static_entity_quads = frame
             .visible_static_block_entity_sections
@@ -9342,14 +9393,23 @@ impl Renderer {
             vertices.clear();
             vertices.extend(frame.screen.iter().flat_map(|q| q.vertices));
             if vertices.len() as u64 > self.screen_capacity {
-                self.screen_capacity = (vertices.len() as u64).next_power_of_two();
-                self.screen_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Screen effect vertices"),
-                    size: self.screen_capacity
-                        * std::mem::size_of::<crate::screen_effects::ScreenVertex>() as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
+                let capacity = (vertices.len() as u64).next_power_of_two();
+                let size =
+                    capacity * std::mem::size_of::<crate::screen_effects::ScreenVertex>() as u64;
+                let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+                let made =
+                    frame_targets::buffer(&self.device, "Screen effect vertices", size, usage);
+                let Some(buffer) = made else {
+                    return self.abandon_frame(frame_targets::Abandoned::grown(
+                        encoder,
+                        copies,
+                        surface_frame,
+                        fg_frames,
+                        backstop,
+                    ));
+                };
+                self.screen_capacity = capacity;
+                self.screen_buffer = buffer;
             }
             self.uploads.buffer(
                 &mut encoder,
@@ -9478,13 +9538,21 @@ impl Renderer {
             section_draw_calls = self.flat.as_ref().map_or(0, |f| f.shadow_calls[0]);
         } else if self.multi_draw && !self.draws.is_empty() {
             if self.draws.len() as u64 > self.indirect_capacity {
-                self.indirect_capacity = (self.draws.len() as u64).next_power_of_two();
-                self.indirect = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Section draws"),
-                    size: self.indirect_capacity * 20,
-                    usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
+                let capacity = (self.draws.len() as u64).next_power_of_two();
+                let usage = wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST;
+                let made =
+                    frame_targets::buffer(&self.device, "Section draws", capacity * 20, usage);
+                let Some(buffer) = made else {
+                    return self.abandon_frame(frame_targets::Abandoned::grown(
+                        encoder,
+                        copies,
+                        surface_frame,
+                        fg_frames,
+                        backstop,
+                    ));
+                };
+                self.indirect_capacity = capacity;
+                self.indirect = buffer;
             }
             self.uploads.buffer(
                 &mut encoder,
@@ -11366,10 +11434,6 @@ impl Renderer {
                 .and_then(|request| self.take_readback(request, &mut encoder, shown_texture))
         });
         self.uploads.finish(&encoder);
-        if has_section_copies {
-            self.section_copy_bytes = 0;
-            self.section_uploads.finish(&encoder);
-        }
         if let Some(image) = surface_frame
             .as_ref()
             .map(|f| &f.texture)
@@ -11407,6 +11471,19 @@ impl Renderer {
                 let size = [self.config.width, self.config.height];
                 Some(copy_frame(&self.device, &mut encoder, &texture, size))
             });
+        if let Some(backstop) = backstop {
+            let (memory, validation) = backstop.errors();
+            if frame_targets::frame_lost(memory, validation) {
+                return self.abandon_frame(frame_targets::Abandoned {
+                    encoder: None,
+                    copies,
+                    surface: surface_frame,
+                    generated: fg_frames,
+                    screenshot: readback.map(|(request, _)| request),
+                    backstop: None,
+                });
+            }
+        }
         let first_frame = self.first_frame == FirstFrame::Submit;
         // Finished, submitted and presented on the submit thread when nothing after the
         // submission needs this one: screenshots' readbacks, the error scopes (one per
@@ -11442,6 +11519,10 @@ impl Renderer {
                     }
                 }) as submit::AfterSubmit
             });
+            // The section copies first, before the submit thread submits the frame.
+            if let Some(copies) = copies.take() {
+                self.queue.submit([copies]);
+            }
             let job = submit::Job {
                 encoder,
                 surface: surface_frame,
@@ -11468,7 +11549,9 @@ impl Renderer {
             startup_step(format_args!("submitting the first frame"));
             self.first_frame = FirstFrame::Drawn;
         }
-        let submission = crate::spans::time("submit", || self.queue.submit([commands]));
+        let submission = crate::spans::time("submit", || {
+            self.queue.submit(copies.into_iter().chain([commands]))
+        });
         if let Some(read) = after.or_else(|| self.after_submit()) {
             read();
         }
@@ -11888,9 +11971,14 @@ impl GpuChecks {
         Self { memory, validation }
     }
     fn pop(self) -> Option<wgpu::Error> {
+        let (memory, validation) = self.errors();
+        memory.or(validation)
+    }
+    /// The out-of-memory scope's error and the validation scope's.
+    fn errors(self) -> (Option<wgpu::Error>, Option<wgpu::Error>) {
         let validation = pollster::block_on(self.validation.pop());
         let memory = pollster::block_on(self.memory.pop());
-        memory.or(validation)
+        (memory, validation)
     }
 }
 /// How many times the window's size a scaled screenshot is: the Resolution Scale

@@ -202,10 +202,25 @@ impl EntityOutline {
         }
         let vertices = silhouettes.len() as u64;
         if vertices > self.capacity {
-            self.capacity = vertices.next_power_of_two();
-            self.vertices = Self::vertex_buffer(device, self.capacity);
+            // Without the room for more (#13624) the old buffer stays and this frame outlines
+            // only the silhouettes posed on the GPU.
+            let capacity = vertices.next_power_of_two();
+            match super::frame_targets::made(device, super::frame_targets::Kind::Outline, || {
+                Self::vertex_buffer(device, capacity)
+            }) {
+                Some(buffer) => {
+                    self.capacity = capacity;
+                    self.vertices = buffer;
+                }
+                None => {
+                    self.quads = 0;
+                    if posed.1 == 0 {
+                        return;
+                    }
+                }
+            }
         }
-        if !silhouettes.is_empty() {
+        if self.quads > 0 {
             uploads.buffer(
                 encoder,
                 &self.vertices,
