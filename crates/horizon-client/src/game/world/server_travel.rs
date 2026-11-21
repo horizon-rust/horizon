@@ -1501,6 +1501,16 @@ impl Game<'_> {
                 continue;
             };
             let source = self.dim;
+            // ServerPlayer.teleportTo wakes a sleeper before the move, in the
+            // level they leave (`stopSleepInBed(true, true)`): their own sleep
+            // counter stays 0 and their client fades from the animate packet
+            // `Hub::wake` sends, so a command into another level wakes them too.
+            if host.hub.guests[i].bed.is_some() {
+                self.wake_guest(i, true, true);
+            }
+            let Some(host) = self.lan.as_mut() else {
+                return;
+            };
             if t.dim != source {
                 drop_hook(host, t.conn);
             }
@@ -1541,6 +1551,9 @@ impl Game<'_> {
             self.bind_player_attachments(t.conn, false);
             self.as_guest(t.conn, |g| {
                 g.trigger_dimension(source, t.dim, origin);
+                // ServerPlayer.teleport: stopUsingItem after the dimension change
+                // triggers (the portal path does the same).
+                g.stop_active_item_use();
                 // The mods hear the teleport into another level, with the
                 // player's state swapped in.
                 g.native_player_teleported(uuid, &name, origin, t.at, t.dim.id());

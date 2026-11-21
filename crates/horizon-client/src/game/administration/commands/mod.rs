@@ -29,6 +29,7 @@ mod terrain_cmds;
 mod test_locate;
 mod test_runs;
 mod text_commands;
+mod tp_motion;
 mod world_cmds;
 
 use super::{Dim, Game, Screen, chat::PLAYER_NAME, vehicle_teleport::TeleportMotion};
@@ -1494,6 +1495,17 @@ impl Game<'_> {
                 });
             }
             Target::Player => {
+                let from = self
+                    .player
+                    .as_ref()
+                    .map(|p| [p.position.x, p.position.y, p.position.z]);
+                // ServerPlayer.teleportTo wakes a sleeper before the move
+                // (`stopSleepInBed(true, true)`), which stands them beside the bed
+                // and tells their client where they are before the teleport does.
+                // A relative destination then moves from where they got up:
+                // `Entity.teleportSetPosition` reads `PositionMoveRotation.of(this)`
+                // after the wake.
+                let v = self.tp_wake(v, relative);
                 // ServerPlayer.teleport: removeVehicle before placing the player.
                 self.stop_riding();
                 // A server's player teleported within their level is placed at once;
@@ -1501,10 +1513,6 @@ impl Game<'_> {
                 if let Some(conn) = self.lan_acting {
                     self.hold_for_chunks(conn, v);
                 }
-                let from = self
-                    .player
-                    .as_ref()
-                    .map(|p| [p.position.x, p.position.y, p.position.z]);
                 if let Some(p) = self.player.as_mut() {
                     p.position = v;
                     p.velocity = teleport_velocity(p.velocity, relative, p.fall_flying);
@@ -2035,13 +2043,16 @@ impl Game<'_> {
                     }
                 }))
             });
+            // `TeleportCommand.getRelatives` keeps the direction bits across
+            // levels (`Relative.direction`; only `Relative.position` is dropped
+            // there), so a relative destination carries the motion of its axes.
             if self.teleport_across(
                 t,
                 source_level,
                 pos,
                 rotation,
                 turn_riders,
-                TeleportMotion::Stop,
+                TeleportMotion::KeepAxes(relative),
             )? {
                 continue;
             }

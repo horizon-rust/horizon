@@ -309,6 +309,62 @@ fn a_command_arrival_holds_movement_until_lit_then_ticks_damage_again() {
 
 #[test]
 #[ignore = "daily"]
+fn a_cross_level_tp_stops_the_item_in_use() {
+    use super::LevelTeleport;
+    let mut resources = None;
+    let (mut game, _rx) = server(&mut resources);
+    // A use in progress (`LivingEntity.useItem`): the guest is eating.
+    assert_eq!(
+        game.as_guest(CONN, |g| {
+            g.using = Some((0, 0));
+            g.using.is_some()
+        }),
+        Some(true)
+    );
+    // A command that sends them into another level: `ServerPlayer.teleport`'s
+    // cross-dimension branch, after `triggerDimensionChangeTriggers`.
+    game.level_teleports.push(LevelTeleport {
+        conn: CONN,
+        dim: crate::game::Dim::Nether,
+        at: [8.5, 64.0, 8.5],
+        rotation: None,
+        vehicle: None,
+    });
+    game.run_level_teleports();
+    assert!(
+        game.as_guest(CONN, |g| g.using.is_none()).unwrap_or(false),
+        "the use ends with the dimension change"
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_cross_level_tp_wakes_the_sleeper_it_moves() {
+    use super::LevelTeleport;
+    let mut resources = None;
+    let (mut game, _rx) = server(&mut resources);
+    // Asleep in a bed: `ServerPlayer.teleportTo`'s `stopSleepInBed(true, true)`.
+    game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+        g.bed = Some([4, 100, 4]);
+        g.sleeping = true;
+        g.sleep_timer = 100;
+    });
+    game.level_teleports.push(LevelTeleport {
+        conn: CONN,
+        dim: crate::game::Dim::Nether,
+        at: [8.5, 64.0, 8.5],
+        rotation: None,
+        vehicle: None,
+    });
+    game.run_level_teleports();
+    let g = &game.lan.as_ref().unwrap().hub.guests[0];
+    assert_eq!(g.bed, None, "the sleeper is out of bed");
+    assert!(!g.sleeping, "and not asleep any more");
+    assert_eq!(g.sleep_timer, 0, "a forceful wake-up leaves no fade");
+}
+
+#[test]
+#[ignore = "daily"]
 fn respawn_arrivals_hold_movement_then_resume_damage_and_pickups() {
     use horizon_client::items::ItemStack;
     use horizon_client::lan::guest::InboxItem;

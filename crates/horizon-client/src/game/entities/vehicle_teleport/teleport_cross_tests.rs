@@ -171,3 +171,54 @@ fn tp_accepts_the_spawnable_border_coordinates() {
         assert!(!game.run_command(command), "{command}");
     }
 }
+
+/// A command's relative destination names `Relative.DELTA_*` across levels
+/// too (`TeleportCommand.getRelatives` drops only `Relative.position` there),
+/// so the entity the level change recreates keeps the motion of those axes and
+/// loses the others (`PositionMoveRotation.calculateAbsolute`).
+#[test]
+#[ignore = "daily"]
+fn a_cross_level_tp_keeps_only_the_motion_of_its_relative_axes() {
+    use horizon_core::geometry::Vec3;
+    let mut game = game();
+    let back = game.enter_command_level(Dim::Nether);
+    game.world
+        .chunks
+        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    let _ = game.block_ticks.add_empty_chunk(ChunkPos::new(0, 0));
+    if let Some(back) = back {
+        game.enter_command_level(back);
+    }
+    // The arrow the command sent into the Nether, whose list is then emptied so
+    // the next move reads its own.
+    let crossed = |game: &mut Game<'_>| {
+        let back = game.enter_command_level(Dim::Nether);
+        let velocity = game
+            .creatures
+            .projectiles
+            .iter()
+            .next()
+            .expect("arrow crossed")
+            .velocity;
+        game.creatures.projectiles.clear();
+        if let Some(back) = back {
+            game.enter_command_level(back);
+        }
+        velocity
+    };
+    // x and z are relative, y is absolute.
+    assert!(game.run_command(
+        "summon minecraft:arrow 1.5 2 0.5 {Motion:[0.3d,0.6d,-0.2d]}"
+    ));
+    let command = "execute in minecraft:the_nether run tp @e[type=minecraft:arrow,limit=1] ~ 64 ~";
+    assert!(game.run_command(command), "{command}");
+    assert_eq!(crossed(&mut game), Vec3::new(0.3, 0.0, -0.2));
+    // An absolute destination carries no motion at all.
+    assert!(game.run_command(
+        "summon minecraft:arrow 1.5 2 0.5 {Motion:[0.3d,0.6d,-0.2d]}"
+    ));
+    let command =
+        "execute in minecraft:the_nether run tp @e[type=minecraft:arrow,limit=1] 2.5 64 0.5";
+    assert!(game.run_command(command), "{command}");
+    assert_eq!(crossed(&mut game), Vec3::ZERO);
+}

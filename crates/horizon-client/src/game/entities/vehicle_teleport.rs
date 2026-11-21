@@ -76,6 +76,11 @@ pub(in crate::game) enum TeleportMotion {
     /// `Entity.teleportTo(ServerLevel, ..)`, as `/tp` calls it: no delta and no
     /// `Relative.DELTA`, so the entity arrives still.
     Stop,
+    /// The same transition from a relative destination: `TeleportCommand.getRelatives`
+    /// drops only `Relative.position` across levels and keeps `Relative.direction`,
+    /// so the axes it names keep the entity's motion
+    /// (`PositionMoveRotation.calculateAbsolute`) and the others go to zero.
+    KeepAxes([bool; 3]),
     /// A portal's `Relative.DELTA` with no delta of its own: the entity keeps
     /// the motion it had (`PositionMoveRotation.of(this)`), unturned.
     Keep,
@@ -421,6 +426,11 @@ impl Game<'_> {
             });
             let kept = match motion {
                 TeleportMotion::Keep => horizon_client::entity_nbt::motion(&tag),
+                TeleportMotion::KeepAxes(relative) => super::commands::teleport_velocity(
+                    horizon_client::entity_nbt::motion(&tag),
+                    relative,
+                    false,
+                ),
                 TeleportMotion::Stop => Vec3::ZERO,
             };
             let to = Vec3::new(at[0], at[1], at[2]);
@@ -485,6 +495,9 @@ impl Game<'_> {
             game.prepare_vehicle_transition(root);
             let kept = match motion {
                 TeleportMotion::Keep => game.transition_motion(target),
+                TeleportMotion::KeepAxes(relative) => game
+                    .transition_motion(target)
+                    .map(|motion| super::commands::teleport_velocity(motion, relative, false)),
                 TeleportMotion::Stop => None,
             };
             let from = game.place_teleport_in_level(target, at, rotation, [false; 3], turn_riders);
