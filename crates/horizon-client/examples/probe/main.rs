@@ -109,6 +109,7 @@ mod situational_music_fixture;
 mod skin_image_fixture;
 mod sound_engine_fixture;
 mod sound_event_fixture;
+mod spawn_chunk_order_fixture;
 mod spawn_rules_fixture;
 mod sprint_probe;
 mod squid_client_probe;
@@ -231,6 +232,7 @@ probes! {
     entity_sound_packet_fixture,
     sound_engine_fixture,
     sound_event_fixture,
+    spawn_chunk_order_fixture,
     spawn_rules_fixture,
     sprint_probe,
     storage_menu_fixture,

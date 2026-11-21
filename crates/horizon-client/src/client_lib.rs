@@ -169,6 +169,7 @@ pub mod controller_notice;
 pub mod server_packs;
 pub mod server_perf;
 pub mod shadows;
+pub mod spawn_chunk_order;
 pub mod spear;
 pub mod spectator_menu;
 pub mod splashes;
