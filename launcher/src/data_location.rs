@@ -412,12 +412,26 @@ fn migrate_locked(
         fs::create_dir_all(&target).map_err(|e| problem(&target, e))?;
         private_dir(&stage)?;
         progress("Copying and verifying launcher data");
-        copy_tree(&source.launcher, &staged.launcher, bootstrap, &mut progress)?;
+        copy_tree(
+            &source.launcher,
+            &staged.launcher,
+            bootstrap,
+            &[],
+            &mut progress,
+        )?;
         progress("Copying and verifying game data");
-        copy_tree(&source.game, &staged.game, bootstrap, &mut progress)?;
+        // Every instance's cache holds links the game made, which copy_tree refuses; the
+        // game rebuilds the cache on its next start.
+        copy_tree(
+            &source.game,
+            &staged.game,
+            bootstrap,
+            &[crate::instances::GAME_CACHE],
+            &mut progress,
+        )?;
         if separate_build || !within(&source.build, &source.launcher) {
             progress("Copying and verifying build data");
-            copy_tree(&source.build, &staged.build, bootstrap, &mut progress)?;
+            copy_tree(&source.build, &staged.build, bootstrap, &[], &mut progress)?;
         } else if !staged.build.exists() {
             fs::create_dir_all(&staged.build).map_err(|e| problem(&staged.build, e))?;
         }
@@ -678,6 +692,7 @@ fn copy_tree(
     source: &Path,
     dest: &Path,
     bootstrap: &Path,
+    skip: &[&str],
     progress: &mut impl FnMut(&str),
 ) -> Result<()> {
     let meta = match fs::symlink_metadata(source) {
@@ -691,6 +706,9 @@ fn copy_tree(
         copy_acl(source, dest)?;
         for entry in fs::read_dir(source).map_err(|e| problem(source, e))? {
             let entry = entry.map_err(|e| problem(source, e))?;
+            if skip.iter().any(|name| entry.file_name() == *name) {
+                continue;
+            }
             let path = entry.path();
             let controls = [
                 bootstrap.to_path_buf(),
@@ -703,7 +721,13 @@ fn copy_tree(
             {
                 continue;
             }
-            copy_tree(&path, &dest.join(entry.file_name()), bootstrap, progress)?;
+            copy_tree(
+                &path,
+                &dest.join(entry.file_name()),
+                bootstrap,
+                skip,
+                progress,
+            )?;
         }
         fs::set_permissions(dest, meta.permissions()).map_err(|e| problem(dest, e))?;
         sync_dir(dest)?;

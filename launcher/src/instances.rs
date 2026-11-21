@@ -512,6 +512,9 @@ pub fn select(query: &str) -> Result<Instance, String> {
     Ok(instance)
 }
 
+/// The game's cache folder in each instance; the game rebuilds it on start.
+pub(crate) const GAME_CACHE: &str = ".horizon-cache";
+
 /// What a copy of a game folder leaves out: other instances and packs, logs and crash reports,
 /// caches, data collection's state, and sign-in sessions (a session never leaves its folder).
 const NOT_COPIED: &[&str] = &[
@@ -522,7 +525,7 @@ const NOT_COPIED: &[&str] = &[
     "crash-reports",
     "sessions",
     "mod-browser",
-    ".horizon-cache",
+    GAME_CACHE,
     // Far terrain's copies of what servers sent, rebuilt as the instance plays.
     "server-terrain",
 ];
