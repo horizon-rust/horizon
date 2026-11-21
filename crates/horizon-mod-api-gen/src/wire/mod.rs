@@ -57,6 +57,7 @@ pub(super) const IMPORTS: &[&str] = &[
     "GenerationContext",
     "PieceContext",
     "StructureRandom",
+    "FoliageContext",
     "AttachmentStore",
     "ServerReloadListeners",
     "GameTests",
@@ -141,6 +142,8 @@ const EXPORTS: &[&str] = &[
     "BlockEntityTransform",
     "StructureType",
     "StructurePiece",
+    "FoliagePlacerType",
+    "FoliagePlacer",
     "BlockPart",
     "BlockEntityPart",
     "ItemPart",
@@ -193,13 +196,15 @@ const LOAD_CONTEXTS: &[&str] = &[
     "ClientReloadContext",
 ];
 
-/// The traits the game calls on its worker threads: a mod's structure types and their pieces on
-/// the worldgen workers, its block tint sources, colour resolvers and section geometry on the
+/// The traits the game calls on its worker threads: a mod's structure types and their pieces and
+/// its foliage placers on the worldgen workers, its block tint sources, colour resolvers and section geometry on the
 /// meshing workers. They keep no mutable state and get no `Host`.
 const WORKERS: &[&str] = &[
     "BlockEntityTransform",
     "StructureType",
     "StructurePiece",
+    "FoliagePlacerType",
+    "FoliagePlacer",
     "BlockTintSource",
     "BiomeColorResolver",
     "SectionGeometry",

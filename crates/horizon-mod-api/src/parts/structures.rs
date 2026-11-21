@@ -64,6 +64,54 @@ pub mod tests {
         assert!(errors[1].contains("namespace"));
         assert!(errors[2].contains("invalid identifier \"test:\""));
     }
+
+    /// A foliage placer type in the mod's namespace is handed over; the same id twice and
+    /// another mod's namespace refuse the mods at startup, naming the mod.
+    #[test]
+    pub(crate) fn duplicate_and_foreign_foliage_placer_types_refuse_registration() {
+        struct Fruit;
+        impl mod_api::FoliagePlacerType for Fruit {
+            fn decode(
+                &self,
+                _: &str,
+            ) -> Result<std::sync::Arc<dyn mod_api::FoliagePlacer>, String> {
+                Err("fixture has no placers".into())
+            }
+        }
+        struct Valid;
+        #[mod_api::__subscriptions]
+        impl Hooks for Valid {
+            fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+                r.register_foliage_placer_type("fruit", Fruit);
+            }
+        }
+        crate::parts::tests::install_parts_fixture(&[ModEntry::new("test", Box::new(Valid))])
+            .unwrap();
+        let types = crate::__private::foliage_placer_type_declarations();
+        assert_eq!(
+            types.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["test:fruit"]
+        );
+
+        struct Invalid;
+        #[mod_api::__subscriptions]
+        impl Hooks for Invalid {
+            fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+                r.register_foliage_placer_type("fruit", Fruit);
+                r.register_foliage_placer_type("fruit", Fruit);
+                r.register_foliage_placer_type("other:fruit", Fruit);
+            }
+        }
+        let errors = install_parts(
+            &[ModEntry::new("test", Box::new(Invalid))],
+            &crate::parts::tests::rule_schema(),
+            |_| false,
+        )
+        .unwrap_err();
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains("test registered foliage placer type test:fruit twice"));
+        assert!(errors[1].contains("namespace"));
+    }
 }
 
 impl StructuresRegistrar for PartRegistrar {
@@ -87,5 +135,23 @@ impl StructuresRegistrar for PartRegistrar {
         }
         self.structure_types
             .push(StructureTypeInfo { id: id.into(), ty });
+    }
+    fn add_foliage_placer_type(&mut self, name: &str, ty: Arc<dyn crate::FoliagePlacerType>) {
+        let id = match self.owned_declaration_id(name) {
+            Ok(id) => id,
+            Err(reason) => {
+                self.refused.push(reason);
+                return;
+            }
+        };
+        if self.foliage_placer_types.iter().any(|t| *t.id == *id) {
+            self.refused.push(format!(
+                "{} registered foliage placer type {id} twice",
+                self.mod_id
+            ));
+            return;
+        }
+        self.foliage_placer_types
+            .push(FoliagePlacerTypeInfo { id: id.into(), ty });
     }
 }

@@ -32,6 +32,11 @@ pub(in crate::game) fn index() -> Option<Arc<Index>> {
     published().map(|(index, _)| index)
 }
 
+/// The registry the published index converts against; None before a server published one.
+pub(in crate::game) fn registry() -> Option<&'static BlockRegistry> {
+    published().map(|(_, registry)| registry)
+}
+
 fn published() -> Option<Published> {
     INDEX.read().unwrap_or_else(PoisonError::into_inner).clone()
 }

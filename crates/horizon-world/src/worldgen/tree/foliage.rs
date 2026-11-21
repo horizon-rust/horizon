@@ -2,17 +2,26 @@
 use super::{
     Layer, Run, TreeDecoder, TreeFeature, TreeResult, kind, read, sample_state, unit_float,
 };
+use crate::registry::BlockStateId;
 use crate::worldgen::{
     DecodeError, Object,
     feature::FeatureWorld,
+    feature_graph::FeatureExecutionError,
     int_range,
+    mod_foliage_placers::{
+        FoliageRandom, ModFoliage, ModFoliageAttachment, ModFoliagePlacer, mod_foliage_placer_types,
+    },
     placement::PlacementContext,
     required,
     tree_blocks::{self as tb, Axis},
     value_provider::IntProvider,
 };
-use horizon_core::{geometry::Direction, random::RandomSource};
+use horizon_core::{
+    geometry::Direction,
+    random::{InvalidBound, RandomSource},
+};
 use serde_json::value::RawValue;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FoliageAttachment {
@@ -62,6 +71,19 @@ enum Kind {
         height: IntProvider,
         side_hole: f32,
     },
+    /// A mod's type (`FoliagePlacerType`), which decoded its own fields.
+    Mod(ModPlacer),
+}
+/// A mod's decoded placer and the type id it came from.
+#[derive(Clone)]
+struct ModPlacer {
+    id: String,
+    placer: Arc<dyn ModFoliagePlacer>,
+}
+impl std::fmt::Debug for ModPlacer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ModPlacer({})", self.id)
+    }
 }
 #[derive(Clone, Debug)]
 pub(super) struct FoliagePlacer {
@@ -80,11 +102,25 @@ impl FoliagePlacer {
         decoder: &mut TreeDecoder<'_, '_>,
     ) -> Result<Self, DecodeError> {
         let object: Object = serde_json::from_str(raw.get())?;
+        let id = kind(&object)?;
+        if let Some(ty) = mod_foliage_placer_types().get(&id) {
+            // The mod's codec reads its own fields: vanilla's `radius` and `offset` belong to
+            // `foliagePlacerParts`, which a mod's type need not use.
+            let placer = ty.decode(raw.get()).map_err(|message| {
+                log::warn!("Horizon: foliage placer {id}: {message}");
+                DecodeError::Field("mod foliage placer")
+            })?;
+            return Ok(Self {
+                radius: IntProvider::Constant(0),
+                offset: IntProvider::Constant(0),
+                kind: Kind::Mod(ModPlacer { id, placer }),
+            });
+        }
         let radius = decoder.int_provider(required(&object, "radius")?, 0, 16)?;
         let offset = decoder.int_provider(required(&object, "offset")?, 0, 16)?;
         let fixed_height = || int_range(required(&object, "height")?, "foliage height", 0, 16);
         let chance = |name: &'static str| unit_float(required(&object, name)?, name);
-        let kind = match kind(&object)?.as_str() {
+        let kind = match id.as_str() {
             "minecraft:blob_foliage_placer" => Kind::Blob(fixed_height()?),
             "minecraft:fancy_foliage_placer" => Kind::Fancy(fixed_height()?),
             "minecraft:bush_foliage_placer" => Kind::Bush(fixed_height()?),
@@ -145,6 +181,12 @@ impl FoliagePlacer {
             Kind::Pine(h) | Kind::MegaPine(h) => h.sample(random)?,
             Kind::RandomSpread { foliage_height, .. } => foliage_height.sample(random)?,
             Kind::Cherry { height, .. } | Kind::Poplar { height, .. } => height.sample(random)?,
+            Kind::Mod(ModPlacer { placer, .. }) => {
+                let mut draws = Draws::new(random);
+                let height = placer.foliage_height(&mut draws, tree_height);
+                draws.finish()?;
+                height
+            }
         })
     }
     pub(super) fn foliage_radius<E>(
@@ -152,6 +194,12 @@ impl FoliagePlacer {
         random: &mut impl RandomSource,
         trunk_height: i32,
     ) -> TreeResult<i32, E> {
+        if let Kind::Mod(ModPlacer { placer, .. }) = &self.kind {
+            let mut draws = Draws::new(random);
+            let radius = placer.foliage_radius(&mut draws, trunk_height);
+            draws.finish()?;
+            return Ok(radius);
+        }
         let radius = self.radius.sample(random)?;
         if matches!(self.kind, Kind::Pine(_)) {
             return Ok(radius + random.next_int_bound(trunk_height.wrapping_add(1).max(1))?);
@@ -217,6 +265,7 @@ impl FoliagePlacer {
                 }
             }
             Kind::Poplar { .. } => unreachable!("poplar uses its own row placement"),
+            Kind::Mod(_) => unreachable!("a mod's placer skips its own locations"),
         })
     }
     fn skip_signed(
@@ -327,11 +376,27 @@ impl FoliagePlacer {
         &self,
         run: &mut Run<'_, W, R>,
         tree: &TreeFeature,
-        _tree_height: i32,
+        tree_height: i32,
         attachment: FoliageAttachment,
         foliage_height: i32,
         leaf_radius: i32,
     ) -> TreeResult<(), W::Error> {
+        if let Kind::Mod(ModPlacer { placer, .. }) = &self.kind {
+            return ModCanopy::grow(run, tree, |canopy| {
+                placer.create_foliage(
+                    canopy,
+                    tree_height,
+                    ModFoliageAttachment {
+                        pos: attachment.pos,
+                        radius_offset: attachment.radius_offset,
+                        height_offset: attachment.height_offset,
+                        size: attachment.size,
+                    },
+                    foliage_height,
+                    leaf_radius,
+                )
+            });
+        }
         let offset = self.offset.sample(run.random)?;
         let double = attachment.double_trunk();
         let pos = attachment.pos;
@@ -502,6 +567,7 @@ impl FoliagePlacer {
                     *hanging_extension,
                 )?;
             }
+            Kind::Mod(_) => unreachable!("a mod's placer returned above"),
             Kind::Poplar { side_hole, .. } => {
                 let poplar = Poplar {
                     side_hole: *side_hole,
@@ -627,5 +693,221 @@ impl Poplar {
             dx += 1;
         }
         Ok(())
+    }
+}
+
+/// The tree's random as a mod placer draws from it: a bound below 1 draws nothing and answers 0,
+/// and the tree fails with it once the placer returns.
+struct Draws<'a, R> {
+    random: &'a mut R,
+    invalid: Option<InvalidBound>,
+}
+impl<'a, R: RandomSource> Draws<'a, R> {
+    fn new(random: &'a mut R) -> Self {
+        Self {
+            random,
+            invalid: None,
+        }
+    }
+    fn finish(self) -> Result<(), InvalidBound> {
+        self.invalid.map_or(Ok(()), Err)
+    }
+}
+impl<R: RandomSource> FoliageRandom for Draws<'_, R> {
+    fn int(&mut self, bound: i32) -> i32 {
+        self.random.next_int_bound(bound).unwrap_or_else(|invalid| {
+            self.invalid.get_or_insert(invalid);
+            0
+        })
+    }
+    fn long(&mut self) -> i64 {
+        self.random.next_long()
+    }
+    fn float(&mut self) -> f32 {
+        self.random.next_float()
+    }
+    fn double(&mut self) -> f64 {
+        self.random.next_double()
+    }
+    fn boolean(&mut self) -> bool {
+        self.random.next_boolean()
+    }
+}
+
+/// A mod placer's view of the tree: its world, its random, `tryPlaceLeaf` and the foliage setter.
+/// The first error ends the tree once the placer returns.
+struct ModCanopy<'r, 'a, W: FeatureWorld, R> {
+    run: &'r mut Run<'a, W, R>,
+    tree: &'r TreeFeature,
+    invalid: Option<InvalidBound>,
+    error: Option<FeatureExecutionError<W::Error>>,
+}
+impl<'r, 'a, W: FeatureWorld + PlacementContext, R: RandomSource> ModCanopy<'r, 'a, W, R> {
+    fn grow(
+        run: &'r mut Run<'a, W, R>,
+        tree: &'r TreeFeature,
+        place: impl FnOnce(&mut dyn ModFoliage),
+    ) -> TreeResult<(), W::Error> {
+        let mut canopy = Self {
+            run,
+            tree,
+            invalid: None,
+            error: None,
+        };
+        place(&mut canopy);
+        if let Some(error) = canopy.error {
+            return Err(error);
+        }
+        canopy.invalid.map_or(Ok(()), |invalid| Err(invalid.into()))
+    }
+    fn keep<T>(&mut self, result: TreeResult<T, W::Error>, failed: T) -> T {
+        result.unwrap_or_else(|error| {
+            self.error.get_or_insert(error);
+            failed
+        })
+    }
+}
+impl<W: FeatureWorld + PlacementContext, R: RandomSource> FoliageRandom
+    for ModCanopy<'_, '_, W, R>
+{
+    fn int(&mut self, bound: i32) -> i32 {
+        self.run
+            .random
+            .next_int_bound(bound)
+            .unwrap_or_else(|invalid| {
+                self.invalid.get_or_insert(invalid);
+                0
+            })
+    }
+    fn long(&mut self) -> i64 {
+        self.run.random.next_long()
+    }
+    fn float(&mut self) -> f32 {
+        self.run.random.next_float()
+    }
+    fn double(&mut self) -> f64 {
+        self.run.random.next_double()
+    }
+    fn boolean(&mut self) -> bool {
+        self.run.random.next_boolean()
+    }
+}
+impl<W: FeatureWorld + PlacementContext, R: RandomSource> ModFoliage for ModCanopy<'_, '_, W, R> {
+    fn random(&mut self) -> &mut dyn FoliageRandom {
+        self
+    }
+    fn block(&mut self, pos: [i32; 3]) -> Option<BlockStateId> {
+        if self.error.is_some() {
+            return None;
+        }
+        let state = read(self.run.world, pos).map(Some);
+        self.keep(state, None)
+    }
+    fn valid_tree_pos(&mut self, pos: [i32; 3]) -> bool {
+        self.block(pos)
+            .is_some_and(|state| self.tree.blocks.valid_tree_pos(state))
+    }
+    fn try_place_leaf(&mut self, pos: [i32; 3]) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        let placed = self.tree.try_place_leaf(self.run, pos);
+        self.keep(placed, false)
+    }
+    fn set(&mut self, pos: [i32; 3], state: BlockStateId) {
+        if self.error.is_some() || !self.tree.blocks.is_state(state) {
+            return;
+        }
+        let written = self.run.set(Layer::Foliage, pos, state);
+        self.keep(written, ());
+    }
+    fn is_set(&mut self, pos: [i32; 3]) -> bool {
+        self.run.foliage_contains(pos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::BlockRegistry;
+    use crate::worldgen::block_feature::FeatureBlockBindings;
+    use crate::worldgen::mod_foliage_placers::{
+        ModFoliagePlacerType, ModFoliagePlacerTypes, with_test_types,
+    };
+    use horizon_core::random::LegacyRandom;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// Four blocks of foliage and one draw bounded by the JSON's `bound`.
+    struct Drawing(i32);
+    impl ModFoliagePlacer for Drawing {
+        fn foliage_height(&self, random: &mut dyn FoliageRandom, _: i32) -> i32 {
+            4 + random.int(self.0)
+        }
+        fn foliage_radius(&self, _: &mut dyn FoliageRandom, _: i32) -> i32 {
+            2
+        }
+        fn create_foliage(
+            &self,
+            _: &mut dyn ModFoliage,
+            _: i32,
+            _: ModFoliageAttachment,
+            _: i32,
+            _: i32,
+        ) {
+        }
+    }
+    struct DrawingType;
+    impl ModFoliagePlacerType for DrawingType {
+        fn decode(&self, json: &str) -> Result<Arc<dyn ModFoliagePlacer>, String> {
+            let json: serde_json::Value =
+                serde_json::from_str(json).map_err(|error| error.to_string())?;
+            let bound = json["bound"].as_i64().ok_or("no bound")?;
+            Ok(Arc::new(Drawing(bound as i32)))
+        }
+    }
+
+    #[test]
+    fn a_mod_type_decodes_its_own_fields_and_a_bad_draw_fails_the_tree() {
+        let names = ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"];
+        let rows: Vec<_> = names
+            .iter()
+            .map(|name| serde_json::json!([name, true, false, "", {"id": name, "properties": {}}]))
+            .collect();
+        let defaults: BTreeMap<_, _> = names.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+        let facts = serde_json::json!({"states": rows, "defaults": defaults});
+        let registry = BlockRegistry::from_facts_json(facts.to_string().as_bytes()).unwrap();
+        let bindings = FeatureBlockBindings::new(&registry, BTreeSet::new()).unwrap();
+        let types: ModFoliagePlacerTypes = BTreeMap::from([(
+            "testmod:drawing".to_owned(),
+            Arc::new(DrawingType) as Arc<dyn ModFoliagePlacerType>,
+        )]);
+        let decode = |json: &str| {
+            let raw: Box<RawValue> = serde_json::from_str(json).unwrap();
+            let mut remaining = 64;
+            FoliagePlacer::decode(
+                &raw,
+                &mut TreeDecoder {
+                    bindings: &bindings,
+                    depth: 0,
+                    remaining: &mut remaining,
+                },
+            )
+        };
+        with_test_types(&types, || {
+            // No `radius` or `offset`: the type's codec reads its own fields.
+            let placer = decode(r#"{"type":"testmod:drawing","bound":3}"#).unwrap();
+            let mut random = LegacyRandom::new(7);
+            let mut expected = LegacyRandom::new(7);
+            assert_eq!(
+                placer.foliage_height::<()>(&mut random, 6).unwrap(),
+                4 + expected.next_int_bound(3).unwrap()
+            );
+            assert_eq!(placer.foliage_radius::<()>(&mut random, 2).unwrap(), 2);
+            assert_eq!(random.next_long(), expected.next_long());
+            assert!(decode(r#"{"type":"testmod:drawing"}"#).is_err());
+            assert!(decode(r#"{"type":"testmod:other"}"#).is_err());
+            let broken = decode(r#"{"type":"testmod:drawing","bound":0}"#).unwrap();
+            assert!(broken.foliage_height::<()>(&mut random, 6).is_err());
+        });
     }
 }

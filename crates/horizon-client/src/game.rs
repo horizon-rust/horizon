@@ -11255,6 +11255,8 @@ pub(crate) fn run_with(
     native_chunk_generator::install();
     native_biome_source::install();
     native_density_function::install();
+    // Their foliage placer types, which the packs' tree features name.
+    native_foliage_placers::install();
     mods::register_components(&vanilla_root)?;
     mods::register_standalone_models(options.execution_role);
     mods::register_layer_definitions(options.execution_role, &vanilla_root);

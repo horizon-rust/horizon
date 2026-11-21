@@ -55,6 +55,7 @@ pub mod material_stage;
 pub mod material_surface;
 pub mod mod_biome_sources;
 pub mod mod_density_functions;
+pub mod mod_foliage_placers;
 pub mod mod_generators;
 pub mod ore_feature;
 pub mod overrides;

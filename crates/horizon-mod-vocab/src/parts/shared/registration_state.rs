@@ -39,6 +39,7 @@ pub(crate) struct Installed {
     pub(crate) controllers: Vec<ControllerInfo>,
     pub(crate) arm_poses: Vec<crate::client::arm_pose::PoseInfo>,
     pub(crate) structure_types: Vec<crate::world::structure_type::StructureTypeInfo>,
+    pub(crate) foliage_placer_types: Vec<crate::world::foliage_placer::FoliagePlacerTypeInfo>,
     pub(crate) dimensions: Vec<crate::world::dimension::DimensionInfo>,
     pub(crate) chunk_generators: Vec<crate::world::chunk_generator::ChunkGeneratorInfo>,
     pub(crate) biome_sources: Vec<crate::world::biome_source::BiomeSourceInfo>,
