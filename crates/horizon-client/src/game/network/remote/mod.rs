@@ -2440,7 +2440,10 @@ mod level_sound_tests;
 #[cfg(test)]
 mod attachment_query_tests;
 #[cfg(test)]
+mod item_menu_screen_tests;
+#[cfg(test)]
 mod passage_cross_tests;
+
 #[cfg(test)]
 pub(crate) mod tests;
 
