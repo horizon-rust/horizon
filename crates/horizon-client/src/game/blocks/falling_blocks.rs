@@ -2,7 +2,105 @@
 //! (`fall_step`) and the item entity it leaves as a drop (`drop_falling_block`, `Entity.spawnAtLocation`).
 use super::*;
 
+const FALLING_BLOCK_PASSENGER_OFFSET: f64 = 0.98;
+
 impl Game<'_> {
+    /// A passenger's position on a loaded vehicle. Falling blocks use the
+    /// fallback `AT_HEIGHT` attachment, while armor stands expose their normal
+    /// entity height as the point for their own passengers.
+    pub(super) fn falling_passenger_position(&self, vehicle: u32) -> Option<(Vec3, Vec3)> {
+        if let Some(falling) = self.falling.iter().find(|f| f.id == vehicle) {
+            let offset = Vec3::new(0.0, FALLING_BLOCK_PASSENGER_OFFSET, 0.0);
+            return Some((
+                falling.position.add_vector(offset),
+                falling.previous.add_vector(offset),
+            ));
+        }
+        if let Some(stand) = self.armor_stands.iter().find(|a| a.id == vehicle) {
+            let height = if stand.marker {
+                0.0
+            } else if stand.small {
+                0.9875
+            } else {
+                1.975
+            };
+            let offset = Vec3::new(0.0, height, 0.0);
+            return Some((
+                stand.position.add_vector(offset),
+                stand.previous.add_vector(offset),
+            ));
+        }
+        let at = self.passenger_riding_position_ignoring_falling(vehicle)?;
+        let at = Vec3::new(at.x, at.y, at.z);
+        Some((at, at))
+    }
+
+    /// Reverse passenger lookup built once for an ordered entity-tick pass.
+    /// Ordinary falling blocks then avoid scanning every stand to find that
+    /// none ride the block.
+    pub(in crate::game) fn falling_passenger_stand_index(
+        &self,
+    ) -> std::collections::HashMap<u32, Vec<u32>> {
+        let mut riders = std::collections::HashMap::new();
+        for stand in &self.armor_stands {
+            if let Some(vehicle) = stand.vehicle {
+                riders.entry(vehicle).or_insert_with(Vec::new).push(stand.id);
+            }
+        }
+        riders
+    }
+
+    /// Move armor-stand passengers after their falling-block vehicle moved.
+    /// The stand keeps its old position for interpolation, matching the
+    /// passenger tick that follows a vehicle's move in vanilla.
+    fn sync_falling_passengers_at(
+        &mut self,
+        vehicle: u32,
+        position: Vec3,
+        previous: Vec3,
+        stand_riders: &std::collections::HashMap<u32, Vec<u32>>,
+    ) {
+        let Some(riders) = stand_riders.get(&vehicle) else {
+            return;
+        };
+        let offset = Vec3::new(0.0, FALLING_BLOCK_PASSENGER_OFFSET, 0.0);
+        let mut moved = Vec::new();
+        for rider in riders {
+            let Some(stand) = self
+                .armor_stands
+                .iter_mut()
+                .find(|stand| stand.id == *rider && stand.vehicle == Some(vehicle))
+            else {
+                continue;
+            };
+            let from = stand.position;
+            stand.previous = previous.add_vector(offset);
+            stand.position = position.add_vector(offset);
+            stand.velocity = Vec3::ZERO;
+            stand.on_ground = false;
+            moved.push((stand.id, from, stand.position));
+        }
+        for (id, from, to) in moved {
+            self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
+        }
+    }
+
+    fn sync_falling_passengers(
+        &mut self,
+        vehicle: u32,
+        stand_riders: &std::collections::HashMap<u32, Vec<u32>>,
+    ) {
+        let Some(falling) = self.falling.iter().find(|f| f.id == vehicle) else {
+            return;
+        };
+        self.sync_falling_passengers_at(
+            vehicle,
+            falling.position,
+            falling.previous,
+            stand_riders,
+        );
+    }
+
     /// Cache only model-dependent work, never an entity's seed, light or pose.
     pub(super) fn falling_model_vertices(
         &self,
@@ -94,30 +192,92 @@ impl Game<'_> {
         }
         f.fall_distance = 0.0;
     }
+    /// Test helper for ticking one block without running the ordered entity pass.
     /// FallingBlockEntity.tick: fall with 0.04 gravity and 0.98F drag, then land.
     /// One falling block's `tick`: places or drops its block in its own tick,
     /// so a block falling onto one that just landed lands on top of it. `i` is
     /// its place in the list; the caller has checked it is ticking.
     /// `entities` are the boxes that stop its move.
     pub(in crate::game) fn tick_one_falling(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
+        let stand_riders = self.falling_passenger_stand_index();
+        self.tick_one_falling_with_stand_index(i, entities, &stand_riders)
+    }
+
+    pub(in crate::game) fn tick_one_falling_with_stand_index(
+        &mut self,
+        i: usize,
+        entities: &[Aabb],
+        stand_riders: &std::collections::HashMap<u32, Vec<u32>>,
+    ) -> Result<()> {
         let entity_drops = self
             .ui
             .rules
             .bool_at(horizon_client::gamerules::vanilla::ENTITY_DROPS);
         let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
+        let passenger_vehicle = self
+            .persist
+            .falling_vehicles
+            .get(&self.falling[i].id)
+            .copied();
         let mut f = self.falling.extract(self.falling[i].join).unwrap();
         let original = f.clone();
         let (id, join) = (f.id, f.join);
+        if let Some(vehicle) = passenger_vehicle {
+            if let Some((position, _previous)) = self.falling_passenger_position(vehicle) {
+                // rideTick snapshots the passenger's current position before
+                // positioning it on the vehicle for this tick.
+                f.previous = original.position;
+                f.position = position;
+                self.entity_section_step(
+                    id,
+                    [original.position.x, original.position.y, original.position.z],
+                    [position.x, position.y, position.z],
+                );
+                f.velocity = Vec3::ZERO;
+                f.fall_distance = 0.0;
+                f.on_ground = false;
+                f.age = f.age.wrapping_add(1);
+                let state = f.state;
+                let y = position.y.floor() as i32;
+                let outside = y <= self.world.bottom_y() || y >= self.world.top_y();
+                let air = self.res.facts().is_air(state);
+                let expired = !air && (f.age > 100 && outside || f.age > 600);
+                if air || expired {
+                    self.sync_falling_passengers_at(
+                        id,
+                        position,
+                        original.position,
+                        stand_riders,
+                    );
+                    self.persist.falling_vehicles.remove(&id);
+                    if expired && f.drop_item && entity_drops {
+                        self.drop_falling_block(state, position);
+                    }
+                    self.falling.retire_extracted(id, join);
+                    return Ok(());
+                }
+                self.falling.put_back(i.min(self.falling.len()), f);
+                self.sync_falling_passengers(id, stand_riders);
+                self.note_falling_tick(id, join, state);
+                return Ok(());
+            }
+            // The vehicle landed or was discarded. The next tick is the
+            // falling block's own tick, just as a vanilla passenger dismounts.
+            self.persist.falling_vehicles.remove(&id);
+        }
         let step = self.fall_step(&mut f, entity_drops, entities);
         // Its move is filed at once, also for one that lands or drops.
         if step.is_ok() {
             let (from, to) = (original.position, f.position);
             self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
         }
+        let terminal_position = f.position;
+        let terminal_previous = f.previous;
         match step {
             Ok(FallStep::Falling) => {
                 let state = f.state;
                 self.falling.put_back(i.min(self.falling.len()), f);
+                self.sync_falling_passengers(id, stand_riders);
                 self.note_falling_tick(id, join, state);
                 return Ok(());
             }
@@ -130,6 +290,13 @@ impl Game<'_> {
                 return Err(error);
             }
         }
+        self.sync_falling_passengers_at(
+            id,
+            terminal_position,
+            terminal_previous,
+            stand_riders,
+        );
+        self.persist.falling_vehicles.remove(&id);
         // Gone, dropped and landed owners have completed their terminal work;
         // unlike a continuing fall, they will never be put back into the list.
         self.falling.retire_extracted(id, join);

@@ -3891,6 +3891,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
         );
     }
     put(&mut tag, "Health", Tag::Float(a.health.to_bits()));
+    put(&mut tag, "DeathTime", Tag::Short(a.death_time as i16));
     put(&mut tag, "Fire", Tag::Short(a.fire_ticks as i16));
     // ArmorStand.addAdditionalSaveData: the `Pose` parts that are not default.
     let pose: Vec<(&str, Tag)> = ArmorStand::POSE_KEYS
@@ -3957,6 +3958,7 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
         if list.iter().any(|attr| text(attr.get("id")).as_deref() == Some(SPEED_ATTRIBUTE)));
     a.velocity = loaded_motion(tag);
     a.health = float(tag.get("Health")).unwrap_or(20.0) as f32;
+    a.death_time = i32::from(number(tag.get("DeathTime")).unwrap_or(0) as i16);
     a.fire_ticks = i32::from(number(tag.get("Fire")).unwrap_or(0) as i16);
     a.custom_name = tag.get("CustomName").map(name_text);
     a.name_visible = flag(tag, "CustomNameVisible");

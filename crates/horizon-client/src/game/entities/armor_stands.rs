@@ -1029,6 +1029,26 @@ impl Game<'_> {
                 self.armor_stands[i].previous_yaw = self.armor_stands[i].yaw;
                 continue;
             }
+            let vehicle = self.armor_stands[i].vehicle;
+            let vehicle_is_falling =
+                vehicle.is_some_and(|id| self.falling.iter().any(|f| f.id == id));
+            if vehicle.is_some() && self.armor_stands[i].health <= 0.0 {
+                let a = &mut self.armor_stands[i];
+                a.death_time = a.death_time.saturating_add(1);
+                if a.death_time >= 20 {
+                    dead.push((i, "minecraft:generic"));
+                    continue;
+                }
+                // A passenger remains mounted through its death animation,
+                // even after its vehicle stops falling.
+                a.previous = a.position;
+                a.previous_yaw = a.yaw;
+                a.first_tick = false;
+                if vehicle_is_falling {
+                    a.velocity = Vec3::ZERO;
+                }
+                continue;
+            }
             self.armor_stands[i].first_tick = false;
             // Entity.baseTick: the saved invulnerability window counts down
             // (arismoko/horizon#916).
@@ -1065,6 +1085,15 @@ impl Game<'_> {
                 self.dim.id(),
                 &mut a.equipment,
             );
+            if vehicle_is_falling {
+                // The vehicle has already placed this passenger. Run common
+                // living updates, then skip independent travel and collision.
+                self.armor_stands[i].velocity = Vec3::ZERO;
+                if let Some(damage_type) = self.armor_stand_environment_tick(i) {
+                    dead.push((i, damage_type));
+                }
+                continue;
+            }
             let (water_height, lava_height) =
                 a.push_by_fluid(&self.world, &self.res.motion().fluids, &self.loop_context);
             let in_water = water_height > 0.0;
@@ -1147,42 +1176,7 @@ impl Game<'_> {
             // LivingEntity.aiStep calls pushEntities after travel. The stand's
             // own doPush is empty; only this shove runs.
             self.push_rideable_minecarts(i);
-            let id = self.armor_stands[i].id;
-            let saved = ["minecraft:on_fire", "minecraft:in_fire"]
-                .map(|damage| self.saved_refuses_damage(id, damage, false));
-            let tags = world_items!(self);
-            let registry = self.pack.assets.registry;
-            let block_registries = &self.pack.block_registries;
-            let hooks = &self.damage_hooks;
-            if let Some(damage_type) = self.armor_stands[i].environment_tick_with_hook(
-                &mut self.world,
-                self.res.facts(),
-                registry,
-                |world, damage| {
-                    let vanilla = if damage == "minecraft:on_fire" {
-                        saved[0]
-                    } else {
-                        saved[1]
-                    };
-                    let source = horizon_client::health::HurtSource {
-                        damage_type: damage,
-                        causing: 0,
-                        direct: 0,
-                        position: None,
-                    };
-                    horizon_client::health::DamageLevel::of(
-                        world,
-                        registry,
-                        Some(tags),
-                        Some(block_registries),
-                        hooks,
-                    )
-                    .invulnerability_check(
-                        horizon_client::health::Hurting::ArmorStand(id as i32, source),
-                        vanilla,
-                    )
-                },
-            ) {
+            if let Some(damage_type) = self.armor_stand_environment_tick(i) {
                 dead.push((i, damage_type));
             }
             let (id, from, to) = section_step;
@@ -1192,6 +1186,44 @@ impl Game<'_> {
             self.break_armor_stand_by_anything(i, damage_type, 0);
         }
         Ok(())
+    }
+    fn armor_stand_environment_tick(&mut self, i: usize) -> Option<&'static str> {
+        let id = self.armor_stands[i].id;
+        let saved = ["minecraft:on_fire", "minecraft:in_fire"]
+            .map(|damage| self.saved_refuses_damage(id, damage, false));
+        let tags = world_items!(self);
+        let registry = self.pack.assets.registry;
+        let block_registries = &self.pack.block_registries;
+        let hooks = &self.damage_hooks;
+        self.armor_stands[i].environment_tick_with_hook(
+            &mut self.world,
+            self.res.facts(),
+            registry,
+            |world, damage| {
+                let vanilla = if damage == "minecraft:on_fire" {
+                    saved[0]
+                } else {
+                    saved[1]
+                };
+                let source = horizon_client::health::HurtSource {
+                    damage_type: damage,
+                    causing: 0,
+                    direct: 0,
+                    position: None,
+                };
+                horizon_client::health::DamageLevel::of(
+                    world,
+                    registry,
+                    Some(tags),
+                    Some(block_registries),
+                    hooks,
+                )
+                .invulnerability_check(
+                    horizon_client::health::Hurting::ArmorStand(id as i32, source),
+                    vanilla,
+                )
+            },
+        )
     }
     /// A lid's `Entity.move` for armor stand `i`, one with physics (vanilla's
     /// `!noPhysics`: not a marker, not `NoGravity`), from the game's one lid
@@ -2948,7 +2980,7 @@ mod postbaseline_lodestone_controls {
     //! Added after baseline: source-backed slots and preservation, not new runtime breadth.
     use super::Game;
     use horizon_client::{chunk::Chunk, entities::ArmorStand, items::ItemStack};
-    use horizon_core::position::BlockPos;
+    use horizon_core::{geometry::Vec3, nbt::Tag, position::BlockPos};
     use std::sync::Arc;
 
     fn stack<'g>(game: &'g Game<'_>, id: u32, slot: usize) -> &'g ItemStack {
@@ -3119,6 +3151,174 @@ mod postbaseline_lodestone_controls {
                 .collect::<std::collections::HashSet<_>>(),
             chunks
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn falling_block_riders_tick_living_state_only_in_entity_ticking_chunks() {
+        let mut resources = None;
+        let mut game = crate::game::game_tests::tests::server_game(&mut resources);
+        game.build_registries();
+
+        game.world
+            .chunks
+            .insert((4, 4), Arc::new(Chunk::empty(4, 4)));
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(64, 0, 64).chunk())
+            .unwrap();
+        game.load_ticking_neighbourhood(0, 0);
+        game.tickets.update(Some(crate::ticket_levels::Sources {
+            forced: vec![(0, 0)],
+            ..Default::default()
+        }));
+        assert!(game.entity_ticking_area()(8, 8));
+        assert!(!game.entity_ticking_area()(65, 65));
+
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for (id, at) in [
+            (71, Vec3::new(8.5, 64.0, 8.5)),
+            (72, Vec3::new(65.5, 64.0, 65.5)),
+        ] {
+            game.falling.push(crate::game::FallingBlock {
+                attachment_lifetime: Default::default(),
+                rotation: [0.0; 2],
+                join: Default::default(),
+                id,
+                state: stone,
+                start_pos: BlockPos::new(at.x as i32, at.y as i32, at.z as i32),
+                position: at,
+                previous: at,
+                velocity: Vec3::ZERO,
+                age: 0,
+                no_gravity: false,
+                portal: Default::default(),
+                drop_item: false,
+                fall_distance: 0.0,
+                on_ground: false,
+                stuck: Vec3::ZERO,
+                damage: Default::default(),
+                saved: None,
+            });
+        }
+
+        let mut healthy = ArmorStand::new(100, Vec3::new(8.5, 64.98, 8.5), 0.0);
+        healthy.vehicle = Some(71);
+        healthy.velocity = Vec3::new(1.0, 0.0, 0.0);
+        healthy.fire_ticks = 1;
+        let mut compass = ItemStack::new("minecraft:compass", 1);
+        compass.data_mut().set_other(
+            "minecraft:lodestone_tracker",
+            Some(Tag::compound([
+                (
+                    "target",
+                    Tag::compound([
+                        ("dimension", Tag::String("minecraft:overworld".into())),
+                        ("pos", Tag::IntArray(vec![1, 64, 1])),
+                    ]),
+                ),
+                ("tracked", Tag::Byte(1)),
+            ])),
+        );
+        healthy.equipment[0] = Some(compass);
+        game.armor_stands.push(healthy);
+        game.persist.raw.insert(
+            100,
+            Tag::compound([("Air", Tag::Short(200)), ("invulnerable_time", Tag::Int(5))]),
+        );
+
+        let mut eligible_dead = ArmorStand::new(101, Vec3::new(8.5, 64.98, 9.5), 0.0);
+        eligible_dead.vehicle = Some(71);
+        eligible_dead.health = 0.0;
+        eligible_dead.death_time = 18;
+        game.armor_stands.push(eligible_dead);
+
+        let mut ineligible_dead = ArmorStand::new(102, Vec3::new(65.5, 64.98, 65.5), 0.0);
+        ineligible_dead.vehicle = Some(72);
+        ineligible_dead.health = 0.0;
+        ineligible_dead.death_time = 19;
+        game.armor_stands.push(ineligible_dead);
+
+        let mut ineligible_orphan = ArmorStand::new(103, Vec3::new(66.5, 64.0, 65.5), 0.0);
+        ineligible_orphan.vehicle = Some(999);
+        ineligible_orphan.health = 0.0;
+        ineligible_orphan.death_time = 7;
+        game.armor_stands.push(ineligible_orphan);
+
+        let mut mounted_dead = ArmorStand::new(104, Vec3::new(9.5, 64.0, 8.5), 0.0);
+        mounted_dead.vehicle = Some(999);
+        mounted_dead.health = 0.0;
+        mounted_dead.death_time = 18;
+        game.armor_stands.push(mounted_dead);
+
+        let position = game.armor_stands[0].position;
+        game.tick_armor_stands().unwrap();
+
+        let healthy = game
+            .armor_stands
+            .iter()
+            .find(|stand| stand.id == 100)
+            .unwrap();
+        assert!(!healthy.first_tick);
+        assert_eq!(healthy.position, position, "a rider does not travel itself");
+        assert_eq!(healthy.velocity, Vec3::ZERO);
+        assert_eq!(healthy.fire_ticks, 0, "environment tick still runs");
+        assert_eq!(
+            healthy.enchantment_block,
+            Some(BlockPos::containing(position))
+        );
+        assert!(!has_target(healthy.equipment[0].as_ref().unwrap()));
+        let Some(Tag::Compound(raw)) = game.persist.raw.get(&100) else {
+            panic!("living entity raw state remains present");
+        };
+        assert_eq!(raw.get(&"Air".into()), Some(&Tag::Short(204)));
+        assert_eq!(raw.get(&"invulnerable_time".into()), Some(&Tag::Int(4)));
+
+        assert_eq!(
+            game.armor_stands
+                .iter()
+                .find(|stand| stand.id == 101)
+                .unwrap()
+                .death_time,
+            19
+        );
+        assert_eq!(
+            game.armor_stands
+                .iter()
+                .find(|stand| stand.id == 102)
+                .unwrap()
+                .death_time,
+            19,
+            "a non-ticking passenger does not advance or expire"
+        );
+        assert!(
+            game.armor_stands
+                .iter()
+                .any(|stand| stand.id == 103 && stand.death_time == 7),
+            "a non-ticking dead passenger is not removed before its vehicle check"
+        );
+        assert_eq!(
+            game.armor_stands
+                .iter()
+                .find(|stand| stand.id == 104)
+                .unwrap()
+                .death_time,
+            19,
+            "a dead passenger remains mounted until its death timer expires"
+        );
+
+        game.tick_armor_stands().unwrap();
+        assert!(
+            game.armor_stands.iter().all(|stand| stand.id != 101),
+            "the eligible dead passenger is removed on its twentieth death tick"
+        );
+        assert!(game.armor_stands.iter().any(|stand| stand.id == 102));
+        assert!(game.armor_stands.iter().any(|stand| stand.id == 103));
+        assert!(game.armor_stands.iter().all(|stand| stand.id != 104));
     }
 }
 

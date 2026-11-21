@@ -122,6 +122,7 @@ impl Game<'_> {
         if let Some(stand) = self.armor_stands.iter_mut().find(|a| a.id == id) {
             stand.vehicle = None;
         }
+        self.persist.falling_vehicles.remove(&id);
         for slots in self.persist.passenger_slots.values_mut() {
             slots.retain(|s| !matches!(s, PassengerSlot::Live(rider) if *rider == id));
         }
@@ -228,6 +229,11 @@ impl Game<'_> {
         }
         if let Some(m) = self.mob_object_mut(vehicle) {
             m.extra.rider.get_or_insert(id);
+        }
+        if self.passenger_present(vehicle)
+            && matches!(self.level_entity(id as i32), Some(Target::Falling(_)))
+        {
+            self.persist.falling_vehicles.insert(id, vehicle);
         }
         self.persist
             .passenger_slots

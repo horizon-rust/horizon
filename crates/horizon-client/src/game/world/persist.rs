@@ -19,6 +19,9 @@ mod anger_tests;
 #[cfg(test)]
 #[path = "persist/completion_tests.rs"]
 mod completion_tests;
+#[cfg(test)]
+#[path = "persist/falling_passenger_tests.rs"]
+mod falling_passenger_tests;
 #[path = "persist/passenger_graph.rs"]
 mod passenger_graph;
 #[path = "persist/hurt_by_refs.rs"]
@@ -198,6 +201,8 @@ pub struct EntityMemory {
     /// (`passenger_graph.rs`; mob riders also keep `extra.mount`, which stays authoritative
     /// for the mob objects above.)
     pub(super) passenger_slots: HashMap<u32, Vec<PassengerSlot>>,
+    /// Non-mob passenger links restored for falling-block summon contraptions.
+    pub(super) falling_vehicles: HashMap<u32, u32>,
     /// Removed boat/cart objects are never part of level residency.
     pub(super) removed_vehicles: HashMap<u32, RemovedVehicle>,
     /// Destruction callbacks already consumed for geometry retained after removal.

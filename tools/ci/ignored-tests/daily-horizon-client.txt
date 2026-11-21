@@ -147,6 +147,7 @@ horizon-client game::native_recipes::tests::synced_vanilla_recipes_keep_their_bo
 horizon-client game::native_server::network_settings_tests::server_settings_follow_the_network_config lib daily slow
 horizon-client game::native_world_columns::tests::terrain_columns_are_the_generators_own_surface_and_load_no_chunk lib daily resources
 horizon-client game::natural_spawning::tests::spawn_candidates_match_the_uncached_union_while_players_move lib daily slow
+horizon-client game::armor_stands::postbaseline_lodestone_controls::falling_block_riders_tick_living_state_only_in_entity_ticking_chunks lib daily resources
 horizon-client game::persist::completion_tests::admitted_families_load_merge_save_and_reload lib daily resources
 horizon-client game::persist::completion_tests::cold_registry_nonmob_uuid_collision_refuses_the_entire_tree lib daily resources
 horizon-client game::persist::completion_tests::generic_seating_tests::generic_root_moves_specialized_vehicle_before_its_mob lib daily resources
@@ -156,6 +157,9 @@ horizon-client game::persist::completion_tests::nested_tree_transfer_keeps_uuid_
 horizon-client game::persist::completion_tests::nosave_riders_transfer_live_without_becoming_saved lib daily resources
 horizon-client game::persist::completion_tests::registered_nosave_riders_are_live_but_not_serialized_or_vehicles lib daily resources
 horizon-client game::persist::completion_tests::valid_nonmob_rider_is_live_and_merge_does_not_adopt_passengers lib daily resources
+horizon-client game::persist::falling_passenger_tests::mounted_falling_block_ticks_its_lifetime_and_expires lib daily resources
+horizon-client game::persist::falling_passenger_tests::falling_block_passenger_stays_attached_to_any_loaded_vehicle lib daily resources
+horizon-client game::persist::falling_passenger_tests::summon_falling_block_loads_non_mob_passengers lib daily resources
 horizon-client game::rectangular_recipe_remainder_tests::rectangular_recipe_for_preserves_two_custom_remainder_cells lib daily resources
 horizon-client game::remote::interaction_event_tests::mapping_press_tests::a_callback_click_survives_until_the_next_tick lib daily resources
 horizon-client game::remote::interaction_event_tests::mapping_press_tests::a_screen_drops_the_clicks_and_holds_nothing lib daily resources

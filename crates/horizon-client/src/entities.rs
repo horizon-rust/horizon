@@ -1756,6 +1756,8 @@ pub struct ArmorStand {
     pub join: crate::join_seq::JoinSeq,
     pub fire_ticks: i32,
     pub health: f32,
+    /// `LivingEntity.deathTime`: a dead riding stand is removed after 20 ticks.
+    pub death_time: i32,
     pub id: u32,
     pub position: Vec3,
     /// `Entity.xo`, `yo`, `zo`: the position at the start of the tick, which
@@ -2037,6 +2039,7 @@ impl ArmorStand {
             join: Default::default(),
             fire_ticks: 0,
             health: 20.0,
+            death_time: 0,
             id,
             position,
             previous: position,
