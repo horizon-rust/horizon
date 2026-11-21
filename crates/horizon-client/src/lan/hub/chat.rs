@@ -528,13 +528,14 @@ impl Hub {
     /// `PlayerList.broadcastChatMessage` for a non-player command source:
     /// an unsigned message with the source's display name, visible as player chat.
     /// `except` is a connection that gets the line another way (with its
-    /// command's captured output).
+    /// command's captured output); the players in `hidden` don't get it at all.
     pub fn broadcast_source_chat(
         &self,
         chat_type: &str,
         name: Tag,
         message: Tag,
         except: Option<u32>,
+        hidden: &[u128],
     ) {
         let bound = play::ChatTypeBound {
             chat_type: self.chat_type_id(chat_type),
@@ -542,7 +543,7 @@ impl Hub {
             target: None,
         };
         for (k, guest) in self.guests.iter().enumerate() {
-            if guest.placed && Some(guest.conn) != except {
+            if guest.placed && Some(guest.conn) != except && !hidden.contains(&guest.uuid) {
                 self.send_disguised(k, message.clone(), bound.clone());
             }
         }

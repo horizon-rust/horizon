@@ -198,3 +198,56 @@ fn say_and_me_are_asked_per_receiver_and_a_whisper_is_not() {
         });
     });
 }
+
+/// `execute ... run say` is the dispatcher's, with the source and the condition `execute` set up:
+/// a failing condition says nothing, a holding one reaches the other players, and the line is
+/// still the player's public `/say` that mods may keep from a receiver.
+#[test]
+#[ignore = "daily"]
+fn execute_runs_say_only_when_its_condition_holds() {
+    let asked = Asked::default();
+    let mods = vec![mod_api::ModEntry::new(
+        "ignorer",
+        Box::new(Ignorer(asked.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            let (sender, other) = two_guests(game);
+            lines(&sender);
+            lines(&other);
+            // The dispatcher queues a guest's command and runs it with the guests' others.
+            let run = |game: &mut super::Game<'_>, command: &str| {
+                game.guest_command(12, command, None);
+                game.run_guest_commands();
+                lines(&sender);
+                lines(&other)
+            };
+            assert_eq!(
+                run(game, "execute if entity @e[type=minecraft:pig,distance=..0] run say hidden"),
+                0,
+                "no pig there: nothing is said"
+            );
+            assert_eq!(run(game, "execute if dimension minecraft:the_end run say hidden"), 0);
+            assert!(asked.lock().unwrap().is_empty(), "nothing said, nobody asked");
+            assert_eq!(
+                run(game, "execute if dimension minecraft:overworld run say shown"),
+                1,
+                "the condition holds"
+            );
+            assert_eq!(
+                run(game, "execute if dimension minecraft:overworld run say a secret"),
+                0,
+                "the mod keeps it from guest 13"
+            );
+            let asked = asked.lock().unwrap();
+            assert!(
+                asked
+                    .iter()
+                    .any(|(sender, name, message, to)| (*sender, name.as_str(), message.as_str(), *to)
+                        == (12, "guest12", "a secret", 13)),
+                "asked about the guest's line: {asked:?}"
+            );
+        });
+    });
+}

@@ -480,7 +480,8 @@ impl Game<'_> {
         }
         out
     }
-    fn player_target_uuid(&self, target: Target) -> Option<[i32; 4]> {
+    /// The UUID of a player target: the player in place or a guest; None for anything else.
+    pub(in crate::game) fn player_target_uuid(&self, target: Target) -> Option<[i32; 4]> {
         match target {
             Target::Player => Some(self.acting_uuid()),
             Target::Guest(conn) => self.lan.as_ref().and_then(|h| {

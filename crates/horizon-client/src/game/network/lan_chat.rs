@@ -182,13 +182,22 @@ impl Game<'_> {
     /// players, signed when the guest signed it (a disguised chat after an
     /// unsigned command packet). False when the command is another one, or
     /// one this can't run (selectors other than `@s` and `@a`), for the
-    /// game's dispatcher to handle.
+    /// game's dispatcher to handle. Only the command itself: one `execute`
+    /// runs (`execute if ... run say`) is the dispatcher's, with the source
+    /// and the conditions `execute` set up.
     pub(super) fn guest_message_command(
         &mut self,
         conn: u32,
         command: &str,
         signed: Option<&Signed>,
     ) -> bool {
+        // `tell` and `w` are MsgCommand's redirects.
+        if !matches!(
+            command.split(' ').next(),
+            Some("say" | "me" | "msg" | "tell" | "w")
+        ) {
+            return false;
+        }
         let Some(host) = self.lan.as_ref() else {
             return false;
         };

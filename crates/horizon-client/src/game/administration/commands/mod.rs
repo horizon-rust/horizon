@@ -3900,6 +3900,17 @@ impl Game<'_> {
         // run say`, the command harness) gets the announcement with that
         // output, in order; everyone else gets the broadcast.
         let captured_for = self.chat_capture.as_ref().and(self.lan_acting);
+        // A player's `/say` is a public line from them (`chat_recipient`), under `execute` too: the
+        // receivers a mod keeps it from aren't sent it, the player included.
+        let hidden = match self.source_entity().and_then(|t| self.player_target_uuid(t)) {
+            Some(sender) if id == "say" => {
+                let sender = horizon_client::lan::playerdata::ints_uuid(sender);
+                let hidden = self.chat_hidden_from(sender, &name.plain(), &message.plain());
+                let own = hidden.contains(&sender);
+                (hidden, own)
+            }
+            _ => (Vec::new(), false),
+        };
         let line = match id {
             "say" => {
                 // SayCommand broadcasts independently of the command source's feedback.
@@ -3910,6 +3921,7 @@ impl Game<'_> {
                         component_nbt(&name.component()),
                         component_nbt(&message.component()),
                         captured_for,
+                        &hidden.0,
                     );
                 }
                 Text::translate("chat.type.announcement", &[name, message])
@@ -3945,6 +3957,7 @@ impl Game<'_> {
                 // the captured output. Without one (the console), the broadcast
                 // reached everyone and the console logged it above.
                 if captured_for.is_some()
+                    && !hidden.1
                     && let Some(capture) = self.chat_capture.as_mut()
                 {
                     capture.push(line);
