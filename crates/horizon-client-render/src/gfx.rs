@@ -11553,16 +11553,16 @@ impl Renderer {
                     }
                 }) as submit::AfterSubmit
             });
-            // The section copies first, before the submit thread submits the frame.
-            if let Some(copies) = copies.take() {
-                self.queue.submit([copies]);
-            }
             let job = submit::Job {
                 encoder,
                 surface: surface_frame,
                 after,
             };
-            match self.queue.submit_later(job) {
+            // The section copies are submitted ahead of the frame on the submit thread.
+            match self
+                .queue
+                .submit_frame(job, copies.take(), Some(&self.device))
+            {
                 Ok(()) => {
                     self.deferred = Some(offscreen);
                     // The frame's waits for the previous one on the submit thread.
@@ -11573,12 +11573,32 @@ impl Renderer {
                     self.shadow_visible = shadow_visible;
                     return Ok(true);
                 }
-                Err(back) => (back.encoder, back.surface, back.after),
+                Err((back, first)) => {
+                    copies = first;
+                    (back.encoder, back.surface, back.after)
+                }
             }
         } else {
             (encoder, surface_frame, None)
         };
+        // Finishing the commands can run out of memory too (#13624); a screenshot's frame has
+        // its own scopes (`checks`) still open.
+        let finishing = checks.is_none().then(|| GpuChecks::push(&self.device));
         let commands = crate::spans::time("encode", || encoder.finish());
+        if let Some(finishing) = finishing {
+            let (memory, validation) = finishing.errors();
+            if frame_targets::frame_lost(memory, validation) {
+                // The belt's chunks closed on the dropped commands are freed, not recalled.
+                return self.abandon_frame(frame_targets::Abandoned {
+                    encoder: None,
+                    copies,
+                    surface: surface_frame,
+                    generated: fg_frames,
+                    screenshot: readback.map(|(request, _)| request),
+                    backstop: None,
+                });
+            }
+        }
         if first_frame {
             startup_step(format_args!("submitting the first frame"));
             self.first_frame = FirstFrame::Drawn;

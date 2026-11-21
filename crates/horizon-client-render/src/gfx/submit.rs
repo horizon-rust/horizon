@@ -33,8 +33,16 @@ pub struct Job {
     pub after: Option<AfterSubmit>,
 }
 
+/// What goes to the submit thread: the frame, what is submitted ahead of it, and the device
+/// whose scope catches the frame running out of video memory as it is finished.
+struct Sent {
+    job: Job,
+    first: Option<wgpu::CommandBuffer>,
+    device: Option<wgpu::Device>,
+}
+
 struct Thread {
-    jobs: Option<mpsc::Sender<Job>>,
+    jobs: Option<mpsc::Sender<Sent>>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -69,15 +77,31 @@ impl Queue {
         if !threaded {
             return this;
         }
-        let (jobs, job_rx) = mpsc::channel::<Job>();
+        let (jobs, job_rx) = mpsc::channel::<Sent>();
         let (done_tx, done) = mpsc::channel();
         let queue = this.queue.clone();
         let spawned = std::thread::Builder::new()
             .name("Render submit".into())
             .spawn(move || {
-                for job in job_rx {
+                for Sent { job, first, device } in job_rx {
+                    // Error scopes are each thread's own, so the window's thread's do not see
+                    // this `finish` (#13624).
+                    let memory = device
+                        .as_ref()
+                        .map(|device| device.push_error_scope(wgpu::ErrorFilter::OutOfMemory));
                     let commands = job.encoder.finish();
-                    let submission = queue.submit([commands]);
+                    let lost = memory.and_then(|memory| pollster::block_on(memory.pop()));
+                    let submission = match lost {
+                        None => queue.submit(first.into_iter().chain([commands])),
+                        // The frame is given up, as its commands may hold what failed: what
+                        // goes ahead of it is still submitted, and its image is presented as
+                        // wgpu clears an image nothing drew to.
+                        Some(error) => {
+                            drop(commands);
+                            super::frame_targets::warn_frame_lost(&error);
+                            queue.submit(first)
+                        }
+                    };
                     if let Some(after) = job.after {
                         after();
                     }
@@ -113,16 +137,32 @@ impl Queue {
     /// Finish, submit and present the frame on the submit thread, then run its `after`;
     /// given back, with nothing done, when there is none.
     pub fn submit_later(&self, job: Job) -> Result<(), Box<Job>> {
+        self.submit_frame(job, None, None).map_err(|(job, _)| job)
+    }
+    /// [`submit_later`](Self::submit_later), with `first` submitted ahead of the frame, and,
+    /// given its `device`, the frame given up where finishing it runs out of video memory
+    /// (#13624). Both are given back when there is no submit thread.
+    pub fn submit_frame(
+        &self,
+        job: Job,
+        first: Option<wgpu::CommandBuffer>,
+        device: Option<&wgpu::Device>,
+    ) -> Result<(), (Box<Job>, Option<wgpu::CommandBuffer>)> {
         let Some(jobs) = self.thread.as_ref().and_then(|t| t.jobs.as_ref()) else {
-            return Err(Box::new(job));
+            return Err((Box::new(job), first));
         };
         self.wait();
-        match jobs.send(job) {
+        let sent = Sent {
+            job,
+            first,
+            device: device.cloned(),
+        };
+        match jobs.send(sent) {
             Ok(()) => {
                 self.pending.store(true, Ordering::Release);
                 Ok(())
             }
-            Err(mpsc::SendError(job)) => Err(Box::new(job)),
+            Err(mpsc::SendError(sent)) => Err((Box::new(sent.job), sent.first)),
         }
     }
     /// Wait until the frame on the submit thread is submitted and presented.

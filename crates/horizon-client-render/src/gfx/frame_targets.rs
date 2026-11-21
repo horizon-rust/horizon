@@ -132,9 +132,8 @@ pub(crate) fn buffer(
     })
 }
 
-/// The verdict on a window frame's own scopes (`Renderer::draw_frame`), read before its
-/// commands are finished: `true` where it ran out of memory, so its commands may hold something
-/// invalid and the frame is given up. A validation error in a frame that ran out of memory
+/// The verdict on a window frame's own scopes (`Renderer::draw_frame`): `true` where it ran out
+/// of memory, so its commands may hold something invalid and the frame is given up. A validation error in a frame that ran out of memory
 /// nowhere panics, as wgpu's handler would.
 pub(super) fn frame_lost(memory: Option<wgpu::Error>, validation: Option<wgpu::Error>) -> bool {
     let error = match (memory, validation) {
@@ -144,10 +143,16 @@ pub(super) fn frame_lost(memory: Option<wgpu::Error>, validation: Option<wgpu::E
         (None, Some(error)) => panic!("wgpu error: {error}"),
     };
     OUT_OF_MEMORY.set(true);
+    warn_frame_lost(&error);
+    true
+}
+
+/// A frame given up where it ran out of video memory (here, or on the submit thread as its
+/// commands were finished), warned of once.
+pub(super) fn warn_frame_lost(error: &wgpu::Error) {
     if !FRAME_WARNED.swap(true, Ordering::Relaxed) {
         log::warn!("Horizon renderer: video memory is full; a frame is skipped ({error})");
     }
-    true
 }
 
 /// What a window frame given up after it took its swapchain image still holds.
