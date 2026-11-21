@@ -3248,7 +3248,7 @@ impl Hub {
 
     /// `ParticleTypes.STREAM_CODEC`'s value for `options`: the type's
     /// network id and the data it carries (`state` for the block particles).
-    /// None for a particle whose data isn't sent from here (items, trails).
+    /// None for a particle whose data isn't sent from here (items).
     pub fn particle(
         &self,
         options: &crate::particles::ParticleOptions,
@@ -3309,7 +3309,12 @@ impl Hub {
                     ticks: *ticks,
                 })
             }
-            T::Item | T::Trail => return item_particles::encode(self, id, options),
+            T::Item => return item_particles::encode(self, id, options),
+            // `TrailParticleOption(target, color, duration)`.
+            T::Trail => {
+                let (target, duration) = options.trail?;
+                Some(ParticleData::Trail(target, rgb, duration))
+            }
             _ => None,
         };
         Some(Particle { id, data })
