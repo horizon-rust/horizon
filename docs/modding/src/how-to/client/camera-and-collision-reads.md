@@ -152,6 +152,15 @@ These read the local player as the client sees it. They take no mod-controlled n
   team name, name) and stop at the 80 it draws. Header and footer are `None` when empty. It is what
   this client has been sent and changes as the server updates the list; `None` outside a world.
   There is no NeoForge call for this: it is Horizon's own read.
+- `ClientHost::client_session().client_sidebar()` is the scoreboard sidebar as the HUD draws it
+  (`Hud.displayScoreboardSidebar`): `ClientSidebar { title, lines }`. Each `ClientSidebarLine` has
+  the `name` as drawn (the score's display name if the server set one, else the holder's name,
+  with its team's prefix, suffix and colour), the `score` as drawn after the number format (empty for a blank one) and its
+  `value`. Lines come top to bottom in the HUD's order (highest value first, then names ignoring
+  case), without hidden `#` holders, and stop at the 15 it draws. The objective is the one in the
+  local player's team-colour slot, else the sidebar slot. It reads the same while a mod hides the
+  `minecraft:scoreboard_sidebar` layer to draw its own; `None` when no objective is in the sidebar
+  or outside a world. There is no NeoForge call for this: it is Horizon's own read.
 - `ClientHost::local_item_use()` is the item in use: `ItemUse { hand, ticks_used, ticks_remaining }`
   (`isUsingItem`, `getUsedItemHand`, `getTicksUsingItem`, `getUseItemRemainingTicks`).
   `ticks_used + ticks_remaining` is the use duration. It is `None` when no item is in use or no world

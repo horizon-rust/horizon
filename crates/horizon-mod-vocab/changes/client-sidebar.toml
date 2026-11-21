@@ -1,0 +1,3 @@
+ids = ["method:ClientSession::client_sidebar", "type:ClientSidebar", "type:ClientSidebarLine"]
+why = "Adds a client read of the scoreboard sidebar as the HUD draws it: the objective's title and its lines top to bottom (at most 15), each with its drawn name, its formatted score and its value."
+migrate = "Additive. Read it on the client; it is None when no objective is in the sidebar or outside a logged-in client world, and reflects what the server has sent."

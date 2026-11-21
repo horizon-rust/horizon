@@ -102,6 +102,20 @@ pub trait ClientSession {
         )
     }
     /// Side: client.
+    /// The scoreboard sidebar as the HUD draws it: the objective's title and its lines top to
+    /// bottom, each line's drawn name and score and its value, at most the 15 it draws. The
+    /// objective is the one in the local player's team-colour slot, else the sidebar slot.
+    /// It reads the same while a mod hides the vanilla sidebar layer. What this client has been
+    /// sent; None when no objective is in the sidebar or outside a logged-in client world.
+    /// Sends nothing.
+    fn client_sidebar(&self) -> Option<ClientSidebar> {
+        crate::world::phase::unprovided(
+            "ClientSession::client_sidebar",
+            "client_sidebar",
+            crate::world::phase::LoadAccess::ClientSetup,
+        )
+    }
+    /// Side: client.
     /// Existing local frame counters; None outside a logged-in client world.
     /// This read collects no history and sends nothing anywhere.
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {

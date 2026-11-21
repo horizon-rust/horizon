@@ -31,6 +31,13 @@ impl ClientSession for Game<'_> {
         );
         self.native_client_tab_list()
     }
+    fn client_sidebar(&self) -> Option<ClientSidebar> {
+        mod_api::__private::check_access(
+            "client_sidebar",
+            mod_api::__private::LoadAccess::ClientSetup,
+        );
+        self.native_client_sidebar()
+    }
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {
         mod_api::__private::check_access(
             "client_frame_stats",

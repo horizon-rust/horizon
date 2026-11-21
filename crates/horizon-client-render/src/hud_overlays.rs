@@ -712,17 +712,24 @@ pub fn compare_ignore_case(a: &str, b: &str) -> Ordering {
     x.len().cmp(&y.len())
 }
 
-/// `Hud.displayScoreboardSidebar` for `objective`; `background` and
-/// `header` are `Options.getBackgroundColor(0.3F)` and `(0.4F)`.
-pub fn sidebar(
-    w: i32,
-    h: i32,
+/// One row of the scoreboard sidebar as `Hud.displayScoreboardSidebar` draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SidebarLine {
+    /// The score's display name, else the holder's name, with its team's prefix, suffix and colour.
+    pub name: Text,
+    /// The value after the score's or the objective's number format; empty for a blank one.
+    pub score: Text,
+    /// The score's value.
+    pub value: i32,
+}
+
+/// What `Hud.displayScoreboardSidebar` draws for `objective`: its title and its rows top to
+/// bottom (hidden `#` holders left out, highest value first, then owners case-insensitively, at
+/// most 15), with legacy `§` codes resolved as the font draws them.
+pub fn sidebar_contents(
     board: &crate::scoreboard::Scoreboard,
     objective: &crate::scoreboard::Objective,
-    font: &Font,
-    background: u32,
-    header: u32,
-) -> Vec<GuiDraw> {
+) -> (Text, Vec<SidebarLine>) {
     use crate::scoreboard::NumberFormat;
     let format = objective.format_or_default(NumberFormat::sidebar_default());
     let mut entries: Vec<_> = board
@@ -739,20 +746,40 @@ pub fn sidebar(
     entries.truncate(15);
     // Font draws each literal through StringDecomposer.iterateFormatted:
     // legacy `§` codes style what follows and are not drawn.
-    let rows: Vec<(Text, Text, i32)> = entries
+    let lines = entries
         .iter()
-        .map(|e| {
-            let name = match board.players_team(&e.owner) {
+        .map(|e| SidebarLine {
+            name: match board.players_team(&e.owner) {
                 Some(team) => team.formatted_name(e.owner_name()),
                 None => e.owner_name(),
             }
-            .resolve_legacy();
-            let score = e.format_value(&format).resolve_legacy();
-            let score_width = width(font, &score);
-            (name, score, score_width)
+            .resolve_legacy(),
+            score: e.format_value(&format).resolve_legacy(),
+            value: e.value,
         })
         .collect();
-    let title = objective.display_text().resolve_legacy();
+    (objective.display_text().resolve_legacy(), lines)
+}
+
+/// `Hud.displayScoreboardSidebar` for `objective`; `background` and
+/// `header` are `Options.getBackgroundColor(0.3F)` and `(0.4F)`.
+pub fn sidebar(
+    w: i32,
+    h: i32,
+    board: &crate::scoreboard::Scoreboard,
+    objective: &crate::scoreboard::Objective,
+    font: &Font,
+    background: u32,
+    header: u32,
+) -> Vec<GuiDraw> {
+    let (title, lines) = sidebar_contents(board, objective);
+    let rows: Vec<(Text, Text, i32)> = lines
+        .into_iter()
+        .map(|line| {
+            let score_width = width(font, &line.score);
+            (line.name, line.score, score_width)
+        })
+        .collect();
     let title_width = width(font, &title);
     let spacer = font.width(": ") as i32;
     let mut biggest = title_width;

@@ -142,3 +142,46 @@ impl ClientTabListEntry {
         }
     }
 }
+
+/// The scoreboard sidebar as the HUD draws it (`Hud.displayScoreboardSidebar`), read with
+/// `ClientSession::client_sidebar`: what this client has been sent, changing as the server
+/// updates the scoreboard.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ClientSidebar {
+    /// The objective's display name, drawn above the lines.
+    pub title: Text,
+    /// The lines top to bottom (`SCORE_DISPLAY_ORDER`: highest value first, then holder names
+    /// case-insensitively), without hidden `#` holders, at most the 15 the HUD draws.
+    pub lines: Vec<ClientSidebarLine>,
+}
+
+impl ClientSidebar {
+    /// A sidebar from its title and lines.
+    pub fn new(title: Text, lines: Vec<ClientSidebarLine>) -> Self {
+        Self { title, lines }
+    }
+}
+
+/// One line of the scoreboard sidebar as the HUD draws it.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ClientSidebarLine {
+    /// The name as drawn: the score's display name if the server set one, else the holder's
+    /// name, with its team's prefix, suffix and colour.
+    pub name: Text,
+    /// The score as drawn, after the score's or the objective's number format; empty for a
+    /// blank format.
+    pub score: Text,
+    /// The score's value, whatever the number format shows.
+    pub value: i32,
+}
+
+impl ClientSidebarLine {
+    /// A line from its parts.
+    pub fn new(name: Text, score: Text, value: i32) -> Self {
+        Self { name, score, value }
+    }
+}

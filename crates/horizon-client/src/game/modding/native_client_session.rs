@@ -59,6 +59,13 @@ impl Game<'_> {
         ))
     }
 
+    /// The scoreboard sidebar as the HUD draws it ([`sidebar`]); None when no objective is in
+    /// the sidebar or outside a logged-in client world.
+    pub(super) fn native_client_sidebar(&self) -> Option<mod_api::ClientSidebar> {
+        self.native_session()?;
+        Some(sidebar(&self.score.board, self.sidebar_objective()?))
+    }
+
     /// The local player's item use (`isUsingItem`, `getUsedItemHand`, `getTicksUsingItem`,
     /// `getUseItemRemainingTicks`); None when no item is in use or outside a logged-in client
     /// world.
@@ -157,13 +164,7 @@ fn tab_list(
     header: Option<&horizon_client::text::Text>,
     footer: Option<&horizon_client::text::Text>,
 ) -> mod_api::ClientTabList {
-    use super::api_values::TryIntoApi;
     use horizon_client::tab_list::{name_for_display, sorted_players};
-    // A text too deep for the API reads as its plain words rather than dropping the entry.
-    let text = |text: &horizon_client::text::Text| {
-        text.try_into_api()
-            .unwrap_or_else(|_| mod_api::Text::literal(text.plain()))
-    };
     let entries = sorted_players(players, board)
         .into_iter()
         .map(|p| {
@@ -173,17 +174,53 @@ fn tab_list(
                 // `GameType.byId`: an id it lacks is survival.
                 mod_api::GameMode::from_id(p.game_mode).unwrap_or(mod_api::GameMode::Survival),
                 p.latency,
-                text(&name_for_display(p, board)),
+                api_text(&name_for_display(p, board)),
             )
         })
         .collect();
-    mod_api::ClientTabList::new(entries, header.map(text), footer.map(text))
+    mod_api::ClientTabList::new(entries, header.map(api_text), footer.map(api_text))
+}
+
+/// `Hud.displayScoreboardSidebar`'s title and lines (`hud_overlays::sidebar_contents`, which the
+/// HUD draws from), so the read cannot drift from what is drawn.
+fn sidebar(
+    board: &horizon_client::scoreboard::Scoreboard,
+    objective: &horizon_client::scoreboard::Objective,
+) -> mod_api::ClientSidebar {
+    let (title, lines) = horizon_client::hud_overlays::sidebar_contents(board, objective);
+    let lines = lines
+        .iter()
+        .map(|line| {
+            mod_api::ClientSidebarLine::new(api_text(&line.name), api_text(&line.score), line.value)
+        })
+        .collect();
+    mod_api::ClientSidebar::new(api_text(&title), lines)
+}
+
+/// A drawn text for the API; one too deep for it reads as its plain words rather than dropping
+/// the entry.
+fn api_text(text: &horizon_client::text::Text) -> mod_api::Text {
+    use super::api_values::TryIntoApi;
+    text.try_into_api()
+        .unwrap_or_else(|_| mod_api::Text::literal(text.plain()))
 }
 
 #[cfg(test)]
 pub(super) mod tests {
     use super::super::native_entity_refs::tests::with_client_game;
     use super::*;
+
+    /// A text's words with its children's, without styles.
+    fn plain(text: &mod_api::Text) -> String {
+        let own = match &text.content {
+            mod_api::text::TextContent::Literal(words) => words.as_str(),
+            _ => "",
+        };
+        text.children
+            .iter()
+            .map(plain)
+            .fold(own.to_owned(), |all, c| all + &c)
+    }
 
     /// The Tab overlay's names, order, cap, header and footer, as `client_tab_list` reads them.
     #[test]
@@ -217,16 +254,6 @@ pub(super) mod tests {
             ["Zed", "Steve", "Alex", "Bob"],
             "list order, then spectators last"
         );
-        fn plain(text: &mod_api::Text) -> String {
-            let own = match &text.content {
-                mod_api::text::TextContent::Literal(words) => words.as_str(),
-                _ => "",
-            };
-            text.children
-                .iter()
-                .map(plain)
-                .fold(own.to_owned(), |all, c| all + &c)
-        }
         assert_eq!(plain(&list.entries[1].display), "Captain");
         assert_eq!(list.entries[1].latency, 42);
         assert_eq!(list.entries[1].uuid, 1);
@@ -263,6 +290,63 @@ pub(super) mod tests {
         );
         assert_eq!(cleared.header, None);
         assert_eq!(cleared.footer, None);
+    }
+
+    /// The sidebar's title, order, cap, names and scores, as `client_sidebar` reads them.
+    #[test]
+    fn the_sidebar_reads_as_the_hud_draws_it() {
+        use horizon_client::scoreboard::{NumberFormat, RenderType, Scoreboard};
+        let mut board = Scoreboard::default();
+        board.add_objective(
+            "kills",
+            "dummy",
+            serde_json::json!("Kills"),
+            RenderType::Integer,
+            false,
+            None,
+        );
+        let kills = |board: &Scoreboard| board.objective("kills").unwrap().clone();
+        let team = board.add_team("red");
+        team.prefix = serde_json::json!("[R] ");
+        board.add_to_team("alex", "red");
+        board.set("alex", "kills", 7);
+        board.set("Bob", "kills", 7);
+        board.set("Steve", "kills", 9);
+        board.set("#hidden", "kills", 99);
+        let zed = board.score_mut("Zed", "kills");
+        zed.value = 1;
+        zed.display = Some(serde_json::json!("Captain"));
+        zed.number_format = Some(NumberFormat::Fixed(serde_json::json!("first")));
+        let read = sidebar(&board, &kills(&board));
+        assert_eq!(plain(&read.title), "Kills");
+        let lines: Vec<_> = read
+            .lines
+            .iter()
+            .map(|l| (plain(&l.name), plain(&l.score), l.value))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (String::from("Steve"), String::from("9"), 9),
+                (String::from("[R] alex"), String::from("7"), 7),
+                (String::from("Bob"), String::from("7"), 7),
+                (String::from("Captain"), String::from("first"), 1),
+            ],
+            "highest first, ties by name ignoring case, hidden holders left out"
+        );
+        board.objective_mut("kills").unwrap().number_format = Some(NumberFormat::Blank);
+        for i in 0..20 {
+            board.set(&format!("p{i:02}"), "kills", 100 - i);
+        }
+        let read = sidebar(&board, &kills(&board));
+        assert_eq!(read.lines.len(), 15, "the HUD draws 15");
+        assert_eq!(plain(&read.lines[0].name), "p00");
+        assert_eq!(
+            plain(&read.lines[0].score),
+            "",
+            "a blank format draws no score"
+        );
+        assert_eq!(read.lines[0].value, 100);
     }
 
     pub(in crate::game) fn logged_client(
