@@ -297,10 +297,53 @@ struct ModAudioChunk {
     /// Where they were spoken, for distance and direction; none plays them centred.
     at: Option<[f64; 3]>,
 }
+/// Why a mod's audio was not queued (`Audio::push_voice`); nothing is queued in any case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceRefusal {
+    /// There are no samples.
+    Empty,
+    /// The sample rate is 0.
+    BadRate,
+    /// A sample or a coordinate of the position is NaN or infinite.
+    NotFinite,
+    /// The source would have more than two seconds waiting.
+    Backlog,
+    /// Another source would make more than 64 play at once.
+    TooManySources,
+    /// The game has no output device (a dedicated server, or no sound).
+    NoOutput,
+}
+/// A mod's way into the mixer from any thread (a network thread that decodes voice): a share of
+/// the mixer, valid for as long as the game's audio lives, through device changes too.
+#[derive(Clone)]
+pub struct VoiceHandle {
+    mixer: Arc<Mutex<Mixer>>,
+    live: bool,
+}
+impl VoiceHandle {
+    /// As [`Audio::push_voice`].
+    pub fn push(
+        &self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> std::result::Result<(), VoiceRefusal> {
+        if !self.live {
+            return Err(VoiceRefusal::NoOutput);
+        }
+        self.mixer
+            .lock()
+            .map_err(|_| VoiceRefusal::NoOutput)?
+            .push_mod_audio(mod_id, source, samples, rate, at)
+    }
+}
 impl Mixer {
-    /// Queues `samples` behind what `source` of `mod_id` already has waiting. False, and
-    /// nothing queued, when they are empty or the rate is 0, when the source would hold more
-    /// than [`MOD_AUDIO_SECONDS`], or when a new source would pass [`MOD_AUDIO_SOURCES`].
+    /// Queues `samples` behind what `source` of `mod_id` already has waiting, or says by name
+    /// why nothing was queued ([`VoiceRefusal`]): they are empty, the rate is 0, they or `at`
+    /// are not finite, the source would hold more than [`MOD_AUDIO_SECONDS`], or a new source
+    /// would pass [`MOD_AUDIO_SOURCES`].
     fn push_mod_audio(
         &mut self,
         mod_id: &str,
@@ -308,9 +351,17 @@ impl Mixer {
         samples: &[f32],
         rate: u32,
         at: Option<[f64; 3]>,
-    ) -> bool {
-        if samples.is_empty() || rate == 0 {
-            return false;
+    ) -> std::result::Result<(), VoiceRefusal> {
+        if samples.is_empty() {
+            return Err(VoiceRefusal::Empty);
+        }
+        if rate == 0 {
+            return Err(VoiceRefusal::BadRate);
+        }
+        if !samples.iter().all(|s| s.is_finite())
+            || at.is_some_and(|a| !a.iter().all(|c| c.is_finite()))
+        {
+            return Err(VoiceRefusal::NotFinite);
         }
         let seconds = |len: usize, rate: u32| len as f64 / f64::from(rate);
         let added = seconds(samples.len(), rate);
@@ -332,13 +383,16 @@ impl Mixer {
                     .map(|c| seconds(c.samples.len(), c.rate))
                     .sum();
                 if waiting + added > MOD_AUDIO_SECONDS {
-                    return false;
+                    return Err(VoiceRefusal::Backlog);
                 }
                 s.chunks.push_back(chunk);
             }
             None => {
-                if added > MOD_AUDIO_SECONDS || self.mod_audio.len() >= MOD_AUDIO_SOURCES {
-                    return false;
+                if added > MOD_AUDIO_SECONDS {
+                    return Err(VoiceRefusal::Backlog);
+                }
+                if self.mod_audio.len() >= MOD_AUDIO_SOURCES {
+                    return Err(VoiceRefusal::TooManySources);
                 }
                 self.mod_audio.push(ModAudioSource {
                     mod_id: mod_id.to_owned(),
@@ -348,7 +402,7 @@ impl Mixer {
                 });
             }
         }
-        true
+        Ok(())
     }
     /// The id of world `name` (1 and up), given once per name.
     fn world_id(&mut self, name: &str) -> u32 {
@@ -390,8 +444,7 @@ impl MuffleFade {
     }
 }
 impl MixerBackend {
-    /// Queues a mod's audio for the output callback (`Host::push_voice`). False when nothing
-    /// was queued: no output device, or what [`Mixer::push_mod_audio`] refuses.
+    /// Queues a mod's audio for the output callback (`Host::push_voice`), or says why not.
     pub fn push_voice(
         &self,
         mod_id: &str,
@@ -399,12 +452,15 @@ impl MixerBackend {
         samples: &[f32],
         rate: u32,
         at: Option<[f64; 3]>,
-    ) -> bool {
-        self.live
-            && self
-                .mixer
-                .lock()
-                .is_ok_and(|mut m| m.push_mod_audio(mod_id, source, samples, rate, at))
+    ) -> std::result::Result<(), VoiceRefusal> {
+        self.voice_handle().push(mod_id, source, samples, rate, at)
+    }
+    /// A share of the mixer for a thread of the mod's own (`Audio::voice_handle`).
+    pub fn voice_handle(&self) -> VoiceHandle {
+        VoiceHandle {
+            mixer: self.mixer.clone(),
+            live: self.live,
+        }
     }
 }
 /// The mixer side of the engine (`Backend`).
@@ -539,8 +595,13 @@ impl Audio {
         samples: &[f32],
         rate: u32,
         at: Option<[f64; 3]>,
-    ) -> bool {
+    ) -> std::result::Result<(), VoiceRefusal> {
         self.backend.push_voice(mod_id, source, samples, rate, at)
+    }
+    /// The mixer's input for a thread other than the game's, to push audio from the thread that
+    /// decodes it.
+    pub fn voice_handle(&self) -> VoiceHandle {
+        self.backend.voice_handle()
     }
 }
 
@@ -3376,7 +3437,10 @@ mod tests {
         let mut m = Mixer::default();
         // Two speakers of one mod, each queuing two chunks, interleaved.
         for (source, level) in [(1, 0.1), (2, 0.4), (1, 0.2), (2, 0.3)] {
-            assert!(m.push_mod_audio("voice", source, &[level; 4], 48_000, None));
+            assert_eq!(
+                m.push_mod_audio("voice", source, &[level; 4], 48_000, None),
+                Ok(())
+            );
         }
         let mut data = vec![0.0f32; 8 * 2];
         mix(&mut m, &mut data, 2, 48_000);
@@ -3389,8 +3453,14 @@ mod tests {
         );
         assert!(m.mod_audio.is_empty(), "both sources played out");
         // Order within a source: its second chunk follows its first.
-        assert!(m.push_mod_audio("voice", 1, &[0.25; 2], 48_000, None));
-        assert!(m.push_mod_audio("voice", 1, &[0.5; 2], 48_000, None));
+        assert_eq!(
+            m.push_mod_audio("voice", 1, &[0.25; 2], 48_000, None),
+            Ok(())
+        );
+        assert_eq!(
+            m.push_mod_audio("voice", 1, &[0.5; 2], 48_000, None),
+            Ok(())
+        );
         let mut data = vec![0.0f32; 4 * 2];
         mix(&mut m, &mut data, 2, 48_000);
         let left: Vec<f32> = data.chunks(2).map(|f| f[0]).collect();
@@ -3400,32 +3470,93 @@ mod tests {
     #[test]
     fn mod_audio_sources_are_kept_apart_by_mod_and_capped() {
         let mut m = Mixer::default();
-        assert!(m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None));
-        assert!(m.push_mod_audio("b", 1, &[0.1; 48_000], 48_000, None));
+        assert_eq!(
+            m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None),
+            Ok(())
+        );
+        assert_eq!(
+            m.push_mod_audio("b", 1, &[0.1; 48_000], 48_000, None),
+            Ok(())
+        );
         assert_eq!(
             m.mod_audio.len(),
             2,
             "the same id in two mods is two sources"
         );
         // Two seconds wait at most per source; a burst past that is refused, not delayed.
-        assert!(m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None));
-        assert!(!m.push_mod_audio("a", 1, &[0.1; 1], 48_000, None));
-        assert!(!m.push_mod_audio("a", 2, &[], 48_000, None));
-        assert!(!m.push_mod_audio("a", 2, &[0.1], 0, None));
+        assert_eq!(
+            m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None),
+            Ok(())
+        );
+        assert_eq!(
+            m.push_mod_audio("a", 1, &[0.1; 1], 48_000, None),
+            Err(VoiceRefusal::Backlog)
+        );
+        assert_eq!(
+            m.push_mod_audio("a", 2, &[], 48_000, None),
+            Err(VoiceRefusal::Empty)
+        );
+        assert_eq!(
+            m.push_mod_audio("a", 2, &[0.1], 0, None),
+            Err(VoiceRefusal::BadRate)
+        );
+        assert_eq!(
+            m.push_mod_audio("a", 2, &[f32::NAN], 48_000, None),
+            Err(VoiceRefusal::NotFinite)
+        );
+        assert_eq!(
+            m.push_mod_audio("a", 2, &[0.1], 48_000, Some([0.0, f64::INFINITY, 0.0])),
+            Err(VoiceRefusal::NotFinite)
+        );
+        // 64 sources play at once; a 65th is refused, an existing one still takes more.
+        let mut m = Mixer::default();
+        for source in 0..64 {
+            assert_eq!(m.push_mod_audio("a", source, &[0.1], 48_000, None), Ok(()));
+        }
+        assert_eq!(
+            m.push_mod_audio("a", 64, &[0.1], 48_000, None),
+            Err(VoiceRefusal::TooManySources)
+        );
+        assert_eq!(m.push_mod_audio("a", 63, &[0.1], 48_000, None), Ok(()));
+        // A share of the mixer pushes from another thread; without an output it names that.
+        let shared = Arc::new(Mutex::new(Mixer::default()));
+        let handle = VoiceHandle {
+            mixer: shared.clone(),
+            live: true,
+        };
+        let sent = std::thread::spawn(move || handle.push("net", 7, &[0.1; 4], 48_000, None))
+            .join()
+            .unwrap();
+        assert_eq!(sent, Ok(()));
+        assert_eq!(shared.lock().unwrap().mod_audio.len(), 1);
+        let silent = VoiceHandle {
+            mixer: shared,
+            live: false,
+        };
+        assert_eq!(
+            silent.push("net", 7, &[0.1], 48_000, None),
+            Err(VoiceRefusal::NoOutput)
+        );
     }
 
     #[test]
     fn mod_audio_is_panned_and_faded_by_where_it_was_spoken() {
         let mut m = Mixer::default();
         // Facing south (yaw 0), -X is the listener's right.
-        assert!(m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([-4.0, 0.0, 0.0])));
+        assert_eq!(
+            m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([-4.0, 0.0, 0.0])),
+            Ok(())
+        );
         let mut data = vec![0.0f32; 16 * 2];
         mix(&mut m, &mut data, 2, 48_000);
         let left: f32 = data.chunks(2).map(|f| f[0]).sum();
         let right: f32 = data.chunks(2).map(|f| f[1]).sum();
         assert!(right > left, "right {right} should beat left {left}");
         // Past the range it is silent.
-        assert!(m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([0.0, 0.0, 60.0])));
+        assert_eq!(
+            m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([0.0, 0.0, 60.0])),
+            Ok(())
+        );
         let mut data = vec![0.0f32; 16 * 2];
         mix(&mut m, &mut data, 2, 48_000);
         assert!(data.iter().all(|s| *s == 0.0));

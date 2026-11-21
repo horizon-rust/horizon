@@ -83,3 +83,25 @@ meshed so far and nothing where a section is not meshed yet.
 A new call replaces the current muffle; `ticks` of 0 ends it immediately. The effect belongs to the sound output, so every splitscreen player hears it. The call refuses an amount or strength outside 0 to 1, more than 64 exempt events, or an exempt event that is not a namespaced sound ID, without changing the output. Server code cannot call this client-only service.
 
 Play the accompanying sound through `ClientHost::play_local_sound` with a `SoundPlay`.
+
+## Playing decoded audio
+
+`ClientHost::push_voice(mod_id, source, samples, rate, at)` queues mono samples (-1 to 1) sampled at `rate` Hz in the game's mixer, as a voice chat mod does with each speaker it decodes:
+
+- `source` is the speaker (a player's UUID as a `u128`). A source's chunks play in order, behind what it already has waiting; different sources play at the same time. `mod_id` keeps two mods' sources apart.
+- `at` is a position in the client's level. The audio fades linearly to silence at 48 blocks and pans by the camera's direction; `None` plays it centred at full level.
+- It is mixed with the game's sounds, so the output device, the master volume and the limiter apply.
+
+A call is refused, queuing nothing, by name as `PushVoiceError` lists: `Empty`, `BadRate` (a rate of 0), `NotFinite` (a NaN or infinite sample or coordinate), `Backlog` (the source would have more than two seconds waiting), `TooManySources` (more than 64 play at once) and `Unavailable` (no output device: a dedicated server, or no sound).
+
+Voice arrives on a network thread, which has no host. A native mod keeps a `VoiceSink` instead, which is `Send + Sync` and cheap to clone, and pushes from there with no hop to the game's thread:
+
+```rust
+let sink = mod_api::voice_sink("mymod");
+std::thread::spawn(move || {
+    // Decoded 20 ms of a speaker, heard 3 blocks to the camera's side.
+    let _ = sink.push(speaker_uuid_bits, &pcm, 48_000, Some([10.0, 64.0, -3.5]));
+});
+```
+
+A wasm mod calls `push_voice` through the host each time; a sink reports `Unavailable` there.

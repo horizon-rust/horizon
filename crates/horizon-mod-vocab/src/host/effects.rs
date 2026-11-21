@@ -19,6 +19,28 @@ pub trait EffectsClientHost {
     #[access(ClientSetup)]
     fn muffle_sounds(&mut self, amount: f32, lowpass: f32, ticks: u32, exempt: &[&str]) -> bool;
     /// Side: client.
+    /// Plays decoded audio through the game's mixer: mono `samples` (-1 to 1) sampled at `rate`
+    /// Hz, queued behind what `source` of `mod_id` already has waiting. A speaker keeps one
+    /// `source` (a player's UUID as a `u128`), so its chunks play in order while different
+    /// sources play at the same time. They are mixed with the game's own sounds, so the output
+    /// device, the master volume and the limiter apply. `at` is a position in the client's level:
+    /// the audio fades linearly to silence at 48 blocks and pans by the camera's direction;
+    /// `None` plays it centred at full level. Nothing changes while no mod calls it. Refused,
+    /// with nothing queued, by name as [`PushVoiceError`] lists: no samples, a rate of 0, a
+    /// sample or coordinate that is NaN or infinite, a source with more than two seconds
+    /// waiting (or one chunk longer than that), more than 64 sources at once, or no output
+    /// device (a dedicated server or no sound). From a thread of the mod's own, use
+    /// [`voice_sink`](crate::voice_sink) instead.
+    #[access(ClientSetup)]
+    fn push_voice(
+        &self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> Result<(), PushVoiceError>;
+    /// Side: client.
     /// A small local vanilla particle; caller should rate-limit emission.
     #[access(WorldOnly)]
     fn flame_particle(&mut self, at: [f64; 3], soul: bool);

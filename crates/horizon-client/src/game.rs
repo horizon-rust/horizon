@@ -10395,6 +10395,9 @@ impl<'a> Game<'a> {
             mod_api::__private::ModPhase::Packages => mod_api::__private::ModPhase::Setup,
             phase => phase,
         };
+        if options.execution_role.is_client() {
+            native_hooks::install_voice_output(&audio);
+        }
         let mod_phase = mod_api::__private::PhaseOwner::new(phase);
         // A scoped hook on this thread asks this game's parts.
         mod_api::__private::mark_game_thread();

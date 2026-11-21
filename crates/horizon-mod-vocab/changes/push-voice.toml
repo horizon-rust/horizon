@@ -1,0 +1,2 @@
+ids = ["method:prelude::EffectsClientHost::push_voice", "type:PushVoiceError", "type:VoiceSink", "fn:voice_sink"]
+why = "Restores the client mod audio path #12869 added and the mod API merge dropped: EffectsClientHost::push_voice queues a mod's decoded mono PCM per source into the game's mixer, placed at a world position or centred, with named refusals (PushVoiceError). voice_sink returns a Send + Sync VoiceSink so a network thread can push without a hop to the game thread. Additive; nothing changes while no mod calls it."
