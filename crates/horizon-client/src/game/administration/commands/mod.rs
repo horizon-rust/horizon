@@ -1117,7 +1117,12 @@ impl Game<'_> {
     fn cmd_help(&mut self, ctx: &Context) -> R<i32> {
         horizon_gameplay::commands::help::help(self, ctx)
     }
-    pub(super) fn set_game_mode(&mut self, mut mode: GameMode) -> bool {
+    pub(super) fn set_game_mode(&mut self, mode: GameMode) -> bool {
+        self.set_game_mode_because(mode, "unknown")
+    }
+    /// `set_game_mode` that tells `player_game_mode_cause` why (`command`, `switcher`, `plugin`,
+    /// `hardcore_death` or `unknown`) once the change is applied.
+    pub(super) fn set_game_mode_because(&mut self, mut mode: GameMode, cause: &str) -> bool {
         if self.mode == mode {
             return false;
         }
@@ -1130,8 +1135,18 @@ impl Game<'_> {
                 return false;
             }
         }
+        let from = self.mode;
         self.set_mode(mode);
-
+        if let Some(uuid) = self.lan_acting_uuid {
+            let name = self.acting_player_name().to_owned();
+            self.native_player_game_mode_cause(mod_api::__private::PlayerGameModeCauseCall {
+                player: uuid,
+                name: &name,
+                from,
+                to: mode,
+                cause,
+            });
+        }
         true
     }
     fn cmd_gamemode(&mut self, ctx: &Context) -> R<i32> {
@@ -1154,7 +1169,7 @@ impl Game<'_> {
                     .rules
                     .bool_at(horizon_client::gamerules::vanilla::SEND_COMMAND_FEEDBACK);
             let changed = self.for_player(t, |g| {
-                if !g.set_game_mode(mode) {
+                if !g.set_game_mode_because(mode, "command") {
                     return false;
                 }
                 if told {

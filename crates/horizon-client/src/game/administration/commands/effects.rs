@@ -101,6 +101,7 @@ impl Game<'_> {
                                     self.audio.play(sound, Some(at), 1.0, 1.0);
                                 }
                                 self.mod_effect_added(name, Some(id as i32), amplifier, new);
+                                self.effect_added_detail(name, Some(id as i32), amplifier, duration, new, "command");
                                 changed
                             }
                             None => false,

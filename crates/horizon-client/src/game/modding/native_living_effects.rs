@@ -133,8 +133,10 @@ impl Game<'_> {
                 let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
                     return false;
                 };
+                let ticks = instance.duration;
                 let changed = m.add_effect_instance(name, instance);
                 self.mod_effect_added_resolved(effect.id, Some(id as i32), amplifier, new);
+                self.effect_added_detail(name, Some(id as i32), amplifier, ticks, new, "plugin");
                 changed
             }
             _ => false,

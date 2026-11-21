@@ -206,6 +206,13 @@ impl Game<'_> {
             if !cancel && let Some(host) = self.lan.as_mut() {
                 host.hub
                     .set_game_mode(conn, to.id(), &self.world, Some(self.collision));
+                self.native_player_game_mode_cause(mod_api::__private::PlayerGameModeCauseCall {
+                    player: uuid,
+                    name: &name,
+                    from,
+                    to,
+                    cause: "hardcore_death",
+                });
             }
         }
         // PlayerList.respawn: `copyRespawnPosition` hands the new player the

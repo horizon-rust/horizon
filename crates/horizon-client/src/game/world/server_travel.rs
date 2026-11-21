@@ -1363,6 +1363,10 @@ impl Game<'_> {
             if !trip.hold {
                 host.play.entry(trip.conn).or_default().portal.cooldown = 10;
             }
+            let (uuid, name, origin) = {
+                let g = &host.hub.guests[i];
+                (g.uuid, g.name.clone(), g.position)
+            };
             host.hub.guests.update(i, |g| {
                 g.yaw = yaw;
                 if let Some(pitch) = pitch {
@@ -1379,6 +1383,27 @@ impl Game<'_> {
                 host.hub.land(i, at);
             } else {
                 host.hub.teleport(i, Some(at));
+            }
+            // PlayerTeleportEvent's cause for a portal or a gateway; a respawn, a command
+            // teleport and the credits are not these.
+            let cause = if trip.gateway.is_some() {
+                Some("end_gateway")
+            } else if trip.respawn.is_some() || trip.world_spawn || trip.placed {
+                None
+            } else if trip.end {
+                Some("end_portal")
+            } else {
+                Some("nether_portal")
+            };
+            if let Some(cause) = cause {
+                self.native_player_teleport_cause(mod_api::__private::PlayerTeleportCauseCall {
+                    player: uuid,
+                    name: &name,
+                    from: origin,
+                    to: at,
+                    dimension: trip.dim.id(),
+                    cause,
+                });
             }
             self.tell_mods_changed_dimension(trip.conn, trip.left, trip.dim);
         }
@@ -1476,10 +1501,10 @@ impl Game<'_> {
             } = note;
             // In place when it is their turn already (as_guest finds them swapped in).
             if self.lan_acting == Some(conn) {
-                self.native_player_teleported(uuid, &name, from, to, &dimension);
+                self.teleported_because(uuid, &name, from, to, &dimension, "command");
             } else {
                 self.as_guest(conn, |g| {
-                    g.native_player_teleported(uuid, &name, from, to, &dimension);
+                    g.teleported_because(uuid, &name, from, to, &dimension, "command");
                 });
             }
         }
@@ -1543,7 +1568,7 @@ impl Game<'_> {
                 g.trigger_dimension(source, t.dim, origin);
                 // The mods hear the teleport into another level, with the
                 // player's state swapped in.
-                g.native_player_teleported(uuid, &name, origin, t.at, t.dim.id());
+                g.teleported_because(uuid, &name, origin, t.at, t.dim.id(), "command");
             });
             self.server_trips.retain(|trip| !trip.is(t.conn));
             self.server_trips.push(Trip {
