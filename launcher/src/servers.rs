@@ -199,7 +199,150 @@ pub fn new_folder(name: &str) -> PathBuf {
 // ----- The programs: an installed Horizon version, laid out as install.sh does ---------------------
 
 pub fn runtime_root() -> PathBuf {
-    backend::data_dir().join("server-runtime")
+    backend::data_dir().join(RUNTIME)
+}
+
+/// The servers' programs in the launcher's data.
+const RUNTIME: &str = "server-runtime";
+
+/// The server runtime's links in the launcher's data, which a move leaves out and makes again
+/// in the new folder: `current` to the release it selects, and each release's
+/// `.local/horizon-client` to the servers' game files. Found without following any link.
+#[derive(Debug, Default)]
+pub(crate) struct RuntimeLinks {
+    release: Option<std::ffi::OsString>,
+    game_files: Vec<std::ffi::OsString>,
+}
+
+impl RuntimeLinks {
+    /// The links in the runtime of the launcher's data at `launcher`. A `current` or game-files
+    /// link that points anywhere else is refused, as any link a move can't make again.
+    pub(crate) fn find(launcher: &Path) -> Result<Self, String> {
+        let root = launcher.join(RUNTIME);
+        let releases = root.join("releases");
+        let mut links = Self::default();
+        if ![launcher, &root, &releases].into_iter().all(plain_dir) {
+            return Ok(links);
+        }
+        let refused = |link: &Path| {
+            format!(
+                "{} is a link Horizon did not make; remove it, or set the servers up again, before moving data",
+                link.display()
+            )
+        };
+        let files = root.join("game-files/horizon-client");
+        for entry in fs::read_dir(&releases).map_err(|e| format!("{}: {e}", releases.display()))? {
+            let entry = entry.map_err(|e| format!("{}: {e}", releases.display()))?;
+            let local = entry.path().join(".local");
+            let link = local.join("horizon-client");
+            if !plain_dir(&entry.path()) || !plain_dir(&local) || !is_link(&link) {
+                continue;
+            }
+            if !links_to(&link, &files) {
+                return Err(refused(&link));
+            }
+            links.game_files.push(entry.file_name());
+        }
+        let current = root.join("current");
+        if is_link(&current) {
+            let tag = fs::read_link(&current)
+                .ok()
+                .and_then(|target| target.file_name().map(ToOwned::to_owned))
+                .filter(|tag| {
+                    let release = releases.join(tag);
+                    plain_dir(&release) && links_to(&current, &release)
+                })
+                .ok_or_else(|| refused(&current))?;
+            links.release = Some(tag);
+        }
+        Ok(links)
+    }
+
+    /// The links' paths under `launcher`, for the copy to leave out.
+    pub(crate) fn paths(&self, launcher: &Path) -> Vec<PathBuf> {
+        let root = launcher.join(RUNTIME);
+        let local = |tag: &std::ffi::OsString| {
+            root.join("releases")
+                .join(tag)
+                .join(".local/horizon-client")
+        };
+        let current = self.release.as_ref().map(|_| root.join("current"));
+        self.game_files.iter().map(local).chain(current).collect()
+    }
+
+    /// Makes the links again in the runtime of the moved data at `launcher`, at their vacant
+    /// names, and checks them before the move is committed.
+    pub(crate) fn make(&self, launcher: &Path) -> Result<(), String> {
+        let root = launcher.join(RUNTIME);
+        let files = root.join("game-files/horizon-client");
+        let mut made = Vec::new();
+        for tag in &self.game_files {
+            made.push((
+                root.join("releases")
+                    .join(tag)
+                    .join(".local/horizon-client"),
+                files.clone(),
+            ));
+        }
+        if let Some(tag) = &self.release {
+            made.push((root.join("current"), root.join("releases").join(tag)));
+        }
+        for (link, target) in &made {
+            dir_link(target, link)
+                .map_err(|e| format!("{} → {}: {e}", link.display(), target.display()))?;
+            let folder = link.parent().unwrap_or(&root);
+            crate::data_location::sync_dir(folder)?;
+            if !(is_link(link) && links_to(link, target) && plain_dir(target)) {
+                return Err(format!("{} was not made again", link.display()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether `path` is a folder itself, not a link to one.
+fn plain_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|meta| meta.is_dir() && crate::data_location::reject_link(path, &meta).is_ok())
+}
+
+/// Whether `path` is a symlink or junction, without following it.
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|meta| crate::data_location::reject_link(path, &meta).is_err())
+}
+
+/// Whether the link at `link` is written as pointing at `target` (read, never followed).
+fn links_to(link: &Path, target: &Path) -> bool {
+    let Ok(written) = fs::read_link(link) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        // A junction reads back with a `\\?\` prefix, and Windows paths ignore case.
+        let plain = |path: &Path| {
+            let text = path.to_string_lossy().replace('/', "\\");
+            let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+            text.trim_end_matches('\\').to_lowercase()
+        };
+        plain(&written) == plain(target)
+    }
+    #[cfg(not(windows))]
+    {
+        written == target
+    }
+}
+
+/// Makes `link`, which must not exist, point at the folder `target`.
+fn dir_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        crate::sources::junction(target, link)
+    }
 }
 
 /// `horizon-server` of the release in use, once one is set up.
