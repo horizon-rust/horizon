@@ -4,8 +4,8 @@ use super::native_replay::{
     FileIdentity, open_in_folder, open_recording, recording_path, recordings_folder, take_request,
 };
 use horizon_client::packet_source::PacketSource;
-use horizon_client::studio::ReplayDriver;
 use horizon_client::studio::mcpr::TimestampedPacket;
+use horizon_client::studio::{CameraKeyframe, CameraTrack, ReplayDriver};
 use mod_api::{ClientHost, Hooks, ModEntry, ReplayError};
 use mod_platform::testing::with_mods;
 use std::any::Any;
@@ -91,6 +91,15 @@ fn login_packet() -> horizon_protocol::packets::play::Clientbound {
         },
         online_mode: false,
         enforces_secure_chat: false,
+    })
+}
+
+/// A system chat line saying `text`.
+fn chat_packet(text: &str) -> horizon_protocol::packets::play::Clientbound {
+    use horizon_protocol::packets::play;
+    play::Clientbound::SystemChat(play::SystemChat {
+        content: horizon_client::lan::data::component_nbt(&serde_json::json!({ "text": text })),
+        overlay: false,
     })
 }
 
@@ -430,12 +439,20 @@ impl PacketSource for Clock {
 struct Heard(Arc<Mutex<Vec<String>>>);
 #[mod_api::__subscriptions]
 impl Hooks for Heard {
-    fn replay_opened(&self, _: &mut dyn ClientHost, event: &mut mod_api::ReplayOpenedEvent<'_>) {
+    fn replay_opened(&self, host: &mut dyn ClientHost, event: &mut mod_api::ReplayOpenedEvent<'_>) {
         let line = format!(
             "opened {} {} {} #{}",
             event.recording, event.duration_ms, event.standalone, event.request
         );
         self.0.lock().unwrap().push(line);
+        // The recording's Login makes its player the local one; a replay heard open before
+        // that is said so, and no test expects it.
+        if host.local_player().is_none() {
+            self.0
+                .lock()
+                .unwrap()
+                .push("opened before its Login".into());
+        }
     }
     fn replay_open_failed(
         &self,
@@ -487,8 +504,10 @@ fn play(game: &mut crate::game::Game<'_>, duration: u32) {
 
 /// A frame `ms` after the replay's last one.
 fn frame(game: &mut crate::game::Game<'_>, ms: u64) {
-    game.replay.last_tick = Some(std::time::Instant::now() - Duration::from_millis(ms));
-    game.advance_studio_replay().unwrap();
+    // One time sample: the frame lasts exactly `ms`.
+    let now = std::time::Instant::now();
+    game.replay.last_tick = Some(now - Duration::from_millis(ms));
+    game.advance_studio_replay_at(now).unwrap();
 }
 
 /// Frame ends until the accepted open's recording is read and taken up.
@@ -672,7 +691,18 @@ fn a_replay_keeps_gameplay_input_off_and_leaves_mods_the_wheel() {
 #[ignore = "daily"]
 fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
     let root = tempfile::tempdir().unwrap();
-    write_recording(&root.path().join("trip.mcpr"), 1_000, &[]);
+    write_packets(
+        &root.path().join("trip.mcpr"),
+        1_000,
+        vec![(0, login_packet()), (0, chat_packet("said in trip"))],
+    );
+    let said_in_trip = |game: &crate::game::Game<'_>| {
+        game.ui
+            .chat
+            .recent_lines(10)
+            .iter()
+            .any(|line| line == "said in trip")
+    };
     write_recording(&root.path().join("trip2.mcpr"), 2_000, &[]);
     std::fs::write(root.path().join("damaged.mcpr"), b"not a zip").unwrap();
     write_hollow_zip(&root.path().join("hollow.mcpr"));
@@ -698,6 +728,7 @@ fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
             ),
             ("trip", 1_000, true)
         );
+        assert!(said_in_trip(game));
 
         // Two opens before the frame's end: one reading thread at most, the first superseded.
         let first = game.replay_open("trip2").unwrap();
@@ -709,6 +740,10 @@ fn a_client_mod_opens_recordings_by_id_at_the_frames_end() {
             .begin_open(mod_api::Authority::IntegratedServer);
         finish_opening(game);
         assert_eq!(game.replay_state().unwrap().recording, "trip2");
+        assert!(
+            !said_in_trip(game),
+            "the replaced replay's chat went with it"
+        );
         game.replay_close().unwrap();
         game.native_replay_requests();
         assert_eq!(game.replay_state(), None);
@@ -865,13 +900,25 @@ fn a_replay_open_never_displaces_a_joining_or_multiplayer_session() {
 fn a_control_socket_seek_to_the_end_rebuilds_the_world_there() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("trip.mcpr");
-    write_recording(&path, 1_000, &[400]);
+    write_packets(
+        &path,
+        1_000,
+        vec![(0, login_packet()), (400, chat_packet("said at 400"))],
+    );
+    let said = |game: &crate::game::Game<'_>| {
+        game.ui
+            .chat
+            .recent_lines(10)
+            .iter()
+            .any(|line| line == "said at 400")
+    };
     let heard = with_heard(|game| {
         game.replay.recordings_dir = Some(root.path().to_path_buf());
         let answer = game
             .open_studio_replay(&path.display().to_string())
             .unwrap();
         assert_eq!(answer["ok"], true);
+        assert!(!said(game), "not yet played");
         let answer = game
             .studio_control(&["studio", "replay", "seek", "1000"])
             .unwrap()
@@ -879,6 +926,10 @@ fn a_control_socket_seek_to_the_end_rebuilds_the_world_there() {
         assert_eq!(answer["position_ms"], 1_000);
         let state = game.replay_state().unwrap();
         assert_eq!((state.position_ms, state.ended), (1_000, true));
+        assert!(
+            said(game),
+            "the world rebuilt at the end holds what was said before it"
+        );
         assert!(
             game.replay.seek_report,
             "reported as a seek, on the next frame"
@@ -891,6 +942,33 @@ fn a_control_socket_seek_to_the_end_rebuilds_the_world_there() {
         heard,
         ["opened trip 1000 true #0", "advanced 1000", "closed trip"]
     );
+}
+
+/// A recording 0 ms long still hands out its snapshot after a restart: its clock is at the end
+/// at once, and the packets stamped there come out on the next frame, once.
+#[test]
+fn a_zero_length_recording_plays_its_snapshot_after_a_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("still.mcpr");
+    write_packets(
+        &path,
+        0,
+        vec![(0, login_packet()), (0, chat_packet("said at 0"))],
+    );
+    let mut driver = ReplayDriver::open(&path).unwrap();
+    assert_eq!(driver.duration_ms(), 0);
+    assert_eq!(driver.advance(Duration::from_millis(16)).unwrap().len(), 2);
+    assert!(driver.is_finished());
+    driver.restart().unwrap();
+    assert!(driver.is_finished(), "the clock is at the end");
+    assert_eq!(driver.advance(Duration::from_millis(16)).unwrap().len(), 2);
+    assert!(
+        driver
+            .advance(Duration::from_millis(16))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(driver.is_finished());
 }
 
 /// Request ids run out rather than wrap: the last `u32` is given once, then none, never the
@@ -940,8 +1018,12 @@ fn a_replay_with_a_late_login_is_set_up_before_it_is_heard_open() {
         game.replay_close().unwrap();
         game.native_replay_requests();
     });
-    assert_eq!(heard.len(), 2);
+    assert_eq!(heard.len(), 2, "{heard:?}");
     assert!(heard[0].starts_with("opened late 1000 true #"));
+    assert_eq!(
+        heard[1], "closed late",
+        "the hook already saw the recording's player"
+    );
 }
 
 /// A replacement never costs the camera path edited in the replay playing: when it can't be
@@ -962,14 +1044,26 @@ fn a_replacement_keeps_the_replay_whose_camera_edits_it_would_lose() {
 
         // Edited, then the same archive asked for again: saved, and the copy read before the
         // save is refused.
+        let first = CameraKeyframe::new(250, [1.0, 2.0, 3.0], 10.0, 5.0, 70.0);
+        game.studio.freecam.track.insert(first.clone());
         game.studio.camera_track_dirty = true;
         let again = game.replay_open("trip").unwrap();
         finish_opening(game);
         assert!(!game.studio.camera_track_dirty, "the edits were saved");
         assert_eq!(game.replay_state().unwrap().recording, "trip");
+        let saved = ReplayDriver::open(&path).unwrap();
+        let saved: CameraTrack =
+            serde_json::from_slice(saved.camera_path().expect("a camera path")).unwrap();
+        assert_eq!(
+            saved.keyframes(),
+            [first.clone()],
+            "the archive holds the edit"
+        );
 
         // Edited again, with the archive replaced so the save is refused: another recording
         // doesn't take the replay's place.
+        let second = CameraKeyframe::new(750, [4.0, 5.0, 6.0], 20.0, 0.0, 70.0);
+        game.studio.freecam.track.insert(second.clone());
         game.studio.camera_track_dirty = true;
         std::fs::rename(&path, root.path().join("kept.mcpr")).unwrap();
         write_recording(&path, 3_000, &[]);
@@ -979,6 +1073,7 @@ fn a_replacement_keeps_the_replay_whose_camera_edits_it_would_lose() {
             game.studio.camera_track_dirty,
             "the edits are still there to save"
         );
+        assert_eq!(game.studio.freecam.track.keyframes(), [first, second]);
         assert_eq!(game.replay_state().unwrap().recording, "trip");
 
         game.studio.camera_track_dirty = false;

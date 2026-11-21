@@ -752,6 +752,10 @@ impl McprReader {
     /// As [`McprReader::from_file`], giving up with `Interrupted` soon after `cancel` is set:
     /// inflating the stream and indexing it both check it as they go.
     pub fn from_file_cancellable(file: File, cancel: &AtomicBool) -> io::Result<Self> {
+        // A request superseded before its worker started doesn't parse the archive at all.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -1440,6 +1444,22 @@ mod tests {
             panic!("a cancelled read gives up");
         };
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+
+        // Cancelled before it started: not even a broken archive is parsed.
+        let broken = scratch.0.join("broken.mcpr");
+        fs::write(&broken, b"PK not a zip").unwrap();
+        let Err(error) = McprReader::from_file_cancellable(File::open(&broken).unwrap(), &cancel)
+        else {
+            panic!("a cancelled read gives up");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        let Err(error) = McprReader::from_file_cancellable(
+            File::open(&broken).unwrap(),
+            &AtomicBool::new(false),
+        ) else {
+            panic!("a broken archive is refused");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

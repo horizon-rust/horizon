@@ -425,6 +425,11 @@ impl Game<'_> {
 
     /// Advance active replay playback by elapsed frame time and dispatch ready packets.
     pub(super) fn advance_studio_replay(&mut self) -> Result<()> {
+        self.advance_studio_replay_at(std::time::Instant::now())
+    }
+
+    /// [`Self::advance_studio_replay`] for a frame drawn at `now`.
+    pub(super) fn advance_studio_replay_at(&mut self, now: std::time::Instant) -> Result<()> {
         let status = self
             .remote
             .as_ref()
@@ -438,7 +443,6 @@ impl Game<'_> {
             return Ok(());
         };
 
-        let now = std::time::Instant::now();
         if std::mem::take(&mut self.replay.seek_report) {
             // The frame after a seek shows the seek's position and says so; the clock runs on
             // from the next one.
@@ -805,6 +809,8 @@ impl Game<'_> {
             // A replay opened over another: mods hear the old one close before the new one opens.
             self.replay.driver = None;
             self.replay.reported_ms = None;
+            // The kept synthetic session isn't rebuilt, so the old recording's chat goes here.
+            self.ui.chat.clear();
             let previous = std::mem::take(&mut self.replay.recording);
             self.native_replay_closed(&previous);
         }

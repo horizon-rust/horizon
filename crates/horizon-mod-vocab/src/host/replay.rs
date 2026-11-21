@@ -6,7 +6,8 @@ use crate::*;
 pub trait ReplayClientHost {
     /// Side: client.
     /// The replay this window plays, if any, as its clock stands now; none while no replay
-    /// is open, including while one asked for by `replay_open` is still opening.
+    /// plays. While one asked for by `replay_open` is still opening, this is the replay
+    /// playing, if any.
     #[access(ClientSetup)]
     fn replay_state(&self) -> Option<ReplayState>;
     /// Side: client.
@@ -14,15 +15,17 @@ pub trait ReplayClientHost {
     /// name in the recordings folder without `.mcpr`, never a path: what an id may hold is in
     /// [`ReplayError::InvalidId`], and an id naming no regular file directly in the folder is
     /// `NotFound`. The call opens the file once, through the folder it checked, and checks it
-    /// is a zip archive; the file is then read and indexed off the game's thread, never
-    /// reopened by name.
+    /// starts with a zip signature (`Unreadable` if not); the file is then read and indexed
+    /// off the game's thread, never reopened by name, and an archive found broken there fails
+    /// through `replay_open_failed` with `Unreadable`.
     ///
     /// `Ok(request)` means the request is accepted: `request` is a non-zero id, never given
     /// twice while the game runs (once every `u32` has been given, `replay_open` is
     /// `Unavailable`). Exactly one of `replay_opened` or `replay_open_failed` follows with that
     /// id, whatever happens, except when the game closes first (then no event is promised). A
-    /// later `replay_open` replaces a request whose read recording the game has not taken up
-    /// yet, which then fails with `Superseded`. An open asked while a replay plays fails with
+    /// later `replay_open` replaces a request still waiting or being read, which then fails
+    /// with `Superseded`; once a read request waits for a world to be left, a later one is
+    /// `WorldBusy` instead. An open asked while a replay plays fails with
     /// `Unavailable` when the camera path edited in that replay can't be saved first, or when
     /// it reads the very archive the editor saved into since the request (its camera path or a
     /// marker); the replay playing stays.

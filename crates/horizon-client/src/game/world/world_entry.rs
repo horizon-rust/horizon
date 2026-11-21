@@ -50,8 +50,15 @@ impl Game<'_> {
     }
 
     pub(super) fn resume_world_entry(&mut self) -> Result<()> {
-        self.poll_integrated_start()?;
-        self.poll_world_rest()?;
+        // A mod's read replay waiting here is told as failed before the error leaves; other
+        // entries stay as they were.
+        if let Err(error) = self
+            .poll_integrated_start()
+            .and_then(|()| self.poll_world_rest())
+        {
+            self.displace_pending_replay(mod_api::ReplayError::Unavailable);
+            return Err(error);
+        }
         self.poll_world_creation();
         if self.rest_loader.is_some() {
             return Ok(());

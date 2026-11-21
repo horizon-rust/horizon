@@ -11,8 +11,8 @@ opened from a file elsewhere (`/studio replay open <path>`) has the empty id.
 
 | Call | Access | What it does |
 |---|---|---|
-| `replay_state()` | client setup | The open replay as its clock stands: id, `standalone`, `position_ms` (0 to `duration_ms`), `duration_ms`, `speed`, `paused`, `ended`. None with no replay open, and while one is still opening. |
-| `replay_open(id)` | world | Accepts a request and returns its id: opens the file once, through the recordings folder's handle, and checks it is a zip archive (`Unreadable` if not). The recording is read off the game's thread, from that open file, and opened at a frame's end. |
+| `replay_state()` | client setup | The open replay as its clock stands: id, `standalone`, `position_ms` (0 to `duration_ms`), `duration_ms`, `speed`, `paused`, `ended`. None while no replay plays; while a requested one is still opening, the replay playing (if any). |
+| `replay_open(id)` | world | Accepts a request and returns its id: opens the file once, through the recordings folder's handle, and checks it starts with a zip signature (`Unreadable` if not). The recording is read off the game's thread, from that open file, and opened at a frame's end; an archive found broken there fails through `replay_open_failed` with `Unreadable`. |
 | `replay_close()` | world | Closes the replay at the end of the frame, as Escape does. |
 | `replay_pause()`, `replay_resume()` | world | Stop and start the clock at once. |
 | `replay_set_speed(speed)` | world | Sets the speed at once, `REPLAY_MIN_SPEED` (0.01) to `REPLAY_MAX_SPEED` (20); anything else, NaN included, is `InvalidSpeed`. |
@@ -21,8 +21,8 @@ opened from a file elsewhere (`/studio replay open <path>`) has the empty id.
 `Ok(request)` from `replay_open` means the request is accepted; `request` is a non-zero id never given twice while
 the game runs (once every id has been given, `replay_open` is `Unavailable`). Exactly one of `replay_opened` or `replay_open_failed` follows with that id, whatever happens; only
 the game closing first promises neither. One thread reads recordings at a time: a later `replay_open` replaces a
-request whose read recording the game hasn't taken up yet, which fails with `Superseded`, and the replaced reading
-is cancelled. While a replay plays, its edited camera path is saved before another replaces it; if that save fails, or
+request still waiting or being read, which fails with `Superseded`, and the replaced reading is cancelled. A read
+request waiting for a world to be left is past that: a later `replay_open` is `WorldBusy` and the first goes on. While a replay plays, its edited camera path is saved before another replaces it; if that save fails, or
 the replacement was read from the same archive and the editor saved into it after the request (the camera path or a
 marker), the replay playing stays and the request fails with `Unavailable`.
 
@@ -35,8 +35,10 @@ Save and Quit does, and the replay opens on the title; if the person cancels tha
 with `Unavailable` and the world stays left. A recording that turns out damaged once read fails with `Unreadable`.
 
 Close and seek run at the end of the frame, outside the calling hook; one of them a frame, the last one winning, and
-a request for a replay that has closed or been replaced since is dropped. Calls other than `replay_open` are
-`NotOpen` while no replay is open, so seek to a start point from `replay_opened`, not right after `replay_open`.
+a request for a replay that has closed or been replaced since is dropped. While no replay plays, the controls
+(close, pause, resume, a valid speed, seek) are `NotOpen` and `replay_state()` is None, so seek to a start point from
+`replay_opened`, not right after `replay_open`. `replay_set_speed` checks the speed first: an invalid one is
+`InvalidSpeed` either way.
 
 The clock stays within the recording: `position_ms` never passes `duration_ms` (the recorded length, or the last
 packet's time when that is later), and `ended` is true exactly when the clock is at `duration_ms`, whether it played
@@ -54,8 +56,8 @@ Hooks follow playback, whoever drives it (a mod, the replays list or `/studio re
 While a replay plays, the recording's world is not the player's: movement, attack, use, drop, inventory and hotbar
 keys do nothing, the wheel and a controller's bumpers don't step the hotbar or the spectator menu, and losing the
 window's focus doesn't pause, with or without Studio's free camera. A mod still hears every key (`input_key`, its
-key mappings), mouse button (`mouse_button_pre`/`_post`), the wheel and the bumpers (`mouse_scrolling`), and its
-screens and prompts take input as usual, so a replay editor can run on a mod's own camera (`camera_pose`). Escape
+key mappings), mouse button (`mouse_button_pre`/`_post`), the wheel and the bumpers (`mouse_scrolling`, the gameplay route:
+not while a screen or prompt, chat included, takes the wheel), and its screens and prompts take input as usual, so a replay editor can run on a mod's own camera (`camera_pose`). Escape
 closes the replay and P opens the pause menu.
 
 Studio's editor saves its markers and camera path into the recording. For a replay a mod opened, the file at the

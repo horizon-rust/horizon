@@ -193,7 +193,9 @@ impl PacketSource for ReplayDriver {
     }
 
     fn advance(&mut self, delta: Duration) -> io::Result<Vec<TimestampedPacket>> {
-        if self.paused || self.finished {
+        // An ended clock still hands out what a seek left pending at the end (a zero-length
+        // recording's snapshot after `restart`).
+        if self.paused || (self.finished && self.next_packet_cache.is_none()) {
             return Ok(Vec::new());
         }
 
