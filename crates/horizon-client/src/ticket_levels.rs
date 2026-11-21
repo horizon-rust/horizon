@@ -5,6 +5,10 @@
 //!   the server's view distance (Chebyshev), from `PlayerTicketTracker`;
 //! - `PLAYER_SIMULATION` at level `31 - simulationDistance` on its own chunk.
 //!
+//! A thrown ender pearl holds a `TicketType.ENDER_PEARL` ticket at level 31 on
+//! the chunk it is in (`ServerPlayer.placeEnderPearlTicket`: radius 2 off
+//! `FULL`), so that chunk ticks and its neighbours block tick; it keeps its
+//! level running with no player in it (`shouldKeepDimensionActive`).
 //! A `/forceload`ed chunk holds a `FORCED` ticket at level 31 of both kinds.
 //! An entity that came through a portal leaves a `PORTAL` ticket of radius 3
 //! (`Entity.placePortalTicket`: level 30 of both kinds, for 300 ticks) on the
@@ -55,6 +59,11 @@ const PORTAL_TIMEOUT: i64 = 300;
 /// minus it.
 const PORTAL_RADIUS: i32 = 3;
 const PORTAL_LEVEL: i32 = FULL as i32 - PORTAL_RADIUS;
+/// `ServerPlayer.placeEnderPearlTicket`'s radius:
+/// `addTicketWithRadius(TicketType.ENDER_PEARL, chunk, 2)`, whose level is
+/// `FULL` (33) minus the radius: the pearl's own chunk entity ticks, its
+/// neighbours block tick and the ring at 2 only loads.
+pub const ENDER_PEARL_LEVEL: i32 = FULL as i32 - 2;
 /// `EnderDragonFight.tick`'s radius on the arena it holds a ticket on:
 /// `addTicketWithRadius(TicketType.DRAGON, new ChunkPos(0, 0), 9)`, whose level
 /// is `FULL` (33) minus the radius.
@@ -62,14 +71,18 @@ const ARENA_RADIUS: i32 = 9;
 const ARENA_LEVEL: i32 = FULL as i32 - ARENA_RADIUS;
 
 /// The tickets of one level: where its players are, its forced chunks, its
-/// portal tickets, the dragon fight's arena while a player watches it, and the
-/// server's view and simulation distances.
+/// portal and ender pearl tickets, the dragon fight's arena while a player
+/// watches it, and the server's view and simulation distances.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sources {
     pub players: Vec<(i32, i32)>,
     pub forced: Vec<(i32, i32)>,
     /// Each `PORTAL` ticket's chunk and level.
     pub portal: Vec<((i32, i32), i32)>,
+    /// The chunk of every ender pearl a player threw (`ThrownEnderpearl.tick`
+    /// -> `ServerPlayer.registerAndUpdateEnderPearlTicket`), each holding a
+    /// `TicketType.ENDER_PEARL` ticket at [`ENDER_PEARL_LEVEL`].
+    pub pearls: Vec<(i32, i32)>,
     /// The arena the dragon fight holds a `TicketType.DRAGON` ticket on while
     /// its boss bar has a watcher (`EnderDragonFight.tick`), `None` once none
     /// has (its `removeTicketWithRadius`).
@@ -338,7 +351,12 @@ impl Tiled {
                 i32::from(ENTITY_TICKING),
             );
         }
-        for &(p, level) in &s.portal {
+        for (p, level) in s
+            .portal
+            .iter()
+            .copied()
+            .chain(s.pearls.iter().map(|&p| (p, ENDER_PEARL_LEVEL)))
+        {
             map.add(p, ticket_radius(level, recording), level, 0, level);
         }
         if let Some(arena) = s.dragon {
@@ -473,6 +491,8 @@ pub struct ChunkTickets {
     /// The level changes since the game last took them, in the order the
     /// updates made them.
     changes: Vec<LevelChange>,
+    pearls: Vec<PortalTicket>,
+    pearl_timers: std::collections::HashMap<u64, u8>,
 }
 
 impl ChunkTickets {
@@ -492,6 +512,7 @@ impl ChunkTickets {
             && next.forced == old.forced
             && next.dragon == old.dragon
             && next.viewed == old.viewed
+            && next.pearls == old.pearls
             && self.portal_matches(old)
         {
             return;
@@ -501,6 +522,8 @@ impl ChunkTickets {
             s.players.dedup();
             s.forced.sort_unstable();
             s.viewed.sort_unstable();
+            s.pearls.sort_unstable();
+            s.pearls.dedup();
             s.portal = self.portal.iter().map(|t| (t.chunk, t.level)).collect();
             s.portal.sort_unstable();
         }
@@ -602,6 +625,44 @@ impl ChunkTickets {
             t.ticks_left >= 0
         });
     }
+    /// Refresh a live pearl after its entity tick, at its new chunk.
+    pub fn tick_pearl(&mut self, id: u64, previous: (i32, i32), chunk: (i32, i32)) {
+        let timer = self.pearl_timers.entry(id).or_default();
+        *timer = timer.saturating_sub(1);
+        if *timer == 0 || previous != chunk {
+            *timer = 39;
+            if let Some(ticket) = self.pearls.iter_mut().find(|t| t.chunk == chunk) {
+                ticket.ticks_left = 40;
+            } else {
+                self.pearls.push(PortalTicket {
+                    chunk,
+                    level: ENDER_PEARL_LEVEL,
+                    ticks_left: 40,
+                });
+            }
+        }
+    }
+    /// Forget timers for entities no longer present; their tickets remain.
+    pub fn retain_pearl_timers(&mut self, mut alive: impl FnMut(u64) -> bool) {
+        self.pearl_timers.retain(|id, _| alive(*id));
+    }
+    /// Age tickets only when their chunks are ready, just like portal tickets.
+    pub fn tick_pearl_tickets(
+        &mut self,
+        mut can_expire: impl FnMut(&PortalTicket) -> bool,
+    ) -> bool {
+        let before = self.pearls.len();
+        self.pearls.retain_mut(|t| {
+            if can_expire(t) {
+                t.ticks_left -= 1;
+            }
+            t.ticks_left >= 0
+        });
+        self.pearls.len() != before
+    }
+    pub fn pearl_tickets(&self) -> &[PortalTicket] {
+        &self.pearls
+    }
     /// While one is held, it keeps its level active (`shouldKeepDimensionActive`).
     pub fn portal_tickets(&self) -> &[PortalTicket] {
         &self.portal
@@ -626,6 +687,9 @@ fn random_bounds(s: &Sources) -> Option<(i32, i32, i32, i32)> {
         .iter()
         .map(|&p| (p, sim))
         .chain(s.forced.iter().map(|&f| (f, 0)))
+        // A pearl's own chunk random ticks (level 31: both levels entity
+        // ticking), its neighbours only block tick.
+        .chain(s.pearls.iter().map(|&p| (p, 0)))
         .chain(
             s.portal
                 .iter()
@@ -670,7 +734,12 @@ fn compute(s: &Sources, recording: bool) -> Map {
         .chain(
             s.portal
                 .iter()
-                .map(|&(p, level)| (p, ticket_radius(level, recording))),
+                .map(|&(p, level)| (p, ticket_radius(level, recording)))
+                .chain(
+                    s.pearls
+                        .iter()
+                        .map(|&p| (p, ticket_radius(ENDER_PEARL_LEVEL, recording))),
+                ),
         )
         .chain(s.dragon.map(|arena| (arena, ARENA_RADIUS)))
         .chain(s.viewed.iter().map(|t| (t.center, t.reach(recording))));
@@ -721,7 +790,12 @@ fn compute(s: &Sources, recording: bool) -> Map {
             }
         }
     }
-    for &((cx, cz), base) in &s.portal {
+    for ((cx, cz), base) in s
+        .portal
+        .iter()
+        .copied()
+        .chain(s.pearls.iter().map(|&p| (p, ENDER_PEARL_LEVEL)))
+    {
         let r = ticket_radius(base, recording);
         for dz in -r..=r {
             for dx in -r..=r {
@@ -793,6 +867,15 @@ fn compute_sparse(s: &Sources) -> FxHashMap<(i32, i32), (u8, u8)> {
             for dx in -r..=r {
                 let level = base + dx.abs().max(dz.abs());
                 lower((cx + dx, cz + dz), level, level);
+            }
+        }
+    }
+    for &(px, pz) in &s.pearls {
+        let r = ticket_radius(ENDER_PEARL_LEVEL, recording);
+        for dz in -r..=r {
+            for dx in -r..=r {
+                let level = ENDER_PEARL_LEVEL + dx.abs().max(dz.abs());
+                lower((px + dx, pz + dz), level, level);
             }
         }
     }
@@ -919,6 +1002,7 @@ mod tests {
                         },
                         dragon: (combo >= 3).then_some((50, 50)),
                         viewed: Vec::new(),
+                        pearls: Vec::new(),
                         view_distance: view,
                         simulation_distance: sim,
                     };
@@ -954,6 +1038,7 @@ mod tests {
             players: players.to_vec(),
             forced: forced.to_vec(),
             portal: Vec::new(),
+            pearls: Vec::new(),
             dragon: None,
             viewed: Vec::new(),
             view_distance: view,
@@ -1069,6 +1154,7 @@ mod tests {
                 players: vec![(12, 0)],
                 forced: Vec::new(),
                 portal: Vec::new(),
+                pearls: Vec::new(),
                 dragon,
                 viewed: Vec::new(),
                 view_distance: 12,
@@ -1102,6 +1188,7 @@ mod tests {
                 players,
                 forced: Vec::new(),
                 portal: Vec::new(),
+                pearls: Vec::new(),
                 dragon: None,
                 viewed: Vec::new(),
                 view_distance: 2,
@@ -1144,6 +1231,9 @@ mod tests {
                 players,
                 forced,
                 portal: Vec::new(),
+                pearls: (0..case % 5)
+                    .map(|_| (next(spread), next(spread)))
+                    .collect(),
                 // Tiled maps hold the arena too.
                 dragon: (case % 3 == 0).then(|| (next(spread), next(spread))),
                 viewed: Vec::new(),
@@ -1195,6 +1285,7 @@ mod tests {
                 players: vec![(60, 40), (80, 80)],
                 forced: vec![(-30, 17)],
                 portal: Vec::new(),
+                pearls: vec![(-70, 40), (90, 90)],
                 dragon: Some((0, 0)),
                 viewed: Vec::new(),
                 view_distance: 4,
@@ -1249,6 +1340,7 @@ mod tests {
                 portal: Vec::new(),
                 dragon: (next(4) == 0).then(|| at(&mut next)),
                 viewed: Vec::new(),
+                pearls: Vec::new(),
                 view_distance: next(12) + 2,
                 simulation_distance: next(12) + 2,
             };
@@ -1329,6 +1421,7 @@ mod tests {
             portal: Vec::new(),
             dragon: None,
             viewed: Vec::new(),
+            pearls: Vec::new(),
             view_distance: view,
             simulation_distance: simulation,
         })
@@ -1448,6 +1541,7 @@ mod tests {
             portal: Vec::new(),
             dragon: None,
             viewed: Vec::new(),
+            pearls: Vec::new(),
             view_distance: 2,
             simulation_distance: 2,
         }));
@@ -1491,6 +1585,7 @@ mod tests {
                     .collect(),
                 dragon: (case % 4 == 0).then(|| (next(spread), next(spread))),
                 viewed: Vec::new(),
+                pearls: Vec::new(),
                 view_distance: 2 + next(8).abs(),
                 simulation_distance: 2 + next(8).abs(),
             };
@@ -1547,6 +1642,7 @@ mod tests {
                 players: at.clone(),
                 forced: Vec::new(),
                 portal: Vec::new(),
+                pearls: Vec::new(),
                 dragon: None,
                 viewed: Vec::new(),
                 view_distance: distance,
@@ -1635,6 +1731,10 @@ mod tiled_tests {
                     .map(|i| ((next(100), next(100)), [30, 12, 31, 32, 40][i]))
                     .chain([((16, -16), PORTAL_LEVEL)])
                     .collect(),
+                pearls: (0..case % 4)
+                    .map(|_| (next(100), next(100)))
+                    .chain([(16, -16)])
+                    .collect(),
                 dragon: (case % 4 == 0).then(|| (next(100), next(100))),
                 viewed: Vec::new(),
                 view_distance: [0, 2, 10, 32][case % 4],
@@ -1651,6 +1751,7 @@ mod tiled_tests {
                 .players
                 .iter()
                 .chain(&s.forced)
+                .chain(&s.pearls)
                 .chain(s.portal.iter().map(|(p, _)| p))
             {
                 for dz in -48..=48 {
@@ -1666,5 +1767,44 @@ mod tiled_tests {
             }
             assert_eq!(tiled.get(50_000, -50_000), NONE);
         }
+    }
+}
+
+#[cfg(test)]
+mod pearl_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn pearl_tickets_keep_their_remaining_lifetime_and_refresh_on_move() {
+        let mut tickets = ChunkTickets::default();
+        tickets.tick_pearl(1, (0, 0), (0, 0));
+        for _ in 0..10 {
+            tickets.tick_pearl_tickets(|_| true);
+            tickets.tick_pearl(1, (0, 0), (0, 0));
+        }
+        tickets.tick_pearl(1, (0, 0), (1, 0));
+        assert_eq!(tickets.pearl_tickets().len(), 2);
+        tickets.retain_pearl_timers(|_| false);
+        for _ in 0..30 {
+            tickets.tick_pearl_tickets(|_| true);
+        }
+        assert_eq!(tickets.pearl_tickets().len(), 2);
+        tickets.tick_pearl_tickets(|_| true);
+        assert_eq!(
+            tickets
+                .pearl_tickets()
+                .iter()
+                .map(|t| t.chunk)
+                .collect::<Vec<_>>(),
+            vec![(1, 0)]
+        );
+        for _ in 0..9 {
+            tickets.tick_pearl_tickets(|_| true);
+        }
+        assert_eq!(tickets.pearl_tickets().len(), 1);
+        tickets.tick_pearl_tickets(|_| false);
+        assert_eq!(tickets.pearl_tickets().len(), 1);
+        tickets.tick_pearl_tickets(|_| true);
+        assert!(tickets.pearl_tickets().is_empty());
     }
 }

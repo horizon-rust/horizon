@@ -23,6 +23,11 @@ impl Game<'_> {
         let world = &self.world;
         self.tickets
             .tick_portal(|ticket| portal_ticket_can_expire(world, ticket));
+        if self.tickets.tick_pearl_tickets(|ticket| {
+            !world.chunks.contains_key(&ticket.chunk) || portal_ticket_can_expire(world, ticket)
+        }) {
+            self.update_chunk_tickets();
+        }
         self.sync_tick_chunks();
         self.start_ticking_chunks();
         laps.lap("tb_tickets");

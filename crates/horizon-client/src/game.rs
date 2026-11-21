@@ -3024,9 +3024,9 @@ impl Game<'_> {
     }
     /// `DistanceManager`'s tickets of the level in place, from every player in
     /// it (the local player, LAN guests, a server's players; a spectator the
-    /// rule skips holds none), its forced chunks and its portal tickets. A game
-    /// with neither a server nor a player (the headless fixtures) ticks
-    /// everywhere.
+    /// rule skips holds none), its forced chunks, its portal tickets and its
+    /// thrown ender pearls. A game with neither a server nor a player (the
+    /// headless fixtures) ticks everywhere.
     fn update_chunk_tickets(&mut self) {
         let rule = self
             .ui
@@ -3063,6 +3063,9 @@ impl Game<'_> {
                 forced: self.streaming.forced.iter().copied().collect(),
                 // Filled from the `PORTAL` tickets by `update`.
                 portal: Vec::new(),
+                // ThrownEnderpearl.tick: a pearl a player threw holds a
+                // `TicketType.ENDER_PEARL` ticket on its chunk.
+                pearls: self.ender_pearl_chunks(self.dim),
                 // EnderDragonFight.tick: while a player watches the fight, the arena holds a
                 // `DRAGON` ticket of radius 9 at (0, 0), so its island ticks out to 7 chunks
                 // whatever the watcher's simulation distance. The fight is where the type has one.

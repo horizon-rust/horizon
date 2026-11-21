@@ -30,11 +30,13 @@ use horizon_client::spans::time as span;
 use horizon_client::{
     Result,
     block_entity_anim::BlockEntityAnims,
+    mobs::Who,
+    projectiles::{Projectile, ProjectileKind},
     random_tick_sections::RandomTickSections,
     save::SaveDir,
     streaming::Streaming,
     tick_chunk_membership::TickChunkMembership,
-    ticket_levels::{ChunkTickets, PortalTicket},
+    ticket_levels::{ChunkTickets, ENDER_PEARL_LEVEL, PortalTicket},
     vanillagen::VanillaTerrain,
     world::World,
 };
@@ -460,6 +462,13 @@ pub(super) struct Levels {
     requested_saves: Vec<Dim>,
     /// The levels mods opened while the server runs, and the requests waiting to be applied.
     pub(super) runtime: super::runtime_levels::RuntimeTable,
+}
+
+/// `ThrownEnderpearl.tick`: a pearl holds its chunk with a
+/// `TicketType.ENDER_PEARL` ticket only while a `ServerPlayer` owns it
+/// (`registerAndUpdateEnderPearlTicket`).
+fn places_ender_pearl_ticket(p: &Projectile) -> bool {
+    matches!(p.kind, ProjectileKind::EnderPearl) && p.owner == Some(Who::Player)
 }
 
 impl Levels {
@@ -1543,10 +1552,16 @@ impl Game<'_> {
                     // running so it can land and tick (the portal ticket).
                     || !self.arrival_chunks(*d).is_empty()
                     // A portal ticket keeps its dimension active
-                    // (`TicketType.shouldKeepDimensionActive`).
+                    // (`TicketType.shouldKeepDimensionActive`), and so does a
+                    // thrown ender pearl (`TicketType.ENDER_PEARL`).
                     || !self.portal_tickets_in(*d).is_empty()
                     // So does a viewed `Ticking` area (arismoko/horizon#3716), for its chunks only.
                     || self.viewed_level(*d) == Some(true)
+                    || !self.pearl_tickets_in(*d).is_empty()
+                    || self
+                        .level_projectiles(*d)
+                        .iter()
+                        .any(places_ender_pearl_ticket)
             })
             .collect();
         if dims.is_empty() {
@@ -1565,6 +1580,68 @@ impl Game<'_> {
                 .get(&dim)
                 .map_or(&[], |p| p.tickets.portal_tickets())
         }
+    }
+
+    fn pearl_tickets_in(&self, dim: Dim) -> &[PortalTicket] {
+        if dim == self.dim {
+            self.tickets.pearl_tickets()
+        } else {
+            self.levels
+                .parked
+                .get(&dim)
+                .map_or(&[], |p| p.tickets.pearl_tickets())
+        }
+    }
+
+    /// `dim`'s level's projectiles: the level in place's, or a parked one's.
+    fn level_projectiles(&self, dim: Dim) -> &[Projectile] {
+        if dim == self.dim {
+            &self.creatures.projectiles
+        } else {
+            self.levels.parked.get(&dim).map_or(&[], |p| &p.projectiles)
+        }
+    }
+
+    /// The chunks `dim`'s level's ender pearls hold: `ThrownEnderpearl.tick`
+    /// places a `TicketType.ENDER_PEARL` ticket on the pearl's chunk
+    /// (`ServerPlayer.registerAndUpdateEnderPearlTicket`, a `ServerPlayer`'s
+    /// pearl only).
+    pub(super) fn ender_pearl_chunks(&self, dim: Dim) -> Vec<(i32, i32)> {
+        let mut chunks: Vec<(i32, i32)> = self
+            .level_projectiles(dim)
+            .iter()
+            .filter(|p| places_ender_pearl_ticket(p))
+            .map(|p| {
+                (
+                    (p.position.x.floor() as i32) >> 4,
+                    (p.position.z.floor() as i32) >> 4,
+                )
+            })
+            .collect();
+        chunks.extend(self.pearl_tickets_in(dim).iter().map(|t| t.chunk));
+        chunks.sort_unstable();
+        chunks.dedup();
+        chunks
+    }
+
+    /// The areas the level in place's ender pearls keep streamed, as
+    /// `portal_ticket_areas` does for its portal tickets: the pearl's
+    /// block-ticking ring and the `FULL` ring past it.
+    pub(super) fn ender_pearl_areas(&self) -> Vec<((i32, i32), i32)> {
+        let block_ticking = i32::from(horizon_client::ticket_levels::BLOCK_TICKING);
+        self.ender_pearl_chunks(self.dim)
+            .into_iter()
+            .map(|chunk| (chunk, (block_ticking - ENDER_PEARL_LEVEL).max(1)))
+            .collect()
+    }
+
+    /// The areas the level in place's tickets keep streamed: its portal
+    /// tickets' and its ender pearls'.
+    pub(super) fn ticket_areas(&self) -> Vec<((i32, i32), i32)> {
+        self.portal_ticket_areas()
+            .into_iter()
+            .chain(self.ender_pearl_areas())
+            .collect()
     }
 
     /// The areas the level in place's portal tickets keep streamed: around each

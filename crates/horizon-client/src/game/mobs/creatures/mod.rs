@@ -4405,6 +4405,7 @@ impl Game<'_> {
 
     pub(super) fn tick_projectiles_now(&mut self) -> Result<()> {
         if self.creatures.projectiles.is_empty() {
+            self.tickets.retain_pearl_timers(|_| false);
             self.flush_lan_explosions();
             return self.flush_wind_bursts();
         }
@@ -4420,6 +4421,7 @@ impl Game<'_> {
         let mut snow_contacts = Vec::new();
         let mut section_steps = section_steps::begin(self);
         let mut keep_flags = vec![true; projectiles.len()];
+        let mut ticked_pearls = Vec::new();
         let mut winds = std::mem::take(&mut self.creatures.pickable_projectile_targets);
         // The impacts the mods may cancel (`native_projectile_impact`), on a server.
         let hear = self.native_hears_impacts();
@@ -4501,6 +4503,14 @@ impl Game<'_> {
                     border,
                 };
                 projectiles.update(i, |p| {
+                    if matches!(p.kind, ProjectileKind::EnderPearl)
+                        && p.owner == Some(Who::Player)
+                    {
+                        ticked_pearls.push((
+                            p.join.get(),
+                            ((at.x.floor() as i32) >> 4, (at.z.floor() as i32) >> 4),
+                        ));
+                    }
                     if vanish
                         && matches!(p.kind, ProjectileKind::EnderPearl)
                         && p.owner == Some(Who::Player)
@@ -4718,6 +4728,17 @@ impl Game<'_> {
                 &mut arrow_events,
             );
         }
+        for (id, previous) in ticked_pearls {
+            if let Some(p) = projectiles.iter().find(|p| p.join.get() == id) {
+                let chunk = (
+                    (p.position.x.floor() as i32) >> 4,
+                    (p.position.z.floor() as i32) >> 4,
+                );
+                self.tickets.tick_pearl(id, previous, chunk);
+            }
+        }
+        self.tickets
+            .retain_pearl_timers(|id| projectiles.iter().any(|p| p.join.get() == id));
         for (owner, guest, at) in shoot_events {
             self.with_projectile_dispatch(&mut projectiles, |game| {
                 game.projectile_shoot_event(owner, guest, at);
