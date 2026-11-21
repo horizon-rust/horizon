@@ -14,7 +14,12 @@ impl PublishHost for Game<'_> {
         let settings = LanSettings {
             port,
             guest_commands,
-            force_game_mode: false,
+            // `PublishCommand.publishServer` only opens the LAN: the world's
+            // force-game-mode setting stays what it was.
+            force_game_mode: self
+                .lan
+                .as_ref()
+                .is_none_or(|host| host.settings.force_game_mode),
         };
         self.serving() && self.publish(settings).is_ok()
     }

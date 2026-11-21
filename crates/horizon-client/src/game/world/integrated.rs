@@ -973,7 +973,8 @@ impl Game<'_> {
             default_game_mode: self.level.mode(),
             // Only the owner until it is opened to the LAN.
             guest_commands: false,
-            force_game_mode: false,
+            // `IntegratedServer.forceGameMode` starts true.
+            force_game_mode: true,
             hardcore: self.level.hardcore,
             view_distance,
             simulation_distance: self.settings.simulation_distance.max(2),
@@ -1022,7 +1023,7 @@ impl Game<'_> {
         let settings = LanSettings {
             port: 0,
             guest_commands: false,
-            force_game_mode: false,
+            force_game_mode: true,
         };
         startup::time("server.lan_host", || self.lan_host(settings, net, config))?;
         let commands = self.allow_commands();
@@ -1322,7 +1323,7 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
-        match pending {
+        let opened = match pending {
             Publish::Open(listener, settings) => {
                 if let Err(e) = host.hub.lan.listen_on(listener, true) {
                     log::error!("Horizon: Open to LAN: {e}");
@@ -1332,6 +1333,7 @@ impl Game<'_> {
                 // IntegratedServer.setGuestCommandAccess, then updatePermissions.
                 host.hub.config.guest_commands = settings.guest_commands && allow_commands;
                 host.hub.resend_commands();
+                true
             }
             Publish::Close => {
                 host.hub.lan.stop_listening();
@@ -1352,7 +1354,13 @@ impl Game<'_> {
                         translatable("multiplayer.disconnect.server_shutdown", &[]),
                     );
                 }
+                false
             }
+        };
+        if opened {
+            // `IntegratedServer.publishServer(scope, allowCommands, port)`:
+            // `setGuestCommandAccess` updates the permissions, then the modes.
+            self.update_game_mode_based_on_permission();
         }
     }
     /// The world options screen's state, read on the server.
@@ -1569,6 +1577,10 @@ impl Game<'_> {
         std::process::exit(101);
     }
 }
+
+#[cfg(test)]
+#[path = "integrated/default_gamemode_tests.rs"]
+mod default_gamemode_tests;
 
 #[cfg(test)]
 pub(super) mod tests {
