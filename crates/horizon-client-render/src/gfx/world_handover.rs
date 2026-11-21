@@ -50,7 +50,7 @@ impl Renderer {
             lod_cutout,
             lod_retiring,
             lod_leaving,
-            lod_pending,
+            lod_uploads,
             detail_columns,
             detail_revision,
             upload_retries,

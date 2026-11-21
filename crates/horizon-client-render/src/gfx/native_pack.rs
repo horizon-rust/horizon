@@ -1257,7 +1257,17 @@ file = \"material.wgsl\"
             1,
             attachment,
         ));
-        let depth = view(texture(wgpu::TextureFormat::Depth32Float, 1, attachment));
+        let can_read_depth = flags.contains(wgpu::DownlevelFlags::DEPTH_TEXTURE_AND_BUFFER_COPIES);
+        let depth_texture = texture(
+            wgpu::TextureFormat::Depth32Float,
+            1,
+            if can_read_depth {
+                attachment | wgpu::TextureUsages::COPY_SRC
+            } else {
+                attachment
+            },
+        );
+        let depth = depth_texture.create_view(&Default::default());
         let mut encoder = device.create_command_encoder(&Default::default());
         // Each terrain pipeline in a pass of its targets, the page's looks bound.
         // The shadow's frame group, or the material's (`TerrainLayers::bind`).
@@ -1307,10 +1317,61 @@ file = \"material.wgsl\"
             pass.set_vertex_buffer(1, origins.slice(..));
             pass.draw(0..3, 0..1);
         }
+        let depth_samples = can_read_depth.then(|| {
+            let inputs = horizon_shader_api::Frame {
+                shadow_view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                ..Default::default()
+            };
+            queue.write_buffer(&pack.frame.buffer, 0, bytemuck::bytes_of(&inputs));
+            let corners = [[-1.0, -1.0], [0.0, -1.0], [0.0, 1.0]].map(|[x, y]| {
+                crate::mesher::TerrainVertex::new([x, y, 0.5], [0.0; 2], 0x8000, u32::MAX, 0xf0f0)
+            });
+            let relief = buffer(bytemuck::cast_slice(&corners));
+            let origins = buffer(bytemuck::cast_slice(&[
+                crate::gfx::section_instance([0.0; 3], 0, 1.0),
+                super::super::native_shadow::held_section_instance([1.0, 0.0, 0.0]),
+            ]));
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&shadow.solid);
+            pass.set_bind_group(0, &terrain, &[]);
+            pass.set_bind_group(super::super::looks::GROUP, &looks_group, &[]);
+            pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+            pass.set_vertex_buffer(0, relief.slice(..));
+            pass.set_vertex_buffer(1, origins.slice(..));
+            pass.draw(0..3, 0..2);
+            drop(pass);
+            crate::gfx::copy_frame(&device, &mut encoder, &depth_texture, [4, 4])
+        });
         queue.submit([encoder.finish()]);
+        if let Some(samples) = &depth_samples {
+            samples.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
+        }
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         if let Some(e) = pollster::block_on(scope.pop()) {
             panic!("{e}");
+        }
+        if let Some(samples) = depth_samples {
+            let mapped = samples.get_mapped_range(..).unwrap();
+            let depth_at = |x: usize| {
+                let i = 2 * crate::gfx::padded_row(4) as usize + x * size_of::<f32>();
+                f32::from_ne_bytes(mapped[i..i + size_of::<f32>()].try_into().unwrap())
+            };
+            assert_eq!(
+                depth_at(1),
+                1.0,
+                "the visible quad leaves its relief to the grid"
+            );
+            assert_eq!(depth_at(3), 0.5, "the held quad still casts a flat shadow");
         }
     }
 

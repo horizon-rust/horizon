@@ -243,10 +243,11 @@ fn horizon_displace_step(v: u32, q: HorizonDisplaceQuad) -> HorizonDisplacePoint
 fn horizon_displace_point(v: u32, instance: u32) -> HorizonDisplacePoint {
     let pick = horizon_displace_picked[instance];
     let section = horizon_displace_sections[pick.y];
-    let c0 = horizon_displace_corner(pick.x, 0u, section.origin.w);
-    let c1 = horizon_displace_corner(pick.x, 1u, section.origin.w);
-    let c2 = horizon_displace_corner(pick.x, 2u, section.origin.w);
-    let c3 = horizon_displace_corner(pick.x, 3u, section.origin.w);
+    let step = abs(section.origin.w);
+    let c0 = horizon_displace_corner(pick.x, 0u, step);
+    let c1 = horizon_displace_corner(pick.x, 1u, step);
+    let c2 = horizon_displace_corner(pick.x, 2u, step);
+    let c3 = horizon_displace_corner(pick.x, 3u, step);
     let look = horizon_look(section.looks + (pick.x - section.first) * section.stride);
     if horizon_displace_steps {
         return horizon_displace_step(v, HorizonDisplaceQuad(c0, c1, c2, c3, section.origin.xyz,
@@ -342,7 +343,7 @@ fn outside(lo: vec3<f32>, hi: vec3<f32>) -> bool {
         return;
     }
     let section = sections[id.y];
-    if id.x >= section.quads {
+    if id.x >= section.quads || (params.shadow != 0u && section.origin.w < 0.0) {
         return;
     }
     let quad = section.first + id.x;
@@ -715,7 +716,8 @@ impl Displacement {
                     n.origin[0],
                     n.origin[1],
                     n.origin[2],
-                    1.0 / crate::mesher::UV_STEPS,
+                    // The shadow pick skips sections whose tile casts in their place.
+                    if n.casts_shadow { 1.0 } else { -1.0 } / crate::mesher::UV_STEPS,
                 ],
                 first: first as u32,
                 quads: quads as u32,
@@ -848,6 +850,7 @@ mod tests {
                     base: 0,
                     quads: 1,
                     origin: [0.0; 3],
+                    casts_shadow: true,
                 }];
                 let mut encoder = device.create_command_encoder(&Default::default());
                 displacement.prepare(&device, &queue, &mut encoder, &near, glam::Mat4::IDENTITY);
@@ -996,6 +999,7 @@ mod tests {
                 base,
                 quads: v.len() as u32 / 4,
                 origin: [0.0; 3],
+                casts_shadow: true,
             };
             let near = [
                 near(&one, &looks_one, base(8), &a),

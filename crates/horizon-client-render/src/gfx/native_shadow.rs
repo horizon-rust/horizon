@@ -27,6 +27,7 @@ struct HorizonShadowOut {
     // The point on the flat face, camera-relative (`[displacement]`'s grid takes it over near
     // the camera).
     @location(4) base: vec3<f32>,
+    @location(5) @interpolate(flat) held: u32,
 }
 // `color` is the vertex colour: the tint, and the fluid flag in its alpha's bit 3 (mesher.rs's
 // `FLUID_BIT`, clear on a fluid). What the light passes through is that colour, whether or not the
@@ -42,6 +43,7 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
     out.tint = color.rgb;
     out.fluid = u32((u32(round(color.a * 255.0)) & 8u) == 0u);
     out.base = pos;
+    out.held = 0u;
     return out;
 }
 // `slot`: the corner's in the arena page, whose look is its quad's; `corner` its index there.
@@ -51,7 +53,10 @@ fn horizon_shadow_terrain(c: HorizonCorner, origin: vec4<f32>, slot: u32, corner
     let look = horizon_look(slot);
     let pos = horizon_material_displace(c.position + origin.xyz, atlas, c.layer, c.color, c.light,
         look, horizon_look_ao(look, corner));
-    return horizon_shadow_vertex(pos, atlas, c.layer, c.color);
+    var out = horizon_shadow_vertex(pos, atlas, c.layer, c.color);
+    // A section held only for shadows carries its negated UV step, with no fade code.
+    out.held = u32(origin.w < 0.0 && origin.w > -1.0);
+    return out;
 }
 @vertex fn horizon_shadow_vs(@builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
@@ -81,8 +86,25 @@ fn horizon_shadow_terrain(c: HorizonCorner, origin: vec4<f32>, slot: u32, corner
     return horizon_shadow_terrain(horizon_terrain_corner_inputs(s.c), origin, s.slot, vertex & 3u);
 }
 @fragment fn horizon_shadow_fs(in: HorizonShadowOut) {
-    if horizon_shadow_taken(in.base, in.layer) { discard; }
+    if in.held == 0u && horizon_shadow_taken(in.base, in.layer) { discard; }
     horizon_shadow_cutout(in);
+}
+// Merged LOD quads are large enough for the nonlinear projection to bend
+// their depth between corners. Intersect the unwarped light ray with the
+// triangle's plane instead of interpolating its depth in the warped map.
+@fragment fn horizon_shadow_fs_lod(in: HorizonShadowOut) -> @builtin(frag_depth) f32 {
+    let p = (frame.shadow_view_proj * vec4(in.base, 1.0)).xyz;
+    let normal = cross(dpdx(p), dpdy(p));
+    let warped = vec2(2.0, -2.0) * in.clip.xy / frame.shadow_resolution + vec2(-1.0, 1.0);
+    let k = frame.shadow_distortion;
+    let xy = warped * ((1.0 - k) / max(1.0 - k * length(warped), 0.0001));
+    let use_plane = abs(normal.z) > length(normal) * 0.0001;
+    let slope = normal.xy / select(1.0, normal.z, use_plane);
+    let z = select(in.clip.z, p.z - dot(slope, xy - p.xy), use_plane);
+    // The ordinary shadow pipeline's slope bias, applied to the corrected depth.
+    let bias = 1.5 * max(abs(dpdx(z)), abs(dpdy(z)));
+    horizon_shadow_cutout(in);
+    return clamp(z + bias, 0.0, 1.0);
 }
 fn horizon_shadow_cutout(in: HorizonShadowOut) {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
@@ -97,6 +119,11 @@ fn horizon_shadow_cutout(in: HorizonShadowOut) {
     return vec4(horizon_line_in(color.rgb * in.tint), select(min(color.a, 0.99), 1.0, in.fluid != 0u));
 }
 ";
+
+/// A retiring section past its world fade is absent from the relief grid.
+pub(super) fn held_section_instance([x, y, z]: [f32; 3]) -> [f32; 4] {
+    [x, y, z, -1.0 / crate::mesher::UV_STEPS]
+}
 
 /// The entity draw of the shadow pass: the renderer's opaque entity quads (`EntityBatch`'s first
 /// material) through the shadow camera, with their texture's cutout. The sky's bodies, clouds,
@@ -385,6 +412,9 @@ impl ShadowMap {
 pub struct NativeShadow {
     pub solid: wgpu::RenderPipeline,
     pub flat: Option<wgpu::RenderPipeline>,
+    /// Merged LOD terrain with depth evaluated in the undistorted light space.
+    pub lod: wgpu::RenderPipeline,
+    pub flat_lod: Option<wgpu::RenderPipeline>,
     /// The translucent terrain's draws into the translucent map and the colour, instanced and
     /// flat.
     pub translucent: wgpu::RenderPipeline,
@@ -581,7 +611,7 @@ impl NativeShadow {
         // The frame alone, and under `[displacement]` the height maps its grid moves by.
         let frame_entry = wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -686,10 +716,14 @@ impl NativeShadow {
                     depth_write_enabled: Some(true),
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 0,
-                        slope_scale: 1.5,
-                        clamp: 0.0,
+                    bias: if fragment == "horizon_shadow_fs_lod" {
+                        wgpu::DepthBiasState::default()
+                    } else {
+                        wgpu::DepthBiasState {
+                            constant: 0,
+                            slope_scale: 1.5,
+                            clamp: 0.0,
+                        }
                     },
                 }),
                 multisample: Default::default(),
@@ -718,20 +752,22 @@ impl NativeShadow {
         let flat_layout = shape.flat.map(|group| layout(Some(group)));
         // With flat draws' page groups the solid draws read the page themselves
         // (`SECTION_CORNER`), in either layout of the solid quads, as the renderer's do.
-        let solid = match &flat_layout {
-            Some(paged) => pipeline(
+        let solid_pipeline = |fragment| match &flat_layout {
+            Some(paged) => pipeline_with(
                 paged,
                 "horizon_shadow_vs_section",
                 &[None, Some(instances.clone())],
-                false,
+                fragment,
             ),
-            None => pipeline(
+            None => pipeline_with(
                 &instanced,
                 "horizon_shadow_vs",
                 &[Some(vertices.clone()), Some(instances.clone())],
-                false,
+                fragment,
             ),
         };
+        let solid = solid_pipeline("horizon_shadow_fs");
+        let lod = solid_pipeline("horizon_shadow_fs_lod");
         let translucent = pipeline(
             &instanced,
             "horizon_shadow_vs",
@@ -741,6 +777,14 @@ impl NativeShadow {
         let flat = flat_layout
             .as_ref()
             .map(|layout| pipeline(layout, "horizon_shadow_vs_section_flat", &[], false));
+        let flat_lod = flat_layout.as_ref().map(|layout| {
+            pipeline_with(
+                layout,
+                "horizon_shadow_vs_section_flat",
+                &[],
+                "horizon_shadow_fs_lod",
+            )
+        });
         let flat_translucent = flat_layout.as_ref().map(|layout| {
             pipeline(
                 layout,
@@ -766,6 +810,8 @@ impl NativeShadow {
         Ok(Self {
             solid,
             flat,
+            lod,
+            flat_lod,
             translucent,
             flat_translucent,
             entity,
@@ -807,17 +853,36 @@ impl super::native_pack::NativePack {
         {
             pass.set_pipeline(pipeline);
             let [first, translucent] = flat.shadow_calls;
-            flat.draw(
-                &mut pass,
-                &flat.calls[first..translucent],
-                sections.flat_vertices(),
-            );
+            let lod = flat.shadow_lod_start();
+            flat.draw(&mut pass, &flat.calls[first..lod], sections.flat_vertices());
+            if lod < translucent
+                && let Some(pipeline) = &shadow.flat_lod
+            {
+                pass.set_pipeline(pipeline);
+                flat.draw(
+                    &mut pass,
+                    &flat.calls[lod..translucent],
+                    sections.flat_vertices(),
+                );
+            }
         } else if !lists.flat_frame {
             pass.set_pipeline(&shadow.solid);
             pass.set_index_buffer(sections.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(1, lists.instances.slice(..));
             let pulled = sections.flat.is_some();
-            sections.draw(&mut pass, lists.indirect, 0, first, solid, pulled);
+            let detail = lists.lod_start - first;
+            sections.draw(&mut pass, lists.indirect, 0, first, detail, pulled);
+            if detail < solid {
+                pass.set_pipeline(&shadow.lod);
+                sections.draw(
+                    &mut pass,
+                    lists.indirect,
+                    0,
+                    lists.lod_start,
+                    solid - detail,
+                    pulled,
+                );
+            }
         }
         // `[displacement]`'s grid casts in place of the flat quads it took over.
         if let Some((d, picks, pipeline)) = self

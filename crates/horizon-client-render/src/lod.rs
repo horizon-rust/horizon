@@ -677,6 +677,30 @@ pub struct TileKey {
     pub z: i32,
     pub level: u8,
 }
+
+/// The columns and finer tiles this particular mesh leaves out. The
+/// renderer can upload the meshes for a cutout before the whole cutout is ready.
+pub(crate) struct MeshCutouts {
+    pub near: Vec<(i32, i32)>,
+    pub finer: Vec<TileKey>,
+}
+
+impl MeshCutouts {
+    pub fn excludes_tile(&self, tile: TileKey) -> bool {
+        (tile.level == 0 && self.near.contains(&(tile.x, tile.z)))
+            || self.finer.iter().any(|finer| {
+                finer
+                    .level
+                    .checked_sub(tile.level)
+                    .is_some_and(|shift| (tile.x >> shift, tile.z >> shift) == (finer.x, finer.z))
+            })
+    }
+
+    pub fn excludes_column(&self, x: i32, z: i32) -> bool {
+        self.excludes_tile(TileKey { x, z, level: 0 })
+    }
+}
+
 impl TileKey {
     pub fn size(self) -> i32 {
         16 << self.level
@@ -1460,7 +1484,6 @@ impl Lod {
                                     continue;
                                 }
                                 step_behind(&shared, &mut behind);
-                                let keep_finer = !job.finer.is_empty();
                                 let input = job.snapshot.mesh_input(job.key, job.finer);
                                 let columns = input.columns();
                                 let edges = input.edges();
@@ -1484,12 +1507,30 @@ impl Lod {
                                 crate::lod::packed::lay_out(&mut mesh);
                                 let [ox, _, oz] = job.key.origin();
                                 let size = job.key.size();
-                                mesh.keep = keep_finer
-                                    || job.covered.iter().any(|&(cx, cz)| {
-                                        let x = cx * 16;
-                                        let z = cz * 16;
-                                        x < ox + size && x + 16 > ox && z < oz + size && z + 16 > oz
-                                    });
+                                let near: Vec<_> =
+                                    if job.bounds.is_some_and(|b| job.key.overlaps(b)) {
+                                        job.covered
+                                            .iter()
+                                            .copied()
+                                            .filter(|&(cx, cz)| {
+                                                let x = cx * 16;
+                                                let z = cz * 16;
+                                                x < ox + size
+                                                    && x + 16 > ox
+                                                    && z < oz + size
+                                                    && z + 16 > oz
+                                            })
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                mesh.keep = !input.finer.is_empty() || !near.is_empty();
+                                if mesh.keep {
+                                    mesh.lod_cutouts = Some(Arc::new(MeshCutouts {
+                                        near,
+                                        finer: input.finer,
+                                    }));
+                                }
                                 if job.canceled.load(Ordering::Acquire) {
                                     if tx
                                         .send(Done::MeshCanceled {

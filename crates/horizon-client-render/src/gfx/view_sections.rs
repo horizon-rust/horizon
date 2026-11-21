@@ -69,10 +69,11 @@ impl Sections {
     }
     /// `Flat::prepare`'s marks: where the shadow camera's solid and translucent draws begin,
     /// then each view's solid and translucent ones (`usize::MAX` for a view not asked for).
-    pub fn marks(&self, shadow: [u32; 2]) -> [usize; super::flat::MARKS] {
+    pub fn marks(&self, shadow: [u32; 2], shadow_lod_first: u32) -> [usize; super::flat::MARKS] {
         let mut marks = [usize::MAX; super::flat::MARKS];
         marks[0] = shadow[0] as usize;
         marks[1] = shadow[1] as usize;
+        marks[super::flat::SHADOW_LOD_MARK] = shadow_lod_first as usize;
         let views = self.views.views().len();
         for (k, [solid, translucent, _]) in self.draws[..views].iter().enumerate() {
             marks[2 + 2 * k] = *solid as usize;
@@ -187,6 +188,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         frame: &Frame,
         radius: i32,
+        expired_fades: Option<std::time::Instant>,
     ) {
         let sections = &mut self.world_views.sections;
         if frame.title && sections.asked {
@@ -205,6 +207,9 @@ impl Renderer {
             if let Some(view) = views.get(k) {
                 let (camera, far) = (frame.camera, frame.depth_far);
                 view_sections(&self.sections, view, camera, far, radius, out);
+                if let Some(now) = expired_fades {
+                    out.retain(|v| !self.sections.get(v.slot).past_lod_fade(now));
+                }
             }
         }
         let visible = std::mem::take(&mut self.world_views.sections.visible);

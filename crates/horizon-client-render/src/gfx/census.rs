@@ -33,19 +33,21 @@ impl Renderer {
     pub fn lod_quads(&self) -> u64 {
         self.lods
             .values()
-            .map(|tile| u64::from(tile.mesh.solid + tile.mesh.translucent))
+            .filter_map(|tile| tile.mesh.as_deref())
+            .map(|mesh| u64::from(mesh.solid + mesh.translucent))
             .sum()
     }
     /// Tiles and quads of the far terrain tiles with GPU buffers, by level.
     pub fn lod_levels(&self) -> Vec<[u64; 2]> {
         let mut levels = Vec::new();
         for (key, tile) in &self.lods {
+            let Some(mesh) = &tile.mesh else { continue };
             let level = usize::from(key.level);
             if levels.len() <= level {
                 levels.resize(level + 1, [0, 0]);
             }
             levels[level][0] += 1;
-            levels[level][1] += u64::from(tile.mesh.solid + tile.mesh.translucent);
+            levels[level][1] += u64::from(mesh.solid + mesh.translucent);
         }
         levels
     }
@@ -63,7 +65,11 @@ impl Renderer {
         let used = |s: &SectionGpu| (s.solid_slots + u64::from(s.translucent) * 4) * stride;
         [
             self.sections.values().map(used).sum(),
-            self.lods.values().map(|tile| used(&tile.mesh)).sum(),
+            self.lods
+                .values()
+                .filter_map(|tile| tile.mesh.as_deref())
+                .map(used)
+                .sum(),
         ]
     }
     /// Bytes of the section vertex arenas' buffers, and of the vertices
@@ -73,7 +79,7 @@ impl Renderer {
         let vertices: u64 = self
             .sections
             .values()
-            .chain(self.lods.values().map(|tile| &*tile.mesh))
+            .chain(self.lods.values().filter_map(|tile| tile.mesh.as_deref()))
             .map(|s| s.solid_slots + u64::from(s.translucent) * 4)
             .sum();
         let translucent = self.translucent_arena.as_ref();
@@ -102,7 +108,11 @@ impl Renderer {
             ),
             (
                 "far_tile_vertices",
-                self.lods.values().map(|tile| used(&tile.mesh)).sum(),
+                self.lods
+                    .values()
+                    .filter_map(|tile| tile.mesh.as_deref())
+                    .map(used)
+                    .sum(),
             ),
             ("quad_indices", self.indices.size()),
             ("block_sprites", textures(&self.sprite_textures)),

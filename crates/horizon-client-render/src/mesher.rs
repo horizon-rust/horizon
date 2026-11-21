@@ -504,6 +504,8 @@ pub struct SectionMesh {
     /// A far mesh was clipped around finer tiles or resident chunks. Keep
     /// the previous GPU mesh while its replacements fade in.
     pub keep: bool,
+    /// The cutouts in this version of a far mesh, for shadow ownership.
+    pub(crate) lod_cutouts: Option<Arc<crate::lod::MeshCutouts>>,
 }
 impl Default for SectionMesh {
     fn default() -> Self {
@@ -524,6 +526,7 @@ impl Default for SectionMesh {
             sprite_layers: Vec::new(),
             bounds: None,
             keep: false,
+            lod_cutouts: None,
         }
     }
 }
@@ -564,6 +567,7 @@ impl SectionMesh {
         self.visibility = ALL_VISIBLE;
         self.bounds = None;
         self.keep = false;
+        self.lod_cutouts = None;
     }
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
