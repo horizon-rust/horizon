@@ -199,76 +199,7 @@ pub fn new_folder(name: &str) -> PathBuf {
 // ----- The programs: an installed Horizon version, laid out as install.sh does ---------------------
 
 pub fn runtime_root() -> PathBuf {
-    backend::data_dir().join(RUNTIME)
-}
-
-/// The servers' programs in the launcher's data.
-const RUNTIME: &str = "server-runtime";
-
-/// The server runtime's links in the launcher's data at `launcher`, which a move leaves out and
-/// [`relink`] makes again: `current` (only when it points at one of its own releases) and each
-/// release's `.local/horizon-client`. Then the release `current` points at.
-pub(crate) fn moved_links(launcher: &Path) -> (Vec<PathBuf>, Option<String>) {
-    let root = launcher.join(RUNTIME);
-    let releases = root.join("releases");
-    let plain_dir = |dir: &Path| {
-        fs::symlink_metadata(dir).is_ok_and(|meta| {
-            meta.is_dir() && crate::data_location::reject_link(dir, &meta).is_ok()
-        })
-    };
-    if ![launcher, &root, &releases].into_iter().all(plain_dir) {
-        return (Vec::new(), None);
-    }
-    let mut links: Vec<PathBuf> = fs::read_dir(&releases)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path().join(".local/horizon-client"))
-        .filter(|link| {
-            fs::symlink_metadata(link)
-                .is_ok_and(|meta| crate::data_location::reject_link(link, &meta).is_err())
-        })
-        .collect();
-    let current = root.join("current");
-    let release = fs::canonicalize(&current).ok().filter(|release| {
-        release.parent() == fs::canonicalize(&releases).ok().as_deref() && release.is_dir()
-    });
-    let release = release.and_then(|r| Some(r.file_name()?.to_str()?.to_string()));
-    if release.is_some() {
-        links.push(current);
-    }
-    (links, release)
-}
-
-/// Makes the links [`moved_links`] left out again in the launcher's data at `launcher`: each
-/// release's link to the game files, and `current` to `release`.
-pub(crate) fn relink(launcher: &Path, release: Option<&str>) -> Result<(), String> {
-    let root = launcher.join(RUNTIME);
-    for entry in fs::read_dir(root.join("releases")).into_iter().flatten() {
-        let release = entry.map_err(|e| e.to_string())?.path();
-        if release.join(".local").is_dir() {
-            link_game_files(&root, &release)?;
-        }
-    }
-    if let Some(release) = release {
-        let release = root.join("releases").join(release);
-        point(&root.join("current"), &release)
-            .map_err(|e| format!("{}: {e}", root.join("current").display()))?;
-    }
-    Ok(())
-}
-
-/// Links `release`'s `.local/horizon-client` to the servers' game files, as install.sh lays an
-/// installation out, unless it is there.
-fn link_game_files(root: &Path, release: &Path) -> Result<(), String> {
-    let local = release.join(".local");
-    fs::create_dir_all(&local).map_err(|e| e.to_string())?;
-    let link = local.join("horizon-client");
-    if link.symlink_metadata().is_err() {
-        fs::create_dir_all(root.join("game-files/horizon-client")).map_err(|e| e.to_string())?;
-        point(&link, &root.join("game-files/horizon-client")).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    backend::data_dir().join("server-runtime")
 }
 
 /// `horizon-server` of the release in use, once one is set up.
@@ -337,7 +268,14 @@ pub fn set_up_in(root: &Path, version: &Path, tag: &str, game_version: &str) -> 
             let _ = fs::remove_dir_all(&release);
             fs::rename(&scratch, &release).map_err(|e| e.to_string())?;
         }
-        link_game_files(root, &release)?;
+        let local = release.join(".local");
+        fs::create_dir_all(&local).map_err(|e| e.to_string())?;
+        let link = local.join("horizon-client");
+        if link.symlink_metadata().is_err() {
+            fs::create_dir_all(root.join("game-files/horizon-client"))
+                .map_err(|e| e.to_string())?;
+            point(&link, &root.join("game-files/horizon-client")).map_err(|e| e.to_string())?;
+        }
         point(&root.join("current"), &release).map_err(|e| e.to_string())?;
     }
     // The game leases the folder it is started from and opens its completion marker there. A copy

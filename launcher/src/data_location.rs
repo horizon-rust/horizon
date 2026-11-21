@@ -413,16 +413,13 @@ fn migrate_locked(
         private_dir(&stage)?;
         progress("Copying and verifying launcher data");
         // Preparing links other launchers' files into the launcher's data and links them again
-        // each time; they are never followed or copied. The server runtime's links are made
-        // again below, to the same release.
-        let (mut skip, release) = crate::servers::moved_links(&source.launcher);
-        skip.extend(crate::sources::linked_layout_links(&source.launcher));
+        // each time; they are never followed or copied.
         copy_tree(
             &source.launcher,
             &source.launcher,
             &staged.launcher,
             bootstrap,
-            &skip,
+            &crate::sources::linked_layout_links(&source.launcher),
             &mut progress,
         )?;
         progress("Copying and verifying game data");
@@ -457,7 +454,6 @@ fn migrate_locked(
             }
         }
         fs::remove_dir(&stage).map_err(|e| problem(&stage, e))?;
-        crate::servers::relink(&destination.launcher, release.as_deref())?;
         sync_dir(&target)?;
         progress("Committing data location");
         commit(bootstrap, &destination)?;
@@ -661,18 +657,16 @@ fn contained_link(
     if !meta.file_type().is_symlink() {
         return Ok(None);
     }
+    use std::os::unix::ffi::OsStrExt;
     let target = fs::read_link(path)?;
-    let mut parts = target.components().peekable();
-    let mut up = 0;
-    while parts.next_if_eq(&Component::ParentDir).is_some() {
-        up += 1;
-    }
-    let mut down = 0;
-    for part in parts {
-        if !matches!(part, Component::Normal(_)) {
-            return Ok(None);
+    let (mut up, mut down) = (0, 0);
+    // Split by hand: `Path::components` would drop an interior `.` and repeated slashes.
+    for part in target.as_os_str().as_bytes().split(|&byte| byte == b'/') {
+        match part {
+            b".." if down == 0 => up += 1,
+            b"" | b"." | b".." => return Ok(None),
+            _ => down += 1,
         }
-        down += 1;
     }
     let depth = path
         .parent()

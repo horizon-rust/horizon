@@ -416,67 +416,6 @@ fn other_launchers_links_are_left_out_of_the_move() {
     assert_eq!(fs::read(outside.0.join("client.jar")).unwrap(), b"jar");
 }
 
-/// Links the folder `link` to `target`: a symlink on Unix, a junction on Windows.
-#[cfg(any(unix, windows))]
-fn dir_link(target: &Path, link: &Path) {
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(target, link).unwrap();
-    #[cfg(windows)]
-    {
-        let output = std::process::Command::new("cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
-            .arg(link.to_string_lossy().replace('/', "\\"))
-            .arg(target.to_string_lossy().replace('/', "\\"))
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "junction setup: {output:?}");
-    }
-}
-
-#[cfg(any(unix, windows))]
-#[test]
-fn server_runtime_moves_with_its_release() {
-    let f = Fixture::new("build");
-    let root = f.source.launcher.join("server-runtime");
-    let files = root.join("game-files/horizon-client");
-    fs::create_dir_all(files.join("1.0")).unwrap();
-    fs::write(files.join("1.0/data"), b"files").unwrap();
-    // Two releases with their links; `current` picks the first, which is not the newest.
-    for tag in ["v1", "v2"] {
-        let release = root.join("releases").join(tag);
-        fs::create_dir_all(release.join(".local")).unwrap();
-        fs::write(release.join("horizon-server"), tag).unwrap();
-        dir_link(&files, &release.join(".local/horizon-client"));
-    }
-    dir_link(&root.join("releases/v1"), &root.join("current"));
-    let roots = migrate(&f.source, &f.target(), &f.bootstrap, |_| {}).unwrap();
-    let moved = roots.launcher.join("server-runtime");
-    let canonical = |path: PathBuf| fs::canonicalize(path).unwrap();
-    assert_eq!(
-        canonical(moved.join("current")),
-        canonical(moved.join("releases/v1"))
-    );
-    assert_eq!(
-        fs::read(moved.join("current/horizon-server")).unwrap(),
-        b"v1"
-    );
-    for tag in ["v1", "v2"] {
-        let local = moved
-            .join("releases")
-            .join(tag)
-            .join(".local/horizon-client");
-        assert_eq!(fs::read(local.join("1.0/data")).unwrap(), b"files");
-        assert_eq!(
-            canonical(local),
-            canonical(moved.join("game-files/horizon-client"))
-        );
-    }
-    assert_eq!(
-        canonical(root.join("current")),
-        canonical(root.join("releases/v1"))
-    );
-}
-
 #[cfg(unix)]
 #[test]
 fn relative_link_inside_the_root_is_made_again() {
@@ -495,7 +434,16 @@ fn relative_link_inside_the_root_is_made_again() {
 #[cfg(unix)]
 #[test]
 fn relative_link_leaving_the_root_is_still_refused() {
-    for target in ["../../outside", "lib/../../outside", "./lib", "../.."] {
+    for target in [
+        "../../outside",
+        "lib/../../outside",
+        "./lib",
+        "lib/./a",
+        "lib//a",
+        "lib/",
+        "/etc",
+        "../..",
+    ] {
         let f = Fixture::new("build");
         let folder = f.source.launcher.join("runtime");
         fs::create_dir_all(folder.join("lib")).unwrap();
