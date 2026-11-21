@@ -826,6 +826,30 @@ pub trait PlayersBackendMut {
     #[access(WorldOnly)]
     fn player_send_map(&mut self, player: PlayerRef, map_id: i32, colors: &[u8]) -> bool;
     /// Side: server.
+    /// Opens `dialog` on the player's screen: a dialog as a data pack's file
+    /// writes it (`type`, `title`, `body`, `inputs`, `buttons`), sent inline,
+    /// as `/dialog show` does for one written out
+    /// (`ServerPlayer.openDialog`). The dialog is not validated: a client
+    /// that cannot read it leaves the game, so build it with care. The
+    /// player's own hooks may call it, the packet going after the hook.
+    /// False for a player not here and on a client.
+    #[access(WorldOnly)]
+    fn player_show_dialog(&mut self, player: PlayerRef, dialog: &Compound) -> bool;
+    /// Side: server.
+    /// Opens the dialog `id` of the `minecraft:dialog` registry (a world
+    /// pack's included, `mymod:shop`, or a vanilla one with or without
+    /// `minecraft:`) on the player's screen, as `/dialog show` does. False
+    /// for an id the registry doesn't have, and as `player_show_dialog`.
+    #[access(WorldOnly)]
+    fn player_show_dialog_id(&mut self, player: PlayerRef, id: &str) -> bool;
+    /// Side: server.
+    /// Closes the dialog the player's client shows (`/dialog clear`,
+    /// `ServerPlayer.closeDialog`); nothing happens when it shows none. The
+    /// server is never told that a player closed a dialog themselves, so it
+    /// cannot read whether one is open. False as `player_show_dialog`.
+    #[access(WorldOnly)]
+    fn player_clear_dialog(&mut self, player: PlayerRef) -> bool;
+    /// Side: server.
     /// Stores a server player's `Abilities` and tells their client
     /// (`ServerPlayer.onUpdateAbilities`). They stay as written until the
     /// player's game mode changes (`GameType.updatePlayerAbilities`), and are

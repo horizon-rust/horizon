@@ -12,6 +12,10 @@ use horizon_client::{
     lan::{guest::Guest, playerdata},
     save::{Level, read_dat, write_dat},
 };
+use horizon_protocol::packets::{
+    Empty,
+    play::{self, Clientbound as C, DialogHolder},
+};
 use mod_api::{__private::game::Fields, PlayerRef};
 use std::path::Path;
 
@@ -345,6 +349,34 @@ impl Game<'_> {
                 }),
             }),
         )
+    }
+    /// Opens `dialog` on the player's screen, sent inline as `/dialog show`
+    /// does for a dialog written out. False for a player not here, a fake
+    /// player and on a client.
+    pub(super) fn player_show_dialog(
+        &mut self,
+        player: PlayerRef,
+        dialog: &horizon_core::nbt::Compound,
+    ) -> bool {
+        let dialog = DialogHolder::Direct(horizon_core::nbt::Tag::Compound(dialog.clone()));
+        self.send_dialog_packet(player, C::ShowDialog(play::ShowDialog { dialog }))
+    }
+    /// Opens the dialog `id` of the `minecraft:dialog` registry on the
+    /// player's screen. False for an id the registry doesn't have, and as
+    /// `player_show_dialog`.
+    pub(super) fn player_show_dialog_id(&mut self, player: PlayerRef, id: &str) -> bool {
+        let Some(dialog) = self.registry_dialog(id) else {
+            return false;
+        };
+        self.send_dialog_packet(player, C::ShowDialog(play::ShowDialog { dialog }))
+    }
+    /// Closes the dialog the player's client shows (`ServerPlayer.closeDialog`).
+    pub(super) fn player_clear_dialog(&mut self, player: PlayerRef) -> bool {
+        self.send_dialog_packet(player, C::ClearDialog(Empty))
+    }
+    fn send_dialog_packet(&mut self, player: PlayerRef, packet: C) -> bool {
+        self.player_is_fake(player) == Some(false)
+            && self.native_send(player.fields().uuid, packet)
     }
 }
 
