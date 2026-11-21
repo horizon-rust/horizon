@@ -21,6 +21,9 @@ pub struct ReplayDriver {
     /// Where the recording ends: its recorded duration, or its last packet when that is later,
     /// so no packet is ever past the end. The clock never goes past it.
     end_ms: u32,
+    /// The Login's time: the recording's opening snapshot is every packet up to it, applied
+    /// whenever the world is built from the start, wherever the clock is.
+    start_ms: u32,
     cursor_ms: f64,
     speed: f64,
     paused: bool,
@@ -54,6 +57,7 @@ impl ReplayDriver {
             .as_ref()
             .ok_or_else(|| invalid_replay("recording contains no play-state packets"))?;
         validate_play_stream_start(first)?;
+        let start_ms = first.timestamp_ms;
         let end_ms = metadata.duration.max(reader.last_timestamp_ms());
 
         Ok(Self {
@@ -61,6 +65,7 @@ impl ReplayDriver {
             reader,
             path: path.to_path_buf(),
             end_ms,
+            start_ms,
             cursor_ms: 0.0,
             speed: 1.0,
             paused: false,
@@ -75,6 +80,22 @@ impl ReplayDriver {
     /// once: what is at [`ReplayDriver::path`] now unless something replaced it since.
     pub fn take_written(&mut self) -> Option<File> {
         self.written.take()
+    }
+
+    /// The recording's opening snapshot, the Login and every packet with its time, still to be
+    /// handed out: what the replay's first frame is set up from, even when the Login is
+    /// recorded after 0 ms. The clock doesn't move.
+    pub fn take_opening(&mut self) -> io::Result<Vec<TimestampedPacket>> {
+        let mut packets = Vec::new();
+        while self
+            .next_packet_cache
+            .as_ref()
+            .is_some_and(|packet| packet.timestamp_ms <= self.start_ms)
+        {
+            packets.push(self.next_packet_cache.take().expect("checked above"));
+            self.next_packet_cache = self.reader.next_packet()?;
+        }
+        Ok(packets)
     }
 
     /// The archive this replay reads, where the editor saves its markers and camera path.
@@ -217,11 +238,13 @@ impl PacketSource for ReplayDriver {
         self.reader.seek_to_timestamp(0)?;
         self.next_packet_cache = self.reader.next_packet()?;
 
+        // A world rebuilt from the start always gets the opening snapshot.
+        let through_ms = target_ms.max(self.start_ms);
         let mut packets = Vec::new();
         while self
             .next_packet_cache
             .as_ref()
-            .is_some_and(|packet| packet.timestamp_ms <= target_ms)
+            .is_some_and(|packet| packet.timestamp_ms <= through_ms)
         {
             packets.push(self.next_packet_cache.take().expect("checked above"));
             self.next_packet_cache = self.reader.next_packet()?;

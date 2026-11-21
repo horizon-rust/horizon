@@ -1,7 +1,7 @@
 //! A client mod reads and drives replay playback, and the person's gameplay input stays off the
 //! recording while it plays (#19247).
 use super::native_replay::{
-    FileIdentity, open_in_folder, open_recording, recording_path, recordings_folder,
+    FileIdentity, open_in_folder, open_recording, recording_path, recordings_folder, take_request,
 };
 use horizon_client::packet_source::PacketSource;
 use horizon_client::studio::ReplayDriver;
@@ -17,6 +17,11 @@ use std::time::Duration;
 /// A recording `/studio record` could have written: the Play login, then a packet at each of
 /// `later` ms; its metadata says it lasts `duration` ms.
 fn write_recording(path: &Path, duration: u32, later: &[u32]) {
+    write_recording_at(path, 0, duration, later);
+}
+
+/// As `write_recording`, with the Login stamped `login` ms in.
+fn write_recording_at(path: &Path, login: u32, duration: u32, later: &[u32]) {
     use horizon_client::studio::{McprWriter, Metadata};
     use horizon_protocol::{buf::Reader, packets::play};
     let encoded = play::Clientbound::Login(play::Login {
@@ -52,7 +57,7 @@ fn write_recording(path: &Path, duration: u32, later: &[u32]) {
         ..Default::default()
     };
     let mut writer = McprWriter::new(path.to_path_buf(), meta).unwrap();
-    writer.write_packet(0, id, reader.rest()).unwrap();
+    writer.write_packet(login, id, reader.rest()).unwrap();
     for &at in later {
         writer.write_packet(at, 0x01, &[1]).unwrap();
     }
@@ -854,4 +859,177 @@ fn a_control_socket_seek_to_the_end_rebuilds_the_world_there() {
         heard,
         ["opened trip 1000 true #0", "advanced 1000", "closed trip"]
     );
+}
+
+/// Request ids run out rather than wrap: the last `u32` is given once, then none, never the
+/// reserved 0 nor an id given before.
+#[test]
+fn request_ids_run_out_instead_of_wrapping() {
+    let next = std::sync::atomic::AtomicU32::new(u32::MAX - 1);
+    assert_eq!(take_request(&next), Some(u32::MAX - 1));
+    assert_eq!(take_request(&next), Some(u32::MAX));
+    assert_eq!(take_request(&next), None);
+    assert_eq!(take_request(&next), None);
+}
+
+/// A recording whose Login is stamped after 0 ms still sets up its first frame from it: the
+/// driver hands out the opening snapshot without moving the clock, and a world rebuilt from the
+/// start gets it too.
+#[test]
+fn a_late_login_is_the_opening_snapshot() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("late.mcpr");
+    write_recording_at(&path, 100, 1_000, &[100, 500]);
+    let mut driver = ReplayDriver::open(&path).unwrap();
+    let opening = driver.take_opening().unwrap();
+    assert_eq!(opening.len(), 2, "the Login and the packet stamped with it");
+    assert_eq!(driver.position_ms(), 0, "the clock stays");
+    assert!(driver.take_opening().unwrap().is_empty(), "handed out once");
+    assert_eq!(driver.seek_and_collect(0).unwrap().len(), 2);
+    assert_eq!(driver.position_ms(), 0);
+}
+
+/// A replay whose Login is stamped 100 ms in is set up from it before `replay_opened` is heard,
+/// while the clock is still before 100 ms.
+#[test]
+#[ignore = "daily"]
+fn a_replay_with_a_late_login_is_set_up_before_it_is_heard_open() {
+    let root = tempfile::tempdir().unwrap();
+    write_recording_at(&root.path().join("late.mcpr"), 100, 1_000, &[]);
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        let request = game.replay_open("late").unwrap();
+        finish_opening(game);
+        let remote = game.remote.as_ref().expect("the replay's session");
+        assert!(remote.logged_in, "the Login was applied");
+        assert_eq!(remote.entity_id, 1);
+        assert!(game.replay_state().unwrap().position_ms < 100);
+        assert!(request != 0);
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+    });
+    assert_eq!(heard.len(), 2);
+    assert!(heard[0].starts_with("opened late 1000 true #"));
+}
+
+/// A replacement never costs the camera path edited in the replay playing: when it can't be
+/// saved, or the replacement was read from the archive it was just saved into, the replay
+/// playing stays and the request fails with `Unavailable`.
+#[test]
+#[ignore = "daily"]
+fn a_replacement_keeps_the_replay_whose_camera_edits_it_would_lose() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trip.mcpr");
+    write_recording(&path, 1_000, &[]);
+    write_recording(&root.path().join("trip2.mcpr"), 2_000, &[]);
+    let mut ids = Vec::new();
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        let trip = game.replay_open("trip").unwrap();
+        finish_opening(game);
+
+        // Edited, then the same archive asked for again: saved, and the copy read before the
+        // save is refused.
+        game.studio.camera_track_dirty = true;
+        let again = game.replay_open("trip").unwrap();
+        finish_opening(game);
+        assert!(!game.studio.camera_track_dirty, "the edits were saved");
+        assert_eq!(game.replay_state().unwrap().recording, "trip");
+
+        // Edited again, with the archive replaced so the save is refused: another recording
+        // doesn't take the replay's place.
+        game.studio.camera_track_dirty = true;
+        std::fs::rename(&path, root.path().join("kept.mcpr")).unwrap();
+        write_recording(&path, 3_000, &[]);
+        let other = game.replay_open("trip2").unwrap();
+        finish_opening(game);
+        assert!(
+            game.studio.camera_track_dirty,
+            "the edits are still there to save"
+        );
+        assert_eq!(game.replay_state().unwrap().recording, "trip");
+
+        game.studio.camera_track_dirty = false;
+        game.replay_close().unwrap();
+        game.native_replay_requests();
+        ids = vec![trip, again, other];
+    });
+    let [trip, again, other] = ids[..] else {
+        panic!("the test ended early");
+    };
+    assert_eq!(
+        heard,
+        [
+            format!("opened trip 1000 true #{trip}"),
+            format!("failed trip Unavailable #{again}"),
+            format!("failed trip2 Unavailable #{other}"),
+            "closed trip".into(),
+        ]
+    );
+}
+
+const SAVE_AND_QUIT: &str =
+    "game::native_replay_tests::save_and_quit_during_a_read_opens_no_replay";
+
+/// A mod asks for a replay in a single-player world, and the person chooses Save and Quit while
+/// it is read: the world is left, and the request fails with `WorldBusy`, opening nothing.
+#[test]
+#[ignore = "daily"]
+fn save_and_quit_during_a_read_opens_no_replay() {
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        SAVE_AND_QUIT,
+        "HORIZON_REPLAY_SAVE_AND_QUIT_CHILD",
+        &["single_player"],
+    ) {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    write_recording(&root.path().join("trip.mcpr"), 1_000, &[]);
+    let mut ids = Vec::new();
+    let heard = with_heard(|game| {
+        game.replay.recordings_dir = Some(root.path().to_path_buf());
+        game.settings.render_distance = 2;
+        game.settings.simulation_distance = 2;
+        let options = horizon_client::title::WorldOptions {
+            world_type: horizon_client::save::WorldPreset::Flat,
+            ..Default::default()
+        };
+        game.open_integrated(
+            "replay_quit",
+            Some("Replay quit"),
+            Some(1),
+            true,
+            Some(&options),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !game
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.logged_in && r.joined)
+        {
+            game.poll_remote().unwrap();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        ids.push(game.replay_open("trip").unwrap());
+        // Save and Quit, carried through before the frame's end takes up the read recording.
+        game.close_world().unwrap();
+        while game.pending_save.is_some() || game.integrated.is_some() || game.remote.is_some() {
+            game.poll_closing_save().unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the world never closed"
+            );
+            std::thread::yield_now();
+        }
+        finish_opening(game);
+        assert_eq!(game.replay_state(), None);
+        assert!(game.remote.is_none(), "no replay over the title");
+    });
+    let [request] = ids[..] else {
+        panic!("the test ended early");
+    };
+    assert_eq!(heard, [format!("failed trip WorldBusy #{request}")]);
 }

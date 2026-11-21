@@ -765,6 +765,16 @@ impl Game<'_> {
             request,
             archive,
         } = origin;
+        let mut driver = driver;
+        // The first frame is set up from the opening snapshot before mods hear `replay_opened`,
+        // whatever time the recording's Login was stamped with.
+        let opening = match driver.take_opening() {
+            Ok(opening) => opening,
+            Err(error) => {
+                log::error!("Failed to read studio replay '{path}': {error}");
+                return Ok(json!({ "ok": false, "error": error.to_string() }));
+            }
+        };
         let standalone = self.replay.driver.is_none() && self.remote.is_none();
         if self.remote.is_none()
             && let Err(error) = self.init_remote_for_replay()
@@ -794,6 +804,7 @@ impl Game<'_> {
         // The wheel's part step belongs to the session the replay leaves.
         self.mouse.scroll = Default::default();
         self.replay.driver = Some(Box::new(driver));
+        self.dispatch_studio_replay_packets(opening);
         self.camera_type = horizon_client::camera::CameraType::FirstPerson;
         self.title = None;
         self.screen = Screen::Playing;

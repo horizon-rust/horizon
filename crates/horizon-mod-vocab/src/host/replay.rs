@@ -18,10 +18,13 @@ pub trait ReplayClientHost {
     /// reopened by name.
     ///
     /// `Ok(request)` means the request is accepted: `request` is a non-zero id, never given
-    /// twice while the game runs. Exactly one of `replay_opened` or `replay_open_failed`
-    /// follows with that id, whatever happens, except when the game closes first (then no
-    /// event is promised). A later `replay_open` replaces a request not yet ready, which then
-    /// fails with `Superseded`.
+    /// twice while the game runs (once every `u32` has been given, `replay_open` is
+    /// `Unavailable`). Exactly one of `replay_opened` or `replay_open_failed` follows with that
+    /// id, whatever happens, except when the game closes first (then no event is promised). A
+    /// later `replay_open` replaces a request whose read recording the game has not taken up
+    /// yet, which then fails with `Superseded`. An open asked while a replay plays fails with
+    /// `Unavailable` when the camera path edited in that replay can't be saved first, or when
+    /// it reads the very archive that path was just saved into; the replay playing stays.
     ///
     /// A replay is never played over a live session it would end: from a plain single-player
     /// world, the world is saved and left as Save and Quit does once the recording is ready,

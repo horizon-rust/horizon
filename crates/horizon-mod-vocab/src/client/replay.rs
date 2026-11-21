@@ -63,16 +63,18 @@ pub enum ReplayError {
     InvalidSpeed,
     /// A replay that doesn't own its session can't seek back before where it is.
     BackwardSeek,
-    /// This client can't play a replay now: a splitscreen guest or a server, or the game
-    /// is closing. Also why an accepted `replay_open` fails when its session can't start or
-    /// the person cancels the wait for it.
+    /// This client can't play a replay now: a splitscreen guest or a server, the game is
+    /// closing, or every request id has been given. Also why an accepted `replay_open` fails
+    /// when its session can't start, the person cancels the wait for it, or the replay playing
+    /// keeps its place (its camera path can't be saved, or was just saved into the archive the
+    /// request read).
     Unavailable,
     /// A world is being joined, this client is connected to a multiplayer server, or its
     /// single-player world is open to LAN or has splitscreen players: a replay would end that
     /// session. Leave it first (`disconnect`). Also why an accepted
     /// `replay_open` fails when such a session starts before the replay is ready.
     WorldBusy,
-    /// An accepted `replay_open` was replaced by a later one before its recording was ready
-    /// (`replay_open_failed` only).
+    /// An accepted `replay_open` was replaced by a later one before the game took up its read
+    /// recording (`replay_open_failed` only).
     Superseded,
 }

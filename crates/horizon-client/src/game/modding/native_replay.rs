@@ -26,10 +26,19 @@ const DEVICE_NAMES: [&str; 30] = [
     "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
 ];
 
-/// A fresh request id for `replay_open`: never zero, never given twice while the game runs.
-fn next_request() -> u32 {
+/// A fresh request id for `replay_open`: never zero, never given twice while the game runs; none
+/// once every `u32` has been given (then `replay_open` is `Unavailable`).
+fn next_request() -> Option<u32> {
     static NEXT: AtomicU32 = AtomicU32::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    take_request(&NEXT)
+}
+
+/// The id `next` holds, moving it on; none once it ran out (it holds 0 then, never handed out).
+pub(super) fn take_request(next: &AtomicU32) -> Option<u32> {
+    next.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
+        (id != 0).then(|| id.wrapping_add(1))
+    })
+    .ok()
 }
 
 /// A mod's close or seek, carried out at the end of the frame. One a frame: a later request
@@ -48,8 +57,9 @@ pub(super) enum ReplayScope {
     /// A replay plays: this one (its generation).
     Replay(u64),
     /// No replay plays: the connections this window had made by then, so one made (and maybe
-    /// left) since counts as a change.
-    Session(u64),
+    /// left) since counts as a change, and whether one was open, so leaving it (Save and Quit,
+    /// Disconnect) counts too.
+    Session { connections: u64, connected: bool },
 }
 
 /// A file as the system knows it (its volume or device, and its index or inode), whatever path
@@ -298,11 +308,14 @@ impl Game<'_> {
     }
 
     /// The session an open is accepted in (`ReplayScope`).
-    fn replay_scope(&self) -> ReplayScope {
+    pub(super) fn replay_scope(&self) -> ReplayScope {
         if self.replay.playing() {
             ReplayScope::Replay(self.replay.generation)
         } else {
-            ReplayScope::Session(self.replay.connections)
+            ReplayScope::Session {
+                connections: self.replay.connections,
+                connected: self.remote.is_some() || self.integrated.is_some(),
+            }
         }
     }
 
@@ -332,7 +345,7 @@ impl Game<'_> {
             return Err(ReplayError::WorldBusy);
         }
         let (path, file, archive) = open_recording(&self.recordings_dir(), recording)?;
-        let request = next_request();
+        let request = next_request().ok_or(ReplayError::Unavailable)?;
         let queued = QueuedOpen {
             origin: ReplayOrigin {
                 recording: recording.to_owned(),
@@ -566,8 +579,26 @@ impl Game<'_> {
     /// saved and left first and the replay opens on the title (`PendingWorldEntry`), carrying
     /// the read recording, never its name.
     pub(super) fn open_prepared_replay(&mut self, driver: ReplayDriver, origin: ReplayOrigin) {
+        // The camera path edited in the replay playing is saved first; a replacement never
+        // costs those edits. If they can't be saved, or the replacement was read from the very
+        // archive they were just saved into (so it holds them as they were), the replay playing
+        // stays and the request fails.
+        let saving = self.studio.camera_track_dirty && self.replay.playing();
+        let same_archive =
+            saving && origin.archive.is_some() && self.playing_archive_identity() == origin.archive;
         if let Err(error) = self.save_studio_camera_track() {
-            log::warn!("Studio: could not save camera path: {error}");
+            log::warn!(
+                "Replay {:?} not opened: the camera path of the replay playing could not be saved: {error}",
+                origin.recording
+            );
+            return self.replay_open_failed(&origin, ReplayError::Unavailable);
+        }
+        if same_archive {
+            log::warn!(
+                "Replay {:?} not opened: it was read before the camera path just saved into it",
+                origin.recording
+            );
+            return self.replay_open_failed(&origin, ReplayError::Unavailable);
         }
         if self.replay.driver.is_none() && (self.remote.is_some() || self.integrated.is_some()) {
             let recording = origin.recording.clone();
@@ -604,6 +635,18 @@ impl Game<'_> {
             return self.start_prepared_replay(driver, origin);
         }
         self.start_prepared_replay(driver, origin);
+    }
+
+    /// The archive file the replay playing reads, as it is at its path now.
+    fn playing_archive_identity(&mut self) -> Option<FileIdentity> {
+        let driver = self
+            .replay
+            .driver
+            .as_mut()?
+            .as_any_mut()
+            .downcast_mut::<ReplayDriver>()?;
+        let file = File::open(driver.path()).ok()?;
+        FileIdentity::of(&file).ok()
     }
 
     fn start_prepared_replay(&mut self, driver: ReplayDriver, origin: ReplayOrigin) {
