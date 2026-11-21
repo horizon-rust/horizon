@@ -5,27 +5,53 @@
 //!
 //! Whether a tick's phases share their work is the Parallel Tick setting's
 //! (`graphics::ParallelTickMode`: Off, Auto or On), decided between ticks for the next one
-//! ([`after_tick`]) and never during one. `HORIZON_PARALLEL_TICK` wins over the setting, and is
-//! all a dedicated server follows (`server.toml`'s `parallel_tick`).
+//! ([`after_tick`]) and never during one. `HORIZON_PARALLEL_TICK` wins over the setting, except
+//! `auto`: it puts the setting itself in Auto and lets the machine decide, which is how a
+//! dedicated server gets Auto (`server.toml`'s `parallel_tick = "auto"` or the variable).
 use crate::graphics::ParallelTickMode;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-/// `HORIZON_PARALLEL_TICK`, whatever the setting says: `0` keeps every tick serial, `1` turns the
-/// server tick's parallel phases on, and `verify` does too, also checking the phases that can be
-/// checked against the serial code. Unset, the setting decides.
-fn forced() -> Option<u8> {
-    static FORCED: OnceLock<Option<u8>> = OnceLock::new();
-    *FORCED.get_or_init(|| match std::env::var("HORIZON_PARALLEL_TICK").as_deref() {
-        Ok("0" | "off" | "false") => Some(0),
-        Ok("1" | "on" | "true") => Some(1),
-        Ok("verify") => Some(2),
-        _ => None,
-    })
+/// What `HORIZON_PARALLEL_TICK` asked for: the mode it forces, and whether it asks for the Auto
+/// setting instead of forcing one.
+///
+/// `0` keeps every tick serial, `1` turns the server tick's parallel phases on, `verify` does too
+/// and also checks the phases that can be checked against the serial code, and `auto` hands the
+/// decision to the machine (the setting), as the window's settings screen would. Anything else,
+/// and no variable at all, leaves the setting alone.
+fn from_env(value: Option<&str>) -> (Option<u8>, bool) {
+    match value {
+        Some("0" | "off" | "false") => (Some(0), false),
+        Some("1" | "on" | "true") => (Some(1), false),
+        Some("verify") => (Some(2), false),
+        Some("auto") => (None, true),
+        _ => (None, false),
+    }
 }
 
-/// The Parallel Tick setting, as the window last applied it; Off until it does (a dedicated
-/// server never does).
+/// What reading `HORIZON_PARALLEL_TICK` does: the mode it forces, and, for `auto`, the Auto
+/// setting, which then decides between ticks itself.
+fn init_forced(raw: Option<&str>) -> Option<u8> {
+    let (mode, auto) = from_env(raw);
+    if auto {
+        apply_setting(ParallelTickMode::Auto);
+    }
+    mode
+}
+
+/// `HORIZON_PARALLEL_TICK`, whatever the setting says, except `auto`: that one applies the Auto
+/// setting once and forces nothing, so the machine decides (a dedicated server's `"auto"`). It is
+/// read before any setting is applied ([`set_setting`]), so on a client the window's own setting
+/// (`apply_ui_settings`, a settings change or a pack reload) stands either way; a dedicated server
+/// has no window, so its `auto` stays.
+fn forced() -> Option<u8> {
+    static FORCED: OnceLock<Option<u8>> = OnceLock::new();
+    *FORCED.get_or_init(|| init_forced(std::env::var("HORIZON_PARALLEL_TICK").ok().as_deref()))
+}
+
+/// The Parallel Tick setting, as last applied: by the window's settings on a client, and on a
+/// dedicated server by `HORIZON_PARALLEL_TICK=auto` or `server.toml`'s `parallel_tick = "auto"`,
+/// which starts the game with that variable. Off until one of them does.
 static SETTING: AtomicU8 = AtomicU8::new(0);
 /// Whether the server's next tick shares its phases' work, by the setting ([`after_tick`]).
 static SHARED: AtomicU8 = AtomicU8::new(0);
@@ -39,9 +65,16 @@ pub fn parallel_tick() -> u8 {
     forced().unwrap_or_else(|| SHARED.load(Ordering::Relaxed))
 }
 
-/// The Parallel Tick setting, from the window's settings: On and Off apply from the next tick,
-/// and Auto starts watching the ticks again.
+/// The Parallel Tick setting, from the window's settings: it stands over the variable's `auto`.
+/// The variable is read first, and its `auto` applies the Auto setting at that reading and never
+/// after this call, so it cannot land on top of the setting.
 pub fn set_setting(mode: ParallelTickMode) {
+    let _ = forced();
+    apply_setting(mode);
+}
+
+/// The setting applied: On and Off apply from the next tick, and Auto starts watching the ticks again.
+fn apply_setting(mode: ParallelTickMode) {
     let mode = mode as u8;
     if SETTING.swap(mode, Ordering::Relaxed) != mode {
         *AUTO.lock().unwrap_or_else(PoisonError::into_inner) = Auto::new();
@@ -55,7 +88,8 @@ pub fn set_setting(mode: ParallelTickMode) {
 
 /// The server thread, after a tick that took `ms`, `cpu_ms` of them on the processor (where the
 /// system tells): decides whether the next tick shares its phases' work. Only Auto has something
-/// to decide.
+/// to decide. A dedicated server feeds it from its tick loop as the integrated one does, when the
+/// host asks for Auto (`parallel_tick = "auto"`, `HORIZON_PARALLEL_TICK=auto`).
 pub fn after_tick(ms: f32, cpu_ms: Option<f32>) {
     if forced().is_some() || SETTING.load(Ordering::Relaxed) != ParallelTickMode::Auto as u8 {
         return;
@@ -405,6 +439,87 @@ pub fn par_map_on<T: Sync, R: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `HORIZON_PARALLEL_TICK` forces a mode for `0`, `1` and `verify`, and asks for Auto for
+    /// `auto` instead of forcing one, so the machine still decides; anything else, and no variable,
+    /// leaves the setting alone.
+    #[test]
+    fn the_variable_asks_for_auto_without_forcing_it() {
+        assert_eq!(from_env(None), (None, false));
+        assert_eq!(from_env(Some("auto")), (None, true), "the machine decides");
+        assert_eq!(from_env(Some("0")), (Some(0), false));
+        assert_eq!(from_env(Some("1")), (Some(1), false));
+        assert_eq!(from_env(Some("verify")), (Some(2), false));
+        for off in ["off", "false"] {
+            assert_eq!(from_env(Some(off)), (Some(0), false), "{off}");
+        }
+        for on in ["on", "true"] {
+            assert_eq!(from_env(Some(on)), (Some(1), false), "{on}");
+        }
+        for junk in ["", "2", "sometimes", "AUTO", " on"] {
+            assert_eq!(from_env(Some(junk)), (None, false), "{junk:?}");
+        }
+    }
+
+    /// Runs `body` in a process of its own with `HORIZON_PARALLEL_TICK=auto`: the variable is read
+    /// once per process, so the case that needs it there needs its own process too, as
+    /// `game::in_own_process` runs the cases that need their own process-wide state.
+    fn with_auto_in_own_process(name: &str, body: impl FnOnce()) {
+        const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
+        if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
+            return body();
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--include-ignored", "--exact", "--test-threads=1"])
+            .env(OWN_PROCESS, name)
+            .env("HORIZON_PARALLEL_TICK", "auto")
+            .output()
+            .unwrap();
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.status.success() && report.contains("test result: ok. 1 passed;"),
+            "{name} failed in its own process:\n{report}"
+        );
+    }
+
+    /// `HORIZON_PARALLEL_TICK=auto` must not land on top of a setting a window applied first: the
+    /// window's settings run before the first tick, and the variable is read before a setting is
+    /// applied, so the setting stands and the next tick stays on one thread.
+    #[test]
+    #[ignore = "daily"]
+    fn the_variable_does_not_override_a_setting_applied_first() {
+        with_auto_in_own_process(
+            "parallel::tests::the_variable_does_not_override_a_setting_applied_first",
+            || {
+                set_setting(ParallelTickMode::Off);
+                assert_eq!(status().0, "off", "the window's setting stands");
+                assert!(!status().1, "the next tick stays on one thread");
+            },
+        );
+    }
+
+    /// The variable's `auto` applies the Auto setting when the variable is read, and a setting
+    /// applied after that stands: `set_setting` reads the variable first, so Auto cannot land on
+    /// top of a setting the window has applied.
+    #[test]
+    fn a_setting_applied_after_the_reading_stands() {
+        assert_eq!(init_forced(Some("auto")), None, "auto forces no mode");
+        assert_eq!(
+            SETTING.load(Ordering::Relaxed),
+            ParallelTickMode::Auto as u8,
+            "auto puts the setting in Auto"
+        );
+        set_setting(ParallelTickMode::Off);
+        assert_eq!(
+            SETTING.load(Ordering::Relaxed),
+            ParallelTickMode::Off as u8,
+            "the setting stands"
+        );
+    }
 
     /// Auto keeps a quiet world on one thread, shares a heavy tick only after two heavy windows,
     /// keeps the trial when the ticks got faster, goes back once they are light, and after a

@@ -7,7 +7,7 @@ use horizon_platform::mod_package::{
     runtime_leases::{self, Claim},
     selection::LaunchArguments,
 };
-use horizon_server_launch::config::Entities;
+use horizon_server_launch::config::{Entities, ParallelTick};
 use std::process::Command;
 use std::{
     io::{BufRead, BufReader, Write},
@@ -151,7 +151,7 @@ pub fn spawn(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
-    parallel_tick: bool,
+    parallel_tick: ParallelTick,
     entities: &Entities,
     transfers: Option<&str>,
 ) -> Result<(Child, Vec<Claim>), String> {
@@ -223,7 +223,7 @@ fn command(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
-    parallel_tick: bool,
+    parallel_tick: ParallelTick,
     entities: &Entities,
     transfers: Option<&str>,
 ) -> std::io::Result<Command> {
@@ -231,9 +231,16 @@ fn command(
         program, resources, dir, low_memory, transfers,
     )?;
     // `[engine] parallel_tick`: the game's switch, for a host that cannot set its environment. Off leaves
-    // the variable alone, so one the operator set still works.
-    if parallel_tick {
-        command.env("HORIZON_PARALLEL_TICK", "1");
+    // the variable alone, so one the operator set still works; Auto hands the decision to the game's own
+    // machine, which then shares only the heavy ticks.
+    match parallel_tick {
+        ParallelTick::Off => {}
+        ParallelTick::On => {
+            command.env("HORIZON_PARALLEL_TICK", "1");
+        }
+        ParallelTick::Auto => {
+            command.env("HORIZON_PARALLEL_TICK", "auto");
+        }
     }
     // `[entities] dab`: the game's switch and its three numbers (mobs/dab.rs). Off leaves the variables alone.
     if entities.dab {
@@ -379,7 +386,7 @@ mod tests {
                 &dir,
                 &dir,
                 low_memory,
-                false,
+                ParallelTick::Off,
                 &Entities::default(),
                 None,
             )
@@ -393,8 +400,10 @@ mod tests {
         assert_eq!(thp(false), None);
     }
 
+    /// `[engine] parallel_tick` reaches the game as its variable: nothing for Off (so one the operator
+    /// set still applies), `1` for On and `auto` for Auto, which the game then decides itself.
     #[test]
-    fn parallel_tick_reaches_the_game_only_when_it_is_on() {
+    fn parallel_tick_reaches_the_game_only_when_it_is_set() {
         let switch = |parallel_tick| {
             let dir = std::env::temp_dir();
             let command = command(
@@ -412,8 +421,15 @@ mod tests {
                 .find(|(k, _)| *k == "HORIZON_PARALLEL_TICK")
                 .and_then(|(_, v)| v.map(|v| v.to_owned()))
         };
-        assert_eq!(switch(true).as_deref(), Some(std::ffi::OsStr::new("1")));
-        assert_eq!(switch(false), None);
+        assert_eq!(switch(ParallelTick::Off), None);
+        assert_eq!(
+            switch(ParallelTick::On).as_deref(),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            switch(ParallelTick::Auto).as_deref(),
+            Some(std::ffi::OsStr::new("auto"))
+        );
     }
 
     #[test]
@@ -425,7 +441,7 @@ mod tests {
                 &dir,
                 &dir,
                 false,
-                false,
+                ParallelTick::Off,
                 &entities,
                 None,
             )
@@ -479,7 +495,7 @@ mod tests {
                 &dir,
                 &dir,
                 false,
-                false,
+                ParallelTick::Off,
                 &Entities::default(),
                 transfers,
             )
@@ -634,7 +650,7 @@ mod tests {
                 &root.join("res"),
                 &server,
                 false,
-                false,
+                ParallelTick::Off,
                 &Entities::default(),
                 None,
             ) {

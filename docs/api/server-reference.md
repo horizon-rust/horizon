@@ -120,7 +120,7 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `resources` | `""` |  | the prepared game files; empty: resources/ here, else the usual places |
 | `restart_on_crash` | `true` |  | start the game again when it crashes |
 | `low_memory` | `false` |  | true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time |
-| `parallel_tick` | `false` |  | true: the server tick shares its work among helper threads (docs/hosting.md) |
+| `parallel_tick` | `false` |  | true: the tick shares its work among helper threads; "auto": it decides (docs/hosting.md) |
 
 ### `[backups]`
 

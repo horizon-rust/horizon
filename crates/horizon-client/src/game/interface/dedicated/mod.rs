@@ -1538,6 +1538,11 @@ impl Game<'_> {
             // MinecraftServer.tickServer: while paused only the connections run.
             // `MinecraftServer.runServer` catches what the tick throws, writes the crash
             // report and still stops the server (saves). A panic here does the same.
+            // What Parallel Tick's Auto measures: the server tick alone. The readings start here,
+            // after the console, the control socket and the pause/autosave bookkeeping above, and
+            // not at `tick_start` (the top of the turn), which covers all of that for /tick query.
+            let began = Instant::now();
+            let tick_cpu = horizon_client::spans::thread_cpu();
             let slow_ms = state.perf.slow_threshold_ms();
             let capturing = state.perf.capturing();
             let mut tick_detail = None;
@@ -1570,6 +1575,17 @@ impl Game<'_> {
                     crashed = Some(panic_message(payload.as_ref()));
                     break;
                 }
+            }
+            if !paused {
+                // Parallel Tick's Auto decides here, between ticks, how the next one runs, as it
+                // does on the integrated server. A paused tick does no work to measure, so it feeds
+                // nothing.
+                horizon_client::parallel::after_tick(
+                    began.elapsed().as_secs_f32() * 1000.0,
+                    horizon_client::spans::thread_cpu()
+                        .zip(tick_cpu)
+                        .map(|(end, start)| (end - start).as_secs_f32() * 1000.0),
+                );
             }
             if state.report.as_ref().is_some_and(report::Recording::done) {
                 self.finish_perf_capture(&mut state, StopReason::Normal);

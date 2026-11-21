@@ -185,7 +185,7 @@ path = ""                    # the game program; empty: the one beside horizon-s
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true
 low_memory = false           # true: less memory, slightly slower ticks (see below)
-parallel_tick = false        # true: the tick shares its work among helper threads (see below)
+parallel_tick = false        # true: the tick shares its work among helper threads; "auto": it decides (see below)
 
 [backups]
 every = "6h"                 # 30m, 6h, 1d...; "0" turns automatic backups off
@@ -821,12 +821,23 @@ effect from the environment variable `MIMALLOC_ALLOW_THP=0`. On macOS and Window
 
 ### Parallel tick: `parallel_tick`
 
-Off by default. Under `[engine]`, `parallel_tick = true` starts the game with its parallel tick on: the
+Off by default, and the server ticks on one thread as vanilla does until you turn it on. Under `[engine]`,
+`parallel_tick = true` starts the game with its parallel tick on: the
 phases of the server tick that give the same result in any order share their work among helper threads (at
 most 8, as many as the machine has cores). It applies at the next start. It is the same switch as the
 environment variable `HORIZON_PARALLEL_TICK=1`, for a host that gives you no way to set one (a game panel
 with a fixed startup command). With the setting off, a `HORIZON_PARALLEL_TICK` already in the server's
 environment still applies.
+
+`parallel_tick = "auto"` lets the server decide between ticks: the tick stays on one thread until it is heavy,
+then shares only the ticks that need it, and goes back to one thread when they are light again. `true` keeps
+sharing every tick and `false` never shares, as before; with `false` a `HORIZON_PARALLEL_TICK` already in the
+server's environment still applies, as above, while `true` and `"auto"` set that variable for the game
+themselves. `HORIZON_PARALLEL_TICK=auto` is the same as the setting, for a host without a `server.toml` to
+edit. The log says which way it went, which is the proof it works: `Horizon: the tick takes 31.4 ms, sharing
+it among threads` when it starts sharing, `Horizon: the tick takes 8.2 ms, back on one thread` when it stops.
+A server whose ticks stay light never shares them, and the status says `watching`. The thresholds Auto watches
+and when it tries again: [graphics.md](graphics.md).
 
 Natural mob spawning is one of those phases: the spawn attempts of the chunks around your players run on the helper
 threads, and the server thread then takes what they found, in order, if the mob caps still allow it. It has vanilla's odds

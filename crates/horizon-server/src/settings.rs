@@ -104,6 +104,21 @@ pub fn parse_change(
         .split_once('.')
         .ok_or_else(|| format!("{key:?}: name a setting as section.name, like server.port"))?;
     let text = text.trim();
+    // `[engine] parallel_tick` is the one setting that is a boolean or a word (`true`, `false`,
+    // `"auto"`), so its own type says nothing about what it takes (config.rs, `ParallelTick`).
+    if (section, field) == ("engine", "parallel_tick") {
+        let value = match text {
+            "true" | "on" | "yes" => toml::Value::Boolean(true),
+            "false" | "off" | "no" => toml::Value::Boolean(false),
+            "auto" => toml::Value::String("auto".into()),
+            _ => {
+                return Err(format!(
+                    "{key} is {text:?}: use true, false or auto (auto: the game decides)"
+                ));
+            }
+        };
+        return Ok((section.to_owned(), field.to_owned(), value));
+    }
     let value = if section == "properties" {
         config::loose_value(text)
     } else {
@@ -365,6 +380,40 @@ mod tests {
             let e = parse_change(&t, bad).unwrap_err();
             assert!(e.contains(says), "{bad}: {e}");
         }
+    }
+
+    /// `[engine] parallel_tick` is the one setting whose values are a boolean or a word, so
+    /// `config set` takes `true`, `false` and `auto`, and refuses anything else.
+    #[test]
+    fn parallel_tick_takes_true_false_and_auto() {
+        let t = table();
+        let value = |change: &str| parse_change(&t, change).unwrap().2;
+        assert_eq!(
+            value("engine.parallel_tick=true"),
+            toml::Value::Boolean(true)
+        );
+        assert_eq!(
+            value("engine.parallel_tick=off"),
+            toml::Value::Boolean(false)
+        );
+        assert_eq!(
+            parse_change(&t, "engine.parallel_tick=auto").unwrap(),
+            (
+                "engine".into(),
+                "parallel_tick".into(),
+                toml::Value::String("auto".into())
+            )
+        );
+        // What `config set` writes, `server.toml` reads back as Auto.
+        assert_eq!(
+            config::Config::parse("[engine]\nparallel_tick = \"auto\"\n")
+                .unwrap()
+                .engine
+                .parallel_tick,
+            config::ParallelTick::Auto
+        );
+        let e = parse_change(&t, "engine.parallel_tick=sometimes").unwrap_err();
+        assert!(e.contains("true, false or auto"), "{e}");
     }
 
     #[test]

@@ -84,7 +84,8 @@ The supervisor/engine split stays even after the engine becomes headless, for th
 **The engine today** is `horizon-client --dedicated`. It needs one small, additive change: a status endpoint.
 With `--control-socket <dir>/.horizon/engine.json` (the existing control protocol: TCP on 127.0.0.1 plus a token, on
 every OS), the dedicated loop answers `server-status` with TPS, MSPT (average, P50/P95/P99 from the tick
-clock `/tick query` uses), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
+clock `/tick query` uses), the parallel tick (its setting, whether the next tick shares its work, and where Auto
+is), players (name, UUID, address, ping, position), loaded chunks and uptime. It answers
 `console <line>` with the command's output. `server-mods` reads the canonical `LoadedMods` package
 inventory on this same server thread and answers `{"mods":[{"id":"example","version":"1"}]}`.
 It includes native, wasm and content packages installed in that inventory, in inventory order; an empty
