@@ -728,7 +728,19 @@ impl Settings {
         };
         // Horizon's own bindings aren't in options.txt.
         next.keys.set("key.emote", self.keys.get("key.emote"));
+        next.keys.sync_action_bindings();
         Ok(next)
+    }
+    /// `KeyMapping.setKey` on the live options: a `keybind` text component shows the key
+    /// from now on (`key_display::display_name`).
+    pub fn bind_key(&mut self, name: &str, key: &str) {
+        self.keys.set(name, key);
+        self.keys.sync_action_bindings();
+    }
+    /// The key bindings screen's Reset All: every mapping back to its default.
+    pub fn reset_bindings(&mut self) {
+        self.keys.reset_all();
+        self.keys.sync_action_bindings();
     }
     /// The `options.txt` text (Options.save).
     pub fn serialize(&self) -> String {

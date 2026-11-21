@@ -157,7 +157,9 @@ fn clone_json(root: Work<'_>) -> Value {
     done.pop().unwrap_or(Value::Null)
 }
 
-/// The style fields of a component object.
+/// The style fields of a component object. A `show_text` hover's contents are
+/// built as a child component, so they are resolved like the component's own
+/// (`ComponentUtils.resolveStyle`).
 fn object_style<'a>(
     o: &'a serde_json::Map<String, Value>,
     child: &mut dyn FnMut(&'a Value) -> Text,
@@ -377,7 +379,7 @@ fn build(
                     },
                     origin(value),
                 );
-                let overridden = if hover { None } else { contents(o) };
+                let overridden = contents(o);
                 let needs_content = overridden.is_none();
                 pending.push(Work::Content(value, hover, style, overridden));
                 if needs_content {
@@ -411,10 +413,7 @@ fn build(
                             .unwrap_or_default()
                     };
                 }
-                let mut literal = |s: &str| Text::literal(s);
-                let resolver: &mut dyn FnMut(&str) -> Text =
-                    if hover { &mut literal } else { resolve };
-                let text = build_node(value, resolver, overridden, mode, &style, &mut |v| {
+                let text = build_node(value, resolve, overridden, mode, &style, &mut |v| {
                     done.remove(&(v as *const Value))
                         .map(take_built_text)
                         .unwrap_or_default()
@@ -433,14 +432,31 @@ fn build(
                     unreachable!()
                 };
                 let mode = Sourced(sourced.0 || hover, origin(value));
+                // KeybindContents has no `resolve`: the component sent on stays the keybind,
+                // with the resolved siblings, so each recipient shows the key it has bound.
+                let mut keybind_wire = (mode.0 && o.contains_key("keybind"))
+                    .then(|| text.component())
+                    .filter(|wire| wire.get("keybind").is_some());
                 if let Some(Value::Array(a)) = o.get("extra") {
                     for v in a {
                         let extra = done
                             .remove(&(v as *const Value))
                             .map(take_built_text)
                             .unwrap_or_default();
-                        mode.append(&mut text, mode.styled(extra, &style));
+                        let extra = mode.styled(extra, &style);
+                        if let Some(Value::Object(wire)) = &mut keybind_wire {
+                            wire.entry("extra")
+                                .or_insert_with(|| Value::Array(Vec::new()))
+                                .as_array_mut()
+                                .unwrap()
+                                .push(extra.component());
+                        } else {
+                            mode.append(&mut text, extra);
+                        }
                     }
+                }
+                if let Some(wire) = keybind_wire {
+                    text = text.with_component(wire);
                 }
                 if mode.0
                     && (o.contains_key("object")
@@ -517,7 +533,12 @@ fn build_node<'a>(
             } else if let Some(sel) = o.get("selector").and_then(Value::as_str) {
                 Text::from(resolve(sel).component())
             } else if let Some(key) = o.get("keybind").and_then(Value::as_str) {
-                Text::from(crate::key_display::display_name(key).component())
+                // KeyMapping.createNameSupplier: the key the mapping is bound to. The
+                // component sent on stays the keybind (`KeybindContents` has no
+                // `resolve`), so each recipient shows the key it has bound.
+                let mut text = crate::key_display::display_name(key);
+                text.retain_source(serde_json::json!({ "keybind": key }));
+                text
             } else {
                 Text::empty()
             };
@@ -748,19 +769,16 @@ mod tests {
     }
 
     #[test]
-    fn iterative_builder_isolates_hover_resolution_and_empty_array_style() {
+    fn iterative_builder_resolves_hover_contents_and_empty_array_style() {
         let value = serde_json::json!({"text":"visible", "hover_event":{"action":"show_text", "value":{"selector":"@p"}}});
         let text = to_text_with(
             &value,
-            &mut |_| panic!("hover resolver escaped"),
-            &mut |o| {
-                assert!(o.contains_key("text"));
-                None
-            },
+            &mut |selector| Text::literal(format!("<{selector}>")),
+            &mut |_| None,
         );
         assert_eq!(
             text.rendered.spans[0].style.hover.as_ref().unwrap().plain(),
-            "@p"
+            "<@p>"
         );
         let value = serde_json::json!({"text":"visible", "hover_event":{"action":"show_text", "value":{"translate":"test:hover"}}});
         let text = to_text(&value, &mut |_| panic!("hover resolver escaped"));
@@ -1151,6 +1169,49 @@ mod tests {
         let (v, _) = parse_snbt(r#"{text:"a",font:"Bad Font"}"#).unwrap();
         let t = to_text(&v, &mut |_| Text::empty());
         assert_eq!(t.rendered.spans[0].style.font, None);
+    }
+
+    /// ComponentUtils.resolveStyle: a `show_text` hover's contents are resolved with the
+    /// component's own context, so a selector, an nbt path and a score inside one show
+    /// what they stand for before the tooltip is drawn.
+    #[test]
+    fn show_text_hover_contents_are_resolved() {
+        let (v, _) = parse_snbt(
+            r#"{text:"Hi",hover_event:{action:"show_text",value:{selector:"@p"}},extra:[
+                 {text:" ",hover_event:{action:"show_text",value:{nbt:"SelectedItem.id",entity:"@s"}}},
+                 {text:"!",hover_event:{action:"show_text",value:{score:{name:"*",objective:"kills"}}}}]}"#,
+        )
+        .unwrap();
+        let text = to_text_with(
+            &v,
+            &mut |selector| Text::literal(format!("<{selector}>")),
+            &mut |o| match () {
+                _ if o.contains_key("nbt") => Some(Text::literal("minecraft:apple")),
+                _ if o.contains_key("score") => Some(Text::literal("42")),
+                _ => None,
+            },
+        );
+        let hovers: Vec<String> = text
+            .spans
+            .iter()
+            .filter_map(|s| s.style.hover.as_deref())
+            .map(Text::plain)
+            .collect();
+        assert_eq!(hovers, ["<@p>", "minecraft:apple", "42"]);
+
+        let (keybind, _) = parse_snbt(
+            r#"{keybind:"key.jump",hover_event:{action:"show_text",value:{selector:"@p"}},extra:[{selector:"@p"}]}"#,
+        )
+        .unwrap();
+        let text = to_text_with(
+            &keybind,
+            &mut |selector| Text::literal(format!("<{selector}>")),
+            &mut |_| None,
+        );
+        let wire = text.component();
+        assert_eq!(wire["keybind"], "key.jump");
+        assert_eq!(wire["hover_event"]["value"]["text"], "<@p>");
+        assert_eq!(wire["extra"][0]["text"], "<@p>");
     }
 
     #[test]
