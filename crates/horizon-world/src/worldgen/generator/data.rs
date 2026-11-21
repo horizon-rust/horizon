@@ -603,7 +603,7 @@ impl GeneratorData {
     pub(in crate::worldgen) fn feature_block_bindings(
         &self,
     ) -> Result<super::super::block_feature::FeatureBlockBindings<'static>, DecodeError> {
-        use super::super::block_feature::FeatureBlockBindings;
+        use super::super::block_feature::{FeatureBlockBindings, MultifaceClasses};
         let bound = match self.bound_block_tags.get() {
             Some(bound) => bound.clone(),
             None => {
@@ -611,7 +611,13 @@ impl GeneratorData {
                 self.bound_block_tags.get_or_init(|| bound).clone()
             }
         };
-        FeatureBlockBindings::with_bound_tags(self.registry, self.integers.clone(), bound)
+        let bindings =
+            FeatureBlockBindings::with_bound_tags(self.registry, self.integers.clone(), bound)?;
+        // Class answers exist only where the block behaviours were loaded.
+        Ok(match &self.behaviours {
+            Some(behaviours) => bindings.with_multiface_classes(MultifaceClasses::new(behaviours)),
+            None => bindings,
+        })
     }
 }
 

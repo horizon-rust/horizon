@@ -574,6 +574,25 @@ impl HugeMushroomFeature {
     }
 }
 
+/// Vanilla validates the block's class and takes its spreader from the same class.
+fn multiface_class(
+    classes: Option<&super::block_feature::MultifaceClasses>,
+    name: &str,
+) -> Result<bool, DecodeError> {
+    match classes {
+        Some(classes) => classes
+            .sculk(name)
+            .ok_or(DecodeError::Field("multiface spreadeable block")),
+        // A bundle without `block-behaviours.json` exports no class chain, so
+        // only vanilla's two blocks can be told apart: a mod's copy of one of
+        // their templates is indistinguishable by name.
+        None => match name {
+            "minecraft:glow_lichen" => Ok(false),
+            "minecraft:sculk_vein" => Ok(true),
+            _ => Err(DecodeError::Field("multiface spreadeable block")),
+        },
+    }
+}
 #[derive(Clone, Debug)]
 pub struct MultifaceGrowthFeature {
     block: BlockStateId,
@@ -603,15 +622,14 @@ impl MultifaceGrowthFeature {
         let name = super::density::identifier(&serde_json::from_str::<String>(
             required(&object, "block")?.get(),
         )?)?;
-        // The 26.3 MultifaceSpreadeableBlock subclasses.
-        let sculk = match name.as_str() {
-            "minecraft:glow_lichen" => false,
-            "minecraft:sculk_vein" => true,
-            _ => return Err(DecodeError::Field("multiface spreadeable block")),
-        };
-        let block = blocks
+        // Native resolves the name against every registered block
+        // (BuiltInRegistries.BLOCK) and only then checks its class, so a mod's
+        // block gets here too.
+        let block = bindings
+            .registry()
             .default_state(&name)
             .ok_or(DecodeError::Field("multiface block"))?;
+        let sculk = multiface_class(bindings.multiface_classes.as_ref(), &name)?;
         let flag = |key: &str| -> Result<bool, DecodeError> {
             Ok(optional(&object, key)
                 .map(|raw| serde_json::from_str::<bool>(raw.get()))
@@ -847,5 +865,186 @@ impl MultifaceGrowthFeature {
             || self.is_block(existing)
             || (self.blocks.has(existing, tb::WATER_BLOCK)
                 && self.blocks.has(existing, tb::WATER_SOURCE))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        block_placement::BlockPlacementBindings,
+        block_properties::BlockPropertiesRegistry,
+        collision::CachedCollisionRegistry,
+        registry::BlockRegistry,
+        worldgen::{
+            block_feature::MultifaceClasses,
+            state_provider::{StateProviderBindings, StateProviderCatalog},
+        },
+    };
+    use horizon_core::nbt::Tag;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// Vanilla accepts a block by class (`MultifaceSpreadeableBlock`) and takes
+    /// its spreader from the class too (`SculkVeinBlock`'s is the sculk one), so
+    /// a mod's own block gets the answer of the vanilla block it copies.
+    #[test]
+    fn multiface_growth_reads_the_blocks_class() {
+        let classes = MultifaceClasses::from_names(
+            &[
+                "minecraft:glow_lichen",
+                "minecraft:sculk_vein",
+                "example:glow_template",
+                "example:sculk_template",
+            ],
+            &[
+                "minecraft:sculk_vein",
+                "example:sculk_template",
+                "example:sculk_only",
+            ],
+        );
+        assert!(matches!(
+            multiface_class(Some(&classes), "example:glow_template"),
+            Ok(false)
+        ));
+        assert!(matches!(
+            multiface_class(Some(&classes), "example:sculk_template"),
+            Ok(true)
+        ));
+        assert!(multiface_class(Some(&classes), "minecraft:stone").is_err());
+        // A sculk class alone is no `MultifaceSpreadeableBlock`.
+        assert!(multiface_class(Some(&classes), "example:sculk_only").is_err());
+        // A bundle without a class chain answers for vanilla's own blocks only.
+        assert!(matches!(
+            multiface_class(None, "minecraft:glow_lichen"),
+            Ok(false)
+        ));
+        assert!(matches!(
+            multiface_class(None, "minecraft:sculk_vein"),
+            Ok(true)
+        ));
+        assert!(multiface_class(None, "example:glow_template").is_err());
+    }
+
+    /// Bindings over a registry that also registers a mod's multiface block.
+    #[cfg(test)]
+    fn modded_multiface_bindings() -> FeatureBlockBindings<'static> {
+        let names = [
+            "minecraft:air",
+            "minecraft:cave_air",
+            "minecraft:void_air",
+            "minecraft:stone",
+            "example:glow_template",
+        ];
+        let mut states: Vec<Tag> = names
+            .iter()
+            .map(|name| Tag::String((*name).into()))
+            .collect();
+        // Placement binds all 2 * 3^4 moss-carpet transitions even when no moss
+        // carpet is placed. These are synthetic states, not prepared game data.
+        for bottom in ["false", "true"] {
+            for code in 0..81 {
+                let mut n = code;
+                let mut props = BTreeMap::from([("bottom".into(), Tag::String(bottom.into()))]);
+                for side in ["north", "east", "south", "west"] {
+                    props.insert(
+                        side.into(),
+                        Tag::String(["none", "low", "tall"][n % 3].into()),
+                    );
+                    n /= 3;
+                }
+                states.push(Tag::compound([
+                    ("id", Tag::String("minecraft:pale_moss_carpet".into())),
+                    ("properties", Tag::Compound(props)),
+                ]));
+            }
+        }
+        let mut defaults: BTreeMap<_, _> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ((*name).into(), Tag::Int(index as i32)))
+            .collect();
+        defaults.insert(
+            "minecraft:pale_moss_carpet".into(),
+            Tag::Int(names.len() as i32),
+        );
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            ("states", Tag::List(states.clone())),
+            ("defaults", Tag::Compound(defaults)),
+        ]))
+        .unwrap();
+        // The bindings borrow the registry for as long as a test holds them.
+        let registry: &'static BlockRegistry = Box::leak(Box::new(registry));
+        let empty = Tag::compound([
+            ("x", Tag::LongArray(vec![0])),
+            ("y", Tag::LongArray(vec![0])),
+            ("z", Tag::LongArray(vec![0])),
+            ("occupied", Tag::ByteArray(vec![])),
+            ("cube", Tag::Byte(0)),
+            ("cube_axes", Tag::Byte(0)),
+            ("discrete_min", Tag::IntArray(vec![0; 3])),
+            ("discrete_max", Tag::IntArray(vec![0; 3])),
+        ]);
+        let collision_tag = Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            ("states", Tag::List(states.clone())),
+            ("shapes", Tag::List(vec![empty])),
+            ("cached_shapes", Tag::IntArray(vec![0; states.len()])),
+        ]);
+        let collisions = CachedCollisionRegistry::from_nbt(&collision_tag, registry).unwrap();
+        let blocks = names
+            .iter()
+            .copied()
+            .chain(["minecraft:pale_moss_carpet"])
+            .map(|name| (name.into(), Tag::Byte(0)))
+            .collect();
+        let properties = BlockPropertiesRegistry::from_nbt(
+            &Tag::compound([
+                ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+                ("states", Tag::List(states)),
+                ("blocks", Tag::Compound(blocks)),
+                ("occlusion", collision_tag),
+            ]),
+            &collisions,
+        )
+        .unwrap();
+        let providers =
+            StateProviderBindings::new(registry, BTreeSet::new(), &BTreeMap::new()).unwrap();
+        let catalog = StateProviderCatalog::from_resources(&BTreeMap::new()).unwrap();
+        let placement =
+            BlockPlacementBindings::new(registry, &properties, &BTreeSet::new(), &BTreeSet::new())
+                .unwrap();
+        FeatureBlockBindings::new(registry, BTreeSet::new())
+            .unwrap()
+            .with_block_properties(&properties)
+            .unwrap()
+            .with_state_providers(providers, catalog, placement)
+            .unwrap()
+            .with_multiface_classes(MultifaceClasses::from_names(
+                &["minecraft:glow_lichen", "example:glow_template"],
+                &[],
+            ))
+    }
+
+    /// The decoder takes a registered mod multiface block end to end.
+    #[test]
+    fn multiface_growth_decodes_a_mod_block() {
+        let bindings = modded_multiface_bindings();
+        let json = r#"{"type":"minecraft:multiface_growth","block":"example:glow_template","can_place_on_floor":true,"can_be_placed_on":"minecraft:stone"}"#;
+        let feature = MultifaceGrowthFeature::decode(json, &bindings).unwrap();
+        // `example:glow_template` is the fifth fixture name, so state 4.
+        assert_eq!(feature.block, BlockStateId(4));
+    }
+
+    /// A name the block registry lacks fails before the class is read.
+    #[test]
+    fn multiface_growth_resolves_the_name_before_the_class() {
+        let bindings = modded_multiface_bindings();
+        // `minecraft:glow_lichen` carries the class, so only its name can fail.
+        let json = r#"{"type":"minecraft:multiface_growth","block":"minecraft:glow_lichen","can_place_on_floor":true,"can_be_placed_on":"minecraft:stone"}"#;
+        assert!(matches!(
+            MultifaceGrowthFeature::decode(json, &bindings),
+            Err(DecodeError::Field("multiface block"))
+        ));
     }
 }

@@ -79,6 +79,62 @@ pub(super) fn integer_properties(registry: &BlockRegistry) -> BTreeSet<(String, 
         .collect()
 }
 
+/// Vanilla's block-class answers for the `minecraft:multiface_growth` codec:
+/// the blocks whose class chain makes them a `MultifaceSpreadeableBlock`, and
+/// the `SculkVeinBlock` ones among them (their spreader is the sculk one).
+pub(crate) struct MultifaceClasses {
+    spreadeable: BTreeSet<String>,
+    sculk: BTreeSet<String>,
+}
+impl MultifaceClasses {
+    /// The class chain of every block of the behaviour table.
+    pub(crate) fn new(behaviours: &crate::level::Behaviours) -> Self {
+        use crate::level::{BlockId, classes::Class};
+        let mut spreadeable = BTreeSet::new();
+        let mut sculk = BTreeSet::new();
+        for index in 0..behaviours.table.block_count() {
+            let block = BlockId(index as u16);
+            let data = behaviours.block_data(block);
+            let (is_spreadeable, is_sculk) = (
+                data.is(Class::MultifaceSpreadeable),
+                data.is(Class::SculkVein),
+            );
+            if !is_spreadeable && !is_sculk {
+                continue;
+            }
+            let name = behaviours.table.info(block).name.to_string();
+            // SculkVeinBlock overrides getSpreader with the sculk config; the
+            // rest of the family keeps DefaultSpreaderConfig.
+            if is_sculk {
+                sculk.insert(name.clone());
+            }
+            if is_spreadeable {
+                spreadeable.insert(name);
+            }
+        }
+        Self { spreadeable, sculk }
+    }
+    /// `Some(true)` for the sculk spreader, `Some(false)` for the default one,
+    /// `None` for a block that is no `MultifaceSpreadeableBlock`.
+    pub(crate) fn sculk(&self, name: &str) -> Option<bool> {
+        if !self.spreadeable.contains(name) {
+            None
+        } else if self.sculk.contains(name) {
+            Some(true)
+        } else {
+            Some(false)
+        }
+    }
+    /// The answers a class chain would give, without a behaviour table.
+    #[cfg(test)]
+    pub(crate) fn from_names(spreadeable: &[&str], sculk: &[&str]) -> Self {
+        Self {
+            spreadeable: spreadeable.iter().map(|name| (*name).to_owned()).collect(),
+            sculk: sculk.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+}
+
 pub struct FeatureBlockBindings<'r> {
     registry: &'r BlockRegistry,
     pub(crate) simple_blocks: Option<(
@@ -97,6 +153,8 @@ pub struct FeatureBlockBindings<'r> {
     pub(crate) air: [BlockStateId; 3],
     tree_blocks: std::sync::OnceLock<Arc<super::tree_blocks::TreeBlocks>>,
     pub(crate) structures: Option<Arc<super::structure::StructureResources>>,
+    /// Block classes for the `minecraft:multiface_growth` codec ([`MultifaceClasses`]).
+    pub(crate) multiface_classes: Option<MultifaceClasses>,
 }
 impl<'r> FeatureBlockBindings<'r> {
     /// Shared tree/vegetation classifications, built on first use. Requires
@@ -107,6 +165,11 @@ impl<'r> FeatureBlockBindings<'r> {
         structures: Arc<super::structure::StructureResources>,
     ) -> Self {
         self.structures = Some(structures);
+        self
+    }
+    /// Bind the block classes the `minecraft:multiface_growth` codec checks.
+    pub(crate) fn with_multiface_classes(mut self, classes: MultifaceClasses) -> Self {
+        self.multiface_classes = Some(classes);
         self
     }
     pub(crate) fn tree_blocks(&self) -> Result<Arc<super::tree_blocks::TreeBlocks>, DecodeError> {
@@ -269,6 +332,7 @@ impl<'r> FeatureBlockBindings<'r> {
             tags,
             tree_blocks: std::sync::OnceLock::new(),
             structures: None,
+            multiface_classes: None,
             air: [
                 get("minecraft:air")?,
                 get("minecraft:cave_air")?,
