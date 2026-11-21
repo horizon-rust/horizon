@@ -126,9 +126,19 @@ pub(super) struct RecipeKey {
     pub(super) display: i32,
 }
 
+/// The buttons a craft keeps going on while held.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Hold {
+    /// LT + A over the vanilla crafting book.
+    TriggerAndA,
+    /// A alone, on the controller crafting screen (`pad/legacy_craft.rs`).
+    A,
+}
+
 /// A craft under way.
 pub(super) struct DirectCraft {
     recipe: RecipeKey,
+    hold: Hold,
     /// The window it started in: another one ends it.
     menu: i32,
     /// The grid's size it started with: another one ends it.
@@ -154,6 +164,7 @@ impl DirectCraft {
     fn new(recipe: RecipeKey, menu: i32, cells: usize, repeat_at: Instant, now: Instant) -> Self {
         Self {
             recipe,
+            hold: Hold::TriggerAndA,
             menu,
             cells,
             asked: 1,
@@ -196,6 +207,12 @@ impl DirectCraft {
         self.asked = self.asked.saturating_add(1);
         self.holding = true;
         self.repeat_at = repeat_at;
+    }
+
+    /// As many as can be made: until the ingredients or the inventory's room run out.
+    fn all(&mut self) {
+        self.asked = MOST_CRAFTS;
+        self.holding = false;
     }
 
     /// The next step, and the gaps it leaves before the next request and placement.
@@ -316,7 +333,7 @@ impl Game<'_> {
     /// Whether direct crafting is allowed where the player is: only through a server, as every
     /// world is played (its quick moves are the server's), and on someone else's only if the
     /// player allowed it (`craft_on_servers`).
-    fn direct_craft_allowed(&self) -> bool {
+    pub(super) fn direct_craft_allowed(&self) -> bool {
         self.remote.is_some()
             && (!self.direct_craft_elsewhere() || self.settings.controller.craft_on_servers)
     }
@@ -345,11 +362,21 @@ impl Game<'_> {
             })
     }
 
+    /// The running craft's recipe.
+    pub(super) fn direct_craft_recipe(&self) -> Option<&RecipeKey> {
+        self.pad.menu.craft.as_ref().map(|craft| &craft.recipe)
+    }
+
     /// LT + A on a recipe: whether it started a craft, or asked the running one for another.
     /// Refused with an item carried, on a book other than crafting, when the recipe can't be made,
     /// where it isn't allowed, or while another recipe's craft is still finishing (one request at
     /// a time); a refused press is plain A's.
     pub(super) fn direct_craft_start(&mut self, entry: usize) -> bool {
+        self.direct_craft_start_held(entry, Hold::TriggerAndA)
+    }
+
+    /// A craft that goes on while `hold`'s buttons stay down, as `direct_craft_start`.
+    pub(super) fn direct_craft_start_held(&mut self, entry: usize, hold: Hold) -> bool {
         let now = Instant::now();
         let repeat_delay = self.settings.controller.repeat_delay;
         let repeat_at = now + Duration::from_secs_f32(repeat_delay);
@@ -373,6 +400,7 @@ impl Game<'_> {
         let menu = self.remote_menu().0;
         let cells = self.craft_size * self.craft_size;
         let mut craft = DirectCraft::new(recipe, menu, cells, repeat_at, now);
+        craft.hold = hold;
         if self.direct_craft_elsewhere() {
             craft.request_gap = REQUEST_GAP;
         }
@@ -381,6 +409,23 @@ impl Game<'_> {
         }
         self.pad.menu.craft = Some(craft);
         true
+    }
+
+    /// Every craft the recipe's ingredients and the inventory allow, one after the other, as
+    /// `direct_craft_start_held` starts one: whether it started.
+    pub(super) fn direct_craft_all(&mut self, entry: usize) -> bool {
+        if self.pad.menu.craft.is_some() || !self.direct_craft_start_held(entry, Hold::A) {
+            return false;
+        }
+        if let Some(craft) = &mut self.pad.menu.craft {
+            craft.all();
+        }
+        true
+    }
+
+    /// Whether a direct craft is under way.
+    pub(super) fn direct_craft_running(&self) -> bool {
+        self.pad.menu.craft.is_some()
     }
 
     /// Anything that ends a running craft while the server can still answer; a click or key
@@ -410,9 +455,9 @@ impl Game<'_> {
         if self.carried.is_some() {
             craft.stop();
         }
-        if !self.pad.edges.is_held(gamepad::Button::South)
-            || !self.pad.edges.is_held(gamepad::Button::LeftTrigger)
-        {
+        let held = self.pad.edges.is_held(gamepad::Button::South)
+            && (craft.hold == Hold::A || self.pad.edges.is_held(gamepad::Button::LeftTrigger));
+        if !held {
             craft.let_go();
         }
         // The book was rebuilt without the recipe: what's in the grid still goes back, and a

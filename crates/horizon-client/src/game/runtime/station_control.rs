@@ -43,7 +43,7 @@ fn stack_json(s: &ItemStack) -> Value {
 }
 
 impl Game<'_> {
-    fn click_at(&mut self, x: f32, y: f32, right: bool, shift: bool) {
+    pub(super) fn click_at(&mut self, x: f32, y: f32, right: bool, shift: bool) {
         use winit::keyboard::KeyCode;
         let saved = self.cursor;
         self.cursor = (x, y);

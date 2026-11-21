@@ -255,6 +255,9 @@ pub const HOTBAR_PREVIOUS: &str = "pad.hotbarPrevious";
 pub const HOTBAR_NEXT: &str = "pad.hotbarNext";
 /// Held, opens the radial menu (`radial.rs`).
 pub const RADIAL: &str = "pad.radial";
+/// Opens the controller crafting screen (Horizon's; `legacy_craft.rs`). On X once the player
+/// turns Console Crafting on (`PadSettings::set_legacy_crafting`), unbound before.
+pub const CRAFTING: &str = "pad.crafting";
 
 mod radial_file;
 pub mod store;
@@ -284,6 +287,7 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.pickItem", Some(Button::DPadLeft)),
     ("key.chat", Some(Button::DPadUp)),
     (RADIAL, Some(Button::DPadRight)),
+    (CRAFTING, None),
     ("key.advancements", None),
     ("key.playerlist", None),
     ("key.command", None),
@@ -317,6 +321,8 @@ pub enum Route {
         next: bool,
     },
     Radial,
+    /// Opens the controller crafting screen.
+    Crafting,
     /// Held, or flipped when the pad's toggle sneak is on.
     Sneak,
     Screenshot,
@@ -337,6 +343,7 @@ pub fn route(action: &str) -> Option<Route> {
         HOTBAR_PREVIOUS => Some(Route::HotbarStep { next: false }),
         HOTBAR_NEXT => Some(Route::HotbarStep { next: true }),
         RADIAL => Some(Route::Radial),
+        CRAFTING => Some(Route::Crafting),
         "key.sneak" => Some(Route::Sneak),
         "key.screenshot" => Some(Route::Screenshot),
         "key.smoothCamera" => Some(Route::SmoothCamera),
@@ -362,6 +369,7 @@ pub fn action_caption(action: &str) -> &str {
         HOTBAR_PREVIOUS => "Hotbar: Previous Slot",
         HOTBAR_NEXT => "Hotbar: Next Slot",
         RADIAL => RADIAL_CAPTION,
+        CRAFTING => "horizon.pad.action.crafting",
         other => other,
     }
 }
@@ -667,6 +675,17 @@ pub struct PadSettings {
     /// found in the server list. Off by default: a server's rules may count a repeated craft as a
     /// macro.
     pub craft_on_servers: bool,
+    /// The crafting menu shows as the controller crafting screen (Horizon's, Legacy Console's
+    /// layout) when the pad opens it. Off by default: it changes vanilla's look.
+    pub legacy_crafting: bool,
+    /// The controller crafting screen puts tiers of one tool or armour piece (wooden to netherite)
+    /// in one column, as Legacy Console's did. On by default.
+    pub legacy_tiers: bool,
+    /// Which screen each crafting grid opens on, as the player last switched it (L3 or the
+    /// switch button): true for the controller crafting screen, false for vanilla's. Keyed by the
+    /// grid's kind (`inventory`, `crafting_table`); one not here opens on its default
+    /// (`legacy_view`).
+    pub legacy_views: BTreeMap<String, bool>,
     pub glyphs: GlyphStyle,
     /// A Nintendo pad's face buttons go by their letters (A confirms and jumps, as on the
     /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
@@ -717,6 +736,9 @@ impl Default for PadSettings {
             trigger_threshold: 0.4,
             toggle_sneak: true,
             craft_on_servers: false,
+            legacy_crafting: false,
+            legacy_tiers: true,
+            legacy_views: BTreeMap::new(),
             glyphs: GlyphStyle::Auto,
             nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
@@ -789,6 +811,22 @@ impl PadSettings {
                 }
                 "toggleSneak" => s.toggle_sneak = flag(s.toggle_sneak),
                 "craftOnServers" => s.craft_on_servers = flag(s.craft_on_servers),
+                "legacyCrafting" => s.legacy_crafting = flag(s.legacy_crafting),
+                "legacyTiers" => s.legacy_tiers = flag(s.legacy_tiers),
+                "legacyViews" => {
+                    s.legacy_views = value
+                        .split(',')
+                        .filter_map(|pair| {
+                            let (kind, view) = pair.split_once('=')?;
+                            let console = match view {
+                                "console" => true,
+                                "classic" => false,
+                                _ => return None,
+                            };
+                            Some((kind.to_owned(), console))
+                        })
+                        .collect()
+                }
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
                 "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
@@ -913,11 +951,23 @@ impl PadSettings {
             self.keyboard.name(),
         );
         text.push_str(&format!(
-            "craftOnServers:{}\ngameplayGuide:{}\npointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
+            "craftOnServers:{}\nlegacyCrafting:{}\nlegacyTiers:{}\ngameplayGuide:{}\npointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
             bool_text(self.craft_on_servers),
+            bool_text(self.legacy_crafting),
+            bool_text(self.legacy_tiers),
             self.guide_detail.name(),
             self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
         ));
+        if !self.legacy_views.is_empty() {
+            let views: Vec<String> = self
+                .legacy_views
+                .iter()
+                .map(|(kind, console)| {
+                    format!("{kind}={}", if *console { "console" } else { "classic" })
+                })
+                .collect();
+            text.push_str(&format!("legacyViews:{}\n", views.join(",")));
+        }
         for (action, button) in &self.bindings {
             text.push_str(&format!(
                 "bind_{action}:{}\n",
@@ -973,6 +1023,55 @@ impl PadSettings {
         } else {
             self.bindings.insert(name, button);
         }
+    }
+    /// Console Crafting on or off. On, the crafting button takes X where X still does only Swap
+    /// Hands, and Swap Hands moves to the radial menu's first page, in its first empty slot;
+    /// with no empty slot there, or no button opening the radial menu, X stays Swap Hands and the
+    /// crafting button stays unbound. Off,
+    /// X goes back to Swap Hands if the crafting button holds it. Swap Hands stays on the dial.
+    pub fn set_legacy_crafting(&mut self, on: bool) {
+        use crate::radial::{RadialAction, Slot};
+        self.legacy_crafting = on;
+        let x = Button::West;
+        if !on {
+            if self.binding(CRAFTING) == Some(x) {
+                self.bind(CRAFTING, None);
+                if self.binding("key.swapOffhand").is_none() {
+                    self.bind("key.swapOffhand", Some(x));
+                }
+            }
+            return;
+        }
+        if self.binding(CRAFTING).is_some()
+            || self.actions_of(x) != ["key.swapOffhand"]
+            || self.binding(RADIAL).is_none()
+        {
+            return;
+        }
+        let swap = Slot::Action(RadialAction::SwapOffhand);
+        let on_dial = (0..self.radial.len()).any(|p| self.radial.page(p).slots().contains(&&swap));
+        if !on_dial {
+            let Some(free) = self
+                .radial
+                .page(0)
+                .slots()
+                .iter()
+                .position(|s| **s == Slot::Empty)
+            else {
+                return;
+            };
+            self.radial.set_slot(0, free, swap);
+        }
+        self.bind("key.swapOffhand", None);
+        self.bind(CRAFTING, Some(x));
+    }
+    /// Whether this grid opens on the controller crafting screen: the player's last choice for
+    /// it, else the default (the crafting table does; the inventory, which Y opens, is vanilla's).
+    pub fn legacy_view(&self, kind: &str) -> bool {
+        self.legacy_views
+            .get(kind)
+            .copied()
+            .unwrap_or(kind != "inventory")
     }
     /// Restore an action's default when this stick allows it, otherwise unbind it.
     pub fn reset_binding(&mut self, action: &str) {
@@ -1860,6 +1959,63 @@ mod tests {
         assert_eq!(held.due(at(1100), interval), Some(DropStep::Stack));
         assert_eq!(held.due(at(1200), interval), Some(DropStep::Stack));
         assert_eq!(held.due(at(1201), interval), None);
+    }
+
+    #[test]
+    fn console_crafting_takes_x_and_puts_swap_hands_on_the_dial() {
+        use crate::radial::{RadialAction, Slot};
+        let swap = Slot::Action(RadialAction::SwapOffhand);
+        let mut s = PadSettings::default();
+        assert_eq!(s.binding(CRAFTING), None);
+        s.set_legacy_crafting(true);
+        assert!(s.legacy_crafting);
+        assert_eq!(s.binding(CRAFTING), Some(Button::West));
+        assert_eq!(s.binding("key.swapOffhand"), None);
+        assert!(s.radial.page(0).slots().contains(&&swap));
+        // Saved and read back: the setting, X and the dial stay.
+        let read = PadSettings::parse(&s.serialize());
+        assert!(read.legacy_crafting);
+        assert_eq!(read.binding(CRAFTING), Some(Button::West));
+        assert!(read.radial.page(0).slots().contains(&&swap));
+        // Off: X is Swap Hands again; the dial keeps its slot.
+        s.set_legacy_crafting(false);
+        assert_eq!(s.binding(CRAFTING), None);
+        assert_eq!(s.binding("key.swapOffhand"), Some(Button::West));
+        assert!(s.radial.page(0).slots().contains(&&swap));
+    }
+
+    #[test]
+    fn console_crafting_keeps_x_on_swap_hands_when_nothing_opens_the_dial() {
+        let mut s = PadSettings::default();
+        s.bind(RADIAL, None);
+        s.set_legacy_crafting(true);
+        assert!(s.legacy_crafting);
+        assert_eq!(s.binding(CRAFTING), None);
+        assert_eq!(s.binding("key.swapOffhand"), Some(Button::West));
+    }
+
+    #[test]
+    fn each_grids_screen_choice_is_kept_in_the_file() {
+        let mut s = PadSettings::default();
+        assert!(s.legacy_view("crafting_table") && !s.legacy_view("inventory"));
+        s.legacy_views.insert("crafting_table".into(), false);
+        s.legacy_views.insert("inventory".into(), true);
+        let read = PadSettings::parse(&s.serialize());
+        assert!(!read.legacy_view("crafting_table"));
+        assert!(read.legacy_view("inventory"));
+        // A view name this game doesn't know leaves the default.
+        let odd = PadSettings::parse("legacyViews:crafting_table=sideways,inventory=console\n");
+        assert!(odd.legacy_view("crafting_table") && odd.legacy_view("inventory"));
+    }
+
+    #[test]
+    fn console_crafting_leaves_an_x_the_player_rebound() {
+        let mut s = PadSettings::default();
+        s.bind("key.jump", Some(Button::West));
+        s.set_legacy_crafting(true);
+        assert!(s.legacy_crafting);
+        assert_eq!(s.binding(CRAFTING), None);
+        assert_eq!(s.actions_of(Button::West), ["key.jump", "key.swapOffhand"]);
     }
 
     #[test]

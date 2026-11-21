@@ -30,6 +30,8 @@ pub(crate) use values::{chat_delay_label, chat_px, generic, on_off, percent};
 
 mod layout;
 mod shell_pages;
+mod wrap;
+use wrap::wrap;
 
 use self::layout::OptionsLayout;
 #[path = "options_ui_wheel.rs"]
@@ -46,30 +48,6 @@ fn tr(key: &str) -> Text {
 pub static HORIZON_EXTRAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 fn horizon_extras() -> bool {
     HORIZON_EXTRAS.load(std::sync::atomic::Ordering::Relaxed)
-}
-/// `text` cut into lines of at most `width` characters, at spaces where it has them.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let len = line.chars().count();
-        if len > 0 && len + 1 + word.chars().count() > width {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-        while line.chars().count() > width {
-            let rest: String = line.chars().skip(width).collect();
-            line = line.chars().take(width).collect();
-            lines.push(std::mem::replace(&mut line, rest));
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 /// Setting `j` of the native mod in row `i` of Options > Mods.
 fn mod_setting(s: &Settings, i: u16, j: u16) -> Option<&crate::mod_list::NativeSetting> {
@@ -338,6 +316,8 @@ impl Opt {
             Opt::PadInvertX => "horizon.options.invert_x",
             Opt::PadInvertY => "horizon.options.invert_y",
             Opt::PadCraftOnServers => "horizon.options.craft_on_servers",
+            Opt::PadLegacyCrafting => "horizon.options.legacy_crafting",
+            Opt::PadLegacyTiers => "horizon.options.legacy_tiers",
             Opt::PadToggleSneak => "horizon.options.sneak_button",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
@@ -903,6 +883,8 @@ impl Opt {
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
             Opt::PadCraftOnServers => on_off(s.controller.craft_on_servers),
+            Opt::PadLegacyCrafting => on_off(s.controller.legacy_crafting),
+            Opt::PadLegacyTiers => on_off(s.controller.legacy_tiers),
             Opt::PadToggleSneak => tr(if s.controller.toggle_sneak {
                 "options.key.toggle"
             } else {
@@ -1229,6 +1211,11 @@ impl Opt {
             Opt::PadCraftOnServers => {
                 s.controller.craft_on_servers = !s.controller.craft_on_servers
             }
+            Opt::PadLegacyCrafting => {
+                let on = !s.controller.legacy_crafting;
+                s.controller.set_legacy_crafting(on)
+            }
+            Opt::PadLegacyTiers => s.controller.legacy_tiers = !s.controller.legacy_tiers,
             Opt::PadToggleSneak => s.controller.toggle_sneak = !s.controller.toggle_sneak,
             Opt::PadNintendoButtons => {
                 s.controller.nintendo_letters = !s.controller.nintendo_letters

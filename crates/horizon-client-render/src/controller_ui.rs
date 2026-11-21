@@ -254,6 +254,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Show the buttons for what you can do, while you play with a controller.",
                         ),
                         option(
+                            Opt::PadLegacyCrafting,
+                            "horizon.options.legacy_crafting.about",
+                        ),
+                        option(Opt::PadLegacyTiers, "horizon.options.legacy_tiers.about"),
+                        option(
                             Opt::PadCraftOnServers,
                             "Lets LT + A craft on servers other than your own worlds. Some servers count it as a macro.",
                         ),
@@ -429,6 +434,8 @@ impl Item {
             Item::Option(Opt::PadInvertX) => Some(c.invert_x),
             Item::Option(Opt::PadInvertY) => Some(c.invert_y),
             Item::Option(Opt::PadCraftOnServers) => Some(c.craft_on_servers),
+            Item::Option(Opt::PadLegacyCrafting) => Some(c.legacy_crafting),
+            Item::Option(Opt::PadLegacyTiers) => Some(c.legacy_tiers),
             _ => None,
         }
     }
@@ -766,6 +773,8 @@ mod tests {
             Opt::PadEnabled,
             Opt::PadGameplayGuide,
             Opt::PadCraftOnServers,
+            Opt::PadLegacyCrafting,
+            Opt::PadLegacyTiers,
             Opt::PadVibration,
             Opt::PadPlayInBackground,
             Opt::PadAdaptiveTriggers,

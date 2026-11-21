@@ -176,6 +176,10 @@ pub fn resolve(facts: &Facts, settings: &PadSettings) -> Guide {
             row("key.sprint", facts.can_sprint.then_some("key.sprint")),
             row("key.inventory", player.then_some("key.inventory")),
             row(
+                crate::gamepad::CRAFTING,
+                player.then_some("horizon.legacy_craft.guide"),
+            ),
+            row(
                 "key.drop",
                 (player && facts.main_hand_item).then_some("horizon.controller.guide.drop"),
             ),
@@ -311,6 +315,9 @@ pub struct MenuFacts {
     pub book: bool,
     /// The bumpers switch tabs.
     pub tabs: bool,
+    /// Console Crafting is on over a crafting grid: the left stick switches to the controller
+    /// crafting screen instead of throwing the stack.
+    pub console_switch: bool,
 }
 
 /// An inventory's rows, by what they ask of the player: at the bottom right one face button, at the
@@ -349,7 +356,10 @@ pub fn resolve_menu(f: &MenuFacts) -> Guide {
             Row::new(Extra, MOVE),
             Row::new(View, "horizon.controller.guide.drop"),
             Row::new(LeftStick, "horizon.controller.guide.drop_stack"),
-        ],
+        ]
+        .into_iter()
+        .filter(|row| !(f.console_switch && row.of == GlyphOf::Menu(LeftStick)))
+        .collect(),
         Under::Nothing | Under::Slot { .. } => Vec::new(),
         Under::Recipe {
             direct_craft,
@@ -385,6 +395,8 @@ pub fn resolve_menu(f: &MenuFacts) -> Guide {
             PageNext,
             "horizon.controller.guide.tabs",
         )),
+        f.console_switch
+            .then_some(Row::new(LeftStick, "horizon.legacy_craft.switch")),
     ];
     let close = Row::new(Back, "horizon.controller.guide.close");
     let rows = std::iter::once(close)

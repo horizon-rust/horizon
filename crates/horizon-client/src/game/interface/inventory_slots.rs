@@ -421,7 +421,7 @@ impl Game<'_> {
     }
     pub(super) fn draw_inventory(&mut self, batch: &mut HudBatch) {
         screen_info::begin_container("container");
-        if self.draw_station(batch) {
+        if self.draw_legacy_or_station(batch) {
             return;
         }
         let (ox, oy) = self.inventory_origin(batch);

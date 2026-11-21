@@ -78,6 +78,10 @@ impl Stacked {
         self.keys = keys;
         self.amounts = amounts;
     }
+    /// How many of `item` are counted.
+    pub fn count(&self, item: &str) -> i32 {
+        self.index.get(item).map_or(0, |&i| self.amounts[i])
+    }
     pub fn keys(&self) -> &[Arc<str>] {
         &self.keys
     }

@@ -99,6 +99,7 @@ actions! {
     HotbarPrevious, "pad.hotbarPrevious", None;
     HotbarNext, "pad.hotbarNext", None;
     Radial, "pad.radial", None;
+    Crafting, "pad.crafting", None;
 }
 
 impl Action {

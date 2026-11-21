@@ -144,6 +144,7 @@ impl Game<'_> {
             || settings.guide_detail == GuideDetail::Off
             || !self.pad.in_use
             || self.pad.keyboard_took_over
+            || self.legacy_showing()
             || self.prompt_open()
             || self.title.is_some()
             || self.pad_keyboard_captures()
@@ -205,6 +206,7 @@ impl Game<'_> {
             carrying: self.carried.is_some(),
             book: self.pad_recipe_book_showing(),
             tabs: creative,
+            console_switch: self.legacy_switch_here(),
         }
     }
 

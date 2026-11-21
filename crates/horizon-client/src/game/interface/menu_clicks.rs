@@ -789,6 +789,9 @@ impl Game<'_> {
         }
     }
     pub(super) fn click_inventory(&mut self, right: bool) {
+        if self.legacy_click(right) {
+            return;
+        }
         if self.mod_browser_press(right) || self.mount_click(right) {
             return;
         }

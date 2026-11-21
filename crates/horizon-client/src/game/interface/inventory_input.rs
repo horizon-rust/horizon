@@ -56,7 +56,12 @@ impl Game<'_> {
             return false;
         };
         let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-        let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1) else {
+        // The controller crafting screen hides vanilla's slots: its own inventory decides.
+        let slot = match self.legacy_key_slot() {
+            Some(slot) => slot,
+            None => self.slot_at(&batch, self.cursor.0, self.cursor.1),
+        };
+        let Some(slot) = slot else {
             return false;
         };
         let hotbar = HOTBAR_DIGITS
@@ -95,10 +100,11 @@ impl Game<'_> {
             return;
         };
         let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-        let Some(slot) = self
-            .slot_at(&batch, self.cursor.0, self.cursor.1)
-            .filter(|_| menu)
-        else {
+        let slot = match self.legacy_key_slot() {
+            Some(slot) => slot,
+            None => self.slot_at(&batch, self.cursor.0, self.cursor.1),
+        };
+        let Some(slot) = slot.filter(|_| menu) else {
             return;
         };
         if self.click_open_inventory(Some(slot), 0, horizon_client::menu::Input::Clone)
@@ -113,6 +119,11 @@ impl Game<'_> {
         use horizon_client::container_screen::Target;
         use horizon_client::menu::Input;
         self.direct_craft_stop();
+        // The controller crafting screen takes every click: the inventory under it isn't drawn.
+        if self.legacy_click(right) {
+            self.inv_clicks.skip_release();
+            return;
+        }
         if self.mod_browser_press(right) {
             return;
         }
@@ -269,14 +280,9 @@ impl Game<'_> {
         let Some((ty, slots)) = self.inv_drag.clone() else {
             return;
         };
-        let Some(r) = self.renderer.as_ref() else {
-            return;
-        };
-        let batch = HudBatch::new(
-            [r.config.width, r.config.height],
-            self.settings.gui_scale_inputs(),
-        );
-        if let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1)
+        // The slot the press would take: under the controller crafting screen, only its visible
+        // inventory.
+        if let Some(slot) = self.inventory_target().0
             && slot != 200
             && slot < Creative::DISPLAY
             && !slots.contains(&slot)
@@ -300,6 +306,11 @@ impl Game<'_> {
     }
     /// The hovered slot and whether the cursor is outside the window.
     pub(super) fn inventory_target(&self) -> (Option<usize>, bool) {
+        // Under the controller crafting screen only its visible inventory is a slot, and nothing
+        // is outside: vanilla's hidden slots take no scroll, pick or throw.
+        if let Some(slot) = self.legacy_key_slot() {
+            return (slot, false);
+        }
         let Some(r) = self.renderer.as_ref() else {
             return (None, false);
         };

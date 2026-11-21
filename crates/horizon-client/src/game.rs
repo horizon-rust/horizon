@@ -9519,7 +9519,7 @@ impl Game<'_> {
                         && !bundle
                         && !self.tweak_scroll(d, self.inventory_target().0)
                     {
-                        self.station_scroll(d);
+                        self.legacy_or_station_scroll(d);
                     }
                     if self.screen == Screen::Stats && d != 0.0 {
                         self.stats_scroll(d);
