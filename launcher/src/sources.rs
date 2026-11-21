@@ -531,11 +531,12 @@ pub(crate) fn linked_layout_links(launcher: &Path) -> Vec<PathBuf> {
     let jars: Vec<PathBuf> = {
         let plain_dir = |dir: &Path| fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir());
         let versions = linked.join("versions");
-        [launcher, linked.as_path(), versions.as_path()]
+        let listed = [launcher, linked.as_path(), versions.as_path()]
             .into_iter()
             .all(plain_dir)
             .then(|| fs::read_dir(&versions).ok())
-            .flatten()
+            .flatten();
+        listed
             .into_iter()
             .flatten()
             .flatten()
