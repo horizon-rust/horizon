@@ -718,6 +718,17 @@ impl StructureRegistry {
         if !placed {
             return false;
         }
+        self.structure_chunk_after_placed(set, seed, x, z, rings, zones)
+    }
+    fn structure_chunk_after_placed(
+        &self,
+        set: &StructureSet,
+        seed: i64,
+        x: i32,
+        z: i32,
+        rings: &Rings,
+        zones: bool,
+    ) -> bool {
         if set.rings.as_ref().is_some_and(|r| !r.allows(x, z)) {
             return false;
         }
@@ -763,10 +774,68 @@ impl StructureRegistry {
         let Some(other) = self.sets.iter().find(|s| s.name == other) else {
             return false;
         };
-        (x - range..=x + range).any(|tx| {
-            (z - range..=z + range)
-                .any(|tz| self.structure_chunk(other, seed, tx, tz, rings, zones))
-        })
+        let (Some(min_x), Some(max_x), Some(min_z), Some(max_z)) = (
+            x.checked_sub(range),
+            x.checked_add(range),
+            z.checked_sub(range),
+            z.checked_add(range),
+        ) else {
+            return (x - range..=x + range).any(|tx| {
+                (z - range..=z + range)
+                    .any(|tz| self.structure_chunk(other, seed, tx, tz, rings, zones))
+            });
+        };
+        if min_x > max_x || min_z > max_z {
+            return false;
+        }
+        match other.placement {
+            Placement::DimensionOrigin => {
+                (min_x..=max_x).contains(&self.origin.x) && (min_z..=max_z).contains(&self.origin.z)
+            }
+            Placement::RandomSpread {
+                spacing,
+                separation,
+                triangular,
+            } if spacing > 0 => {
+                // Each `spacing x spacing` sector produces at most one candidate chunk.
+                let limit = spacing - separation;
+                let spread = |r: &mut WorldgenRandom<LegacyRandom>| {
+                    if triangular {
+                        (r.next_int_bound(limit).unwrap_or(0)
+                            + r.next_int_bound(limit).unwrap_or(0))
+                            / 2
+                    } else {
+                        r.next_int_bound(limit).unwrap_or(0)
+                    }
+                };
+                for gx in min_x.div_euclid(spacing)..=max_x.div_euclid(spacing) {
+                    for gz in min_z.div_euclid(spacing)..=max_z.div_euclid(spacing) {
+                        let mut random = WorldgenRandom::new(LegacyRandom::new(0));
+                        random.set_large_feature_with_salt(seed, gx, gz, other.salt);
+                        let px = gx.wrapping_mul(spacing).wrapping_add(spread(&mut random));
+                        let pz = gz.wrapping_mul(spacing).wrapping_add(spread(&mut random));
+                        if (min_x..=max_x).contains(&px)
+                            && (min_z..=max_z).contains(&pz)
+                            && self.structure_chunk_after_placed(other, seed, px, pz, rings, zones)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            Placement::ConcentricRings { .. } => rings.get(&other.name).is_some_and(|list| {
+                list.iter().any(|c| {
+                    (min_x..=max_x).contains(&c.x)
+                        && (min_z..=max_z).contains(&c.z)
+                        && self.structure_chunk_after_placed(other, seed, c.x, c.z, rings, zones)
+                })
+            }),
+            Placement::Unsupported => false,
+            _ => (min_x..=max_x).any(|tx| {
+                (min_z..=max_z).any(|tz| self.structure_chunk(other, seed, tx, tz, rings, zones))
+            }),
+        }
     }
 }
 impl StructureSet {

@@ -252,7 +252,14 @@ impl OreFeature {
         size_y: i32,
     ) -> Result<bool, FeatureExecutionError<W::Error>> {
         let size = self.size as usize;
-        let mut data = vec![[0f64; 4]; size];
+        let mut data_stack = [[0f64; 4]; 64];
+        let mut data_heap = Vec::new();
+        let data: &mut [[f64; 4]] = if size <= data_stack.len() {
+            &mut data_stack[..size]
+        } else {
+            data_heap.resize(size, [0.0; 4]);
+            &mut data_heap[..]
+        };
         for (i, entry) in data.iter_mut().enumerate() {
             let step = i as f32 / self.size as f32;
             let step64 = f64::from(step);
@@ -286,11 +293,19 @@ impl OreFeature {
             }
         }
         let tested_len = (size_xz as usize) * (size_y as usize) * (size_xz as usize);
-        let mut tested = vec![0u64; tested_len.div_ceil(64)];
+        let tested_words = tested_len.div_ceil(64);
+        let mut tested_stack = [0u64; 160];
+        let mut tested_heap = Vec::new();
+        let tested: &mut [u64] = if tested_words <= tested_stack.len() {
+            &mut tested_stack[..tested_words]
+        } else {
+            tested_heap.resize(tested_words, 0);
+            &mut tested_heap[..]
+        };
         let mut placed = 0;
         let mut matches = TargetMemo::default();
         let mut squares = SphereSquares::default();
-        for sphere in data {
+        for &sphere in &*data {
             if sphere[3] < 0.0 {
                 continue;
             }
@@ -391,9 +406,14 @@ impl OreFeature {
 /// so the cells of a row that pass form one run around the smallest square:
 /// it is found from there outwards, and the cells outside the sphere are
 /// never visited.
+const STACK_AXIS: usize = 32;
+
 #[derive(Default)]
 struct SphereSquares {
-    axes: [Vec<f64>; 3],
+    stack: [[f64; STACK_AXIS]; 3],
+    stack_len: [usize; 3],
+    heap: [Vec<f64>; 3],
+    use_heap: [bool; 3],
 }
 impl SphereSquares {
     fn each_cell<E>(
@@ -408,18 +428,42 @@ impl SphereSquares {
         for axis in 0..3 {
             let low = ((centre[axis] - r).floor() as i32).max(start[axis]);
             let high = ((centre[axis] + r).floor() as i32).max(low);
-            let squares = &mut self.axes[axis];
-            squares.clear();
-            squares.extend((low..=high).map(|v| {
+            let count = (i64::from(high) - i64::from(low) + 1) as usize;
+            let slice: &mut [f64] = if count <= STACK_AXIS {
+                self.use_heap[axis] = false;
+                self.stack_len[axis] = count;
+                &mut self.stack[axis][..count]
+            } else {
+                self.use_heap[axis] = true;
+                let heap = &mut self.heap[axis];
+                heap.clear();
+                heap.resize(count, 0.0);
+                &mut heap[..]
+            };
+            let mut best = 0usize;
+            let mut best_sq = 0.0_f64;
+            for (idx, (v, slot)) in (low..=high).zip(slice.iter_mut()).enumerate() {
                 let d = (f64::from(v) + 0.5 - centre[axis]) / r;
-                d * d
-            }));
+                let sq = d * d;
+                *slot = sq;
+                if idx == 0 || sq.total_cmp(&best_sq).is_lt() {
+                    best = idx;
+                    best_sq = sq;
+                }
+            }
             from[axis] = low;
-            lowest[axis] = (0..squares.len())
-                .min_by(|&a, &b| squares[a].total_cmp(&squares[b]))
-                .unwrap_or(0);
+            lowest[axis] = best;
         }
-        let [xs, ys, zs] = &self.axes;
+        let axis_slice = |axis: usize| -> &[f64] {
+            if self.use_heap[axis] {
+                &self.heap[axis]
+            } else {
+                &self.stack[axis][..self.stack_len[axis]]
+            }
+        };
+        let xs = axis_slice(0);
+        let ys = axis_slice(1);
+        let zs = axis_slice(2);
         // Vanilla's `xd * xd >= 1.0` is `0.0 + xd * xd >= 1.0`: a square is
         // never negative zero, and adding zero to it rounds nothing.
         let Some((x_low, x_high)) = pass_run(xs, lowest[0], 0.0) else {

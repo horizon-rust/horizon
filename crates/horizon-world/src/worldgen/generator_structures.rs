@@ -14,11 +14,13 @@ use super::{
         stronghold::RingSearch,
     },
 };
-use horizon_core::{density::Beardifier, geometry::Direction, position::ChunkPos};
+use horizon_core::{
+    density::Beardifier, fast_hash::FxHashMap, geometry::Direction, position::ChunkPos,
+};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     sync::{
         Arc, Condvar, Mutex, OnceLock, RwLock, TryLockError,
         atomic::{AtomicUsize, Ordering},
@@ -26,6 +28,11 @@ use std::{
 };
 
 pub(super) type Starts = Arc<Vec<Arc<StructureStart>>>;
+
+fn empty_starts() -> Starts {
+    static EMPTY: OnceLock<Starts> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
+}
 impl StructureState {
     /// [`StartCache::census`].
     pub(super) fn start_census(&self) -> (usize, usize) {
@@ -157,8 +164,10 @@ struct StartCache {
 }
 #[derive(Default)]
 struct StartShard {
-    new: HashMap<(i32, i32), Starts>,
-    old: HashMap<(i32, i32), Starts>,
+    /// `None` marks a chunk cached with zero starts (avoiding per-chunk heap
+    /// `Arc<Vec>` allocations and atomic refcount traffic on empty chunks).
+    new: FxHashMap<(i32, i32), Option<Starts>>,
+    old: FxHashMap<(i32, i32), Option<Starts>>,
 }
 impl StartShard {
     /// Room for one more in the new generation.
@@ -177,7 +186,9 @@ impl StartCache {
     fn shard(&self, key: (i32, i32)) -> &RwLock<StartShard> {
         &self.shards[shard_of(key, START_SHARDS)]
     }
-    fn get(&self, key: (i32, i32)) -> Option<Starts> {
+    /// Returns `None` on miss, `Some(None)` on cached empty chunk (zero `Arc`
+    /// traffic), and `Some(Some(starts))` when the chunk has starts.
+    fn get_entry(&self, key: (i32, i32)) -> Option<Option<Starts>> {
         let shard = self.shard(key);
         {
             let read = shard.read().unwrap();
@@ -199,7 +210,7 @@ impl StartCache {
     }
     /// Keeps `starts` unless another thread built the same chunk's first:
     /// everyone keeps the first, so placement state on its pieces is shared.
-    fn insert_first(&self, key: (i32, i32), starts: Starts) -> Starts {
+    fn insert_first(&self, key: (i32, i32), starts: Option<Starts>) -> Option<Starts> {
         let mut shard = self.shard(key).write().unwrap();
         let first = shard.new.remove(&key).or_else(|| shard.old.remove(&key));
         shard.make_room();
@@ -219,7 +230,7 @@ impl StartCache {
                 .new
                 .values()
                 .chain(shard.old.values())
-                .filter(|s| !s.is_empty())
+                .filter(|s| s.is_some())
                 .count();
         }
         census
@@ -230,7 +241,8 @@ impl StartCache {
         if !shard.new.contains_key(&key) {
             shard.make_room();
         }
-        shard.new.insert(key, starts);
+        let entry = (!starts.is_empty()).then_some(starts);
+        shard.new.insert(key, entry);
     }
     fn clear(&self) {
         for shard in &self.shards {
@@ -658,13 +670,23 @@ impl StructureState {
         chunk: ChunkPos,
         wait: bool,
     ) -> Option<Starts> {
-        if let Some(found) = self.starts.get((chunk.x, chunk.z)) {
+        self.build_starts_entry(context, chunk, wait)
+            .map(|entry| entry.unwrap_or_else(empty_starts))
+    }
+    fn build_starts_entry(
+        &self,
+        context: &mut impl super::structure::start::StartContext,
+        chunk: ChunkPos,
+        wait: bool,
+    ) -> Option<Option<Starts>> {
+        if let Some(found) = self.starts.get_entry((chunk.x, chunk.z)) {
             return Some(found);
         }
         if context.is_old_chunk(chunk) {
             // Decoded once: the neighbours ask for these starts again and again.
             let starts = self.saved_starts_at(context, chunk);
-            return Some(self.starts.insert_first((chunk.x, chunk.z), starts));
+            let entry = (!starts.is_empty()).then_some(starts);
+            return Some(self.starts.insert_first((chunk.x, chunk.z), entry));
         }
         // Ring searches enlist other workers and wait for them: never hold a
         // chunk-work lock while helping, even when this chunk has no starts.
@@ -675,7 +697,7 @@ impl StructureState {
             Err(TryLockError::WouldBlock) if !wait => return None,
             Err(_) => work.lock().unwrap(),
         };
-        if let Some(found) = self.starts.get((chunk.x, chunk.z)) {
+        if let Some(found) = self.starts.get_entry((chunk.x, chunk.z)) {
             return Some(found);
         }
         let saved = self.saved.get().and_then(|source| source(chunk));
@@ -699,22 +721,22 @@ impl StructureState {
                 )
             })
             .collect();
-        let starts: Starts = Arc::new(
-            create_starts_with_saved(
-                &self.registry,
-                &self.resources,
-                &self.bindings,
-                context,
-                &self.possible_sets,
-                rings,
-                chunk,
-                saved,
-            )
-            .into_iter()
-            .map(Arc::new)
-            .collect(),
+        let built = create_starts_with_saved(
+            &self.registry,
+            &self.resources,
+            &self.bindings,
+            context,
+            &self.possible_sets,
+            rings,
+            chunk,
+            saved,
         );
-        Some(self.starts.insert_first((chunk.x, chunk.z), starts))
+        let entry = if built.is_empty() {
+            None
+        } else {
+            Some(Arc::new(built.into_iter().map(Arc::new).collect()))
+        };
+        Some(self.starts.insert_first((chunk.x, chunk.z), entry))
     }
     /// `Structure.generate` for `/place structure`: the start `structure`
     /// builds in `chunk`, whether or not a structure set would place one
@@ -808,7 +830,7 @@ impl StructureState {
             // jigsaw's start piece and its biome), and only then are all its starts built,
             // layouts included. A map's search for a camp of a rarer biome built thousands of
             // chunks' starts on the server thread, seconds of it (#8669).
-            if this.starts.get((chunk.x, chunk.z)).is_none()
+            if this.starts.get_entry((chunk.x, chunk.z)).is_none()
                 && !context.is_old_chunk(chunk)
                 && !wanted_structures.iter().any(|&s| {
                     may_start(
@@ -918,25 +940,81 @@ impl StructureState {
         chunk: ChunkPos,
     ) -> Vec<Arc<StructureStart>> {
         let (bx, bz) = (chunk.x * 16, chunk.z * 16);
-        let around: Vec<ChunkPos> = (chunk.x - 8..=chunk.x + 8)
-            .flat_map(|sx| (chunk.z - 8..=chunk.z + 8).map(move |sz| ChunkPos::new(sx, sz)))
-            .collect();
+        let mut out = Vec::new();
         // Workers generating neighbouring chunks ask for the same starts in the
         // same order: build those no other worker is building first, and wait
         // for the others only then, rather than all queueing behind each one.
-        let found: Vec<Option<Starts>> = around
-            .iter()
-            .map(|&at| self.build_starts(context, at, false))
-            .collect();
-        let mut out = Vec::new();
-        for (&at, found) in around.iter().zip(found) {
-            let starts = found.unwrap_or_else(|| self.starts_at(context, at));
-            for start in starts.iter() {
-                let b = start.bounding_box;
-                if b.max[0] >= bx && b.min[0] <= bx + 15 && b.max[2] >= bz && b.min[2] <= bz + 15 {
-                    out.push(start.clone());
+        let mut busy = [ChunkPos::new(0, 0); 289];
+        let mut busy_count = 0usize;
+        let mut deferred: [Option<Starts>; 289] = [const { None }; 289];
+        let mut idx = 0usize;
+        for sx in chunk.x - 8..=chunk.x + 8 {
+            for sz in chunk.z - 8..=chunk.z + 8 {
+                let at = ChunkPos::new(sx, sz);
+                match self.build_starts_entry(context, at, false) {
+                    Some(Some(starts)) => {
+                        if busy_count == 0 {
+                            for start in starts.iter() {
+                                let b = start.bounding_box;
+                                if b.max[0] >= bx
+                                    && b.min[0] <= bx + 15
+                                    && b.max[2] >= bz
+                                    && b.min[2] <= bz + 15
+                                {
+                                    out.push(start.clone());
+                                }
+                            }
+                        } else {
+                            deferred[idx] = Some(starts);
+                        }
+                    }
+                    Some(None) => {}
+                    None => {
+                        busy[busy_count] = at;
+                        busy_count += 1;
+                    }
+                }
+                idx += 1;
+            }
+        }
+        if busy_count > 0 {
+            let mut bi = 0usize;
+            let mut slot_idx = 0usize;
+            for sx in chunk.x - 8..=chunk.x + 8 {
+                for sz in chunk.z - 8..=chunk.z + 8 {
+                    let at = ChunkPos::new(sx, sz);
+                    if bi < busy_count && busy[bi] == at {
+                        bi += 1;
+                        if let Some(starts) = self.build_starts_entry(context, at, true).flatten() {
+                            for start in starts.iter() {
+                                let b = start.bounding_box;
+                                if b.max[0] >= bx
+                                    && b.min[0] <= bx + 15
+                                    && b.max[2] >= bz
+                                    && b.min[2] <= bz + 15
+                                {
+                                    out.push(start.clone());
+                                }
+                            }
+                        }
+                    } else if let Some(starts) = deferred[slot_idx].take() {
+                        for start in starts.iter() {
+                            let b = start.bounding_box;
+                            if b.max[0] >= bx
+                                && b.min[0] <= bx + 15
+                                && b.max[2] >= bz
+                                && b.min[2] <= bz + 15
+                            {
+                                out.push(start.clone());
+                            }
+                        }
+                    }
+                    slot_idx += 1;
                 }
             }
+        }
+        if out.len() <= 1 {
+            return out;
         }
         // Vanilla keeps each structure's references in a LongOpenHashSet and
         // places the starts in its iteration order; reorder each structure's
@@ -1837,13 +1915,19 @@ mod tests {
         let cache = StartCache::new();
         let first: Starts = Arc::new(Vec::new());
         let second: Starts = Arc::new(Vec::new());
-        assert!(cache.get((3, -4)).is_none());
+        assert!(cache.get_entry((3, -4)).is_none());
         assert!(Arc::ptr_eq(
-            &cache.insert_first((3, -4), first.clone()),
+            &cache.insert_first((3, -4), Some(first.clone())).unwrap(),
             &first
         ));
-        assert!(Arc::ptr_eq(&cache.insert_first((3, -4), second), &first));
-        assert!(Arc::ptr_eq(&cache.get((3, -4)).unwrap(), &first));
+        assert!(Arc::ptr_eq(
+            &cache.insert_first((3, -4), Some(second)).unwrap(),
+            &first
+        ));
+        assert!(Arc::ptr_eq(
+            &cache.get_entry((3, -4)).unwrap().unwrap(),
+            &first
+        ));
         for (cx, cz) in [(0, 0), (-1000, 77), (i32::MAX - 8, i32::MIN + 8)] {
             let mut used = vec![0; START_SHARDS];
             for x in cx - 8..=cx + 8 {
@@ -1860,7 +1944,7 @@ mod tests {
             assert!(used.iter().all(|&n| n > 0 && n < 20), "{used:?}");
         }
         cache.clear();
-        assert!(cache.get((3, -4)).is_none());
+        assert!(cache.get_entry((3, -4)).is_none());
     }
 
     /// A full shard forgets the starts nobody asked for since it last filled,
@@ -1875,20 +1959,26 @@ mod tests {
             .map(|x| (x, 0))
             .filter(|&k| shard_of(k, START_SHARDS) == shard);
         let cold_key = same_shard.next().unwrap();
-        cache.insert_first((0, 0), hot.clone());
-        cache.insert_first(cold_key, cold);
+        cache.insert_first((0, 0), Some(hot.clone()));
+        cache.insert_first(cold_key, Some(cold));
         // Three shards' worth of other chunks, with the hot one asked for now and then.
         for (i, key) in same_shard
             .take(3 * START_CACHE_LIMIT / START_SHARDS)
             .enumerate()
         {
-            cache.insert_first(key, Arc::new(Vec::new()));
+            cache.insert_first(key, None);
             if i % 100 == 0 {
-                assert!(Arc::ptr_eq(&cache.get((0, 0)).unwrap(), &hot));
+                assert!(Arc::ptr_eq(
+                    &cache.get_entry((0, 0)).unwrap().unwrap(),
+                    &hot
+                ));
             }
         }
-        assert!(Arc::ptr_eq(&cache.get((0, 0)).unwrap(), &hot));
-        assert!(cache.get(cold_key).is_none());
+        assert!(Arc::ptr_eq(
+            &cache.get_entry((0, 0)).unwrap().unwrap(),
+            &hot
+        ));
+        assert!(cache.get_entry(cold_key).is_none());
     }
 
     #[test]
@@ -1896,25 +1986,22 @@ mod tests {
         let cache = StartCache::new();
         let key = (3, -4);
         let first: Starts = Arc::new(Vec::new());
-        cache.insert_first(key, first.clone());
+        cache.insert_first(key, Some(first.clone()));
         {
             let mut shard = cache.shard(key).write().unwrap();
             shard.old = std::mem::take(&mut shard.new);
         }
-        cache.insert_first((99, 100), Arc::new(Vec::new()));
-        assert_eq!(cache.census(), (2, 0));
-        assert!(Arc::ptr_eq(
-            &cache.insert_first(key, Arc::new(Vec::new())),
-            &first
-        ));
+        cache.insert_first((99, 100), None);
+        assert_eq!(cache.census(), (2, 1));
+        assert!(Arc::ptr_eq(&cache.insert_first(key, None).unwrap(), &first));
         {
             let mut shard = cache.shard(key).write().unwrap();
             let value = shard.new.remove(&key).unwrap();
             shard.old.insert(key, value);
         }
         let replacement: Starts = Arc::new(Vec::new());
-        cache.replace(key, replacement.clone());
-        assert!(Arc::ptr_eq(&cache.get(key).unwrap(), &replacement));
+        cache.replace(key, replacement);
+        assert!(matches!(cache.get_entry(key), Some(None)));
         assert_eq!(cache.census(), (2, 0));
     }
 

@@ -100,9 +100,8 @@ where
     if mask.is_empty() {
         return Ok(());
     }
-    // Restoring the dirt under a carved cell used to build a fresh material
-    // worker, compile the whole surface rule and allocate its bindings for every
-    // cell. One worker now serves the pass; only the 1x1x1 bindings move.
+    // Most carved chunks only cut underground stone and never expose dirt under
+    // grass/mycelium, so initialize the material worker lazily on the first hit.
     let TopMaterialInputs {
         generation,
         root,
@@ -110,23 +109,15 @@ where
         preliminary_surface,
         density_context,
     } = inputs;
-    let volume =
-        DensityVolume::new([1; 3], [0; 3], [1; 3]).map_err(|_| SurfaceError::InvalidVolume)?;
-    let sources = MaterialDensitySources::new(
-        surface,
-        volume,
-        preliminary_surface,
-        SamplerContext::default(),
-    )?;
-    let mut worker =
-        MaterialConditions::<R, _>::with_possible_biomes(generation, root, sources, None);
-    let rule = worker.add_shared_rule(rule, shared)?;
+    let mut top_inputs = Some((generation, root, surface, preliminary_surface));
+    let mut top_worker: Option<(MaterialConditions<R, MaterialDensitySources<S>>, usize)> = None;
     let cx = chunk.position().x.wrapping_shl(4);
     let cz = chunk.position().z.wrapping_shl(4);
     for column in mask.columns() {
         let mut found_surface = false;
         let x = cx.wrapping_add(column.x);
         let z = cz.wrapping_add(column.z);
+        let mut bounds = chunk.worldgen_column_bounds(x, z);
         for y in (column.min_y..=column.max_y).rev() {
             if !filter([column.x, y, column.z]) {
                 continue;
@@ -142,23 +133,46 @@ where
             else {
                 continue;
             };
-            chunk.set_block_worldgen(x, y, z, state)?;
+            chunk.set_block_worldgen_column(x, y, z, state, &mut bounds)?;
             if aquifer.should_schedule_fluid_update() && chunk.block_properties(state).has_fluid() {
                 chunk.mark_postprocessing(x, y, z);
             }
             let below = y.wrapping_sub(1);
             if found_surface && blocks.flags(chunk.block(x, below, z))? & 4 != 0 {
                 let submerged = chunk.block_properties(state).has_fluid();
-                worker.retarget_surface_densities([x, below, z])?;
+                let (worker, rule_id) = match &mut top_worker {
+                    Some((worker, rule_id)) => {
+                        worker.retarget_surface_densities([x, below, z])?;
+                        (worker, *rule_id)
+                    }
+                    None => {
+                        let (generation, root, surface, preliminary_surface) =
+                            top_inputs.take().expect("initialized once");
+                        let volume = DensityVolume::new([1; 3], [x, below, z], [1; 3])
+                            .map_err(|_| SurfaceError::InvalidVolume)?;
+                        let sources = MaterialDensitySources::new(
+                            surface,
+                            volume,
+                            preliminary_surface,
+                            SamplerContext::default(),
+                        )?;
+                        let mut worker = MaterialConditions::<R, _>::with_possible_biomes(
+                            generation, root, sources, None,
+                        );
+                        let rule_id = worker.add_shared_rule(rule, shared)?;
+                        let entry = top_worker.insert((worker, rule_id));
+                        (&mut entry.0, entry.1)
+                    }
+                };
                 let replacement = top_material_cell(
-                    &mut worker,
+                    worker,
                     chunk,
-                    rule,
+                    rule_id,
                     BlockPos::new(x, below, z),
                     submerged,
                 )?;
                 if let Some(replacement) = replacement {
-                    chunk.set_block_worldgen(x, below, z, replacement)?;
+                    chunk.set_block_worldgen_column(x, below, z, replacement, &mut bounds)?;
                     if chunk.block_properties(replacement).has_fluid() {
                         chunk.mark_postprocessing(x, below, z);
                     }

@@ -7,10 +7,10 @@
 use super::{
     anchor::WorldGenerationContext,
     biome::BiomeId,
-    biome_chunk::BiomeRegion,
+    biome_chunk::BiomeRegionError,
     biome_predicate::BiomePredicateBindings,
     biome_source::ResolvedBiomeSource,
-    biome_temperature::BiomeTemperature,
+    biome_temperature::{BiomeTemperature, TemperatureModifier},
     biome_weather::BiomeWeatherBindings,
     block_feature::FeatureBlockBindings,
     decoration::{DecorationWorld, FeatureDecorationPlan},
@@ -20,7 +20,8 @@ use super::{
     feature_region::{RegionError, TerrainRegion},
     feature_sort::FeatureIdentity,
     generator::{
-        DecorateStats, GenBlockStates, GeneratorData, GeneratorError, ProtoChunk, WorkerState,
+        DecorateStats, GenBlockStates, GeneratorData, GeneratorError, ProtoChunk,
+        SurfaceBiomeRegion, WorkerState,
     },
     placement::{FeaturePlacer, LayerBlock, PlacementContext, PlacementQueryError},
     tags::TagDefinitions,
@@ -43,7 +44,7 @@ use crate::{
 };
 use horizon_core::random::{WorldgenRandom, XoroshiroRandom};
 use horizon_core::{
-    biome::obfuscate_seed,
+    biome::{BiomeZoom, obfuscate_seed},
     geometry::{Axis, Direction, VoxelShape},
     position::{BlockPos, ChunkPos},
 };
@@ -428,22 +429,38 @@ impl Decoration {
             .map(|chunk| chunk.position())
             .collect();
         let mut chunks = Vec::with_capacity(9);
-        let mut biomes = Vec::with_capacity(9);
         let (min_y, height) = (region[4].terrain.min_y(), region[4].terrain.height());
+        let mut standins = std::mem::take(&mut worker.decor_standins);
+        let biomes = SurfaceBiomeRegion::new(
+            center,
+            [
+                Arc::clone(region[0].biomes_arc()),
+                Arc::clone(region[1].biomes_arc()),
+                Arc::clone(region[2].biomes_arc()),
+                Arc::clone(region[3].biomes_arc()),
+                Arc::clone(region[4].biomes_arc()),
+                Arc::clone(region[5].biomes_arc()),
+                Arc::clone(region[6].biomes_arc()),
+                Arc::clone(region[7].biomes_arc()),
+                Arc::clone(region[8].biomes_arc()),
+            ],
+            BiomeZoom::new(obfuscate_seed(seed)),
+        );
         for chunk in region.iter_mut() {
-            // A one-section stand-in while the region holds the terrain: it
-            // is swapped back below, and allocating the full height for nine
-            // stand-ins per region cost more than some features.
-            let empty = super::terrain::TerrainChunk::new(
-                chunk.position(),
-                min_y,
-                16,
-                data.registry(),
-                data.block_states().clone(),
-            )
-            .map_err(|e| resource(e.to_string()))?;
+            // A one-section stand-in while the region holds the terrain: reused
+            // from the worker across decorated chunks and swapped back below.
+            let empty = match standins.pop() {
+                Some(standin) => standin,
+                None => super::terrain::TerrainChunk::new(
+                    chunk.position(),
+                    min_y,
+                    16,
+                    data.registry(),
+                    data.block_states().clone(),
+                )
+                .map_err(|e| resource(e.to_string()))?,
+            };
             chunks.push(std::mem::replace(&mut chunk.terrain, empty));
-            biomes.push(chunk.biomes().clone());
         }
         let terrain = TerrainRegion::new(chunks, generation)
             .and_then(|region| region.with_block_bindings(&self.bindings))
@@ -458,6 +475,10 @@ impl Decoration {
         for chunk in region.iter_mut() {
             block_entities.append(&mut chunk.block_entities);
         }
+        let mut uniform_biomes = std::mem::take(&mut worker.decor_uniform_biomes);
+        let uniform_len = 9 * (height / 16).max(0) as usize;
+        uniform_biomes.clear();
+        uniform_biomes.resize(uniform_len, UNKNOWN_BIOME);
         let mut world = World {
             block_entities,
             entities: Vec::new(),
@@ -470,11 +491,10 @@ impl Decoration {
                 .as_ref()
                 .and_then(|r| r.blocks.as_ref()),
             region: terrain,
-            biomes: BiomeRegion::new(biomes, obfuscate_seed(seed))
-                .map_err(|e| resource(e.to_string()))?,
+            biomes,
             zone: GenerationWriteZone::new(center, 1),
             center,
-            uniform_biomes: vec![UNKNOWN_BIOME; 9 * (height / 16).max(0) as usize],
+            uniform_biomes,
             biome_quarts: region[4].biomes().quart_range(),
             decoration: self,
             temperatures: &mut worker.temperatures,
@@ -588,7 +608,14 @@ impl Decoration {
                 }
             }
         }
-        for (pos, nbt) in std::mem::take(&mut world.block_entities) {
+        let World {
+            block_entities,
+            entities,
+            region: world_region,
+            uniform_biomes,
+            ..
+        } = world;
+        for (pos, nbt) in block_entities {
             let index = ((pos[2] >> 4).wrapping_sub(center.z) + 1) * 3
                 + (pos[0] >> 4).wrapping_sub(center.x)
                 + 1;
@@ -597,7 +624,7 @@ impl Decoration {
             }
         }
         // WorldGenRegion.addFreshEntity: into the chunk holding the position.
-        for nbt in std::mem::take(&mut world.entities) {
+        for nbt in entities {
             let Some(at) = block_of(&nbt) else {
                 continue;
             };
@@ -608,11 +635,16 @@ impl Decoration {
                 chunk.entities.push(nbt);
             }
         }
-        for terrain in world.region.into_chunks() {
+        worker.decor_uniform_biomes = uniform_biomes;
+        for terrain in world_region.into_chunks() {
             let p = terrain.position();
             let index = (p.z.wrapping_sub(center.z) + 1) * 3 + p.x.wrapping_sub(center.x) + 1;
-            region[index as usize].terrain = terrain;
+            let standin = std::mem::replace(&mut region[index as usize].terrain, terrain);
+            if standins.len() < 9 {
+                standins.push(standin);
+            }
         }
+        worker.decor_standins = standins;
         result.map_err(|e| GeneratorError::Stage("features", e.to_string()))?;
         stats.failed += structure_errors;
         region[4]
@@ -651,11 +683,7 @@ impl World<'_> {
             let ready = self.region.chunk(cx, cz).is_ok_and(|c| {
                 c.highest_generated_status() >= crate::chunk_status::ChunkStatus::Biomes
             });
-            let values = self
-                .biomes
-                .chunk(chunk)
-                .ok()
-                .and_then(|c| c.section(section));
+            let values = self.biomes.chunk(chunk).and_then(|c| c.section(section));
             self.uniform_biomes[slot] = match values {
                 Some(values) if ready && values.iter().all(|b| *b == values[0]) => values[0].0,
                 _ => MIXED_BIOMES,
@@ -775,7 +803,7 @@ struct World<'a> {
     biome_names: &'a [Arc<str>],
     blocks: Option<&'a BlockBehavior>,
     region: TerrainRegion<'static, GenBlockStates>,
-    biomes: BiomeRegion<BiomeId>,
+    biomes: SurfaceBiomeRegion,
     zone: GenerationWriteZone,
     center: ChunkPos,
     /// Per biome section of the nine chunks (chunk-major): its one biome id,
@@ -944,7 +972,10 @@ impl DecorationWorld for World<'_> {
     /// `BiomeRegion::present_in_chunk`: the distinct ids, ascending, from a
     /// bitset instead of sorting every quart of the column.
     fn chunk_biomes(&mut self, chunk: ChunkPos) -> Result<Vec<BiomeId>, RegionError> {
-        let biomes = self.biomes.chunk(chunk).map_err(RegionError::Biome)?;
+        let biomes = self
+            .biomes
+            .chunk(chunk)
+            .ok_or(RegionError::Biome(BiomeRegionError::MissingChunk(chunk)))?;
         // Ordinary registry ids fit in the stack array. Keep a spill for
         // unusually large modded registries without changing the ascending
         // iteration order of the bitset.
@@ -1029,17 +1060,18 @@ impl FeatureWorld for World<'_> {
         if self.is_full_chunk(position) {
             return Ok(true);
         }
-        let old = self.region.block(position)?;
-        self.region.set_block_worldgen(position, state)?;
+        let old = self.region.set_block_worldgen(position, state)?;
         self.raise_floor_bound(position);
         // ProtoChunk keeps a block entity that already exists when the same kind
         // of block is set again (a chest turning waterlogged); other changes drop it.
-        let registry = self.decoration.bindings.registry();
-        let same_block = old == state
-            || registry.state(old).map(|s| s.name.as_str())
-                == registry.state(state).map(|s| s.name.as_str());
-        if !same_block {
-            self.block_entities.retain(|(p, _)| *p != position);
+        if !self.block_entities.is_empty() {
+            let registry = self.decoration.bindings.registry();
+            let same_block = old == state
+                || registry.state(old).map(|s| s.name.as_str())
+                    == registry.state(state).map(|s| s.name.as_str());
+            if !same_block {
+                self.block_entities.retain(|(p, _)| *p != position);
+            }
         }
         // WorldGenRegion.setBlock: BlockState.getPostProcessPos unless UPDATE_KNOWN_SHAPE.
         if flags & 16 == 0 {
@@ -1166,7 +1198,7 @@ impl PlacementContext for World<'_> {
         state: BlockStateId,
         position: [i32; 3],
     ) -> Result<bool, PlacementQueryError> {
-        let collision = self.blocks()?.collision.clone();
+        let collision = &self.blocks()?.collision;
         collision
             .collision_shape(self, state, position)
             .map(|shape| shape.is_empty())
@@ -1279,7 +1311,7 @@ impl PlacementContext for World<'_> {
         if let (None, Some(behaviours)) = (self.blocks, self.behaviours) {
             return Ok(behaviours.is_face_sturdy(state, direction));
         }
-        let support = self.blocks()?.support.clone();
+        let support = &self.blocks()?.support;
         support
             .is_face_sturdy(self, state, position, direction, SupportType::Full)
             .map_err(query)
@@ -1293,7 +1325,7 @@ impl PlacementContext for World<'_> {
         if let (None, Some(behaviours)) = (self.blocks, self.behaviours) {
             return Ok(behaviours.is_face_sturdy_center(state, direction));
         }
-        let support = self.blocks()?.support.clone();
+        let support = &self.blocks()?.support;
         support
             .is_face_sturdy(self, state, position, direction, SupportType::Center)
             .map_err(query)
@@ -1316,7 +1348,7 @@ impl PlacementContext for World<'_> {
         state: BlockStateId,
         position: [i32; 3],
     ) -> Result<bool, PlacementQueryError> {
-        let collision = self.blocks()?.collision.clone();
+        let collision = &self.blocks()?.collision;
         let shape = collision
             .collision_shape(self, state, position)
             .map_err(query)?;
@@ -1562,9 +1594,16 @@ impl PlacementContext for World<'_> {
         let weather = self
             .decoration
             .weather
-            .clone()
+            .as_ref()
             .ok_or(PlacementQueryError::Unavailable)?;
+        let sea = self.region.sea_level()?;
         let settings = self.temperatures[biome.0 as usize].settings();
+        if settings.modifier == TemperatureModifier::None
+            && position[1] <= sea.wrapping_add(17)
+            && settings.base_temperature >= 0.15
+        {
+            return Ok(false);
+        }
         let mut temperature = std::mem::replace(
             &mut self.temperatures[biome.0 as usize],
             BiomeTemperature::new(settings),
@@ -1581,9 +1620,17 @@ impl PlacementContext for World<'_> {
         let weather = self
             .decoration
             .weather
-            .clone()
+            .as_ref()
             .ok_or(PlacementQueryError::Unavailable)?;
+        let sea = self.region.sea_level()?;
         let settings = self.temperatures[biome.0 as usize].settings();
+        if !settings.has_precipitation
+            || (settings.modifier == TemperatureModifier::None
+                && position[1] <= sea.wrapping_add(17)
+                && settings.base_temperature >= 0.15)
+        {
+            return Ok(false);
+        }
         let mut temperature = std::mem::replace(
             &mut self.temperatures[biome.0 as usize],
             BiomeTemperature::new(settings),
@@ -1628,13 +1675,18 @@ impl PlacementContext for World<'_> {
         if let Some(biome) = self.uniform_biome(position) {
             return Ok(biome);
         }
-        self.region
-            .biome_at(
-                &self.biomes,
-                BlockPos::new(position[0], position[1], position[2]),
-            )
-            .copied()
-            .map_err(Into::into)
+        let quart =
+            self.biomes
+                .zoom()
+                .quart_at_block(BlockPos::new(position[0], position[1], position[2]));
+        let (cx, cz) = (quart[0] >> 2, quart[2] >> 2);
+        let chunk = self.region.chunk(cx, cz)?;
+        if chunk.highest_generated_status() < crate::chunk_status::ChunkStatus::Biomes {
+            return Err(RegionError::BiomesNotGenerated([cx, cz]).into());
+        }
+        self.biomes.noise_biome(quart).ok_or_else(|| {
+            RegionError::Biome(BiomeRegionError::MissingChunk(ChunkPos::new(cx, cz))).into()
+        })
     }
     fn biome_allows_feature(
         &mut self,

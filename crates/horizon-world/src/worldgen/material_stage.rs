@@ -19,7 +19,22 @@ use horizon_core::{
     position::BlockPos,
     random::RandomSource,
 };
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
+
+thread_local! {
+    static COLUMN_CACHE: RefCell<ColumnCache> = const {
+        RefCell::new(ColumnCache {
+            states: Vec::new(),
+            kinds: Vec::new(),
+        })
+    };
+}
+
+pub(crate) fn release_scratch() {
+    let _ = COLUMN_CACHE.try_with(|cache| {
+        *cache.borrow_mut() = ColumnCache::default();
+    });
+}
 
 pub struct SurfaceInputs<'a, R: RandomSource, S: MaterialSurfaceQueries> {
     pub generation: WorldGenerationContext,
@@ -121,6 +136,9 @@ struct Column<'a, 'r, B: TerrainBlockStates> {
     /// This column's `TerrainChunk::worldgen_column_bounds`: most writes are
     /// far below the heightmaps and need no update.
     bounds: Option<ColumnBounds>,
+    /// Lowest Y whose modification could alter `WorldSurfaceWg` (`top - 1`).
+    top_watch: i32,
+    wrote_top: bool,
 }
 impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
     fn new(
@@ -170,6 +188,8 @@ impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
             low,
             high,
             bounds,
+            top_watch: top.wrapping_sub(1),
+            wrote_top: false,
         }
     }
     fn cache_index(&self, y: i32) -> Option<usize> {
@@ -208,6 +228,15 @@ impl<'a, 'r, B: TerrainBlockStates> Column<'a, 'r, B> {
         let low = low.max(self.min);
         if high < low {
             return Ok(());
+        }
+        if !self.chunk.block_properties(state).has_fluid()
+            && let (Some(lo), Some(hi)) = (self.cache_index(low), self.cache_index(high))
+            && self.cache.states[lo..=hi].iter().all(|&s| s == state)
+        {
+            return Ok(());
+        }
+        if high >= self.top_watch {
+            self.wrote_top = true;
         }
         self.set_block(high, state)?;
         if high > low {
@@ -248,6 +277,9 @@ impl<B: TerrainBlockStates> MaterialColumn for Column<'_, '_, B> {
             if self.block(y)? != state {
                 self.chunk
                     .set_block_worldgen_column(self.x, y, self.z, state, &mut self.bounds)?;
+                if y >= self.top_watch {
+                    self.wrote_top = true;
+                }
                 if let Some(index) = self.cache_index(y) {
                     self.cache.states[index] = state;
                     self.cache.kinds[index] = BlockKind::from_properties(properties);
@@ -447,180 +479,230 @@ where
     R::Positional: Clone,
 {
     let min = chunk.min_y();
-    let rule = worker.add_shared_rule(rule, shared)?;
-    let mut variants = worker.surface_variants(rule)?;
+    let (mut variants, cached_slot) = worker.prepare_shared_surface(rule, shared)?;
     let cx = chunk.position().x.wrapping_shl(4);
     let cz = chunk.position().z.wrapping_shl(4);
-    // One block buffer, refilled per column and kept across columns.
-    let mut cache = ColumnCache::default();
-    for lx in 0..16 {
-        for lz in 0..16 {
-            let x = cx.wrapping_add(lx);
-            let z = cz.wrapping_add(lz);
-            let original_top = first_available(chunk, lx, lz)?;
-            let biome = worker
-                .biome_at(BlockPos::new(x, original_top, z))?
-                .ok_or(MaterialRuleError::MissingBiome)?;
-            if biome.as_ref() == "minecraft:eroded_badlands" {
-                extensions.eroded_badlands(
-                    &mut Column::new(
-                        chunk,
-                        x,
-                        z,
-                        write_min_y,
-                        write_max_y,
-                        original_top,
-                        &mut cache,
-                    ),
-                    x,
-                    z,
-                    original_top,
-                    min,
-                )?;
-            }
-            let top = first_available(chunk, lx, lz)?;
-            let gx = first_available(chunk, (lx + 1).min(15), lz)?.wrapping_sub(first_available(
-                chunk,
-                (lx - 1).max(0),
-                lz,
-            )?);
-            let gz = first_available(chunk, lx, (lz + 1).min(15))?.wrapping_sub(first_available(
-                chunk,
-                lx,
-                (lz - 1).max(0),
-            )?);
-            worker.update_xz(x, z, gx, gz);
-            let mut above = 0i32;
-            let mut water = i32::MIN;
-            let mut bottom = i32::MAX;
-            let mut y = top;
-            let mut budget = 1 << 20;
-            // The walk descends, so the band only steps down.
-            let mut band = variants.band(top);
-            let mut band_low = variants.band_bounds(band)[0];
-            // The column's minimum surface level, read once when first needed.
-            let mut minimum = None;
-            let mut column = Column::new(chunk, x, z, write_min_y, write_max_y, top, &mut cache);
-            while y >= min {
-                tick(&mut budget)?;
-                match column.kind(y) {
-                    BlockKind::Air => {
-                        above = 0;
-                        water = i32::MIN;
-                    }
-                    BlockKind::Fluid => {
-                        if water == i32::MIN {
-                            water = y.wrapping_add(1);
-                        }
-                    }
-                    BlockKind::Solid => {
-                        if bottom >= y {
-                            bottom = -32512; // DimensionType.MIN_Y << 4 for 26.3.
-                            let mut below = y.wrapping_sub(1);
-                            while below >= min - 1 {
-                                tick(&mut budget)?;
-                                if column.kind(below) != BlockKind::Solid {
-                                    bottom = below.wrapping_add(1);
-                                    break;
-                                }
-                                below = below.wrapping_sub(1);
-                            }
-                        }
-                        above = above.wrapping_add(1);
-                        if y >= write_min_y && y <= write_max_y {
-                            let surface = variants.surface
-                                && y >= match minimum {
-                                    Some(level) => level,
-                                    None => *minimum.insert(worker.minimum_surface_level()?),
-                                };
-                            while y < band_low {
-                                band -= 1;
-                                band_low = variants.band_bounds(band)[0];
-                            }
-                            // Where the rule gives no block, the block's context
-                            // is not needed: each application sets its own first.
-                            if let Some(band_rule) =
-                                worker.surface_variant(&mut variants, band, surface)
-                            {
-                                worker.update_y(
-                                    above,
-                                    y.wrapping_sub(bottom).wrapping_add(1),
-                                    water,
-                                    y,
-                                );
-                                // A run of blocks the rule gives one state where
-                                // none of its ore veins places one is written
-                                // through the section fill, down to the first y
-                                // where a vein can place a block, the band's
-                                // bottom or the write bounds.
-                                if let BandRule::Fill(_, index) = band_rule {
-                                    let fill = variants.fill(index);
-                                    if column.fills_runs(fill.block)
-                                        && worker.veins_miss(fill, BlockPos::new(x, y, z))?
-                                    {
-                                        // A run above the minimum surface level stops
-                                        // there too: below it the band takes its other
-                                        // variant (`surface` is false).
-                                        let lowest = match minimum {
-                                            Some(level) if surface => {
-                                                band_low.max(write_min_y).max(level)
-                                            }
-                                            _ => band_low.max(write_min_y),
-                                        };
-                                        let mut run_low = y;
-                                        loop {
-                                            let next = run_low.wrapping_sub(1);
-                                            if next < lowest {
-                                                break;
-                                            }
-                                            tick(&mut budget)?;
-                                            if column.kind(next) != BlockKind::Solid
-                                                || !worker
-                                                    .veins_miss(fill, BlockPos::new(x, next, z))?
-                                            {
-                                                break;
-                                            }
-                                            run_low = next;
-                                        }
-                                        column.fill_opaque(run_low, y, fill.block)?;
-                                        above = above.wrapping_add(y.wrapping_sub(run_low));
-                                        // The run's blocks are written: the
-                                        // loop continues below it.
-                                        y = run_low.wrapping_sub(1);
-                                        continue;
-                                    }
-                                }
-                                if let Some(state) =
-                                    worker.try_apply(band_rule.rule(), BlockPos::new(x, y, z))?
-                                {
-                                    column.set_block(y, state)?;
-                                }
-                            }
-                        }
-                    }
+    // One block buffer, pooled on the worker thread and reused across columns/chunks.
+    let mut cache = COLUMN_CACHE
+        .try_with(|slot| std::mem::take(&mut *slot.borrow_mut()))
+        .unwrap_or_default();
+    let result = (|| -> Result<(), SurfaceError> {
+        if chunk.heightmap(HeightmapType::WorldSurfaceWg).is_none() {
+            chunk.prime_heightmaps(&[HeightmapType::WorldSurfaceWg])?;
+        }
+        let mut tops = [0i32; 256];
+        {
+            let map = chunk
+                .heightmap(HeightmapType::WorldSurfaceWg)
+                .expect("primed above");
+            for lx in 0..16 {
+                for lz in 0..16 {
+                    tops[(lx * 16 + lz) as usize] =
+                        map.first_available(lx, lz).map_err(TerrainError::from)?;
                 }
-                y = y.wrapping_sub(1);
-            }
-            if matches!(
-                biome.as_ref(),
-                "minecraft:frozen_ocean" | "minecraft:deep_frozen_ocean"
-            ) {
-                let minimum = worker.minimum_surface_level()?;
-                extensions.frozen_ocean_with_melt(
-                    &mut column,
-                    [x, z],
-                    original_top,
-                    minimum,
-                    |position, sea| {
-                        worker
-                            .melts_frozen_ocean(&biome, position, sea)
-                            .map_err(SurfaceError::from)
-                    },
-                )?;
             }
         }
-    }
-    Ok(())
+        let check_extensions = match worker.possible_biome_ids() {
+            Some(ids) => {
+                let has = |name: &str| {
+                    worker.biome_index(name).flatten().is_some_and(|id| {
+                        let word = id as usize / 64;
+                        ids.get(word)
+                            .is_some_and(|bits| (bits >> (id % 64)) & 1 != 0)
+                    })
+                };
+                has("minecraft:eroded_badlands")
+                    || has("minecraft:frozen_ocean")
+                    || has("minecraft:deep_frozen_ocean")
+            }
+            None => true,
+        };
+        for lx in 0..16 {
+            for lz in 0..16 {
+                let x = cx.wrapping_add(lx);
+                let z = cz.wrapping_add(lz);
+                let cell_idx = (lx * 16 + lz) as usize;
+                let original_top = tops[cell_idx];
+                let biome = if check_extensions {
+                    Some(
+                        worker
+                            .biome_at(BlockPos::new(x, original_top, z))?
+                            .ok_or(MaterialRuleError::MissingBiome)?,
+                    )
+                } else {
+                    None
+                };
+                if biome.as_deref() == Some("minecraft:eroded_badlands") {
+                    extensions.eroded_badlands(
+                        &mut Column::new(
+                            chunk,
+                            x,
+                            z,
+                            write_min_y,
+                            write_max_y,
+                            original_top,
+                            &mut cache,
+                        ),
+                        x,
+                        z,
+                        original_top,
+                        min,
+                    )?;
+                    tops[cell_idx] = first_available(chunk, lx, lz)?;
+                }
+                let top = tops[cell_idx];
+                let gx = tops[((lx + 1).min(15) * 16 + lz) as usize]
+                    .wrapping_sub(tops[((lx - 1).max(0) * 16 + lz) as usize]);
+                let gz = tops[(lx * 16 + (lz + 1).min(15)) as usize]
+                    .wrapping_sub(tops[(lx * 16 + (lz - 1).max(0)) as usize]);
+                worker.update_xz(x, z, gx, gz);
+                let mut above = 0i32;
+                let mut water = i32::MIN;
+                let mut bottom = i32::MAX;
+                let mut y = top;
+                let mut budget = 1 << 20;
+                // The walk descends, so the band only steps down.
+                let mut band = variants.band(top);
+                let mut band_low = variants.band_bounds(band)[0];
+                // The column's minimum surface level, read once when first needed.
+                let mut minimum = None;
+                let mut column =
+                    Column::new(chunk, x, z, write_min_y, write_max_y, top, &mut cache);
+                while y >= min {
+                    tick(&mut budget)?;
+                    match column.kind(y) {
+                        BlockKind::Air => {
+                            above = 0;
+                            water = i32::MIN;
+                        }
+                        BlockKind::Fluid => {
+                            if water == i32::MIN {
+                                water = y.wrapping_add(1);
+                            }
+                        }
+                        BlockKind::Solid => {
+                            if bottom >= y {
+                                bottom = -32512; // DimensionType.MIN_Y << 4 for 26.3.
+                                let mut below = y.wrapping_sub(1);
+                                while below >= min - 1 {
+                                    tick(&mut budget)?;
+                                    if column.kind(below) != BlockKind::Solid {
+                                        bottom = below.wrapping_add(1);
+                                        break;
+                                    }
+                                    below = below.wrapping_sub(1);
+                                }
+                            }
+                            above = above.wrapping_add(1);
+                            if y >= write_min_y && y <= write_max_y {
+                                let surface = variants.surface
+                                    && y >= match minimum {
+                                        Some(level) => level,
+                                        None => *minimum.insert(worker.minimum_surface_level()?),
+                                    };
+                                while y < band_low {
+                                    band -= 1;
+                                    band_low = variants.band_bounds(band)[0];
+                                }
+                                // Where the rule gives no block, the block's context
+                                // is not needed: each application sets its own first.
+                                if let Some(band_rule) =
+                                    worker.surface_variant(&mut variants, band, surface)
+                                {
+                                    worker.update_y(
+                                        above,
+                                        y.wrapping_sub(bottom).wrapping_add(1),
+                                        water,
+                                        y,
+                                    );
+                                    // A run of blocks the rule gives one state where
+                                    // none of its ore veins places one is written
+                                    // through the section fill, down to the first y
+                                    // where a vein can place a block, the band's
+                                    // bottom or the write bounds.
+                                    if let BandRule::Fill(_, index) = band_rule {
+                                        let fill = variants.fill(index);
+                                        if column.fills_runs(fill.block)
+                                            && worker.veins_miss(fill, BlockPos::new(x, y, z))?
+                                        {
+                                            // A run above the minimum surface level stops
+                                            // there too: below it the band takes its other
+                                            // variant (`surface` is false).
+                                            let lowest = match minimum {
+                                                Some(level) if surface => {
+                                                    band_low.max(write_min_y).max(level)
+                                                }
+                                                _ => band_low.max(write_min_y),
+                                            };
+                                            let mut run_low = y;
+                                            loop {
+                                                let next = run_low.wrapping_sub(1);
+                                                if next < lowest {
+                                                    break;
+                                                }
+                                                tick(&mut budget)?;
+                                                if column.kind(next) != BlockKind::Solid
+                                                    || !worker.veins_miss(
+                                                        fill,
+                                                        BlockPos::new(x, next, z),
+                                                    )?
+                                                {
+                                                    break;
+                                                }
+                                                run_low = next;
+                                            }
+                                            column.fill_opaque(run_low, y, fill.block)?;
+                                            above = above.wrapping_add(y.wrapping_sub(run_low));
+                                            // The run's blocks are written: the
+                                            // loop continues below it.
+                                            y = run_low.wrapping_sub(1);
+                                            continue;
+                                        }
+                                    }
+                                    if let Some(state) = worker
+                                        .try_apply(band_rule.rule(), BlockPos::new(x, y, z))?
+                                    {
+                                        column.set_block(y, state)?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    y = y.wrapping_sub(1);
+                }
+                let mut refresh_top = column.wrote_top;
+                if let Some(biome) = &biome
+                    && matches!(
+                        biome.as_ref(),
+                        "minecraft:frozen_ocean" | "minecraft:deep_frozen_ocean"
+                    )
+                {
+                    let minimum = worker.minimum_surface_level()?;
+                    extensions.frozen_ocean_with_melt(
+                        &mut column,
+                        [x, z],
+                        original_top,
+                        minimum,
+                        |position, sea| {
+                            worker
+                                .melts_frozen_ocean(biome, position, sea)
+                                .map_err(SurfaceError::from)
+                        },
+                    )?;
+                    refresh_top = true;
+                }
+                if refresh_top {
+                    tops[cell_idx] = first_available(chunk, lx, lz)?;
+                }
+            }
+        }
+        Ok(())
+    })();
+    let _ = COLUMN_CACHE.try_with(|slot| {
+        *slot.borrow_mut() = cache;
+    });
+    worker.finish_shared_surface(shared, variants, cached_slot);
+    result
 }
 
 #[cfg(test)]

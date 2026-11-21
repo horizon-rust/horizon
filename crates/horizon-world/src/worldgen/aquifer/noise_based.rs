@@ -3,11 +3,11 @@ use super::{AquiferField, AquiferSamplers, FluidPicker, FluidStatus};
 use crate::registry::{BlockRegistry, BlockStateId};
 use horizon_core::{
     density::{SampleError, SamplerContext},
+    fast_hash::FxHashMap,
     noise::{DensityError, DensityVolume},
     position::{BlockPos, ChunkPos},
     random::{PositionalRandom, RandomSource},
 };
-use std::collections::HashMap;
 
 const WAY_BELOW_MIN_Y: i32 = -32512;
 const FLOWING_UPDATE_SIMILARITY: f64 = 1.0 - 44.0 / 25.0;
@@ -37,6 +37,7 @@ pub trait AquiferBlockStates {
     fn is_lava(&self, state: BlockStateId) -> bool;
     fn is_water(&self, state: BlockStateId) -> bool;
 }
+#[derive(Clone, Copy)]
 pub struct RegistryAquiferBlockStates<'a> {
     registry: &'a BlockRegistry,
     air: BlockStateId,
@@ -147,7 +148,14 @@ pub struct NoiseBasedAquifer<P, F, B> {
     locations: Vec<i64>,
     /// Each drawn location as `BlockPos.getX/Y/Z` read it back.
     points: Vec<[i32; 3]>,
-    surfaces: HashMap<i64, i32>,
+    /// Dense 2D grid of precomputed surface levels in quart coordinates (step 4 blocks).
+    surface_low: [i32; 2],
+    surface_sizes: [usize; 2],
+    surface_grid: Vec<i32>,
+    /// Surface levels queried outside the precomputed grid (outer offsets).
+    surfaces_overflow: FxHashMap<i64, i32>,
+    /// Reusable density buffer for `max_surface_level`.
+    surface_buf: Vec<f32>,
     /// The anchor `cells` holds, once all 12 of its cells are in the grid.
     anchor: Option<[i32; 3]>,
     /// The column `cells.horizontal` was computed for.
@@ -167,6 +175,44 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
         volume: DensityVolume,
         context: &mut SamplerContext,
     ) -> Result<Self, AquiferError> {
+        let mut result = Self {
+            samplers,
+            picker,
+            random,
+            blocks,
+            minimum: [0; 3],
+            size_x: 0,
+            size_z: 0,
+            statuses: Vec::new(),
+            locations: Vec::new(),
+            points: Vec::new(),
+            surface_low: [0; 2],
+            surface_sizes: [0; 2],
+            surface_grid: Vec::new(),
+            surfaces_overflow: FxHashMap::default(),
+            surface_buf: Vec::new(),
+            anchor: None,
+            column: [0; 2],
+            cells: Cells {
+                index: [0; 12],
+                x: [0; 12],
+                y: [0; 12],
+                z: [0; 12],
+                horizontal: [0; 12],
+            },
+            skip_above_y: 0,
+            schedule: false,
+        };
+        result.reset(volume, context)?;
+        Ok(result)
+    }
+    /// Reinitialize this aquifer for a new `volume`, reusing all internal
+    /// cache buffers without heap reallocation when capacity suffices.
+    pub fn reset(
+        &mut self,
+        volume: DensityVolume,
+        context: &mut SamplerContext,
+    ) -> Result<(), AquiferError> {
         let low = volume.minimum();
         let high = volume.maximum();
         let minimum = [
@@ -192,46 +238,46 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
             })
             .filter(|n| *n <= 16_777_216)
             .ok_or(AquiferError::InvalidGrid)?;
-        let mut statuses = Vec::new();
-        statuses
-            .try_reserve_exact(count)
-            .map_err(|_| AquiferError::Allocation)?;
-        statuses.resize(count, None);
-        let mut locations = Vec::new();
-        locations
-            .try_reserve_exact(count)
-            .map_err(|_| AquiferError::Allocation)?;
-        locations.resize(count, i64::MAX);
-        let mut points = Vec::new();
-        points
-            .try_reserve_exact(count)
-            .map_err(|_| AquiferError::Allocation)?;
-        points.resize(count, [0; 3]);
-        let mut result = Self {
-            samplers,
-            picker,
-            random,
-            blocks,
-            minimum,
-            size_x: sizes[0],
-            size_z: sizes[2],
-            statuses,
-            locations,
-            points,
-            surfaces: HashMap::new(),
-            anchor: None,
-            column: [0; 2],
-            cells: Cells {
-                index: [0; 12],
-                x: [0; 12],
-                y: [0; 12],
-                z: [0; 12],
-                horizontal: [0; 12],
-            },
-            skip_above_y: 0,
-            schedule: false,
+        self.statuses.clear();
+        if self.statuses.capacity() < count {
+            self.statuses
+                .try_reserve_exact(count)
+                .map_err(|_| AquiferError::Allocation)?;
+        }
+        self.statuses.resize(count, None);
+        self.locations.clear();
+        if self.locations.capacity() < count {
+            self.locations
+                .try_reserve_exact(count)
+                .map_err(|_| AquiferError::Allocation)?;
+        }
+        self.locations.resize(count, i64::MAX);
+        self.points.clear();
+        if self.points.capacity() < count {
+            self.points
+                .try_reserve_exact(count)
+                .map_err(|_| AquiferError::Allocation)?;
+        }
+        self.points.resize(count, [0; 3]);
+        self.minimum = minimum;
+        self.size_x = sizes[0];
+        self.size_z = sizes[2];
+        self.surface_low = [0; 2];
+        self.surface_sizes = [0; 2];
+        self.surface_grid.clear();
+        self.surfaces_overflow.clear();
+        self.anchor = None;
+        self.column = [0; 2];
+        self.cells = Cells {
+            index: [0; 12],
+            x: [0; 12],
+            y: [0; 12],
+            z: [0; 12],
+            horizontal: [0; 12],
         };
-        let max_surface = result
+        self.skip_above_y = 0;
+        self.schedule = false;
+        let max_surface = self
             .max_surface_level(
                 context,
                 [minimum[0].wrapping_shl(4), minimum[2].wrapping_shl(4)],
@@ -242,8 +288,8 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
             )?
             .wrapping_add(8);
         let skip_grid = max_surface.wrapping_add(12).div_euclid(12).wrapping_add(1);
-        result.skip_above_y = skip_grid.wrapping_mul(12).wrapping_add(11).wrapping_sub(1);
-        Ok(result)
+        self.skip_above_y = skip_grid.wrapping_mul(12).wrapping_add(11).wrapping_sub(1);
+        Ok(())
     }
     /// Read-only diagnostic state; enumeration never populates a cache.
     pub fn cached_cells(&self) -> impl Iterator<Item = (i64, Option<FluidStatus>)> + '_ {
@@ -253,7 +299,29 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
             .zip(self.statuses.iter().copied())
     }
     pub fn cached_surfaces(&self) -> impl Iterator<Item = (i64, i32)> + '_ {
-        self.surfaces.iter().map(|(key, value)| (*key, *value))
+        let low = self.surface_low;
+        let sx = self.surface_sizes[0];
+        let grid = self
+            .surface_grid
+            .iter()
+            .enumerate()
+            .map(move |(index, &value)| {
+                let x = (index % sx) as i32;
+                let z = (index / sx) as i32;
+                (
+                    ChunkPos::new(
+                        low[0].wrapping_add(x).wrapping_shl(2),
+                        low[1].wrapping_add(z).wrapping_shl(2),
+                    )
+                    .pack(),
+                    value,
+                )
+            });
+        grid.chain(
+            self.surfaces_overflow
+                .iter()
+                .map(|(&key, &value)| (key, value)),
+        )
     }
     pub fn should_schedule_fluid_update(&self) -> bool {
         self.schedule
@@ -285,22 +353,38 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
     ) -> Result<f64, AquiferError> {
         Ok(self.samplers.get(field).sample_value(context, position)? as f64)
     }
+    #[inline]
     fn surface_level(
         &mut self,
         context: &mut SamplerContext,
         x: i32,
         z: i32,
     ) -> Result<i32, AquiferError> {
-        let x = (x >> 2).wrapping_shl(2);
-        let z = (z >> 2).wrapping_shl(2);
+        let qx = x >> 2;
+        let qz = z >> 2;
+        let dx = qx.wrapping_sub(self.surface_low[0]) as u32 as usize;
+        let dz = qz.wrapping_sub(self.surface_low[1]) as u32 as usize;
+        if dx < self.surface_sizes[0] && dz < self.surface_sizes[1] {
+            return Ok(self.surface_grid[dz * self.surface_sizes[0] + dx]);
+        }
+        self.surface_level_overflow(context, qx.wrapping_shl(2), qz.wrapping_shl(2))
+    }
+    #[cold]
+    #[inline(never)]
+    fn surface_level_overflow(
+        &mut self,
+        context: &mut SamplerContext,
+        x: i32,
+        z: i32,
+    ) -> Result<i32, AquiferError> {
         let key = ChunkPos::new(x, z).pack();
-        if let Some(level) = self.surfaces.get(&key) {
-            return Ok(*level);
+        if let Some(&level) = self.surfaces_overflow.get(&key) {
+            return Ok(level);
         }
         let level = self
             .sample(AquiferField::SurfaceLevel, context, [x, 0, z])?
             .floor() as i32;
-        self.surfaces.insert(key, level);
+        self.surfaces_overflow.insert(key, level);
         Ok(level)
     }
     fn max_surface_level(
@@ -320,33 +404,29 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
         if volume.size() > 2_097_152 {
             return Err(AquiferError::InvalidGrid);
         }
-        let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(volume.size())
-            .map_err(|_| AquiferError::Allocation)?;
-        buffer.resize(volume.size(), 0.);
+        self.surface_buf.clear();
+        if self.surface_buf.capacity() < volume.size() {
+            self.surface_buf
+                .try_reserve_exact(volume.size())
+                .map_err(|_| AquiferError::Allocation)?;
+        }
+        self.surface_buf.resize(volume.size(), 0.0);
         self.samplers
             .get(AquiferField::SurfaceLevel)
-            .sample_volume(context, &mut buffer, volume)?;
-        self.surfaces
-            .try_reserve(volume.size())
-            .map_err(|_| AquiferError::Allocation)?;
+            .sample_volume(context, &mut self.surface_buf, volume)?;
+        self.surface_grid.clear();
+        if self.surface_grid.capacity() < volume.size() {
+            self.surface_grid
+                .try_reserve_exact(volume.size())
+                .map_err(|_| AquiferError::Allocation)?;
+        }
+        self.surface_low = low;
+        self.surface_sizes = [sizes[0] as usize, sizes[1] as usize];
         let mut maximum = i32::MIN;
-        let mut index = 0;
-        for z in 0..sizes[1] {
-            for x in 0..sizes[0] {
-                let value = (buffer[index] as f64).floor() as i32;
-                index += 1;
-                self.surfaces.insert(
-                    ChunkPos::new(
-                        low[0].wrapping_add(x).wrapping_shl(2),
-                        low[1].wrapping_add(z).wrapping_shl(2),
-                    )
-                    .pack(),
-                    value,
-                );
-                maximum = maximum.max(value);
-            }
+        for &raw in &self.surface_buf {
+            let value = (raw as f64).floor() as i32;
+            self.surface_grid.push(value);
+            maximum = maximum.max(value);
         }
         Ok(maximum)
     }
